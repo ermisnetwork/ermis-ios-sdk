@@ -1,0 +1,42 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+// MARK: - Call
+/// Text used in the navigation title of the voice call.
+"call.title.voice-call" = "Voice call";
+/// Text used in the navigation title of the video call.
+"call.title.video-call" = "Video call";
+/// Text used when call status is ringing.
+"call.status.ringing" = "Ringing...";
+/// Text used when call status is connecting.
+"call.status.connecting" = "Connecting...";
+/// Text used when call status is ended.
+"call.status.ended" = "The call was ended";
+/// Text show when have connection problem.
+"call.connection.low-connection" = "Low connection";
+/// Text show your internet connection problem.
+"call.connection.your-connection-unstable" = "Your network connection is unstable";
+/// Text show other's internet connection problem.
+"call.connection.other-connection-unstable" = "%@'s network connection is unstable";
+/// Text show when receiver in other call.
+"call.message.receiver-busy" = "Receiver busy";
+// MARK: - Camera authorization
+/// Title of require camera access alert.
+"alert.title.camera" = "Camera";
+/// Message of require camera access alert.
+"alert.message.camera-access-notgrandted" = "%@ doesn't have permission to use Camera, please change privacy settings";
+/// Message show in alert when camera is unavailble.
+"alert.message.camera-unavailable" = "The camera is unavailable on your device";
+/// Title of require microphone access alert.
+"alert.title.mic" = "Microphone";
+/// Message of require microphone access alert.
+"alert.message.mic-access-notgrandted" = "%@ doesn't have permission to use Microphone, plase change privacy settings";
+/// Generic accept text in the popups.
+"alert.actions.accept" = "Accept";
+/// Generic settings text in the popups.
+"alert.actions.settings" = "Settings";
+/// Generic cancel text in the popups.
+"alert.actions.cancel" = "Cancel";
+/// Generic ok text in the popups.
+"alert.actions.ok" = "Ok";

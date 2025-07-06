@@ -1,0 +1,1182 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+import CoreData
+import Foundation
+
+/// A reaction is represented by a String with the following format: "userId/messageId/reactionType"
+typealias ReactionString = String
+extension ReactionString {
+    var reactionUserId: String {
+        split(separator: "/").first.map(String.init) ?? ""
+    }
+
+    var reactionType: String {
+        split(separator: "/").last.map(String.init) ?? ""
+    }
+}
+
+@objc(MessageDTO)
+class MessageDTO: NSManagedObject {
+    @NSManaged fileprivate var localMessageStateRaw: String?
+
+    @NSManaged var id: String
+    @NSManaged var cid: String?
+    @NSManaged var text: String
+    @NSManaged var type: String
+    @NSManaged var command: String?
+    @NSManaged var createdAt: DBDate
+    @NSManaged var updatedAt: DBDate
+    @NSManaged var deletedAt: DBDate?
+    @NSManaged var textUpdatedAt: DBDate?
+    @NSManaged var isHardDeleted: Bool
+    @NSManaged var args: String?
+    @NSManaged var parentMessageId: MessageId?
+    @NSManaged var parentMessage: MessageDTO?
+    @NSManaged var replyCount: Int32
+    @NSManaged var isSilent: Bool
+    @NSManaged var isShadowed: Bool
+    @NSManaged var reactionScores: [String: Int]
+    @NSManaged var reactionCounts: [String: Int]
+
+    @NSManaged var latestReactions: [ReactionString]
+    @NSManaged var ownReactions: [ReactionString]
+
+    @NSManaged var translations: [String: String]?
+    @NSManaged var originalLanguage: String?
+    
+    @NSManaged var moderationDetails: MessageModerationDetailsDTO?
+    var isBounced: Bool {
+        moderationDetails?.action == MessageModerationAction.bounce.rawValue
+    }
+
+    // Boolean flag that determines if the reply will be shown inside the thread query.
+    // This boolean is used to control the pagination of the replies of a thread.
+    @NSManaged var showInsideThread: Bool
+
+    // Used for paginating newer replies while jumping to a mid-page.
+    // We want to avoid new replies being inserted in the UI if we are in a mid-page.
+    @NSManaged var newestReplyAt: DBDate?
+
+    @NSManaged var user: UserDTO
+
+    /// Use this property in case you want to read the mentioned users in the message.
+    @NSManaged var mentionedUsers: Set<UserDTO>
+    /// Use this property ONLY when creating/updating a message with new mentioned users.
+    @NSManaged var mentionedUserIds: [String]
+    @NSManaged var mentionedAll: Bool
+    @NSManaged var pinnedAt: DBDate?
+
+    @NSManaged var threadParticipants: NSOrderedSet
+    @NSManaged var channel: ChannelDTO?
+    @NSManaged var replies: Set<MessageDTO>
+    @NSManaged var flaggedBy: CurrentUserDTO?
+    @NSManaged var attachments: Set<AttachmentDTO>
+    @NSManaged var oldTexts: Set<MessageEditHistoryDTO>?
+    @NSManaged var quotedMessage: MessageDTO?
+    @NSManaged var quotedMessageId: MessageId?
+    @NSManaged var forwardCid: String?
+    @NSManaged var quotedBy: Set<MessageDTO>
+    @NSManaged var searches: Set<MessageSearchQueryDTO>
+    @NSManaged var previewOfChannel: ChannelDTO?
+
+    /// If the message is sent by the current user, this field
+    /// contains channel reads of other channel members (excluding the current user),
+    /// where `read.lastRead >= self.createdAt`.
+    ///
+    /// If the message has a channel read of a member, it is considered as seen/read by
+    /// that member.
+    ///
+    /// For messages authored NOT by the current user this field is always empty.
+    @NSManaged var reads: Set<ChannelReadDTO>
+
+    // The timestamp the message was created locally. Applies only for the messages of the current user.
+    @NSManaged var locallyCreatedAt: DBDate?
+
+    // We use `Date!` to replicate a required value. The value must be marked as optional in the CoreData model, because we change
+    // it in the `willSave` phase, which happens after the validation.
+    @NSManaged var defaultSortingKey: DBDate!
+
+    override func willSave() {
+        super.willSave()
+
+        guard !isDeleted else {
+            return
+        }
+
+        if let channel = channel, self.cid != channel.cid {
+            self.cid = channel.cid
+        }
+
+        // Manually mark the channel as dirty to trigger the entity update and give the UI a chance
+        // to reload the channel cell to reflect the updated preview.
+        if let channel = previewOfChannel, !channel.hasChanges, !channel.isDeleted {
+            let cid = channel.cid
+            channel.cid = cid
+        }
+
+        prepareDefaultSortKeyIfNeeded()
+    }
+
+    /// Makes sure the `defaultSortingKey` value is computed and set.
+    fileprivate func prepareDefaultSortKeyIfNeeded() {
+        let newSortingKey = locallyCreatedAt ?? createdAt
+        if defaultSortingKey != newSortingKey {
+            defaultSortingKey = newSortingKey
+        }
+    }
+
+    /// Returns a fetch request for messages pending send.
+    static func messagesPendingSendFetchRequest() -> NSFetchRequest<MessageDTO> {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: true)]
+
+        let pendingSendMessage = NSPredicate(
+            format: "localMessageStateRaw == %@", LocalMessageState.pendingSend.rawValue
+        )
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            pendingSendMessage,
+            allAttachmentsAreUploadedOrEmptyPredicate()
+        ])
+
+        return request
+    }
+
+    /// Returns a fetch request for messages pending sync.
+    static func messagesPendingSyncFetchRequest() -> NSFetchRequest<MessageDTO> {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: true)]
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format: "localMessageStateRaw == %@", LocalMessageState.pendingSync.rawValue),
+            allAttachmentsAreUploadedOrEmptyPredicate()
+        ])
+
+        return request
+    }
+
+    static func allAttachmentsAreUploadedOrEmptyPredicate() -> NSCompoundPredicate {
+        NSCompoundPredicate(orPredicateWithSubpredicates: [
+            .init(
+                format: "SUBQUERY(attachments, $a, $a.localStateRaw == %@).@count == attachments.@count",
+                LocalAttachmentState.uploaded.rawValue
+            ),
+            .init(format: "SUBQUERY(attachments, $a, $a.localStateRaw == nil).@count == attachments.@count")
+        ])
+    }
+
+    /// Returns a predicate that filters out deleted message by other than the current user
+    private static func onlyOwnDeletedMessagesPredicate() -> NSCompoundPredicate {
+        .init(orPredicateWithSubpredicates: [
+            // Non-deleted messages.
+            nonDeletedMessagesPredicate(),
+            // Deleted messages sent by current user excluding ephemeral ones.
+            NSCompoundPredicate(andPredicateWithSubpredicates: [
+                .init(format: "deletedAt != nil"),
+                .init(format: "user.currentUser != nil"),
+                .init(format: "type != %@", MessageType.ephemeral.rawValue)
+            ])
+        ])
+    }
+
+    private static func deletedMessagesPredicate(
+        deletedMessagesVisibility: ErmisClientConfig.DeletedMessageVisibility
+    ) -> NSPredicate {
+        let deletedMessagesPredicate: NSPredicate
+
+        switch deletedMessagesVisibility {
+        case .alwaysHidden:
+            deletedMessagesPredicate = nonDeletedMessagesPredicate()
+        case .visibleForCurrentUser:
+            deletedMessagesPredicate = onlyOwnDeletedMessagesPredicate()
+        case .alwaysVisible:
+            deletedMessagesPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+                // Non-deleted messages
+                nonDeletedMessagesPredicate(),
+                // Deleted messages excluding ephemeral ones
+                NSPredicate(format: "deletedAt != nil AND type != %@", MessageType.ephemeral.rawValue)
+            ])
+        }
+
+        let ignoreHardDeletedMessagesPredicate = NSPredicate(
+            format: "isHardDeleted == NO"
+        )
+
+        return NSCompoundPredicate(andPredicateWithSubpredicates: [
+            deletedMessagesPredicate,
+            ignoreHardDeletedMessagesPredicate
+        ])
+    }
+
+    /// Returns a predicate that filters out all deleted messages
+    private static func nonDeletedMessagesPredicate() -> NSPredicate {
+        .init(format: "deletedAt == nil")
+    }
+
+    private static func channelPredicate(with cid: String) -> NSPredicate {
+        .init(format: "channel.cid == %@", cid)
+    }
+
+    private static func messageSentPredicate() -> NSPredicate {
+        .init(format: "localMessageStateRaw == nil")
+    }
+
+    /// Returns predicate for displaying messages after the channel truncation date.
+    private static func nonTruncatedMessagesPredicate() -> NSCompoundPredicate {
+        .init(orPredicateWithSubpredicates: [
+            .init(format: "channel.truncatedAt == nil"),
+            .init(format: "createdAt >= channel.truncatedAt")
+        ])
+    }
+
+    /// Returns predicate for the channel preview message.
+    private static func previewMessagePredicate(cid: String, includeShadowedMessages: Bool) -> NSPredicate {
+        NSCompoundPredicate(andPredicateWithSubpredicates: [
+            channelMessagesPredicate(
+                for: cid,
+                deletedMessagesVisibility: .alwaysHidden,
+                shouldShowShadowedMessages: includeShadowedMessages,
+                filterNewerMessages: false
+            ),
+            .init(format: "type != %@", MessageType.ephemeral.rawValue),
+            .init(format: "type != %@", MessageType.error.rawValue)
+        ])
+    }
+
+    /// Returns predicate with channel messages and replies that should be shown in channel.
+    static func channelMessagesPredicate(
+        for cid: String,
+        deletedMessagesVisibility: ErmisClientConfig.DeletedMessageVisibility,
+        shouldShowShadowedMessages: Bool,
+        filterNewerMessages: Bool = true
+    ) -> NSCompoundPredicate {
+        let channelMessagePredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+            .init(format: "parentMessageId == nil")
+        ])
+
+        let validTypes = [
+            MessageType.regular.rawValue,
+            MessageType.reply.rawValue,
+            MessageType.signal.rawValue,
+            MessageType.ephemeral.rawValue,
+            MessageType.system.rawValue,
+            MessageType.deleted.rawValue,
+            MessageType.error.rawValue
+        ]
+
+        let messageTypePredicate = NSCompoundPredicate(format: "type IN %@", validTypes)
+
+        // Some pinned messages might be in the local database, but should not be fetched
+        // if they do not belong to the regular channel query.
+        let ignoreOlderMessagesPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+            .init(format: "channel.oldestMessageAt == nil"),
+            .init(format: "createdAt >= channel.oldestMessageAt")
+        ])
+
+        let ignoreNotEndedCallMessagesPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+            NSCompoundPredicate(andPredicateWithSubpredicates: [
+                .init(format: "type IN %@", [MessageType.signal.rawValue]),
+                .init(format: "text MATCHES %@", "^2.*|3.*|5.*|6.*|7.*|8.*|9.*|10.*")
+            ]),
+            NSCompoundPredicate(notPredicateWithSubpredicate:
+                    .init(format: "type IN %@", [MessageType.signal.rawValue])
+            )
+        ])
+
+        var subpredicates = [
+            channelPredicate(with: cid),
+            channelMessagePredicate,
+            messageTypePredicate,
+            nonTruncatedMessagesPredicate(),
+            ignoreOlderMessagesPredicate,
+            ignoreNotEndedCallMessagesPredicate,
+            deletedMessagesPredicate(deletedMessagesVisibility: deletedMessagesVisibility)
+        ]
+
+        if filterNewerMessages {
+            // Used for paginating newer messages while jumping to a mid-page.
+            // We want to avoid new messages being inserted in the UI if we are in a mid-page.
+            let ignoreNewerMessagesPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+                .init(format: "channel.newestMessageAt == nil"),
+                .init(format: "createdAt <= channel.newestMessageAt")
+            ])
+            subpredicates.append(ignoreNewerMessagesPredicate)
+        }
+
+        if !shouldShowShadowedMessages {
+            let ignoreShadowedMessages = NSPredicate(format: "isShadowed == NO")
+            subpredicates.append(ignoreShadowedMessages)
+        }
+
+        return .init(andPredicateWithSubpredicates: subpredicates)
+    }
+
+    /// Returns predicate with thread messages that should be shown in the thread.
+    static func threadRepliesPredicate(
+        for messageId: MessageId,
+        deletedMessagesVisibility: ErmisClientConfig.DeletedMessageVisibility,
+        shouldShowShadowedMessages: Bool
+    ) -> NSCompoundPredicate {
+        let replyMessage = NSPredicate(format: "parentMessageId == %@", messageId)
+        let shouldShowInsideThread = NSPredicate(format: "showInsideThread == YES")
+
+        let ignoreNewerRepliesPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+            .init(format: "parentMessage.newestReplyAt == nil"),
+            .init(format: "createdAt <= parentMessage.newestReplyAt")
+        ])
+
+        var subpredicates = [
+            replyMessage,
+            shouldShowInsideThread,
+            ignoreNewerRepliesPredicate,
+            deletedMessagesPredicate(deletedMessagesVisibility: deletedMessagesVisibility),
+            nonTruncatedMessagesPredicate()
+        ]
+
+        if !shouldShowShadowedMessages {
+            let ignoreShadowedMessages = NSPredicate(format: "isShadowed == NO")
+            subpredicates.append(ignoreShadowedMessages)
+        }
+
+        return .init(andPredicateWithSubpredicates: subpredicates)
+    }
+
+    private static func sentMessagesPredicate(for cid: String) -> NSPredicate {
+        NSCompoundPredicate(andPredicateWithSubpredicates: [
+            channelPredicate(with: cid),
+            messageSentPredicate(),
+            nonTruncatedMessagesPredicate(),
+            nonDeletedMessagesPredicate()
+        ])
+    }
+
+    /// Returns a fetch request for messages from the channel with the provided `cid`.
+    static func messagesFetchRequest(
+        for cid: ChannelId,
+        pageSize: Int,
+        sortAscending: Bool = false,
+        deletedMessagesVisibility: ErmisClientConfig.DeletedMessageVisibility,
+        shouldShowShadowedMessages: Bool
+    ) -> NSFetchRequest<MessageDTO> {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.defaultSortingKey, ascending: sortAscending)]
+        request.predicate = channelMessagesPredicate(
+            for: cid.rawValue,
+            deletedMessagesVisibility: deletedMessagesVisibility,
+            shouldShowShadowedMessages: shouldShowShadowedMessages
+        )
+        request.fetchLimit = pageSize
+        request.fetchBatchSize = pageSize
+        return request
+    }
+
+    /// Returns a fetch request for replies for the specified `parentMessageId`.
+    static func repliesFetchRequest(
+        for messageId: MessageId,
+        pageSize: Int,
+        sortAscending: Bool = false,
+        deletedMessagesVisibility: ErmisClientConfig.DeletedMessageVisibility,
+        shouldShowShadowedMessages: Bool
+    ) -> NSFetchRequest<MessageDTO> {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.defaultSortingKey, ascending: sortAscending)]
+        request.predicate = threadRepliesPredicate(
+            for: messageId,
+            deletedMessagesVisibility: deletedMessagesVisibility,
+            shouldShowShadowedMessages: shouldShowShadowedMessages
+        )
+        request.fetchLimit = pageSize
+        request.fetchBatchSize = pageSize
+        return request
+    }
+
+    static func messagesFetchRequest(for query: MessageSearchQuery) -> NSFetchRequest<MessageDTO> {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            NSPredicate(format: "ANY searches.filterHash == %@", query.filterHash),
+            NSPredicate(format: "isHardDeleted == NO")
+        ])
+        let sortDescriptors = query.sort.compactMap { $0.key.sortDescriptor(isAscending: $0.isAscending) }
+        request.sortDescriptors = sortDescriptors.isEmpty ? [MessageSearchSortingKey.defaultSortDescriptor] : sortDescriptors
+        return request
+    }
+
+    /// Returns a fetch request for the dto with a specific `messageId`.
+    static func message(withID messageId: MessageId) -> NSFetchRequest<MessageDTO> {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.defaultSortingKey, ascending: false)]
+        request.predicate = NSPredicate(format: "id == %@", messageId)
+        return request
+    }
+
+    static func load(
+        for cid: String,
+        limit: Int,
+        offset: Int = 0,
+        deletedMessagesVisibility: ErmisClientConfig.DeletedMessageVisibility,
+        shouldShowShadowedMessages: Bool,
+        context: NSManagedObjectContext
+    ) -> [MessageDTO] {
+        let request = NSFetchRequest<MessageDTO>(entityName: entityName)
+        request.predicate = channelMessagesPredicate(
+            for: cid,
+            deletedMessagesVisibility: deletedMessagesVisibility,
+            shouldShowShadowedMessages: shouldShowShadowedMessages
+        )
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: false)]
+        request.fetchLimit = limit
+        request.fetchOffset = offset
+        return load(by: request, context: context)
+    }
+
+    static func preview(for cid: String, context: NSManagedObjectContext) -> MessageDTO? {
+        let request = NSFetchRequest<MessageDTO>(entityName: entityName)
+        request.predicate = previewMessagePredicate(
+            cid: cid,
+            includeShadowedMessages: context.shouldShowShadowedMessages ?? false
+        )
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: false),
+                                   NSSortDescriptor(keyPath: \MessageDTO.textUpdatedAt, ascending: false)]
+        request.fetchOffset = 0
+        request.fetchLimit = 1
+
+        return load(by: request, context: context).first
+    }
+
+    static func load(id: String, context: NSManagedObjectContext) -> MessageDTO? {
+        load(by: id, context: context).first
+    }
+
+    static func loadOrCreate(id: String, context: NSManagedObjectContext, cache: PreWarmedCache?) -> MessageDTO {
+        if let cachedObject = cache?.model(for: id, context: context, type: MessageDTO.self) {
+            return cachedObject
+        }
+
+        if let existing = load(id: id, context: context) {
+            return existing
+        }
+
+        let request = fetchRequest(id: id)
+        let new = NSEntityDescription.insertNewObject(into: context, for: request)
+        new.id = id
+        new.latestReactions = []
+        new.ownReactions = []
+        return new
+    }
+
+    /// Load replies for the specified `parentMessageId`.
+    static func loadReplies(
+        for messageId: MessageId,
+        limit: Int,
+        offset: Int = 0,
+        context: NSManagedObjectContext
+    ) -> [MessageDTO] {
+        let request = NSFetchRequest<MessageDTO>(entityName: entityName)
+        request.predicate = NSPredicate(format: "parentMessageId == %@", messageId)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: false)]
+        request.fetchLimit = limit
+        request.fetchOffset = offset
+        return load(by: request, context: context)
+    }
+
+    static func loadCurrentUserMessages(
+        in cid: String,
+        createdAtFrom: Date,
+        createdAtThrough: Date,
+        context: NSManagedObjectContext
+    ) -> [MessageDTO] {
+        let subpredicates: [NSPredicate] = [
+            sentMessagesPredicate(for: cid),
+            .init(format: "user.currentUser != nil"),
+            .init(format: "createdAt > %@", createdAtFrom.bridgeDate),
+            .init(format: "createdAt <= %@", createdAtThrough.bridgeDate)
+        ]
+
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.defaultSortingKey, ascending: false)]
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: subpredicates)
+
+        return (try? context.fetch(request)) ?? []
+    }
+
+    static func countOtherUserMessages(
+        in cid: String,
+        createdAtFrom: Date,
+        context: NSManagedObjectContext
+    ) -> Int {
+        let subpredicates: [NSPredicate] = [
+            sentMessagesPredicate(for: cid),
+            .init(format: "createdAt >= %@", createdAtFrom.bridgeDate),
+            .init(format: "user.currentUser == nil")
+        ]
+
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.defaultSortingKey, ascending: false)]
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: subpredicates)
+
+        return (try? context.count(for: request)) ?? 0
+    }
+
+    static func numberOfReads(for messageId: MessageId, context: NSManagedObjectContext) -> Int {
+        let request = NSFetchRequest<ChannelReadDTO>(entityName: ChannelReadDTO.entityName)
+        request.predicate = NSPredicate(format: "readMessagesFromCurrentUser.id CONTAINS %@", messageId)
+        return (try? context.count(for: request)) ?? 0
+    }
+
+    static func loadLastMessage(from userId: String, in cid: String, context: NSManagedObjectContext) -> MessageDTO? {
+        let request = NSFetchRequest<MessageDTO>(entityName: entityName)
+        request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+            channelPredicate(with: cid),
+            .init(format: "user.id CONTAINS %@", userId),
+            .init(format: "type != %@", MessageType.ephemeral.rawValue),
+            .init(format: "type != %@", MessageType.system.rawValue),
+            messageSentPredicate()
+        ])
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: false)]
+        request.fetchLimit = 1
+        return load(by: request, context: context).first
+    }
+
+    static func loadSendingMessages(context: NSManagedObjectContext) -> [MessageDTO] {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: false)]
+        request.predicate = NSPredicate(format: "localMessageStateRaw == %@", LocalMessageState.sending.rawValue)
+        return load(by: request, context: context)
+    }
+}
+
+// MARK: - State Helpers
+
+extension MessageDTO {
+    /// A possible additional local state of the message. Applies only for the messages of the current user.
+    var localMessageState: LocalMessageState? {
+        get { localMessageStateRaw.flatMap(LocalMessageState.init(rawValue:)) }
+        set { localMessageStateRaw = newValue?.rawValue }
+    }
+
+    var isLocalOnly: Bool {
+        if let localMessageState = self.localMessageState {
+            return localMessageState.isLocalOnly
+        }
+
+        return type == MessageType.ephemeral.rawValue || type == MessageType.error.rawValue
+    }
+}
+
+extension NSManagedObjectContext: MessageDatabaseSession {
+    func createNewMessage(
+        in cid: ChannelId,
+        messageId: MessageId?,
+        text: String,
+        command: String?,
+        arguments: String?,
+        parentMessageId: MessageId?,
+        attachments: [AnyAttachmentPayload],
+        mentionedUserIds: [UserId],
+        mentionedAll: Bool,
+        isSilent: Bool,
+        quotedMessageId: MessageId?,
+        createdAt: Date?
+    ) throws -> MessageDTO {
+        guard let currentUserDTO = currentUser,
+              let user = currentUserDTO.user(of: cid.projectId) else {
+            throw ClientError.CurrentUserDoesNotExist()
+        }
+
+        guard let channelDTO = ChannelDTO.load(cid: cid, context: self) else {
+            throw ClientError.ChannelDoesNotExist(cid: cid)
+        }
+
+        let message = MessageDTO.loadOrCreate(id: messageId ?? .newUniqueId, context: self, cache: nil)
+
+        // We make `createdDate` 0.1 second bigger than Channel's most recent message
+        // so if the local time is not in sync, the message will still appear in the correct position
+        // even if the sending fails
+        let createdAt = createdAt ?? (max(channelDTO.lastMessageAt?.addingTimeInterval(0.1).bridgeDate ?? Date(), Date()))
+        message.locallyCreatedAt = createdAt.bridgeDate
+        // It's fine that we're saving an incorrect value for `createdAt` and `updatedAt`
+        // When message is successfully sent, backend sends the actual dates
+        // and these are set correctly in `saveMessage`
+        message.createdAt = createdAt.bridgeDate
+        message.updatedAt = createdAt.bridgeDate
+
+        message.cid = cid.rawValue
+        message.type = parentMessageId == nil ? MessageType.regular.rawValue : MessageType.reply.rawValue
+        message.text = text
+        message.command = command
+        message.args = arguments
+        message.parentMessageId = parentMessageId
+        message.isSilent = isSilent
+        message.reactionScores = [:]
+        message.reactionCounts = [:]
+
+        message.attachments = Set(
+            try attachments.enumerated().map { index, attachment in
+                let id = AttachmentId(cid: cid, messageId: message.id, index: index)
+                return try createNewAttachment(attachment: attachment, id: id)
+            }
+        )
+
+        message.mentionedUserIds = mentionedUserIds
+        message.mentionedAll = mentionedAll
+        message.quotedMessage = quotedMessageId.flatMap { MessageDTO.load(id: $0, context: self) }
+
+        message.user = user
+        message.channel = channelDTO
+
+        let newLastMessageAt = max(channelDTO.lastMessageAt?.bridgeDate ?? createdAt, createdAt).bridgeDate
+        channelDTO.lastMessageAt = newLastMessageAt
+        channelDTO.defaultSortingAt = newLastMessageAt
+
+        if let parentMessageId = parentMessageId,
+           let parentMessageDTO = MessageDTO.load(id: parentMessageId, context: self) {
+            parentMessageDTO.replies.insert(message)
+            parentMessageDTO.replyCount += 1
+        }
+
+        // When the current user submits the new message that will be shown
+        // in the channel for sending - make it a channel preview.
+        if parentMessageId == nil {
+            channelDTO.previewMessage = message
+        }
+
+        return message
+    }
+
+    func saveMessage(
+        payload: MessagePayload,
+        channelDTO: ChannelDTO,
+        syncOwnReactions: Bool,
+        cache: PreWarmedCache?
+    ) throws -> MessageDTO {
+        let cid = try ChannelId(cid: channelDTO.cid)
+        let dto = MessageDTO.loadOrCreate(id: payload.id, context: self, cache: cache)
+
+        if dto.localMessageState == .pendingSend || dto.localMessageState == .pendingSync {
+            return dto
+        }
+
+        dto.cid = payload.cid?.rawValue
+        dto.text = payload.text
+        dto.createdAt = payload.createdAt.bridgeDate
+        dto.updatedAt = payload.updatedAt.bridgeDate
+        if payload.deletedAt != nil {
+            dto.deletedAt = payload.deletedAt?.bridgeDate
+        }
+        dto.textUpdatedAt = payload.messageTextUpdatedAt?.bridgeDate
+        dto.type = payload.type.rawValue
+        dto.command = payload.command
+        dto.args = payload.args
+        if payload.parentId != nil {
+            dto.parentMessageId = payload.parentId
+        }
+        dto.replyCount = Int32(payload.replyCount)
+
+        dto.isSilent = payload.isSilent
+        dto.isShadowed = payload.isShadowed
+
+        if currentUser?.user(of: cid.projectId)?.userId == payload.user.id {
+            dto.isShadowed = false
+        }
+
+        dto.quotedMessageId = payload.quotedMessageId
+        dto.forwardCid = payload.forwardChannelId?.rawValue
+
+        if let quotedMessageId = payload.quotedMessageId,
+           let quotedMessage = message(id: quotedMessageId) {
+            // In case we do not have a fully formed quoted message in the payload,
+            // we check for quotedMessageId. This can happen in the case of nested quoted messages.
+            dto.quotedMessage = quotedMessage
+        } else if let quotedMessage = payload.quotedMessage {
+            dto.quotedMessage = try saveMessage(
+                payload: quotedMessage,
+                channelDTO: channelDTO,
+                syncOwnReactions: false,
+                cache: cache
+            )
+        } else {
+            dto.quotedMessage = nil
+        }
+
+        let user = try saveUser(payload: payload.user, projectId: cid.projectId)
+        dto.user = user
+
+        dto.reactionScores = payload.reactionScores.mapKeys { $0.rawValue }
+        dto.reactionCounts = payload.reactionCounts.mapKeys { $0.rawValue }
+
+        // If user edited their message to remove mentioned users, we need to get rid of it
+        // as backend does
+        dto.mentionedUsers = try Set(payload.mentionedUsers.compactMap {
+            let user = try self.user(id: $0, projectId: cid.projectId)
+            return user
+        })
+        dto.mentionedUserIds = payload.mentionedUsers
+        dto.mentionedAll = payload.mentionedAll
+
+        dto.pinnedAt = payload.pinnedAt?.bridgeDate
+        // If user participated in thread, but deleted message later, we need to get rid of it if backends does
+        dto.threadParticipants = try NSOrderedSet(
+            array: payload.threadParticipants.map { try saveUser(payload: $0, projectId: cid.projectId) }
+        )
+
+        channelDTO.lastMessageAt = max(channelDTO.lastMessageAt?.bridgeDate ?? payload.updatedAt, payload.createdAt).bridgeDate
+        
+        dto.channel = channelDTO
+
+        dto.latestReactions = payload
+            .latestReactions
+            .compactMap { try? saveReaction(payload: $0, cache: cache) }
+            .map(\.id)
+
+        if syncOwnReactions, let userId = currentUser?.user(of: cid.projectId)?.userId {
+            dto.ownReactions = payload
+                .getReactions(of: userId)
+                .compactMap { try? saveReaction(payload: $0, cache: cache) }
+                .map(\.id)
+        }
+
+        let attachments: Set<AttachmentDTO> = try Set(
+            payload.attachments.enumerated().map { index, attachment in
+                let id = AttachmentId(cid: cid, messageId: payload.id, index: index)
+                let dto = try saveAttachment(payload: attachment, id: id)
+                return dto
+            }
+        )
+        dto.attachments = attachments
+
+        // Only insert message into Parent's replies if not already present.
+        // This in theory would not be needed since replies is a Set, but
+        // it will trigger an FRC update, which will cause the message to disappear
+        // in the Message List if there is already a message with the same ID.
+        if let parentMessageId = payload.parentId,
+           let parentMessageDTO = MessageDTO.load(id: parentMessageId, context: self),
+           !parentMessageDTO.replies.contains(dto) {
+            parentMessageDTO.replies.insert(dto)
+        }
+
+        dto.translations = payload.translations?.mapKeys { $0.languageCode }
+        dto.originalLanguage = payload.originalLanguage
+
+        if let moderationDetailsPayload = payload.moderationDetails {
+            dto.moderationDetails = MessageModerationDetailsDTO.create(
+                from: moderationDetailsPayload,
+                context: self
+            )
+        } else {
+            dto.moderationDetails = nil
+        }
+        if let oldTextsPayload = payload.oldTexts {
+            dto.oldTexts = Set(oldTextsPayload.map {
+                MessageEditHistoryDTO.create(from: $0, messageId: payload.id, context: self)
+            })
+        } else {
+            dto.oldTexts = nil
+        }
+
+        // Calculate reads if the message is authored by the current user.
+        if payload.user.id == currentUser?.user(of: cid.projectId)?.id {
+            dto.reads = Set(
+                channelDTO.reads.filter {
+                    $0.lastReadAt?.bridgeDate ?? Date() >= payload.createdAt && $0.user.userId != payload.user.id
+                }
+            )
+        }
+
+        // Refetch channel preview if the current preview has changed.
+        //
+        // The current message can stop being a valid preview e.g.
+        // if it didn't pass moderation and obtained `error` type.
+        if payload.id == channelDTO.previewMessage?.id {
+            channelDTO.previewMessage = preview(for: cid)
+        }
+        return dto
+    }
+
+    func saveMessages(messagesPayload: MessageListPayload, for cid: ChannelId?, syncOwnReactions: Bool = true) -> [MessageDTO] {
+        let cache = messagesPayload.getPayloadToModelIdMappings(context: self)
+        return messagesPayload.messages.compactMapLoggingError {
+            try saveMessage(payload: $0, for: cid, syncOwnReactions: syncOwnReactions, cache: cache)
+        }
+    }
+
+    func saveMessage(
+        payload: MessagePayload,
+        for cid: ChannelId?,
+        syncOwnReactions: Bool = true,
+        cache: PreWarmedCache?
+    ) throws -> MessageDTO {
+        guard payload.channel != nil || cid != nil else {
+            throw ClientError.MessagePayloadSavingFailure("""
+            Either `payload.channel` or `cid` must be provided to sucessfuly save the message payload.
+            - `payload.channel` value: \(String(describing: payload.channel))
+            - `cid` value: \(String(describing: cid))
+            """)
+        }
+
+        if let cid = cid, let payloadCid = payload.channel?.cid {
+            log.assert(cid == payloadCid, "`cid` provided is different from the `payload.channel.cid`.")
+        }
+
+        var channelDTO: ChannelDTO?
+
+        if let channelPayload = payload.channel {
+            channelDTO = try saveChannel(payload: channelPayload, query: nil, cache: cache)
+        } else if let cid = cid {
+            channelDTO = ChannelDTO.load(cid: cid, context: self)
+        } else {
+            let description = "Should never happen because either `cid` or `payload.channel` should be present."
+            log.assertionFailure(description)
+            throw ClientError.MessagePayloadSavingFailure(description)
+        }
+
+        guard let channel = channelDTO else {
+            let description = "Should never happen, a channel should have been fetched."
+            log.assertionFailure(description)
+            throw ClientError.MessagePayloadSavingFailure(description)
+        }
+
+        return try saveMessage(payload: payload, channelDTO: channel, syncOwnReactions: syncOwnReactions, cache: cache)
+    }
+
+    func saveMessage(payload: MessagePayload, for query: MessageSearchQuery, cache: PreWarmedCache?) throws -> MessageDTO {
+        let messageDTO = try saveMessage(payload: payload, for: nil, cache: cache)
+        messageDTO.searches.insert(saveQuery(query: query))
+        return messageDTO
+    }
+
+    func message(id: MessageId) -> MessageDTO? { .load(id: id, context: self) }
+
+    func messageExists(id: MessageId) -> Bool {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.predicate = NSPredicate(format: "id == %@", id)
+        do {
+            let count = try count(for: request)
+            return count != 0
+        } catch {
+            return false
+        }
+    }
+
+    func delete(message: MessageDTO) {
+        delete(message)
+    }
+
+    /// Adds the reaction for the current user to the message with id `messageId`
+    ///
+    /// Notes:
+    /// - The reaction is added to the database and it updates the message `reactionScores` property
+    /// - This method will throw if there is no current user set
+    /// - If the message is not found, there will be no side effect and the method will return `nil`
+    /// - If a reaction for the same user, type and message exists
+    func addReaction(
+        to messageId: MessageId,
+        type: MessageReactionType,
+        localState: LocalReactionState?
+    ) throws -> MessageReactionDTO {
+        guard let message = MessageDTO.load(id: messageId, context: self) else {
+            throw ClientError.MessageDoesNotExist(messageId: messageId)
+        }
+
+        guard let cid = message.cid,
+              let channelId = try? ChannelId(cid: cid),
+              let currentUserDTO = currentUser,
+              let user = currentUserDTO.user(of: channelId.projectId) else {
+                throw ClientError.CurrentUserDoesNotExist()
+        }
+
+        let dto = MessageReactionDTO.loadOrCreate(
+            message: message,
+            type: type,
+            user: user,
+            context: self,
+            cache: nil
+        )
+
+        // make sure we update the reactionScores for the message in a way that works for new or updated reactions
+        let scoreDiff = 1 - dto.score
+        let newScore = max(0, message.reactionScores[type.rawValue] ?? Int(dto.score) + Int(scoreDiff))
+        message.reactionScores[type.rawValue] = newScore
+
+        // Update reaction counts
+        if let reactionCount = message.reactionCounts[type.rawValue] {
+            message.reactionCounts[type.rawValue] = reactionCount + 1
+        } else {
+            message.reactionCounts[type.rawValue] = 1
+        }
+
+        dto.score = 1
+        dto.localState = localState
+
+        let reactionId = dto.id
+
+        if !message.latestReactions.contains(reactionId) {
+            message.latestReactions.append(reactionId)
+        }
+
+        if !message.ownReactions.contains(reactionId) {
+            message.ownReactions.append(reactionId)
+        }
+
+        return dto
+    }
+
+    /// Removes the reaction for the current user to the message with id `messageId`
+    ///
+    /// Notes:
+    /// - The reaction is *not* removed from the database
+    /// - This method will throw if there is no current user set
+    /// - If the message is not found, there will be no side effect and the method will return `nil`
+    /// - If there is no reaction found in the database, this method returns `nil`
+    func removeReaction(from messageId: MessageId, type: MessageReactionType, on version: String?) throws -> MessageReactionDTO? {
+        guard let message = MessageDTO.load(id: messageId, context: self) else {
+            throw ClientError.MessageDoesNotExist(messageId: messageId)
+        }
+
+
+        guard let cid = message.cid,
+              let channelId = try? ChannelId(cid: cid),
+              let currentUserDTO = currentUser,
+              let user = currentUserDTO.user(of: channelId.projectId) else {
+            throw ClientError.CurrentUserDoesNotExist()
+        }
+
+        guard let reaction = MessageReactionDTO
+            .load(userId: user.userId, messageId: messageId, type: type, context: self) else {
+            return nil
+        }
+
+        // if the reaction on the database does not match the version, do nothing
+        guard version == nil || version == reaction.version else {
+            return nil
+        }
+
+        message.latestReactions = message.latestReactions.filter { $0 != reaction.id }
+        message.ownReactions = message.ownReactions.filter { $0 != reaction.id }
+
+        guard let reactionScore = message.reactionScores.removeValue(forKey: type.rawValue), reactionScore > 1 else {
+            return reaction
+        }
+
+        message.reactionScores[type.rawValue] = max(reactionScore - Int(reaction.score), 0)
+        return reaction
+    }
+
+    func preview(for cid: ChannelId) -> MessageDTO? {
+        MessageDTO.preview(for: cid.rawValue, context: self)
+    }
+
+    func saveMessageSearch(payload: MessageSearchResultsPayload, for query: MessageSearchQuery) -> [MessageDTO] {
+        let cache = payload.getPayloadToModelIdMappings(context: self)
+        return payload.results.compactMapLoggingError {
+            try saveMessage(payload: $0.message, for: query, cache: cache)
+        }
+    }
+
+    /// Changes the state to `.pendingSend` for all messages in `.sending` state. This method is expected to be used at the beginning of the session
+    /// to avoid those from being stuck there in limbo.
+    /// Messages can get stuck in `.sending` state if the network request to send them takes to much, and the app is backgrounded or killed.
+    func rescueMessagesStuckInSending() {
+        // Restart messages in sending state.
+        let messages = MessageDTO.loadSendingMessages(context: self)
+        // MARK: - Todo: - Prevent case duplicate message.
+        messages.forEach {
+            //$0.localMessageState = .pendingSend
+            delete(message: $0)
+        }
+
+        // Restart attachments that were in progress before the app was killed.
+        let attachments = AttachmentDTO.loadInProgressAttachments(context: self)
+        attachments.forEach {
+            $0.localState = .pendingUpload
+        }
+    }
+}
+
+extension MessageDTO {
+    /// Snapshots the current state of `MessageDTO` and returns an immutable model object from it.
+    func asModel() throws -> ChatMessage { try .init(fromDTO: self, depth: 0) }
+
+    /// Snapshots the current state of `MessageDTO` and returns an immutable model object from it if the dependency depth
+    /// limit has not been reached
+    func relationshipAsModel(depth: Int) throws -> ChatMessage? {
+        do {
+            return try ChatMessage(fromDTO: self, depth: depth + 1)
+        } catch {
+            if error is RecursionLimitError { return nil }
+            throw error
+        }
+    }
+
+    /// Snapshots the current state of `MessageDTO` and returns its representation for the use in API calls.
+    func asRequestBody() -> MessageRequestBody {
+
+        let uploadedAttachments: [MessageAttachmentPayload] = attachments
+            .filter { $0.localState == .uploaded || $0.localState == nil }
+            .sorted { ($0.attachmentID?.index ?? 0) < ($1.attachmentID?.index ?? 0) }
+            .compactMap { $0.asRequestPayload() }
+
+        return .init(
+            id: id,
+            user: user.asRequestBody(),
+            text: text,
+            oldTexts: Array(oldTexts?.map { MessageEditHistoryPayload(text: $0.text, createdAt: $0.createdAt) } ?? []),
+            command: command,
+            args: args,
+            parentId: parentMessageId,
+            isSilent: isSilent,
+            quotedMessageId: quotedMessage?.id,
+            attachments: uploadedAttachments,
+            mentionedUserIds: mentionedUserIds,
+            mentionedAll: mentionedAll
+        )
+    }
+
+    /// The message has been successfully sent to the server.
+    func markMessageAsSent() {
+        locallyCreatedAt = nil
+        localMessageState = nil
+    }
+
+    /// The message failed to be sent to the server.
+    func markMessageAsFailed() {
+        localMessageState = .sendingFailed
+    }
+}
+
+private extension ChatMessage {
+    init(fromDTO dto: MessageDTO, depth: Int) throws {
+        guard ErmisRuntimeCheck._canFetchRelationship(currentDepth: depth) else {
+            throw RecursionLimitError()
+        }
+        guard let context = dto.managedObjectContext else {
+            throw InvalidModel(dto)
+        }
+
+        guard dto.user != nil else {
+            throw InvalidModel(dto)
+        }
+
+        id = dto.id
+        cid = try? dto.cid.map { try ChannelId(cid: $0) }
+        text = dto.text
+        type = MessageType(rawValue: dto.type) ?? .regular
+        oldTexts = dto.oldTexts?.map { $0.asModel() }
+        command = dto.command
+        createdAt = dto.createdAt.bridgeDate
+        locallyCreatedAt = dto.locallyCreatedAt?.bridgeDate
+        updatedAt = dto.updatedAt.bridgeDate
+        deletedAt = dto.deletedAt?.bridgeDate
+        arguments = dto.args
+        parentMessageId = dto.parentMessageId
+        replyCount = Int(dto.replyCount)
+        quotedMessageId = dto.quotedMessageId
+        if let forwardCid = dto.forwardCid {
+            forwardChannelId = try? ChannelId(cid: forwardCid)
+        }
+        isBounced = dto.isBounced
+        isSilent = dto.isSilent
+        isShadowed = dto.isShadowed
+        reactionScores = dto.reactionScores.mapKeys { MessageReactionType(rawValue: $0) }
+        reactionCounts = dto.reactionCounts.mapKeys { MessageReactionType(rawValue: $0) }
+        translations = dto.translations?.mapKeys { TranslationLanguage(languageCode: $0) }
+        originalLanguage = dto.originalLanguage.map(TranslationLanguage.init)
+        moderationDetails = dto.moderationDetails.map {
+            MessageModerationDetails(
+                originalText: $0.originalText,
+                action: MessageModerationAction(rawValue: $0.action)
+            )
+        }
+        textUpdatedAt = dto.textUpdatedAt?.bridgeDate
+        mentionedAll = dto.mentionedAll
+        pinnedAt = dto.pinnedAt?.bridgeDate
+        localState = dto.localMessageState
+        isFlaggedByCurrentUser = dto.flaggedBy != nil
+
+        if let currentUser = context.currentUser,
+           let user = currentUser.user(of: cid?.projectId ?? "") {
+            isSentByCurrentUser = user.id == dto.user.id
+            $_currentUserReactions = ({
+                Set(
+                    MessageReactionDTO
+                        .loadReactions(ids: dto.ownReactions, context: context)
+                        .compactMap { try? $0.asModel() }
+                )
+            }, dto.managedObjectContext)
+            $_currentUserReactionsCount = ({ dto.ownReactions.count }, dto.managedObjectContext)
+        } else {
+            isSentByCurrentUser = false
+            $_currentUserReactions = ({ [] }, nil)
+            $_currentUserReactionsCount = ({ 0 }, nil)
+        }
+
+        $_latestReactions = ({
+            Set(
+                MessageReactionDTO
+                    .loadReactions(ids: dto.latestReactions, context: context)
+                    .compactMap { try? $0.asModel() }
+            )
+        }, dto.managedObjectContext)
+
+        $_threadParticipantsCount = ({ dto.threadParticipants.count }, nil)
+        if dto.threadParticipants.array.isEmpty {
+            $_threadParticipants = ({ [] }, nil)
+        } else {
+            $_threadParticipants = (
+                {
+                    let threadParticipants = dto.threadParticipants.array as? [UserDTO] ?? []
+                    return threadParticipants.compactMap { try? $0.asModel() }
+                },
+                dto.managedObjectContext
+            )
+        }
+
+        $_mentionedUsers = ({
+            guard dto.isValid else { return [] }
+            return Set(dto.mentionedUsers.compactMap { try? $0.asModel() })
+        }, dto.managedObjectContext)
+
+        let user = try dto.user.asModel()
+        $_author = ({ user }, nil)
+        $_attachments = ({
+            dto.attachments
+                .compactMap { $0.asAnyModel() }
+                .sorted { $0.id.index < $1.id.index }
+        }, dto.managedObjectContext)
+
+        if dto.replies.isEmpty {
+            $_latestReplies = ({ [] }, nil)
+        } else {
+            $_latestReplies = ({
+                MessageDTO
+                    .loadReplies(for: dto.id, limit: 5, context: context)
+                    .compactMap { try? ChatMessage(fromDTO: $0, depth: depth) }
+            }, dto.managedObjectContext)
+        }
+
+        $_quotedMessage = ({ try? dto.quotedMessage?.relationshipAsModel(depth: depth) }, dto.managedObjectContext)
+
+        let readBy = {
+            Set(dto.reads.compactMap { try? $0.user.asModel() })
+        }
+
+        $_readBy = (readBy, dto.managedObjectContext)
+        $_readByCount = ({ dto.reads.count }, dto.managedObjectContext)
+    }
+}
+
+extension ClientError {
+    class CurrentUserDoesNotExist: ClientError {
+        override var localizedDescription: String {
+            "There is no `CurrentUserDTO` instance in the DB."
+                + "Make sure to call `client.currentUserController.reloadUserIfNeeded()`"
+        }
+    }
+
+    class MessagePayloadSavingFailure: ClientError {}
+
+    class ChannelDoesNotExist: ClientError {
+        init(cid: ChannelId) {
+            super.init("There is no `ChannelDTO` instance in the DB matching cid: \(cid).")
+        }
+    }
+}

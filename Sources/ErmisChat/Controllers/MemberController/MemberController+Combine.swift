@@ -1,0 +1,52 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+import Combine
+import Foundation
+
+extension ChannelMemberController {
+    /// A publisher emitting a new value every time the state of the controller changes.
+    public var statePublisher: AnyPublisher<DataController.State, Never> {
+        basePublishers.state.keepAlive(self)
+    }
+
+    /// A publisher emitting a new value every time the member changes.
+    public var memberChangePublisher: AnyPublisher<EntityChange<ChannelMember>, Never> {
+        basePublishers.memberChange.keepAlive(self)
+    }
+
+    /// An internal backing object for all publicly available Combine publishers. We use it to simplify the way we expose
+    /// publishers. Instead of creating custom `Publisher` types, we use `CurrentValueSubject` and `PassthroughSubject` internally,
+    /// and expose the published values by mapping them to a read-only `AnyPublisher` type.
+    class BasePublishers {
+        /// The wrapped controller.
+        unowned let controller: ChannelMemberController
+
+        /// A backing subject for `statePublisher`.
+        let state: CurrentValueSubject<DataController.State, Never>
+
+        /// A backing subject for `memberChangePublisher`.
+        let memberChange: PassthroughSubject<EntityChange<ChannelMember>, Never> = .init()
+
+        init(controller: ChannelMemberController) {
+            self.controller = controller
+            state = .init(controller.state)
+
+            controller.multicastDelegate.add(additionalDelegate: self)
+        }
+    }
+}
+
+extension ChannelMemberController.BasePublishers: ChannelMemberControllerDelegate {
+    func controller(_ controller: DataController, didChangeState state: DataController.State) {
+        self.state.send(state)
+    }
+
+    func memberController(
+        _ controller: ChannelMemberController,
+        didUpdateMember change: EntityChange<ChannelMember>
+    ) {
+        memberChange.send(change)
+    }
+}

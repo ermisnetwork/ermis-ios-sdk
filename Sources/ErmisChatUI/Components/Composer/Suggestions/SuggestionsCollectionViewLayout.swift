@@ -1,0 +1,29 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+import UIKit
+
+/// The collection view layout of the suggestions collection view.
+open class SuggestionsCollectionViewLayout: UICollectionViewFlowLayout {
+    override public required init() {
+        super.init()
+        commonInit()
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+
+    private func commonInit() {
+        minimumInteritemSpacing = 0
+        minimumLineSpacing = 0
+    }
+
+    override open func prepare() {
+        super.prepare()
+
+        estimatedItemSize = .init(width: collectionView?.bounds.width ?? 0, height: 60)
+    }
+}

@@ -1,0 +1,166 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+import ErmisChat
+import UIKit
+
+extension MessageFileAttachmentListView {
+    open class ItemView: _View, UIProvider {
+        /// Content of the attachment `MessageFileAttachment`
+        public var content: MessageFileAttachment? {
+            didSet { updateContentIfNeeded() }
+        }
+
+        /// Closure which notifies when the user tapped the attachment.
+        open var didTapOnAttachment: ((MessageFileAttachment) -> Void)?
+
+        /// Closure which notifies when the user tapped an attachment action. (Ex: Retry)
+        open var didTapActionOnAttachment: ((MessageFileAttachment) -> Void)?
+
+        /// Label which shows name of the file, usually with extension (file.pdf)
+        open private(set) lazy var fileNameLabel = UILabel()
+            .withoutAutoresizingMaskConstraints
+            .withBidirectionalLanguagesSupport
+            .withAdjustingFontForContentSizeCategory
+            .withAccessibilityIdentifier(identifier: "fileNameLabel")
+
+        /// Label indicating size of the file.
+        open private(set) lazy var fileSizeLabel = UILabel()
+            .withoutAutoresizingMaskConstraints
+            .withBidirectionalLanguagesSupport
+            .withAdjustingFontForContentSizeCategory
+            .withAccessibilityIdentifier(identifier: "fileSizeLabel")
+
+        /// Animated indicator showing progress of uploading of a file.
+        open private(set) lazy var loadingIndicator = components
+            .loadingIndicator
+            .init()
+            .withoutAutoresizingMaskConstraints
+
+        /// imageView indicating action for the file attachment. (Download / Retry upload...)
+        open private(set) lazy var actionIconImageView = UIImageView()
+            .withoutAutoresizingMaskConstraints
+            .withAccessibilityIdentifier(identifier: "actionIconImageView")
+
+        open private(set) lazy var mainContainerStackView: ContainerStackView = ContainerStackView()
+            .withoutAutoresizingMaskConstraints
+            .withAccessibilityIdentifier(identifier: "mainContainerStackView")
+
+        /// Stack containing loading indicator and label with fileSize.
+        open private(set) lazy var spinnerAndSizeStack: ContainerStackView = ContainerStackView()
+            .withoutAutoresizingMaskConstraints
+            .withAccessibilityIdentifier(identifier: "spinnerAndSizeStack")
+
+        /// Stack containing file name and and the size of the file.
+        open private(set) lazy var fileNameAndSizeStack: ContainerStackView = ContainerStackView()
+            .withoutAutoresizingMaskConstraints
+            .withAccessibilityIdentifier(identifier: "fileNameAndSizeStack")
+
+        open private(set) lazy var fileIconImageView = UIImageView()
+            .withoutAutoresizingMaskConstraints
+            .withAccessibilityIdentifier(identifier: "fileIconImageView")
+
+        override open func setUp() {
+            super.setUp()
+
+            let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(didTapOnAttachment(_:)))
+            mainContainerStackView.addGestureRecognizer(tapRecognizer)
+
+            let actionTapRecognizer = UITapGestureRecognizer(target: self, action: #selector(didTapActionOnAttachment(_:)))
+            actionIconImageView.addGestureRecognizer(actionTapRecognizer)
+            actionIconImageView.isUserInteractionEnabled = true
+        }
+
+        override open func setUpTheme() {
+            super.setUpTheme()
+
+            fileSizeLabel.textColor = theme.colors.subtitleText
+            fileSizeLabel.font = theme.fonts.subheadline.bold
+            fileNameLabel.font = theme.fonts.body.bold
+            fileNameLabel.lineBreakMode = .byTruncatingMiddle
+            fileIconImageView.contentMode = .center
+            backgroundColor = theme.colors.surfaceContainer
+            layer.cornerRadius = 12
+            layer.masksToBounds = true
+            layer.borderWidth = 1
+            layer.borderColor = theme.colors.outline.cgColor
+        }
+
+        override open func setUpUI() {
+            super.setUpUI()
+            addSubview(mainContainerStackView)
+            mainContainerStackView.pin(to: layoutMarginsGuide)
+
+            spinnerAndSizeStack.addArrangedSubviews([loadingIndicator, fileSizeLabel])
+            fileNameAndSizeStack.addArrangedSubviews([fileNameLabel, spinnerAndSizeStack])
+            mainContainerStackView.addArrangedSubviews([fileIconImageView, fileNameAndSizeStack, actionIconImageView])
+
+            spinnerAndSizeStack.axis = .horizontal
+            spinnerAndSizeStack.alignment = .leading
+
+            fileNameAndSizeStack.axis = .vertical
+            fileNameAndSizeStack.alignment = .leading
+            fileNameAndSizeStack.spacing = 3
+
+            mainContainerStackView.axis = .horizontal
+            mainContainerStackView.alignment = .center
+        }
+
+        override open func contentDidChanged() {
+            super.contentDidChanged()
+
+            fileIconImageView.image = fileIcon
+            // If we cannot fetch filename, let's use only content type.
+            fileNameLabel.text = content?.payload.title ?? content?.type.rawValue
+
+            switch content?.uploadingState?.state {
+            case .uploaded, .none:
+                fileSizeLabel.text = content?.payload.file.sizeString
+            case .uploadingFailed:
+                fileSizeLabel.text = L10n.Message.Sending.attachmentUploadingFailed
+            default:
+                fileSizeLabel.text = content?.uploadingState?.fileUploadingProgress
+            }
+
+            if let state = content?.uploadingState?.state {
+                actionIconImageView.image = theme.fileAttachmentActionIcon(for: state)
+            } else {
+                actionIconImageView.image = nil
+            }
+
+            switch content?.uploadingState?.state {
+            case .pendingUpload, .uploading:
+                loadingIndicator.isVisible = true
+            default:
+                loadingIndicator.isVisible = false
+            }
+
+            if content?.file.type == .unknown {
+                fileNameLabel.text = L10n.Message.unsupportedAttachment
+                fileSizeLabel.isHidden = true
+            }
+        }
+
+        @objc open func didTapOnAttachment(_ recognizer: UITapGestureRecognizer) {
+            guard let attachment = content else { return }
+            didTapOnAttachment?(attachment)
+        }
+
+        @objc open func didTapActionOnAttachment(_ recognizer: UITapGestureRecognizer) {
+            guard let attachment = content else { return }
+            didTapActionOnAttachment?(attachment)
+        }
+
+        private var fileIcon: UIImage? {
+            guard let file = content?.payload.file else { return nil }
+
+            /// If the `file.type` is `.aac` (VoiceRecording) but we `VoiceRecordings` feature
+            /// is disabled, we don't want to show the `.aac` new icon and instead we are mapping it
+            /// to an `.mp3`.
+            let fileType: AttachmentFileType = file.type == .aac ? .mp3 : file.type
+
+            return theme.icons.fileIcons[fileType] ?? theme.icons.fileFallback
+        }
+    }
+}

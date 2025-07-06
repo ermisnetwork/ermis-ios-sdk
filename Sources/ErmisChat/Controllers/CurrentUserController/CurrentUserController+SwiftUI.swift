@@ -1,0 +1,50 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+import Foundation
+import Combine
+import SwiftUI
+
+extension CurrentUserController {
+    /// A wrapper object that exposes the controller variables in the form of `ObservableObject` to be used in SwiftUI.
+    public var observableObject: ObservableObject { .init(controller: self) }
+
+    /// A wrapper object for `CurrentUserController` type which makes it possible to use the controller comfortably in SwiftUI.
+    public class ObservableObject: SwiftUI.ObservableObject {
+        /// The underlying controller. You can still access it and call methods on it.
+        public let controller: CurrentUserController
+
+        /// The currently logged-in user.
+        @Published public private(set) var currentUser: CurrentChatUser?
+
+        /// The unread messages and channels count for the current user.
+        @Published public private(set) var unreadCount: UnreadCount = .noUnread
+
+        /// Creates a new `ObservableObject` wrapper with the provided controller instance.
+        init(controller: CurrentUserController) {
+            self.controller = controller
+
+            controller.multicastDelegate.add(additionalDelegate: self)
+
+            currentUser = controller.currentUser
+            unreadCount = controller.unreadCount
+        }
+    }
+}
+
+extension CurrentUserController.ObservableObject: CurrentUserControllerDelegate {
+    public func currentUserController(
+        _ controller: CurrentUserController,
+        didChangeCurrentUserUnreadCount unreadCount: UnreadCount
+    ) {
+        self.unreadCount = controller.unreadCount
+    }
+
+    public func currentUserController(
+        _ controller: CurrentUserController,
+        didChangeCurrentUser currentUser: EntityChange<CurrentChatUser>
+    ) {
+        self.currentUser = controller.currentUser
+    }
+}

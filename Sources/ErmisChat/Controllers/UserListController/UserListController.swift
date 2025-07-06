@@ -1,0 +1,209 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+import CoreData
+import Foundation
+
+extension ErmisClient {
+    /// Creates a new `ChatUserListController` with the provided user query.
+    ///
+    /// - Parameter query: The query specify the filter and sorting of the users the controller should fetch.
+    ///
+    /// - Returns: A new instance of `ChatUserListController`.
+    ///
+    public func userListController(query: UserListQuery? = nil) -> ChatUserListController {
+        if let query = query {
+            return .init(query: query, client: self)
+        } else {
+            return .init(query: UserListQuery(projectId: projectId), client: self)
+        }
+    }
+}
+
+/// `ChatUserListController` is a controller class which allows observing a list of chat users based on the provided query.
+public class ChatUserListController: DataController, DelegateCallable, DataStoreProvider {
+    /// The query specifying and filtering the list of users.
+    public let query: UserListQuery
+
+    /// The `ErmisClient` instance this controller belongs to.
+    public let client: ErmisClient
+
+    /// The users matching the query of this controller.
+    ///
+    /// To observe changes of the users, set your class as a delegate of this controller or use the provided
+    /// `Combine` publishers.
+    ///
+    public var users: LazyCachedMapCollection<ChatUser> {
+        startUserListObserverIfNeeded()
+        return userListObserver.items
+    }
+
+    /// The worker used to fetch the remote data and communicate with servers.
+    private lazy var worker: UserListUpdater = self.environment
+        .userQueryUpdaterBuilder(
+            client.databaseContainer,
+            client.apiClient
+        )
+
+    /// A type-erased delegate.
+    var multicastDelegate: MulticastDelegate<ChatUserListControllerDelegate> = .init() {
+        didSet {
+            stateMulticastDelegate.set(mainDelegate: multicastDelegate.mainDelegate)
+            stateMulticastDelegate.set(additionalDelegates: multicastDelegate.additionalDelegates)
+
+            // After setting delegate local changes will be fetched and observed.
+            startUserListObserverIfNeeded()
+        }
+    }
+
+    /// Used for observing the database for changes.
+    private(set) lazy var userListObserver: ListDatabaseObserverWrapper<ChatUser, UserDTO> = {
+        let request = UserDTO.userListFetchRequest(query: self.query)
+
+        let observer = self.environment.createUserListDabaseObserver(
+            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            client.databaseContainer,
+            request,
+            { try $0.asModel() }
+        )
+
+        observer.onDidChange = { [weak self] changes in
+            self?.delegateCallback { [weak self] in
+                guard let self = self else {
+                    log.warning("Callback called while self is nil")
+                    return
+                }
+
+                $0.controller(self, didChangeUsers: changes)
+            }
+        }
+
+        return observer
+    }()
+
+    var _basePublishers: Any?
+    /// An internal backing object for all publicly available Combine publishers. We use it to simplify the way we expose
+    /// publishers. Instead of creating custom `Publisher` types, we use `CurrentValueSubject` and `PassthroughSubject` internally,
+    /// and expose the published values by mapping them to a read-only `AnyPublisher` type.
+    var basePublishers: BasePublishers {
+        if let value = _basePublishers as? BasePublishers {
+            return value
+        }
+        _basePublishers = BasePublishers(controller: self)
+        return _basePublishers as? BasePublishers ?? .init(controller: self)
+    }
+
+    private let environment: Environment
+
+    /// Creates a new `UserListController`.
+    ///
+    /// - Parameters:
+    ///   - query: The query used for filtering the users.
+    ///   - client: The `Client` instance this controller belongs to.
+    init(query: UserListQuery, client: ErmisClient, environment: Environment = .init()) {
+        self.client = client
+        self.query = query
+        self.environment = environment
+    }
+
+    override public func synchronize(_ completion: ((_ error: Error?) -> Void)? = nil) {
+        startUserListObserverIfNeeded()
+
+        worker.update(userListQuery: query, projectId: client.projectId) { error in
+            self.state = error == nil ? .remoteDataFetched : .remoteDataFetchFailed(ClientError(with: error))
+            self.callback { completion?(error) }
+        }
+    }
+
+    /// If the `state` of the controller is `initialized`, this method calls `startObserving` on the
+    /// `userListObserver` to fetch the local data and start observing the changes. It also changes
+    /// `state` based on the result.
+    ///
+    /// It's safe to call this method repeatedly.
+    ///
+    private func startUserListObserverIfNeeded() {
+        guard state == .initialized else { return }
+        do {
+            try userListObserver.startObserving()
+            state = .localDataFetched
+        } catch {
+            state = .localDataFetchFailed(ClientError(with: error))
+            log.error("Failed to perform fetch request with error: \(error). This is an internal error.")
+        }
+    }
+}
+
+// MARK: - Actions
+
+public extension ChatUserListController {
+    /// Loads next users from backend.
+    ///
+    /// - Parameters:
+    ///   - limit: Limit for page size.
+    ///   - completion: The completion. Will be called on a **callbackQueue** when the network request is finished.
+    ///                 If request fails, the completion will be called with an error.
+    ///
+    func loadNextUsers(
+        limit: Int = 25,
+        completion: ((Error?) -> Void)? = nil
+    ) {
+        var updatedQuery = query
+        guard query.pagination?.isLastPage == false else {
+            completion?(nil)
+            return
+        }
+        updatedQuery.pagination = UserPagination(page: (query.pagination?.page ?? 1) + 1, pageSize: limit)
+        worker.update(userListQuery: updatedQuery, projectId: client.projectId) { error in
+            self.callback { completion?(error) }
+        }
+    }
+}
+
+extension ChatUserListController {
+    struct Environment {
+        var userQueryUpdaterBuilder: (
+            _ database: DatabaseContainer,
+            _ apiClient: APIClient
+        ) -> UserListUpdater = UserListUpdater.init
+
+        var createUserListDabaseObserver: (
+            _ isBackgroundMappingEnabled: Bool,
+            _ database: DatabaseContainer,
+            _ fetchRequest: NSFetchRequest<UserDTO>,
+            _ itemCreator: @escaping (UserDTO) throws -> ChatUser
+        )
+            -> ListDatabaseObserverWrapper<ChatUser, UserDTO> = {
+                ListDatabaseObserverWrapper(isBackground: $0, database: $1, fetchRequest: $2, itemCreator: $3)
+            }
+    }
+}
+
+extension ChatUserListController {
+    /// Set the delegate of `UserListController` to observe the changes in the system.
+    public weak var delegate: ChatUserListControllerDelegate? {
+        get { multicastDelegate.mainDelegate }
+        set { multicastDelegate.set(mainDelegate: newValue) }
+    }
+}
+
+/// `ChatUserListController` uses this protocol to communicate changes to its delegate.
+public protocol ChatUserListControllerDelegate: DataControllerStateDelegate {
+    /// The controller changed the list of observed users.
+    ///
+    /// - Parameters:
+    ///   - controller: The controller emitting the change callback.
+    ///   - changes: The change to the list of users.
+    ///
+    func controller(
+        _ controller: ChatUserListController,
+        didChangeUsers changes: [ListChange<ChatUser>]
+    )
+}
+
+public extension ChatUserListControllerDelegate {
+    func controller(
+        _ controller: ChatUserListController,
+        didChangeUsers changes: [ListChange<ChatUser>]
+    ) {}
+}
