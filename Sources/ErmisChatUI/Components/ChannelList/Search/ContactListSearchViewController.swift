@@ -29,6 +29,7 @@ open class ContactListSearchViewController: ContactListViewController, UISearchR
         emptyView.isHidden = true
         emptyView.actionButton.removeFromSuperview()
         emptyView.titleLabel.isHidden = true
+        emptyView.iconView.image = theme.icons.emptySearch
     }
 
     override open func setUp() {
@@ -59,20 +60,7 @@ open class ContactListSearchViewController: ContactListViewController, UISearchR
     override open func setUpTheme() {
         super.setUpTheme()
 
-        emptyView.iconView.image = theme.icons.emptySearch
     }
-
-//    override open func loadSearchResults(with text: String) {
-//        guard let currentUserId = controller.client.currentUserId else { return }
-//
-//        replaceQuery(.init(
-//            filter: .and([
-//                .autocomplete(.name, text: text),
-//                .invitedChannels(memberId: currentUserId,
-//                                 projectId: controller.client.projectId)
-//            ])
-//        ))
-//    }
 
     // MARK: - UISearchResultsUpdating
 

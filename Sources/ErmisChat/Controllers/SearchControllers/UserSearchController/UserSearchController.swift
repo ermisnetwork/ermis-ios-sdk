@@ -130,7 +130,7 @@ public class UserSearchController: DataController, DelegateCallable, DataStorePr
     /// Loads all friend contact ids
     /// - Parameters: completion: Called when the controller has finished fetching remote data.
 
-    func getFriendUserIds(completion: @escaping (Result<FriendContactListPayload, Error>) -> Void) {
+    public func getFriendUserIds(completion: @escaping (Result<FriendContactListPayload, Error>) -> Void) {
         userQueryUpdater.getFriendContacts(projectId: projectId, completion: completion)
     }
 
@@ -328,7 +328,7 @@ private extension UserSearchController {
         state = .localDataFetched
     }
 
-    func getContactFriendsIfNeeded(completion: ((_ error: Error?) -> Void)? = nil) {
+    public func getContactFriendsIfNeeded(completion: ((_ error: Error?) -> Void)? = nil) {
         if shouldLoadFriendContacts, !hasLoadFriendContacts {
             getFriendUserIds { [weak self] result in
                 switch result {

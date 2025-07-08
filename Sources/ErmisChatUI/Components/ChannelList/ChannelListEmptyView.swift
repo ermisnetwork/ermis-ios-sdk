@@ -53,11 +53,12 @@ open class ChannelListEmptyView: _View, UIProvider {
     override open func setUpTheme() {
         super.setUpTheme()
         backgroundColor = theme.colors.surface
-        titleLabel.font = theme.fonts.body.bold
+
+        titleLabel.font = theme.fonts.headline.bold
         titleLabel.textColor = theme.colors.text
         titleLabel.textAlignment = .center
 
-        subtitleLabel.font = theme.fonts.subheadline
+        subtitleLabel.font = theme.fonts.body
         subtitleLabel.textColor = theme.colors.subtitleText
         subtitleLabel.numberOfLines = 0
         subtitleLabel.textAlignment = .center
