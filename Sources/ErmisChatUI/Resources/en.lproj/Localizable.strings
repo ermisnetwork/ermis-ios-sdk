@@ -7,7 +7,7 @@
 /// E.g. John, Steve and 5 more.
 "channel.name.andXMore" = "+ %@ more";
 /// Shown when the channel name is missing.
-"channel.name.missing" = "No Channel";
+"channel.name.missing" = "No Group";
 /// Shown in the channel list preview, when the channel doesn't contain any messages.
 "channel.item.empty-messages" = "No messages";
 /// Shown when searching messages, the placeholder is filled with the channel name.
@@ -23,9 +23,9 @@
 /// Show in direct channel for invited users.
 "channel.invitation.directAccceptRequireMessage" = "Accept the invite to see all messages of this conversation";
 /// Show in channel for invited users.
-"channel.invitation.accceptRequireMessage" = "Accept the invite to see all messages of this channel";
+"channel.invitation.accceptRequireMessage" = "Accept the invite to see all messages of this group";
 /// Show in channel condition required alert when user don't have enough conditions to join channel.
-"channel.invitation.join-channel" = "Join channel %@";
+"channel.invitation.join-channel" = "Join group %@";
 /// Show in channel condition required alert when user don't have enough conditions to join channel.
 "channel.invitation.required-token-message" = "You need to hold any of tokens:";
 /// Show in channel condition required alert when user don't have enough conditions to join channel
@@ -48,13 +48,13 @@
 "channelList.ongoing-call.tap-to-return-call" = "Tap to return call";
 
 /// Shown when the invited channel list is empty
-"invitedChannelList.empty.title" = "No invited channels.";
+"invitedChannelList.empty.title" = "No invited.";
 
 /// Show when contact list is empty
 "contactList.empty.title" = "No contacts";
 
 /// Shown when there's an error when loading the channels.
-"channelList.error.message" = "Error loading channels";
+"channelList.error.message" = "Error loading groups";
 /// Shown in the channel list preview when the last message is a voice recording.
 "channelList.preview.voice.recording" = "Voice message";
 
@@ -207,58 +207,58 @@
 // System message
 
 /// Show when channel name updated.
-"message.system.channel-name-updated" = "%@ changed the channel name to \"%@\"";
+"message.system.channel-name-updated" = "%@ changed the group name to \"%@\"";
 /// Show when channel avatar updated.
-"message.system.channel-image-updated" = "%@ changed the channel avatar";
+"message.system.channel-image-updated" = "%@ changed the group avatar";
 /// Show when channel desciption updated.
-"message.system.channel-desciption-updated" = "%@ changed the channel description";
+"message.system.channel-desciption-updated" = "%@ changed the group description";
 /// Show when channel member removed.
-"message.system.member-removed" = "%@ removed from this channel";
+"message.system.member-removed" = "%@ removed from this group";
 /// Show when channel member banned.
-"message.system.member-banned" = "%@ banned from interacting in this channel by Channel Admin";
+"message.system.member-banned" = "%@ banned from interacting in this group by Group Admin";
 /// Show when you was banned.
-"message.system.you-banned" = "You banned from interacting in this channel by Channel Admin";
+"message.system.you-banned" = "You banned from interacting in this group by Group Admin";
 /// Show when channel member unbanned.
-"message.system.member-unbanned" = "%@ unbanned and now can interact in this channel";
+"message.system.member-unbanned" = "%@ unbanned and now can interact in this group";
 /// Show when you was unbanned.
-"message.system.you-unbanned" = "You unbanned and now can interact in this channel";
+"message.system.you-unbanned" = "You unbanned and now can interact in this group";
 /// Show when channel member promoted.
-"message.system.member-promoted" = "%@ assigned as the moderator for this channel";
+"message.system.member-promoted" = "%@ assigned as the moderator for this group";
 /// Show when channel member demoted.
-"message.system.member-demoted" = "%@ removed as the moderator from this channel";
+"message.system.member-demoted" = "%@ removed as the moderator from this group";
 /// Show when you changed channel permission of channel's member.
-"message.system.you-updated-member-permission" = "You updated member permission of channel";
+"message.system.you-updated-member-permission" = "You updated member permission of group";
 /// Show when admin changed channel permission of channel's member.
-"message.system.other-updated-member-permission" = "%@ updated member permission of channel";
+"message.system.other-updated-member-permission" = "%@ updated member permission of group";
 /// Show when you was promoted.
-"message.system.you-promoted" = "You assigned as the moderator for this channel";
+"message.system.you-promoted" = "You assigned as the moderator for this group";
 /// Show when you was demoted.
-"message.system.you-demoted" = "You removed as the moderator from this channel";
+"message.system.you-demoted" = "You removed as the moderator from this group";
 /// Show when new member joined channel.
-"message.system.member-joined-channel" = "%@ joined this channel";
+"message.system.member-joined-channel" = "%@ joined this group";
 /// Show when you joined channel.
-"message.system.you-joined-channel" = "You joined this channel";
+"message.system.you-joined-channel" = "You joined this group";
 /// Show when user reject invitation to join channel.
-"message.system.user-rejected-invitation" = "%@ declined to join this channel";
+"message.system.user-rejected-invitation" = "%@ declined to join this group";
 /// Show when new member joined conversation.
 "message.system.member-joined-conversation" = "%@ joined this conversation";
 /// Show when you joined conversation.
 "message.system.you-joined-conversation" = "You joined this conversation";
 /// Show when memver leave channel.
-"message.system.member-leave" = "%@ left this channel";
+"message.system.member-leave" = "%@ left this group";
 /// Show when you leave channel.
-"message.system.you-leave" = "You left this channel";
+"message.system.you-leave" = "You left this group";
 // Show when channel public / private
-"message.system.set-channel-public" = "Member %@ made this channel public";
-"message.system.you-set-channel-public" = "You made this channel public";
-"message.system.set-channel-private" = "Member %@ made this channel private";
-"message.system.you-set-channel-private" = "You made this channel private";
+"message.system.set-channel-public" = "Member %@ made this group public";
+"message.system.you-set-channel-public" = "You made this group public";
+"message.system.set-channel-private" = "Member %@ made this group private";
+"message.system.you-set-channel-private" = "You made this group private";
 /// Show when set cooldown duration.
-"message.system.turn-on-cooldown" = "Cooldown feature enabled by Channel Admin. Cooldown duration set to %@";
-"message.system.adjust-cooldown" = "Cooldown feature enabled by Channel Admin. Cooldown duration set to %@";
+"message.system.turn-on-cooldown" = "Cooldown feature enabled by Group Admin. Cooldown duration set to %@";
+"message.system.adjust-cooldown" = "Cooldown feature enabled by Group Admin. Cooldown duration set to %@";
 "message.system.turn-off-cooldown" = "Cooldown has been disabled";
 /// Show when filter words of channel chagned.
-"message.system.filter-words-changed" = "%@ update channel filter words";
+"message.system.filter-words-changed" = "%@ update group filter words";
 /// Show when user pinned a message.
 "message.system.message-pinned" = "%@ pinned a message";
 /// Show when user unpinned a message.
@@ -295,7 +295,7 @@
 /// Shown as a placeholder in the composer input text view.
 "composer.placeholder.message" = "Send a message";
 /// Shown in the placeholder in the composer input text view, when sending messages is disabled for the channel.
-"composer.placeholder.messageDisabled" = "You can't send messages in this channel";
+"composer.placeholder.messageDisabled" = "You can't send messages in this group";
 /// Shown in the placeholder in the composer input text view, when the channel is in slow mode.
 "composer.placeholder.slowMode" = "Slow mode ON";
 /// Shown after the checkbox that allows users to send a thread reply also as a direct message in a DM.
@@ -318,7 +318,7 @@
 /// Shown as title in the popup shown when links are disabled in the chat.
 "composer.links-disabled.title" = "Links are disabled";
 /// Shown as message in the popup shown when links are disabled in the chat.
-"composer.links-disabled.subtitle" = "Members in this channel are not allowed to send links.";
+"composer.links-disabled.subtitle" = "Members in this group are not allowed to send links.";
 /// Show as message in the popup shown when content contains blocked keywords.
 "composer.filterwords.content-contain-blocked-keywords" = "The content you entered contains blocked keywords";
 /// Shown while quoting a message that contains a photo attachment.
@@ -330,7 +330,7 @@
 /// Show as title of unblock label.
 "composer.user-blocked.title" = "You have blocked %@.";
 /// Show as title of join channel label.
-"composer.join-channel-title" = "Join channel to send message.";
+"composer.join-channel-title" = "Join group to send message.";
 /// Show as title of join button label.
 "composer.join-button" = "Join";
 
