@@ -799,14 +799,6 @@ open class MessageListViewController: _ViewController,
         delegate?.messageListVC(self, willDisplayMessageAt: indexPath)
     }
 
-    open func tableView(_ tableView: UITableView, didEndDisplaying cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-        guard let cell = cell as? MessageCell else { return }
-        cell.messageContentView?.delegate = nil
-        cell.messageContentView?.channel = nil
-        cell.messageContentView?.content = nil
-        cell.prepareForReuse()
-    }
-
     open func tableView(_ tableView: UITableView, estimatedHeightForRowAt indexPath: IndexPath) -> CGFloat {
         if let message = dataSource?.messageListVC(self, messageAt: indexPath) {
             return cellHeightsCache[message.id] ?? UITableView.automaticDimension
