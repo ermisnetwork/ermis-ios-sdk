@@ -125,7 +125,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         textView.textContainer.lineBreakMode = .byTruncatingTail
         textView.textContainer.lineFragmentPadding = .zero
         textView.backgroundColor = .clear
-        textView.font = theme.fonts.subheadline
+        textView.font = theme.fonts.body
         textView.textContainerInset = .zero
 
         authorAvatarView.contentMode = .scaleAspectFit
@@ -211,7 +211,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
                 .foregroundColor: content?.isParentMessageSentByCurrentUser == true
                 ? theme.colors.outgoingQuotedMessageText
                 : theme.colors.incommingQuotedMessageText,
-                .font: theme.fonts.subheadline
+                .font: theme.fonts.body
             ]
         )
 
@@ -243,7 +243,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
                 .foregroundColor: content?.isParentMessageSentByCurrentUser == true
                 ? theme.colors.outgoingQuotedMessageText
                 : theme.colors.incommingQuotedMessageText,
-                .font: theme.fonts.subheadline
+                .font: theme.fonts.body
             ]
         )
         textView.attributedText = attributedText

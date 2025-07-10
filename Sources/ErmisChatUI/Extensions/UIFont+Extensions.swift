@@ -26,6 +26,16 @@ extension UIFont {
     }
 
     public
+    var medium: UIFont {
+        let descriptor = fontDescriptor.addingAttributes([
+            UIFontDescriptor.AttributeName.traits: [
+                UIFontDescriptor.TraitKey.weight: UIFont.Weight.medium
+            ]
+        ])
+        return UIFont(descriptor: descriptor, size: pointSize)
+    }
+
+    public
     var italic: UIFont {
         withTraits(traits: .traitItalic)
     }
