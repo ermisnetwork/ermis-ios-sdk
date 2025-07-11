@@ -41,7 +41,7 @@ public class CurrentChatUser: ChatUser {
         name: String?,
         imageURL: URL?,
         phone: String?,
-        email: [String],
+        email: String?,
         isOnline: Bool,
         isInvisible: Bool,
         isBanned: Bool,

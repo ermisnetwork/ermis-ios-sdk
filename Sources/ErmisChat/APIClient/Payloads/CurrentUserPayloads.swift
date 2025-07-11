@@ -19,7 +19,7 @@ class CurrentUserPayload: UserPayload {
         name: String?,
         imageURL: URL?,
         phone: String?,
-        email: [String],
+        email: String?,
         role: UserRole,
         createdAt: Date,
         updatedAt: Date,

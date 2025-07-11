@@ -59,7 +59,7 @@ public class ChannelMember: ChatUser {
         name: String?,
         imageURL: URL?,
         phone: String?,
-        email: [String],
+        email: String?,
         isOnline: Bool,
         isBanned: Bool,
         isFlaggedByCurrentUser: Bool,

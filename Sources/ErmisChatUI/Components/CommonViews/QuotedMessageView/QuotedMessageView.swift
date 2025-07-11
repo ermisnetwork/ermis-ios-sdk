@@ -128,7 +128,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         textView.font = theme.fonts.body
         textView.textContainerInset = .zero
 
-        authorAvatarView.contentMode = .scaleAspectFit
+        authorAvatarView.contentMode = .scaleAspectFill
 
         contentContainerView.layer.cornerRadius = 16
         contentContainerView.layer.borderWidth = 1
