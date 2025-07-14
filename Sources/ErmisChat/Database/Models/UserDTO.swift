@@ -27,7 +27,7 @@ class UserDTO: NSManagedObject {
     @NSManaged var currentUser: CurrentUserDTO?
     @NSManaged var teams: [TeamId]
     @NSManaged var language: String?
-    @NSManaged var email: [String]
+    @NSManaged var email: String?
     @NSManaged var phone: String?
 
     var userId: String {

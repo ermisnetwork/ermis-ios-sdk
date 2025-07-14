@@ -33,6 +33,7 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
         emptyView.isHidden = true
         emptyView.actionButton.removeFromSuperview()
         emptyView.titleLabel.isHidden = true
+        emptyView.iconView.image = theme.icons.emptySearch
     }
 
     override open func setUp() {
@@ -59,7 +60,7 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
     override open func setUpTheme() {
         super.setUpTheme()
 
-        emptyView.iconView.image = theme.icons.emptySearch
+//        emptyView.iconView.image = theme.icons.emptySearch
     }
 
     // MARK: - UISearchResultsUpdating

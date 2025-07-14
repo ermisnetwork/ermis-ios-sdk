@@ -239,8 +239,7 @@ open class ChannelViewController: _ViewController,
             .publisher(for: UIApplication.didBecomeActiveNotification)
             .receive(on: RunLoop.main)
             .sink { [weak self] notificaiton in
-                self?.channelController.synchronize { error in
-
+                self?.channelController.synchronize { [weak self] error in
                 }
             }
             .store(in: &cancelBags)

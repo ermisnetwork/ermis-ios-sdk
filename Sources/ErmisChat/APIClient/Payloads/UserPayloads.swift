@@ -41,7 +41,7 @@ class UserPayload: Decodable {
     let name: String?
     let imageURL: URL?
     var phone: String?
-    let email: [String]?
+    let email: String?
     let role: UserRole?
     let createdAt: Date?
     let updatedAt: Date?
@@ -69,7 +69,7 @@ class UserPayload: Decodable {
         name: String?,
         imageURL: URL?,
         phone: String?,
-        email: [String],
+        email: String?,
         role: UserRole,
         createdAt: Date?,
         updatedAt: Date?,
@@ -113,7 +113,7 @@ class UserPayload: Decodable {
         name = try container.decodeIfPresent(String.self, forKey: .name)
         imageURL = try container.decodeIfPresent(String.self, forKey: .imageURL).flatMap(URL.init(string:))
         phone = try container.decodeIfPresent(String.self, forKey: .phone)
-        email = try container.decodeIfPresent([String].self, forKey: .email)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
         role = try container.decodeIfPresent(UserRole.self, forKey: .role)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt)

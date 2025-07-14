@@ -126,7 +126,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     ///
     /// Example: `UIFont.preferredFont(forTextStyle: .body)`
     open var defaultMessageFont: UIFont {
-        theme.fonts.body
+        theme.fonts.body.medium
     }
 
     /// The current font used in the message text based on the content of the message.

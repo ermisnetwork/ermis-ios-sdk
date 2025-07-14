@@ -28,7 +28,7 @@ public class ChatUser {
     public var phone: String?
 
     /// Email of this user.
-    public var email: [String]
+    public var email: String?
 
     /// An indicator whether the user is online.
     public let isOnline: Bool
@@ -83,7 +83,7 @@ public class ChatUser {
         name: String?,
         imageURL: URL?,
         phone: String?,
-        email: [String],
+        email: String?,
         isOnline: Bool,
         isBanned: Bool,
         isFlaggedByCurrentUser: Bool,
