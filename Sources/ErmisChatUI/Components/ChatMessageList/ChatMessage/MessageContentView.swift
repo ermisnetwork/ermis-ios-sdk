@@ -608,8 +608,16 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
            let channel = channel {
             let systemMessage = SystemMessage(systemMessage: text)
             text = formatters.systemMessage.format(systemMessage: systemMessage, in: channel) ?? ""
+            textView?.textColor = theme.colors.systemMessageText
+            textView?.backgroundColor = theme.colors.systemMessageBackground
+            textView?.layer.cornerRadius = 16
+            textView?.clipsToBounds = true
+            textView?.textContainerInset = UIEdgeInsets(top: 6, left: 16, bottom: 6 , right: 16)
+        } else {
+            textView?.backgroundColor = .clear
+            textView?.layer.cornerRadius = 0
+            textView?.textContainerInset = UIEdgeInsets(top: 0, left: 8, bottom: 0, right: 8)
         }
-
         textView?.textAlignment = content?.type == .system ? .center : .natural
 
         // Translated text
