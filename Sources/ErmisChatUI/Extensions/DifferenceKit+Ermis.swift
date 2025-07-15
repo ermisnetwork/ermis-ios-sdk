@@ -26,12 +26,14 @@ extension UITableView {
     ///                updates should be stopped and performed reloadData. Default is nil.
     ///   - setData: A closure that takes the collection as a parameter.
     ///              The collection should be set to data-source of UITableView.
+    ///   - completion: The completion block.
     func reload<C>(
         using stagedChangeset: StagedChangeset<C>,
         with animation: @autoclosure () -> RowAnimation,
         reconfigure: ((IndexPath) -> Bool)? = nil,
         interrupt: ((Changeset<C>) -> Bool)? = nil,
-        setData: (C) -> Void
+        setData: (C) -> Void,
+        completion: (() -> Void)? = nil
     ) {
         reload(
             using: stagedChangeset,
@@ -43,10 +45,11 @@ extension UITableView {
             reloadRowsAnimation: animation(),
             reconfigure: reconfigure,
             interrupt: interrupt,
-            setData: setData
+            setData: setData,
+            completion: completion
         )
     }
-    
+
     /// Applies multiple animated updates in stages using `StagedChangeset`.
     ///
     /// - Note: There are combination of changes that crash when applied simultaneously in `performBatchUpdates`.
@@ -66,6 +69,7 @@ extension UITableView {
     ///                updates should be stopped and performed reloadData. Default is nil.
     ///   - setData: A closure that takes the collection as a parameter.
     ///              The collection should be set to data-source of UITableView.
+    ///   - completion: The completion block.
     func reload<C>(
         using stagedChangeset: StagedChangeset<C>,
         deleteSectionsAnimation: @autoclosure () -> RowAnimation,
@@ -76,49 +80,54 @@ extension UITableView {
         reloadRowsAnimation: @autoclosure () -> RowAnimation,
         reconfigure: ((IndexPath) -> Bool)? = nil,
         interrupt: ((Changeset<C>) -> Bool)? = nil,
-        setData: (C) -> Void
+        setData: (C) -> Void,
+        completion: (() -> Void)? = nil
     ) {
         if case .none = window, let data = stagedChangeset.last?.data {
             setData(data)
-            return reloadData()
+            reloadData()
+            completion?()
+            return
         }
-        
+
         for changeset in stagedChangeset {
             if let interrupt = interrupt, interrupt(changeset), let data = stagedChangeset.last?.data {
                 setData(data)
-                return reloadData()
+                reloadData()
+                completion?()
+                return
             }
-            
-            _performBatchUpdates {
+
+            performBatchUpdates({
                 setData(changeset.data)
-                
+
                 if !changeset.sectionDeleted.isEmpty {
                     deleteSections(IndexSet(changeset.sectionDeleted), with: deleteSectionsAnimation())
                 }
-                
+
                 if !changeset.sectionInserted.isEmpty {
                     insertSections(IndexSet(changeset.sectionInserted), with: insertSectionsAnimation())
                 }
-                
+
                 if !changeset.sectionUpdated.isEmpty {
                     reloadSections(IndexSet(changeset.sectionUpdated), with: reloadSectionsAnimation())
                 }
-                
+
                 for (source, target) in changeset.sectionMoved {
                     moveSection(source, toSection: target)
                 }
-                
+
                 if !changeset.elementDeleted.isEmpty {
                     deleteRows(at: changeset.elementDeleted.map { IndexPath(row: $0.element, section: $0.section) }, with: deleteRowsAnimation())
                 }
-                
+
                 if !changeset.elementInserted.isEmpty {
                     insertRows(at: changeset.elementInserted.map { IndexPath(row: $0.element, section: $0.section) }, with: insertRowsAnimation())
                 }
-                
+
                 if !changeset.elementUpdated.isEmpty {
                     var indexPaths = changeset.elementUpdated.map { IndexPath(row: $0.element, section: $0.section) }
-                    if #available(iOS 15.0, *), let reconfigure {
+                    if  let reconfigure {
                         let partitioned = indexPaths.partitionReconfigurable(by: reconfigure)
                         if !partitioned.reconfiguredIndexPaths.isEmpty {
                             reconfigureRows(at: partitioned.reconfiguredIndexPaths)
@@ -130,21 +139,13 @@ extension UITableView {
                         reloadRows(at: indexPaths, with: reloadRowsAnimation())
                     }
                 }
-                
+
                 for (source, target) in changeset.elementMoved {
                     moveRow(at: IndexPath(row: source.element, section: source.section), to: IndexPath(row: target.element, section: target.section))
                 }
-            }
-        }
-    }
-    
-    private func _performBatchUpdates(_ updates: () -> Void) {
-        if #available(iOS 11.0, tvOS 11.0, *) {
-            performBatchUpdates(updates)
-        } else {
-            beginUpdates()
-            updates()
-            endUpdates()
+            }, completion: { _ in
+                completion?()
+            })
         }
     }
 }
@@ -167,48 +168,59 @@ extension UICollectionView {
         using stagedChangeset: StagedChangeset<C>,
         reconfigure: ((IndexPath) -> Bool)? = nil,
         interrupt: ((Changeset<C>) -> Bool)? = nil,
-        setData: (C) -> Void
+        setData: (C) -> Void,
+        completion: (() -> Void)? = nil
     ) {
         if case .none = window, let data = stagedChangeset.last?.data {
             setData(data)
-            return reloadData()
+            completion?()
+            reloadData()
+            return
         }
-        
+
+        guard !stagedChangeset.isEmpty else {
+            completion?()
+            reloadData()
+            return
+        }
+
         for changeset in stagedChangeset {
             if let interrupt = interrupt, interrupt(changeset), let data = stagedChangeset.last?.data {
                 setData(data)
-                return reloadData()
+                completion?()
+                reloadData()
+                return
             }
-            
+
             performBatchUpdates({
                 if !changeset.sectionDeleted.isEmpty {
                     deleteSections(IndexSet(changeset.sectionDeleted))
                 }
-                
+
                 if !changeset.sectionInserted.isEmpty {
                     insertSections(IndexSet(changeset.sectionInserted))
                 }
-                
+
                 if !changeset.sectionUpdated.isEmpty {
                     reloadSections(IndexSet(changeset.sectionUpdated))
                 }
-                
+
                 for (source, target) in changeset.sectionMoved {
                     moveSection(source, toSection: target)
                 }
-                
+
                 if !changeset.elementDeleted.isEmpty {
                     deleteItems(at: changeset.elementDeleted.map { IndexPath(item: $0.element, section: $0.section) })
                 }
-                
+
                 if !changeset.elementInserted.isEmpty {
                     insertItems(at: changeset.elementInserted.map { IndexPath(item: $0.element, section: $0.section) })
                 }
-                
+
                 if !changeset.elementUpdated.isEmpty {
                     var indexPaths = changeset.elementUpdated.map { IndexPath(row: $0.element, section: $0.section) }
-                    
-                    if #available(iOS 15.0, *), let reconfigure {
+
+                    if let reconfigure {
                         let partitioned = indexPaths.partitionReconfigurable(by: reconfigure)
                         if !partitioned.reconfiguredIndexPaths.isEmpty {
                             reconfigureItems(at: partitioned.reconfiguredIndexPaths)
@@ -220,12 +232,14 @@ extension UICollectionView {
                         reloadItems(at: indexPaths)
                     }
                 }
-                
+
                 for (source, target) in changeset.elementMoved {
                     moveItem(at: IndexPath(item: source.element, section: source.section), to: IndexPath(item: target.element, section: target.section))
                 }
 
                 setData(changeset.data)
+            }, completion: { _ in
+                completion?()
             })
         }
     }

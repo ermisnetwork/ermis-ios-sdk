@@ -25,7 +25,7 @@ extension MessageGalleryView {
             content?.id
         }
 
-        private var gifLoadingHandler = SwiftyGifLoadingHandler()
+        private lazy var gifLoadingHandler = SwiftyGifLoadingHandler()
 
         public var didTapOnAttachment: ((MessageImageAttachment) -> Void)?
         public var didTapOnUploadingActionButton: ((MessageImageAttachment) -> Void)?

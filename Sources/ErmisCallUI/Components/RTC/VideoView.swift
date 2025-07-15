@@ -29,8 +29,6 @@ open class VideoView: _View, UIProvider, RemoteImageDisplayable {
         }
     }
 
-    public weak var imageDownloadTask: (any ErmisChatUI.Cancellable)?
-
     public override func setUp() {
         super.setUp()
         backgroundImageView.contentMode = .scaleAspectFill

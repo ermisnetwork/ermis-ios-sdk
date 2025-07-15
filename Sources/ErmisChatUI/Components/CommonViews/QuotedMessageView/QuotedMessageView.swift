@@ -96,8 +96,6 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
     /// The component responsible to detect links in the message text.
     public let linkDetector = TextLinkDetector()
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     public var imageView: UIImageView {
         return attachmentPreviewView
     }

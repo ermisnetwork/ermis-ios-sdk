@@ -23,7 +23,7 @@ open class PinnedMessageView: _View, UIProvider, PreviewMessageProvider {
     public private(set) lazy var showInChatButton = createShowInChatButton()
     public private(set) lazy var expandButton = createExpandButton()
 
-    public var delegate: PinnedMessageViewDelegate?
+    public weak var delegate: PinnedMessageViewDelegate?
 
     public var content: Content? {
         didSet {
