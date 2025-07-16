@@ -608,8 +608,10 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
            let channel = channel {
             let systemMessage = SystemMessage(systemMessage: text)
             text = formatters.systemMessage.format(systemMessage: systemMessage, in: channel) ?? ""
+            textView?.textColor = theme.colors.systemMessageText
+            bubbleContentContainer.backgroundColor = theme.colors.systemMessageBackground
         }
-
+        
         textView?.textAlignment = content?.type == .system ? .center : .natural
 
         // Translated text
