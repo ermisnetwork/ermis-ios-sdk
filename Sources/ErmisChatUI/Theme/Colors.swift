@@ -37,7 +37,8 @@ public class Colors {
     public var incommingBubbleQuotedMessageBackground = BaseColor.surfaceContainerLow
     public var outgoingBubbleQuotedMessageBackground = BaseColor.primaryDark
     public var messageListSeparatorBackground = BaseColor.surfaceContainerHigh
-
+    public var systemMessageBackground = BaseColor.surfaceContainerLowest
+    
     public var reactionBubbleBackground = BaseColor.surfaceContainerHighest
     public var reactionItemBackground = BaseColor.surfaceContainerHighest
     public var currentUserReactionItemBackground = BaseColor.primary
@@ -49,6 +50,11 @@ public class Colors {
     // MARK: - Border
     public var reactionBubbleBorder = BaseColor.outline
     public var jumpToUnreadMessageButtonBorder = BaseColor.outlineVariant
+    
+    // MARK: - Dividers
+    public var dividerSentMessageBackground = BaseColor.primaryContainer
+    public var dividerReceivedMessageBackground = BaseColor.outlineVariantHigh
+    
 
     // MARK: - Base colors
     public var white = UIColor.white

@@ -238,6 +238,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
     /// An object responsible for injecting the views needed to display the attachments content.
     public private(set) var customCellViewInjector: CustomCellViewInjector?
+    
+    /// Divider view that separates the file attachments.
+    public private(set) var dividerView: UIView?
 
     /// The reply icon image view.
     open private(set) lazy var replyIconImageView: UIImageView = {
@@ -453,6 +456,12 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         // Text
         if options.contains(.text) {
             let textView = createTextView()
+            
+            if customCellViewInjector != nil {
+                let dividerView = createDividerView()
+                bubbleContentContainer.addArrangedSubview(dividerView, respectsLayoutMargins: true)
+            }
+            
             bubbleContentContainer.addArrangedSubview(textView, respectsLayoutMargins: true)
         }
 
@@ -608,8 +617,10 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
            let channel = channel {
             let systemMessage = SystemMessage(systemMessage: text)
             text = formatters.systemMessage.format(systemMessage: systemMessage, in: channel) ?? ""
+            textView?.textColor = theme.colors.systemMessageText
+            bubbleContentContainer.backgroundColor = theme.colors.systemMessageBackground
         }
-
+        
         textView?.textAlignment = content?.type == .system ? .center : .natural
 
         // Translated text
@@ -1112,6 +1123,21 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             deliveryStatusView!.addTarget(self, action: #selector(handleTapOnDeliveryStatusView), for: .touchUpInside)
         }
         return deliveryStatusView!
+    }
+    
+    open func createDividerView() -> UIView {
+        if dividerView == nil {
+            dividerView = UIView()
+                
+            dividerView?.heightAnchor.constraint(equalToConstant: 1).isActive = true
+            if let content = content, content.isSentByCurrentUser {
+                dividerView?.backgroundColor = theme.colors.dividerSentMessageBackground
+            } else {
+                dividerView?.backgroundColor = theme.colors.dividerReceivedMessageBackground
+            }
+        }
+        
+        return dividerView!
     }
 }
 

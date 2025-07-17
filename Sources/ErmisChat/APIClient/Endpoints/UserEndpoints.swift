@@ -15,7 +15,9 @@ extension Endpoint {
         .init(
             path: .usersSearch,
             method: .post,
-            query: query        )
+            query: query,
+            isAuth: true
+        )
     }
 
     /// Create the endpoint to get user list from idetifier list.
@@ -30,7 +32,8 @@ extension Endpoint {
         return .init(path: .userBatch,
                      method: .post,
                      query: queryParameters,
-                     body: bodyParam
+                     body: bodyParam,
+                     isAuth: true
         )
     }
 
@@ -47,7 +50,8 @@ extension Endpoint {
         return .init(
             path: .updateUsers,
             method: .patch,
-            body: payload
+            body: payload,
+            isAuth: true
         )
     }
 
@@ -61,7 +65,9 @@ extension Endpoint {
         return .init(path: .getUser(id),
                      method: .get,
                      query: ["project_id": projectId],
-                     needConnectionId: false)
+                     needConnectionId: false,
+                     isAuth: true
+        )
     }
 
     /// Create the endpoint to get user's infomation without accessToken.
@@ -75,7 +81,9 @@ extension Endpoint {
                      method: .get,
                      query: ["project_id": projectId],
                      needConnectionId: false,
-                     needToken: false)
+                     needToken: false,
+                     isAuth: true
+        )
     }
 
     /// Create the endpoint to update user's profile picture.
@@ -86,7 +94,9 @@ extension Endpoint {
                      method: .post,
                      query: nil,
                      needConnectionId: false,
-                     needToken: true)
+                     needToken: true,
+                     isAuth: true
+)
     }
 
     /// Create the endpoint to get user challange for delete user's account if account sign in with Wallet.
@@ -95,7 +105,9 @@ extension Endpoint {
     static func getDeleteUserChallange() -> Endpoint<SignWalletPayload> {
         return .init(path: .getDeleteUserChallange,
                      method: .get,
-                     needToken: true)
+                     needToken: true,
+                     isAuth: true
+        )
     }
 
     /// Create the endpoint to delete user's account.
@@ -108,7 +120,9 @@ extension Endpoint {
                      method: .post,
                      body: [
                         "signature": signature
-                     ])
+                     ],
+                     isAuth: true
+        )
     }
 
     /// Create the endpoint to get otp code for delete user's account.
@@ -117,7 +131,9 @@ extension Endpoint {
     static func getDeleteUserOtp() -> Endpoint<EmptyResponse> {
         return .init(path: .getDeleteUserOtp,
                      method: .get,
-                     needToken: true)
+                     needToken: true,
+                     isAuth: true
+        )
     }
 
     /// Create the endpoint to delete user's account.
@@ -128,6 +144,8 @@ extension Endpoint {
     static func deleteUser(body: OtpRequestBody) -> Endpoint<EmptyResponse> {
         return .init(path: .deleteUser,
                      method: .delete,
-                     body: body)
+                     body: body,
+                     isAuth: true
+        )
     }
 }
