@@ -155,7 +155,8 @@ extension Endpoint {
                 "channel_id": cid.id,
                 "action": "accept"
             ],
-            needConnectionId: true
+            needConnectionId: true,
+            isAuth: true
         )
     }
 
@@ -198,7 +199,8 @@ extension Endpoint {
                 "channel_id": cid.id,
                 "action": "join"
             ],
-            needConnectionId: true
+            needConnectionId: true,
+            isAuth: true
         )
     }
 
