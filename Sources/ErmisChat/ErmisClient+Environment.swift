@@ -59,7 +59,7 @@ extension ErmisClient {
 
         var extensionLifecycleBuilder = NotificationExtensionLifecycle.init
 
-        var requestEncoderBuilder: (_ baseURL: URL, _ apiKey: APIKey) -> RequestEncoder = DefaultRequestEncoder.init
+        var requestEncoderBuilder: (_ baseURL: URL, _ authURL: URL?, _ apiKey: APIKey) -> RequestEncoder = DefaultRequestEncoder.init
         var requestDecoderBuilder: () -> RequestDecoder = DefaultRequestDecoder.init
 
         var eventDecoderBuilder: () -> EventDecoder = EventDecoder.init

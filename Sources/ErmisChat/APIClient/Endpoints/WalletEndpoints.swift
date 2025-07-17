@@ -18,7 +18,8 @@ extension Endpoint {
         return .init(path: .signWallet,
                      method: .post,
                      body: params,
-                     needToken: false
+                     needToken: false,
+                     isAuth: true
         )
     }
 
@@ -41,7 +42,8 @@ extension Endpoint {
         return .init(path: .walletAuthenticate,
                      method: .post,
                      body: body,
-                     needToken: false
+                     needToken: false,
+                     isAuth: true
         )
     }
 
@@ -49,7 +51,11 @@ extension Endpoint {
     ///
     /// - Returns: The endpoint to get available chains of current project.
     static func getChains() -> Endpoint<ChainListPayload> {
-        .init(path: .getChains, method: .get, needConnectionId: false)
+        .init(path: .getChains,
+              method: .get,
+              needConnectionId: false,
+              isAuth: true
+        )
     }
 
     /// Create the endpoint to get list client on a chain.
@@ -62,7 +68,8 @@ extension Endpoint {
               method: .post,
               body: [
                 "chain_id": chain
-              ])
+              ],
+              isAuth: true)
     }
 
     /// Create the endpoint to get list project on a client.
@@ -77,7 +84,8 @@ extension Endpoint {
               body: [
                 "chain_id": chain,
                 "client_id": client
-              ])
+              ],
+              isAuth: true)
     }
 
     /// Create the endpoint to join a project.
@@ -90,7 +98,8 @@ extension Endpoint {
               method: .post,
               body: [
                 "project_id": projectId
-        ])
+              ],
+              isAuth: true)
     }
 }
 

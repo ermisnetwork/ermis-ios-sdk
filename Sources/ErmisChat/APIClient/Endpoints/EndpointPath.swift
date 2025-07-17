@@ -108,6 +108,10 @@ enum EndpointPath: Codable {
             return "uss/v1/users/batch"
         case .getUser(let id):
             return "uss/v1/users/\(id)"
+        case .updateUsers:
+            return "uss/v1/users/update"
+        case .uploadUserAvatar:
+            return "uss/v1/users/upload"
         case .getUserInfo(let id):
             return "uss/v1/users/get-info/\(id)"
         case .getDeleteUserChallange:
@@ -129,10 +133,6 @@ enum EndpointPath: Codable {
             return "channels/public/search"
         case .getAttachments(let cid):
             return "channels/\(cid.apiPath)/attachment"
-        case .updateUsers:
-            return "uss/v1/users/update"
-        case .uploadUserAvatar:
-            return "uss/v1/users/upload"
         case .guest:
             return "guest"
         case .members:
@@ -167,6 +167,8 @@ enum EndpointPath: Codable {
             return "channels/\(channelId.apiPath)/unpin"
         case .showChannel(let (channelId, show)):
             return "channels/\(channelId)/\(show ? "show" : "hide")"
+        case .unread:
+            return "unread"
         case .markChannelRead(let (channelId, messageId)):
             if let messageId {
                 return "channels/\(channelId)/\(messageId)/read"
@@ -233,15 +235,12 @@ enum EndpointPath: Codable {
             return "uss/v1/auth/apple_login"
         case .subscribe:
             return "uss/v1/sse/subscribe"
-
-        case .unread: 
-            return "unread"
+        case .refreshToken:
+            return "uss/v1/refresh_token"
         case .signWallet:
             return "uss/v1/auth/get_challenge"
         case .walletAuthenticate:
             return "uss/v1/auth/verify_signature"
-        case .refreshToken:
-            return "uss/v1/refresh_token"
         case .getChains:
             return "uss/v1/users/chains"
         case .getUserClients:

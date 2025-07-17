@@ -27,7 +27,7 @@ protocol RequestEncoder {
     /// - Parameters:
     ///   - baseURL: The base URL for all requests.
     ///   - apiKey: The app specific API key.
-    init(baseURL: URL, apiKey: APIKey)
+    init(baseURL: URL, authURL: URL?, apiKey: APIKey)
 }
 
 extension RequestEncoder {
@@ -72,6 +72,7 @@ extension RequestEncoder {
 /// The default implementation of `RequestEncoder`.
 class DefaultRequestEncoder: RequestEncoder {
     let baseURL: URL
+    let authURL: URL
     let apiKey: APIKey
 
     /// Timeout when waiting for token or connectionId
@@ -130,8 +131,9 @@ class DefaultRequestEncoder: RequestEncoder {
         }
     }
 
-    required init(baseURL: URL, apiKey: APIKey) {
+    required init(baseURL: URL, authURL: URL?, apiKey: APIKey) {
         self.baseURL = baseURL
+        self.authURL = authURL ?? baseURL
         self.apiKey = apiKey
     }
 
@@ -218,10 +220,10 @@ class DefaultRequestEncoder: RequestEncoder {
     private func encodeRequestURL<T: Decodable>(for endpoint: Endpoint<T>) throws -> URL {
         var urlComponents = URLComponents()
 
-        urlComponents.scheme = baseURL.scheme
-        urlComponents.host = baseURL.host
-        urlComponents.path = baseURL.path
-        urlComponents.port = baseURL.port
+        urlComponents.scheme = endpoint.isAuth ? authURL.scheme : baseURL.scheme
+        urlComponents.host = endpoint.isAuth ? authURL.host : baseURL.host
+        urlComponents.path = endpoint.isAuth ? authURL.path : baseURL.path
+        urlComponents.port = endpoint.isAuth ? authURL.port : baseURL.port
 
         guard var url = urlComponents.url else {
             throw ClientError.InvalidURL("URL can't be created using components: \(urlComponents)")

@@ -18,7 +18,8 @@ extension Endpoint {
             method: .post,
             query: nil,
             body: LoginRequestBody(email: email, password: password, apiKey: apiKey),
-            needToken: false
+            needToken: false,
+            isAuth: true
         )
     }
 
@@ -35,7 +36,8 @@ extension Endpoint {
             method: .post,
             query: nil,
             body: LoginRequestBody(email: email, password: password, apiKey: apiKey),
-            needToken: false
+            needToken: false,
+            isAuth: true
         )
     }
 
@@ -52,7 +54,8 @@ extension Endpoint {
             method: .post,
             query: nil,
             body: RegisterRequestBody(email: email, password: password, apiKey: apiKey),
-            needToken: false
+            needToken: false,
+            isAuth: true
         )
     }
 
@@ -67,7 +70,8 @@ extension Endpoint {
             method: .post,
             query: nil,
             body: body,
-            needToken: false
+            needToken: false,
+            isAuth: true
         )
     }
 
@@ -84,7 +88,8 @@ extension Endpoint {
             method: .post,
             query: nil,
             body: body,
-            needToken: false
+            needToken: false,
+            isAuth: true
         )
     }
 
@@ -103,7 +108,8 @@ extension Endpoint {
                 "token": token,
                 "apikey": apiKey
             ],
-            needToken: false
+            needToken: false,
+            isAuth: true
         )
     }
 
@@ -122,7 +128,8 @@ extension Endpoint {
                 "token": token,
                 "apikey": apiKey
             ],
-            needToken: false
+            needToken: false,
+            isAuth: true
         )
     }
 
@@ -139,6 +146,8 @@ extension Endpoint {
         return .init(path: .refreshToken(token),
                      method: .post,
                      body: param,
-                     needToken: false)
+                     needToken: false,
+                     isAuth: true
+        )
     }
 }

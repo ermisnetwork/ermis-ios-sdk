@@ -30,10 +30,10 @@ public struct ErmisClientConfig {
     }()
 
     static func initLocalStorageFolderURL(groupIdentifier: String?) -> URL? {
-        #if os(macOS)
+#if os(macOS)
         let urls = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
         return urls.first.map { $0.appendingPathComponent("network.ermis.ermisChat") }
-        #else
+#else
         if let groupIdentifier = groupIdentifier {
             if let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: groupIdentifier) {
                 return url
@@ -44,11 +44,11 @@ public struct ErmisClientConfig {
                 )
         }
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-        #endif
+#endif
     }
 
     /// The datacenter `ErmisClient` uses for connecting.
-    public var baseURL: BaseURL = .product
+    public var endpointEnviroment: EndpointEnviroment
 
     /// Determines whether `ErmisClient` caches the data locally. This makes it possible to browse the existing chat data also
     /// when the internet connection is not available.
@@ -152,22 +152,22 @@ public struct ErmisClientConfig {
     /// whenever a new channel is created,/updated the SDK will try to
     /// match the channel list filter automatically.
     public var isChannelAutomaticFilteringEnabled: Bool = true
-    
+
     /// The `URLSessionConfiguration` being used as default configuration for the `APIClient` and
     /// `WebSocketClient`
     public var urlSessionConfiguration: URLSessionConfiguration = .default
-    
+
     /// How many hours the unsent actions should be queued for sending when the internet connection is available.
     public var queuedActionsMaxHoursThreshold: Int = 12
 
     public init(
         apiKey: APIKey,
-        isErmis: Bool,
-        baseURL: BaseURL
+        endpointEnviroment: EndpointEnviroment,
+        isErmis: Bool
     ) {
         self.apiKey = apiKey
+        self.endpointEnviroment = endpointEnviroment
         self.isErmis = isErmis
-        self.baseURL = baseURL
         isClientInActiveMode = !Bundle.main.isAppExtension
     }
 }
@@ -178,12 +178,14 @@ extension ErmisClientConfig {
     /// - Warning: ⚠️ The provided `apiKeyString` must not empty, otherwise an assertion failure is triggered.
     ///
     /// - Parameter apiKeyString: The string with API key of the chat app the `ErmisClient` connects to.
-    /// - Parameter baseURL: The baseURL of the chat app the `ErmisClient`.
+    /// - Parameter endpointEnviroment: The `EndpointEnviroment` that `ErmisClient` connects to.
     /// - Parameter isErmis: The flag to check current app is Ermis App or other App.
     public init(apiKeyString: String,
-                baseURL: BaseURL = .product,
+                endpointEnviroment: EndpointEnviroment,
                 isErmis: Bool = false) {
-        self.init(apiKey: APIKey(apiKeyString), isErmis: isErmis, baseURL: baseURL)
+        self.init(apiKey: APIKey(apiKeyString),
+                  endpointEnviroment: endpointEnviroment,
+                  isErmis: isErmis)
     }
 }
 

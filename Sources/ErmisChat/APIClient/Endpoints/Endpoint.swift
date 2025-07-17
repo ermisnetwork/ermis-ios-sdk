@@ -10,6 +10,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
     let query: Encodable?
     let needConnectionId: Bool
     let needToken: Bool
+    let isAuth: Bool
     let body: Encodable?
 
     init(
@@ -18,7 +19,8 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         query: Encodable? = nil,
         body: Encodable? = nil,
         needConnectionId: Bool = false,
-        needToken: Bool = true
+        needToken: Bool = true,
+        isAuth: Bool = false
     ) {
         self.path = path
         self.method = method
@@ -26,6 +28,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         self.body = body
         self.needConnectionId = needConnectionId
         self.needToken = needToken
+        self.isAuth = isAuth
     }
 
     // MARK: - Codable
@@ -37,6 +40,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         case requiresConnectionId
         case requiresToken
         case body
+        case isAuth
     }
 
     init(from decoder: Decoder) throws {
@@ -47,6 +51,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         needConnectionId = try container.decode(Bool.self, forKey: .requiresConnectionId)
         needToken = try container.decode(Bool.self, forKey: .requiresToken)
         body = try container.decodeIfPresent(Data.self, forKey: .body)
+        isAuth = try container.decode(Bool.self, forKey: .isAuth)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -61,6 +66,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         if let body = try body?.encodedAsData() {
             try container.encode(body, forKey: .body)
         }
+        try container.encode(isAuth, forKey: .isAuth)
     }
 }
 
