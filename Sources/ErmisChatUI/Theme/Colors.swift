@@ -50,6 +50,11 @@ public class Colors {
     // MARK: - Border
     public var reactionBubbleBorder = BaseColor.outline
     public var jumpToUnreadMessageButtonBorder = BaseColor.outlineVariant
+    
+    // MARK: - Dividers
+    public var dividerSentMessageBackground = BaseColor.primaryContainer
+    public var dividerReceivedMessageBackground = BaseColor.outlineVariantHigh
+    
 
     // MARK: - Base colors
     public var white = UIColor.white
