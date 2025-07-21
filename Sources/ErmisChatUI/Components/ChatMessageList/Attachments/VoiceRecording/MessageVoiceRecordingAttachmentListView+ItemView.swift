@@ -16,7 +16,7 @@ extension MessageVoiceRecordingAttachmentListView {
     /// |                 | bottomContainerStackView|                           |
     /// |-----------------------------------------------------------------------|
     /// ```
-    open class ItemView: _View, UIProvider {
+    open class ItemView: _View, UIProvider, MessageBubbleProvidable {
         // MARK: - Properties
 
         /// Content of the attachment `MessageFileAttachment`
