@@ -216,6 +216,15 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
     }
 
     // MARK: - Bars
+    public func configure(
+        barWidth: CGFloat? = nil,
+        barInterItem: CGFloat? = nil,
+        barCornerRadius: CGFloat? = nil
+    ) {
+        meteringLevelBarWidth = barWidth ?? meteringLevelBarWidth
+        meteringLevelBarInterItem = barInterItem ?? meteringLevelBarInterItem
+        meteringLevelBarCornerRadius = barCornerRadius ?? meteringLevelBarCornerRadius
+    }
 
     private func drawMeteringLevelBars(inContext context: CGContext) {
         if audioVisualizationMode == .write {

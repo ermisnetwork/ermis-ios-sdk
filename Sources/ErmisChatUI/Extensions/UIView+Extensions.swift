@@ -81,6 +81,17 @@ extension UIView {
     static func spacer(axis: NSLayoutConstraint.Axis) -> UIView {
         UIView().flexible(axis: axis)
     }
+    
+    func superview<T: UIView>(ofKind kind: T.Type) -> T? {
+        var currentSuperview = self.superview
+        while let view = currentSuperview {
+            if let matched = view as? T {
+                return matched
+            }
+            currentSuperview = view.superview
+        }
+        return nil
+    }
 }
 
 public
