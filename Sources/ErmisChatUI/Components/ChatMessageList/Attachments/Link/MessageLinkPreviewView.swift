@@ -96,10 +96,10 @@ open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable,
         addSubview(imagePreview)
         addSubview(authorBackground)
         addSubview(textStack)
-
-        imagePreview.pin(anchors: [.leading, .top, .trailing], to: layoutMarginsGuide)
         
-        imagePreviewHeightConstraint = imagePreview.heightAnchor.pin(equalTo: imagePreview.widthAnchor, multiplier: 0.75)
+        imagePreview.pin(anchors: [.leading, .top, .trailing], to: self)
+        
+        imagePreviewHeightConstraint = imagePreview.heightAnchor.pin(equalTo: imagePreview.widthAnchor, multiplier: 0.5)
         imagePreviewHeightConstraint?.isActive = true
 
         textStack.addArrangedSubviews([titleLabel, bodyTextView])
@@ -176,10 +176,10 @@ open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable,
     }
 
     override open func tintColorDidChange() {
-//        super.tintColorDidChange()
-//
-//        guard UIApplication.shared.applicationState == .active else { return }
-//        updateContentIfNeeded()
+        super.tintColorDidChange()
+
+        guard UIApplication.shared.applicationState == .active else { return }
+        updateContentIfNeeded()
     }
 
     deinit {
