@@ -5,7 +5,7 @@
 import ErmisChat
 import UIKit
 
-open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable {
+open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable, MessageBubbleProvidable {
     public var content: MessageLinkAttachment? { didSet { updateContentIfNeeded() } }
 
     /// Image view showing link's preview image.
@@ -96,8 +96,9 @@ open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable 
         addSubview(imagePreview)
         addSubview(authorBackground)
         addSubview(textStack)
-
+        
         imagePreview.pin(anchors: [.leading, .top, .trailing], to: self)
+        
         imagePreviewHeightConstraint = imagePreview.heightAnchor.pin(equalTo: imagePreview.widthAnchor, multiplier: 0.5)
         imagePreviewHeightConstraint?.isActive = true
 
