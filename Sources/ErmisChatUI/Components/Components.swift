@@ -59,8 +59,8 @@ public struct Components {
     /// A view show when calls are happen, this will help user back to call screen.
     public var ongoingCallVIew: OngoingCallView.Type = OngoingCallView.self
 
-    /// A button for choosing files.
-    public var fileButton: UIButton.Type = FileButton.self
+    /// A button for choosing emoji and sticker.
+    public var stickerButton: UIButton.Type = StickerButton.self
 
     /// A button for choosing photos.
     public var photoButton: UIButton.Type = PhotoButton.self
@@ -68,8 +68,8 @@ public struct Components {
     /// A button for opening command list.
     public var commandsButton: UIButton.Type = CommandButton.self
 
-    /// A button for shrinking the input view to allow more space.
-    public var shrinkInputButton: UIButton.Type = ShrinkInputButton.self
+    /// A button for showing actions menu in composer..
+    public var composerMenu: ComposerMenuButton.Type = ComposerMenuButton.self
 
     /// A button used for sending a message.
     public var sendButton: UIButton.Type = SendButton.self

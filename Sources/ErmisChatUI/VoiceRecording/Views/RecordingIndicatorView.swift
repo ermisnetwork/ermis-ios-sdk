@@ -32,7 +32,8 @@ open class RecordingIndicatorView: _View, UIProvider {
     override open func setUpUI() {
         super.setUpUI()
         recordingIndicator.pin(anchors: [.width], to: 35)
-        recordingIndicator.pin(anchors: [.height], to: 40)
+        recordingIndicator.pin(anchors: [.height], to: 46)
+        durationLabel.pin(anchors: [.height], to: 46)
 
         container.axis = .horizontal
         container.spacing = 5

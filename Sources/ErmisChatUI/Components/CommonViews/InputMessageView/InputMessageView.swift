@@ -74,7 +74,7 @@ open class InputMessageView: _View, ComponentsProvider, ThemeProvider {
         clearButton.setImage(closeTransparentImage, for: .normal)
 
         container.clipsToBounds = true
-        container.layer.cornerRadius = 19
+        container.layer.cornerRadius = 23
         container.layer.borderWidth = 1
         container.layer.borderColor = theme.colors.outline.cgColor
     }
@@ -99,7 +99,7 @@ open class InputMessageView: _View, ComponentsProvider, ThemeProvider {
         inputTextContainer.isLayoutMarginsRelativeArrangement = true
         inputTextContainer.alignment = .center
         inputTextContainer.spacing = 4
-        inputTextContainer.directionalLayoutMargins = .init(top: 0, leading: 6, bottom: 0, trailing: 6)
+        inputTextContainer.directionalLayoutMargins = .init(top: 0, leading: 0, bottom: 0, trailing: 0)
         inputTextContainer.addArrangedSubview(commandLabelView)
         inputTextContainer.addArrangedSubview(textView)
         inputTextContainer.addArrangedSubview(clearButton)

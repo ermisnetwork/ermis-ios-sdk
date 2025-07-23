@@ -490,13 +490,15 @@ open class ComposerViewController: _ViewController,
         // Set the delegate for handling the pasting of UIImages in the text view
         composerView.inputMessageView.textView.clipboardAttachmentDelegate = self
 
-        composerView.fileButton.addTarget(self, action: #selector(showFilePicker), for: .touchUpInside)
-        composerView.photoButton.addTarget(self, action: #selector(showPhotoPicker), for: .touchUpInside)
         composerView.sendButton.addTarget(self, action: #selector(publishMessage), for: .touchUpInside)
         composerView.confirmButton.addTarget(self, action: #selector(publishMessage), for: .touchUpInside)
-        composerView.shrinkInputButton.addTarget(self, action: #selector(shrinkInput), for: .touchUpInside)
+        composerView.photoButton.addTarget(self, action: #selector(showPhotoPicker), for: .touchUpInside)
+        composerView.stickerButton.addTarget(self, action: #selector(showStickerPicker), for: .touchUpInside)
         composerView.commandsButton.addTarget(self, action: #selector(showAvailableCommands), for: .touchUpInside)
         composerView.dismissButton.addTarget(self, action: #selector(clearContent(sender:)), for: .touchUpInside)
+        composerView.composerMenuButton.onMenuItemDidTapped = { [weak self] item in
+            self?.onMenuButtonDidSelected(item: item)
+        }
         composerView.inputMessageView.clearButton.addTarget(
             self,
             action: #selector(clearContent(sender:)),
@@ -573,8 +575,8 @@ open class ComposerViewController: _ViewController,
         updateCommandsButtonVisibility()
         updateConfirmButtonVisibility()
         updateSendButtonVisibility()
-        updateFileButtonVisibility()
         updatePhotoButtonVisibility()
+        updateStickerButtonVisibility()
         updateHeaderViewVisibility()
         updateRecordButtonVisibility()
         updateCooldownView()
@@ -636,6 +638,18 @@ open class ComposerViewController: _ViewController,
         }
     }
 
+    open func updateMenuButtonVisibility() {
+        let textView = composerView.inputMessageView.textView
+        Animate {
+            let leadingViews = self.composerView.leadingContainer.subviews
+            let isNotShrinkInputButton: (UIView) -> Bool = { $0 !== self.composerView.composerMenuButton }
+            let isLeadingActionsVisible = leadingViews
+                .filter { isNotShrinkInputButton($0) && self.composerView.composerMenuButton.isHidden }
+                .filter(\.isHidden).isEmpty
+            self.composerView.composerMenuButton.isHidden = self.content.isVoiceRecording //textView.text.isEmpty || self.content .hasCommand || !isLeadingActionsVisible
+        }
+    }
+
     open func updateRecordButtonVisibility() {
         guard isSendMessageEnabled else {
             composerView.recordButton.isHidden = true
@@ -648,13 +662,13 @@ open class ComposerViewController: _ViewController,
         Animate {
             switch self.content.state {
             case .new:
-                self.composerView.recordButton.isHidden = isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
+                self.composerView.recordButton.isHidden = !isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
             case .recording:
                 self.composerView.recordButton.isHidden = false
             case .recordingLocked:
                 self.composerView.recordButton.isHidden = true
             case .quote:
-                self.composerView.recordButton.isHidden = isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
+                self.composerView.recordButton.isHidden = !isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
             case .edit:
                 self.composerView.recordButton.isHidden = isConfirmButtonHidden || !self.isAttachmentsEnabled
             default:
@@ -701,27 +715,27 @@ open class ComposerViewController: _ViewController,
         composerView.confirmButton.isEnabled = !content.isEmpty
     }
 
-    open func updateFileButtonVisibility() {
-        guard isSendMessageEnabled else {
-            composerView.fileButton.isHidden = true
-            return
-        }
-
-        let isFileButtonHidden = !isAttachmentsEnabled || content.hasCommand || !composerView.shrinkInputButton.isHidden
-        Animate {
-            self.composerView.fileButton.isHidden = isFileButtonHidden
-        }
-    }
-
     open func updatePhotoButtonVisibility() {
         guard isSendMessageEnabled else {
             composerView.photoButton.isHidden = true
             return
         }
 
-        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || !composerView.shrinkInputButton.isHidden
+        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || !content.isEmpty || content.isVoiceRecording
         Animate {
             self.composerView.photoButton.isHidden = isPhotoButtonHidden
+        }
+    }
+
+    open func updateStickerButtonVisibility() {
+        guard isSendMessageEnabled else {
+            composerView.stickerButton.isHidden = true
+            return
+        }
+
+        let isStickerButtonHidden = !isAttachmentsEnabled || content.hasCommand || !content.isEmpty || content.isVoiceRecording
+        Animate {
+            self.composerView.stickerButton.isHidden = isStickerButtonHidden
         }
     }
 
@@ -731,7 +745,7 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        let isCommandsButtonHidden = !isCommandsEnabled || content.hasCommand || !composerView.shrinkInputButton.isHidden
+        let isCommandsButtonHidden = !isCommandsEnabled || content.hasCommand || !composerView.composerMenuButton.isHidden
         Animate {
             self.composerView.commandsButton.isHidden = isCommandsButtonHidden
         }
@@ -835,7 +849,7 @@ open class ComposerViewController: _ViewController,
         Animate {
             switch self.content.state {
             case .new, .quote:
-                self.composerView.sendButton.isHidden = self.isSlowModeOn
+                self.composerView.sendButton.isHidden = self.isSlowModeOn || self.content.isEmpty
             case .edit, .recording, .recordingLocked:
                 self.composerView.sendButton.isHidden = true
             default:
@@ -970,6 +984,28 @@ open class ComposerViewController: _ViewController,
         return [showMediaPickerAction, cancelAction]
     }
 
+    open func onMenuButtonDidSelected(item: ComposerMenuItemType) {
+        switch item {
+        case .location:
+            presentAlert(message: "Feature under develop")
+        case .file:
+            showFilePicker()
+        case .poll:
+            presentAlert(message: "Feature under develop")
+        case .custom(let string):
+            // Implement in subclass if want to add custom type button.
+            break
+        }
+    }
+
+    @objc open func showAvailableCommands(sender: UIButton) {
+        if suggestionsVC.isPresented {
+            dismissSuggestions()
+        } else {
+            showCommandSuggestions(for: "")
+        }
+    }
+
     @objc open func showPhotoPicker(sender: UIButton) {
         let isCameraAvailable = UIImagePickerController.isSourceTypeAvailable(.camera)
         if isCameraAvailable {
@@ -984,28 +1020,8 @@ open class ComposerViewController: _ViewController,
         }
     }
 
-    @objc open func shrinkInput(sender: UIButton) {
-        Animate {
-            self.composerView.shrinkInputButton.isHidden = true
-            self.composerView.leadingContainer.subviews
-                .filter { $0 !== self.composerView.shrinkInputButton }
-                .forEach {
-                    $0.isHidden = false
-                }
-
-            // If attachment uploads is disabled, don't ever show the attachments button
-            if !self.isAttachmentsEnabled {
-                self.composerView.fileButton.isHidden = true
-            }
-        }
-    }
-
-    @objc open func showAvailableCommands(sender: UIButton) {
-        if suggestionsVC.isPresented {
-            dismissSuggestions()
-        } else {
-            showCommandSuggestions(for: "")
-        }
+    @objc open func showStickerPicker(sender: UIButton) {
+        presentAlert(message: "Feature under develop")
     }
 
     @objc open func clearContent(sender: UIButton) {
@@ -1498,7 +1514,7 @@ open class ComposerViewController: _ViewController,
 
     open func textViewDidChange(_ textView: UITextView) {
         defer {
-            updateShrinkButtonVisibility()
+            updateMenuButtonVisibility()
         }
         if preventHandleTextChanged {
             return
@@ -1544,19 +1560,6 @@ open class ComposerViewController: _ViewController,
     }
 
     public func textViewDidChangeSelection(_ textView: UITextView) {
-    }
-
-    open func updateShrinkButtonVisibility() {
-        let textView = composerView.inputMessageView.textView
-        Animate {
-            let leadingViews = self.composerView.leadingContainer.subviews
-            let isNotShrinkInputButton: (UIView) -> Bool = { $0 !== self.composerView.shrinkInputButton }
-            let isLeadingActionsVisible = leadingViews
-                .filter { isNotShrinkInputButton($0) && self.composerView.shrinkInputButton.isHidden }
-                .filter(\.isHidden).isEmpty
-            self.composerView.shrinkInputButton.isHidden = textView.text.isEmpty || self.content
-                .hasCommand || !isLeadingActionsVisible
-        }
     }
 
     func onTextViewChangeText(_ textView: UITextView, currentText: String, in range: NSRange, text: String) {

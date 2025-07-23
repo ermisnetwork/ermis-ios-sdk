@@ -40,7 +40,7 @@ open class InputTextView: UITextView, UIProvider {
     /// When there is no content in the text view OR the height of the content is less than this value,
     /// the text view will be of this height
     open var minimumHeight: CGFloat {
-        38.0
+        46
     }
 
     /// The constraint responsible for setting the height of the text view.
@@ -137,7 +137,7 @@ open class InputTextView: UITextView, UIProvider {
     open func setUpTheme() {
         backgroundColor = .clear
         textContainer.lineFragmentPadding = 8
-        font = theme.fonts.body
+        font = theme.fonts.callout
         textColor = theme.colors.text
         textAlignment = .natural
         adjustsFontForContentSizeCategory = true
@@ -150,6 +150,7 @@ open class InputTextView: UITextView, UIProvider {
         placeholderLabel.font = font
         placeholderLabel.textColor = theme.colors.subtitleText
         placeholderLabel.adjustsFontSizeToFitWidth = true
+        textContainerInset = .init(top: 12, left: 0, bottom: 12, right: 0)
     }
 
     open func setUpUI() {

@@ -293,7 +293,7 @@
 /// Shown as title in the composer when replying to a message.
 "composer.title.reply" = "Reply to Message";
 /// Shown as a placeholder in the composer input text view.
-"composer.placeholder.message" = "Send a message";
+"composer.placeholder.message" = "Write a message";
 /// Shown in the placeholder in the composer input text view, when sending messages is disabled for the channel.
 "composer.placeholder.messageDisabled" = "You can't send messages in this group";
 /// Shown in the placeholder in the composer input text view, when the channel is in slow mode.
@@ -315,6 +315,12 @@
 "composer.picker.camera" = "Camera";
 /// Text for the cancel button in the attachment picker in the composer.
 "composer.picker.cancel" = "Cancel";
+/// Text for location item title in menu.
+"composer.menu.location" = "Location";
+/// Text for share file item title in menu.
+"composer.menu.share-file" = "Share File";
+/// Text for create poll item title in menu.
+"composer.menu.create-poll" = "Create Poll";
 /// Shown as title in the popup shown when links are disabled in the chat.
 "composer.links-disabled.title" = "Links are disabled";
 /// Shown as message in the popup shown when links are disabled in the chat.
