@@ -127,6 +127,10 @@ open class MessageLayoutOptionsResolver {
         if isLastInSequence && canShowDeliveryStatus(for: message, in: channel) {
             options.insert(.deliveryStatusIndicator)
         }
+        
+        if message.isSentByCurrentUser && message.forwardChannelId != nil {
+            options.insert(.forwardedMessageIndicator)
+        }
 
         return options
     }

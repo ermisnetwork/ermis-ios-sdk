@@ -312,6 +312,14 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     open func layout(options: MessageLayoutOptions) {
         defer {
             customCellViewInjector?.contentViewDidLayout(options: options)
+            if options.contains(.forwardedMessageIndicator) {
+                let label = UILabel()
+                label.text = "You have forwarded a message"
+                label.font = theme.fonts.caption1
+                label.textColor = theme.colors.subtitleText
+                
+                bubbleThreadFootnoteContainer.insertArrangedSubview(label, at: 0)
+            }
         }
 
         var constraintsToActivate: [NSLayoutConstraint] = []
