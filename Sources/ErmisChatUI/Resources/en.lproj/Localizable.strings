@@ -263,6 +263,10 @@
 "message.system.message-pinned" = "%@ pinned a message";
 /// Show when user unpinned a message.
 "message.system.message-unpinned" = "%@ unpinned a message";
+/// Show when your message was forwarded.
+"message.system.your-message-forwarded" = "You have forwarded a message";
+/// Show when a message was forwarded.
+"message.system.message-forwarded" = "A message has been forwarded";
 
 /// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
 "attachment.max-size-exceeded" = "File size exceeds the limit. Maximum allowed: 100MB.";

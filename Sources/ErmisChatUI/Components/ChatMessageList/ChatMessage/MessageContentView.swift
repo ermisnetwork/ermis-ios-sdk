@@ -316,9 +316,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
                 let label = UILabel()
                 if let content = content {
                     if content.isSentByCurrentUser {
-                        label.text = "You have forwarded a message"
+                        label.text = L10n.Message.System.yourMessageForwarded
                     } else {
-                        label.text = "A message has been forwarded"
+                        label.text = L10n.Message.System.messageForwarded
                     }
                 }
                 
