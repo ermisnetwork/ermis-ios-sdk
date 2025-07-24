@@ -314,10 +314,16 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             customCellViewInjector?.contentViewDidLayout(options: options)
             if options.contains(.forwardedMessageIndicator) {
                 let label = UILabel()
-                label.text = "You have forwarded a message"
+                if let content = content {
+                    if content.isSentByCurrentUser {
+                        label.text = "You have forwarded a message"
+                    } else {
+                        label.text = "A message has been forwarded"
+                    }
+                }
+                
                 label.font = theme.fonts.caption1
                 label.textColor = theme.colors.subtitleText
-                
                 bubbleThreadFootnoteContainer.insertArrangedSubview(label, at: 0)
             }
         }

@@ -128,7 +128,7 @@ open class MessageLayoutOptionsResolver {
             options.insert(.deliveryStatusIndicator)
         }
         
-        if message.isSentByCurrentUser && message.forwardChannelId != nil {
+        if message.forwardChannelId != nil {
             options.insert(.forwardedMessageIndicator)
         }
 
