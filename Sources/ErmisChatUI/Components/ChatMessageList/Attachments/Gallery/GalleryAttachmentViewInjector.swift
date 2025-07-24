@@ -32,44 +32,47 @@ open class GalleryAttachmentViewInjector: CustomCellViewInjector {
         .galleryView.init()
         .withoutAutoresizingMaskConstraints
 
+    /// A gallery view width / height default ratio
+    open var galleryViewDefaultAspectRatio: CGFloat {
+        return 1.32
+    }
+
+    /// A min gallery aspect ratio value, nil value is same as don't set min ratio.
+    open var minGalleryAspectRatio: CGFloat? {
+        return 0.67
+    }
+
     /// A gallery view width * height ratio.
     ///
     /// If `nil` is returned, aspect ratio will not be applied and gallery view will
     /// aspect ratio will depend on internal constraints.
     ///
-    /// Returns `1.32` by default.
-    open var galleryViewAspectRatio: CGFloat? { 1.32 }
+    public private(set) var galleryViewAspectRatio: CGFloat?
+
+    open var galleryViewSizeRatioConstraint: NSLayoutConstraint?
 
     open override func contentViewDidLayout(options: MessageLayoutOptions) {
         super.contentViewDidLayout(options: options)
 
         contentView.bubbleView?.clipsToBounds = true
 
-        // We need to apply corners to the left and right containers because the previewsContainerView
-        // is applying extra layout margins and the rounded corners wouldn't match the margins.
-        let leftCorners: CACornerMask = [.layerMinXMaxYCorner, .layerMinXMinYCorner]
-        galleryView.leftPreviewsContainerView.layer.maskedCorners = options.roundedCorners.intersection(leftCorners)
-        galleryView.leftPreviewsContainerView.layer.cornerRadius = 16
-        galleryView.leftPreviewsContainerView.layer.masksToBounds = true
-
-        let rightCorners: CACornerMask = [.layerMaxXMaxYCorner, .layerMaxXMinYCorner]
-        galleryView.rightPreviewsContainerView.layer.maskedCorners = options.roundedCorners.intersection(rightCorners)
-        galleryView.rightPreviewsContainerView.layer.cornerRadius = 16
-        galleryView.rightPreviewsContainerView.layer.masksToBounds = true
-
-        if let ratio = galleryViewAspectRatio {
-            galleryView
-                .widthAnchor
-                .pin(equalTo: galleryView.heightAnchor, multiplier: ratio)
-                .isActive = true
-        }
+        let ratio = galleryViewAspectRatio ?? galleryViewDefaultAspectRatio
+        galleryViewSizeRatioConstraint = galleryView
+            .widthAnchor
+            .pin(equalTo: galleryView.heightAnchor, multiplier: ratio)
+        galleryViewSizeRatioConstraint?.isActive = true
     }
 
     open override func contentViewDidcontentDidChanged() {
         super.contentViewDidcontentDidChanged()
         let videos = attachments(payloadType: VideoAttachmentPayload.self)
         let images = attachments(payloadType: ImageAttachmentPayload.self)
-        log.debug("TTTTT GALLARY ATTACHMENT VIEW INJECTOR CONTENT CHANGED \(videos.count),  \(images.count)")
+        if videos.count + images.count == 1, let image = images.first {
+            galleryViewAspectRatio = ratioValue(for: image)
+        } else {
+            galleryViewAspectRatio = galleryViewDefaultAspectRatio
+        }
+        updateGalleryViewRatio()
         galleryView.content = videos.map(preview) + images.map(preview)
     }
 
@@ -96,6 +99,32 @@ open class GalleryAttachmentViewInjector: CustomCellViewInjector {
         super.contentViewDidPrepareForReuse()
         galleryView.content = []
         contentView.content = nil
+    }
+
+    /// Get width/height ratio of image attachment.
+    /// - Parameter attachment: The image message attachemnts.
+    /// - Returns The width/height ratio value of input attachment.
+    ///
+    open func ratioValue(for attachment: MessageAttachment<ImageAttachmentPayload>) -> CGFloat {
+        guard let width = attachment.originalWidth, let height = attachment.originalHeight else {
+            return galleryViewDefaultAspectRatio
+        }
+        let ratio = CGFloat(width) / CGFloat(height)
+        if let minGalleryAspectRatio {
+            return max(ratio, minGalleryAspectRatio)
+        }
+        return ratio
+    }
+
+    /// Update current gallery view ratio constraint.
+    open func updateGalleryViewRatio() {
+        if galleryViewSizeRatioConstraint?.multiplier != galleryViewAspectRatio {
+            NSLayoutConstraint.deactivate([galleryViewSizeRatioConstraint!])
+            galleryViewSizeRatioConstraint = galleryView
+                .widthAnchor
+                .pin(equalTo: galleryView.heightAnchor, multiplier: galleryViewAspectRatio ?? galleryViewDefaultAspectRatio)
+            galleryViewSizeRatioConstraint?.isActive = true
+        }
     }
 }
 

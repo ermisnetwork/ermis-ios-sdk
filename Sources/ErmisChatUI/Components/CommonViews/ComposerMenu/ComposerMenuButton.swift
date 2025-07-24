@@ -86,11 +86,11 @@ open class ComposerMenuButton: _Button, ThemeProvider {
     open func title(for item: ComposerMenuItemType) -> String {
         switch item {
             case .location:
-            return "Location"
+            return L10n.Composer.Menu.location
         case .file:
-            return "File"
+            return L10n.Composer.Menu.shareFile
         case .poll:
-            return "Poll"
+            return L10n.Composer.Menu.createPoll
         case .custom(let rawValue):
             return rawValue.capitalized
         }
