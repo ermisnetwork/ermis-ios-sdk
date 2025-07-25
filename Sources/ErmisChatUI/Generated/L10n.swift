@@ -178,6 +178,14 @@ internal enum L10n {
       /// Links are disabled
       internal static var title: String { L10n.tr("Localizable", "composer.links-disabled.title") }
     }
+    internal enum Menu {
+      /// Create Poll
+      internal static var createPoll: String { L10n.tr("Localizable", "composer.menu.create-poll") }
+      /// Location
+      internal static var location: String { L10n.tr("Localizable", "composer.menu.location") }
+      /// Share File
+      internal static var shareFile: String { L10n.tr("Localizable", "composer.menu.share-file") }
+    }
     internal enum Picker {
       /// Camera
       internal static var camera: String { L10n.tr("Localizable", "composer.picker.camera") }
@@ -193,7 +201,7 @@ internal enum L10n {
       internal static var photoTitle: String { L10n.tr("Localizable", "composer.picker.photo-title") }
     }
     internal enum Placeholder {
-      /// Send a message
+      /// Write a message
       internal static var message: String { L10n.tr("Localizable", "composer.placeholder.message") }
       /// You can't send messages in this group
       internal static var messageDisabled: String { L10n.tr("Localizable", "composer.placeholder.messageDisabled") }

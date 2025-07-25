@@ -82,7 +82,7 @@ open class LiveRecordingView: _View, UIProvider {
         [playbackButton, recordingIndicator]
             .forEach {
                 $0.pin(anchors: [.width], to: 35)
-                $0.pin(anchors: [.height], to: 40)
+                $0.pin(anchors: [.height], to: 46)
             }
 
         container.axis = .horizontal

@@ -6,14 +6,14 @@ import ErmisChat
 import UIKit
 
 /// Button for opening attachments.
-open class FileButton: _Button, ThemeProvider {
+open class StickerButton: _Button, ThemeProvider {
     override open func setUpTheme() {
         super.setUpTheme()
 
-        let clipIcon = theme
+        let stickerIcon = theme
             .icons
-            .openAttachments
+            .sticker
             .tinted(with: theme.colors.text)
-        setImage(clipIcon, for: .normal)
+        setImage(stickerIcon, for: .normal)
     }
 }
