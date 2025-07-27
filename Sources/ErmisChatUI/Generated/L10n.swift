@@ -10,6 +10,8 @@ internal enum L10n {
   internal static func currentSelection(_ p1: Int, _ p2: Int) -> String {
     return L10n.tr("Localizable", "current-selection", p1, p2)
   }
+  /// From
+  internal static var from: String { L10n.tr("Localizable", "from") }
   /// You
   internal static var you: String { L10n.tr("Localizable", "you") }
 

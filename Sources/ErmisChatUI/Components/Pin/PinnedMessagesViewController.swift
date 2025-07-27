@@ -107,6 +107,11 @@ extension PinnedMessagesViewController {
 }
 // MARK: - PinnedMessageCellDelegate
 extension PinnedMessagesViewController: PinnedMessageCellDelegate {
+    public func pinnedMessageCell(_ cell: PinnedMessageCell, didSelectShowInChat message: ChatMessage) {
+        close()
+        delegate?.pinnedMessageViewController(self, didSelected: message)
+    }
+
     public func pinnedMessageCell(_ cell: PinnedMessageCell, didSelectedUnPin message: ChatMessage) {
         self.alertsRouter.showMessageUnpinConfirmationAlert { [weak self] confirmed in
             guard let self, confirmed else { return }

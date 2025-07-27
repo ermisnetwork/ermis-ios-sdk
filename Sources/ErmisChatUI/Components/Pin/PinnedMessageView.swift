@@ -7,18 +7,19 @@ import UIKit
 
 public protocol PinnedMessageViewDelegate: AnyObject {
     func pinnedMessageViewDidSelected(_ pinnedMessageView: PinnedMessageView)
-    func pinnedMessageViewDidSelectedTrailingButton(_ pinnedMessageView: PinnedMessageView)
-    func pinnedMessageViewDidSelectClearButton(_ pinnedMessageView: PinnedMessageView)
+    func pinnedMessageViewDidSelectedShowInChatButton(_ pinnedMessageView: PinnedMessageView)
+    func pinnedMessageViewDidSelectedUnpinButton(_ pinnedMessageView: PinnedMessageView)
 }
 
 open class PinnedMessageView: _View, UIProvider, PreviewMessageProvider {
     public private(set) lazy var leadingStackView = createLeadingStack()
     public private(set) lazy var centerStackView = createCenterStackView()
     public private(set) lazy var trailingStackView = createTrailingStackView()
-    public private(set) lazy var imageView = createImageView()
+    /// The button to unpin message.
+    public private(set) lazy var unpinButton = createUnpinButton()
     public private(set) lazy var titleLabel = createTitleLabel()
     public private(set) lazy var subtitleLabel = createSubtitleLabel()
-    public private(set) lazy var trailingButton = createtrailingButton()
+    public private(set) lazy var showInChatButton = createShowInChatButton()
 
     public var delegate: PinnedMessageViewDelegate?
 
@@ -48,9 +49,11 @@ open class PinnedMessageView: _View, UIProvider, PreviewMessageProvider {
         leadingStackView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 0).isActive = true
         leadingStackView.pin(anchors: [.centerY], to: self)
         leadingStackView.pin(anchors: [.leading], to: self, contant: 16)
-        leadingStackView.addArrangedSubview(imageView)
-        imageView.pin(anchors: [.width, .height], to: 24)
-        imageView.pin(anchors: [.leading], to: leadingStackView, contant: 16)
+        leadingStackView.isLayoutMarginsRelativeArrangement = true
+        leadingStackView.layoutMargins = .init(top: 0, left: 14, bottom: 0, right: 0)
+        leadingStackView.addArrangedSubview(unpinButton)
+        unpinButton.pin(anchors: [.width, .height], to: 32)
+//        unpinButton.pin(anchors: [.leading], to: leadingStackView, contant: 14)
 
         centerStackView.addArrangedSubviews([titleLabel, subtitleLabel])
 
@@ -63,8 +66,8 @@ open class PinnedMessageView: _View, UIProvider, PreviewMessageProvider {
         trailingStackView.pin(anchors: [.trailing], to: self, contant: -16)
         trailingStackView.pin(anchors: [.top, .centerY], to: self)
 
-        trailingStackView.addArrangedSubview(trailingButton)
-        trailingButton.pin(anchors: [.width, .height], to: 20)
+        trailingStackView.addArrangedSubview(showInChatButton)
+        showInChatButton.pin(anchors: [.width, .height], to: 24)
     }
 
     open override func setUpTheme() {
@@ -72,30 +75,39 @@ open class PinnedMessageView: _View, UIProvider, PreviewMessageProvider {
         self.backgroundColor = theme.colors.surfaceContainerLow.withAlphaComponent(0.96)
         layer.borderColor = theme.colors.outline.cgColor
         titleLabel.textColor = theme.colors.text
-        titleLabel.font = theme.fonts.body.bold
+        titleLabel.font = theme.fonts.callout.bold
+        updateSubTitleLabel()
 
-        subtitleLabel.textColor = theme.colors.subtitleText
-        subtitleLabel.font = theme.fonts.body
-        trailingButton.tintColor = theme.colors.text
+        unpinButton.tintColor = theme.colors.text
+        unpinButton.configuration?.image = theme.icons.messageActionUnpin
+        unpinButton.configuration?.background.cornerRadius = 10
+        unpinButton.configuration?.background.backgroundColor = theme.colors.surfaceContainerLowest
+
+        showInChatButton.tintColor = theme.colors.text
+        showInChatButton.configuration?.image = theme.icons.messageActionShowInChat
+        
     }
 
     open override func contentDidChanged() {
         super.contentDidChanged()
-        subtitleLabel.text = generatePreviewMessage()
+        titleLabel.text = generatePreviewMessage()
         let pinnedMessages = content?.channel.pinnedMessages ?? []
         self.isHidden = pinnedMessages.isEmpty
+        updateSubTitleLabel()
      }
     // MARK: - Action
     @objc private func onBackgroundTapped() {
         delegate?.pinnedMessageViewDidSelected(self)
     }
 
-    @objc private func onTrailingButtonTapped() {
-        if content?.isShowClearButton == true {
-            delegate?.pinnedMessageViewDidSelectClearButton(self)
-        } else {
-            delegate?.pinnedMessageViewDidSelectedTrailingButton(self)
-        }
+    @objc
+    private func onUnpinButtonSelected() {
+        delegate?.pinnedMessageViewDidSelectedUnpinButton(self)
+    }
+
+    @objc
+    private func onShowInChatButtonSelected() {
+        delegate?.pinnedMessageViewDidSelectedShowInChatButton(self)
     }
     // MARK: - Helper
     open func generatePreviewMessage() -> String? {
@@ -131,13 +143,29 @@ open class PinnedMessageView: _View, UIProvider, PreviewMessageProvider {
 
         return nil
     }
+
+    open func updateSubTitleLabel() {
+        if let senderName = content?.message.author.displayName {
+            let attributedString = NSMutableAttributedString(
+                attributedString: NSAttributedString(string: "\(L10n.from) \(senderName)",attributes: [
+                    .font: theme.fonts.footnote.bold,
+                    .foregroundColor: theme.colors.subtitleText
+                ]
+                ))
+            attributedString.addAttribute(.font,
+                                          value: theme.fonts.footnote,
+                                          range: NSRange(location: 0, length: L10n.from.count))
+            subtitleLabel.attributedText = attributedString
+        } else {
+            subtitleLabel.attributedText = nil
+        }
+    }
 }
 
 public extension PinnedMessageView {
     struct Content {
         public let message: ChatMessage
         public let channel: Channel
-        public let isShowClearButton: Bool
     }
 }
 
@@ -169,11 +197,13 @@ extension PinnedMessageView {
         return containerStackView.withoutAutoresizingMaskConstraints
     }
 
-    private func createImageView() -> UIImageView {
-        let imageView = UIImageView()
-        imageView.image = theme.icons.messageActionPin
-        return imageView.withoutAutoresizingMaskConstraints
+    open func createUnpinButton() -> UIButton {
+        let button = UIButton()
+        button.configuration = .plain()
+        button.addTarget(self, action: #selector(onUnpinButtonSelected), for: .touchUpInside)
+        return button
     }
+
 
     private func createTitleLabel() -> UILabel {
         let label = UILabel()
@@ -186,10 +216,10 @@ extension PinnedMessageView {
         return label.withoutAutoresizingMaskConstraints
     }
 
-    private func createtrailingButton() -> UIButton {
+    open func createShowInChatButton() -> UIButton {
         let button = UIButton()
-        button.addTarget(self, action: #selector(onTrailingButtonTapped), for: .touchUpInside)
-        button.setImage(theme.icons.chevronRight, for: .normal)
-        return button.withoutAutoresizingMaskConstraints
+        button.configuration = .plain()
+        button.addTarget(self, action: #selector(onShowInChatButtonSelected), for: .touchUpInside)
+        return button
     }
 }

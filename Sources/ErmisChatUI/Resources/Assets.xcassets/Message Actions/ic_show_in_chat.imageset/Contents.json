@@ -1,7 +1,7 @@
 {
   "images" : [
     {
-      "filename" : "ic_unpin.pdf",
+      "filename" : "ic_show_in_chat.pdf",
       "idiom" : "universal"
     }
   ],
@@ -10,6 +10,6 @@
     "version" : 1
   },
   "properties" : {
-    "template-rendering-intent" : "original"
+    "template-rendering-intent" : "template"
   }
 }

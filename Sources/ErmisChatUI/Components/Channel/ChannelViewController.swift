@@ -735,8 +735,7 @@ open class ChannelViewController: _ViewController,
         if let channel = self.channelController.channel,
            let lastestPinnedMessage = channel.pinnedMessages.first {
             pinnedMessageView.content = .init(message: lastestPinnedMessage,
-                                           channel: channel,
-                                           isShowClearButton: false)
+                                           channel: channel)
             messageListVC.listView.defaultContentInsetTop = pinnedMessageView.bounds.height + 32
         } else {
             pinnedMessageView.content = nil
@@ -935,13 +934,17 @@ extension ChannelViewController: PinnedMessageViewDelegate {
     public func pinnedMessageViewDidSelected(_ pinnedMessageView: PinnedMessageView) {
         showPinnedMessageList()
     }
-    
-    public func pinnedMessageViewDidSelectedTrailingButton(_ pinnedMessageView: PinnedMessageView) {
 
+    public func pinnedMessageViewDidSelectedUnpinButton(_ pinnedMessageView: PinnedMessageView) {
+        showPinnedMessageList()
     }
-    
-    public func pinnedMessageViewDidSelectClearButton(_ pinnedMessageView: PinnedMessageView) {
 
+    public func pinnedMessageViewDidSelectedShowInChatButton(_ pinnedMessageView: PinnedMessageView) {
+        guard let channel = channelController.channel,
+              let messageId = channel.pinnedMessages.last?.id else {
+            return
+        }
+        jumpToMessage(id: messageId, shouldHighlight: true)
     }
 }
 // MARK: - PinnedMessageViewControllerDelegate

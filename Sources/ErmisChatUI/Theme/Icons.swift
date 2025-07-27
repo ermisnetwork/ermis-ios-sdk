@@ -193,6 +193,7 @@ public extension Theme {
         public var messageActionForward: UIImage = loadImageSafely(with: "ic_forward")
         public var messageActionPin: UIImage = loadImageSafely(with: "ic_pin")
         public var messageActionUnpin: UIImage = loadImageSafely(with: "ic_unpin")
+        public var messageActionShowInChat: UIImage = loadImageSafely(with: "ic_show_in_chat")
         public var messageActionBlockUser: UIImage = loadImageSafely(with: "ic_block_user")
         public var messageActionMuteUser: UIImage = loadImageSafely(with: "ic_mute_user")
         public var messageActionDelete: UIImage = loadImageSafely(with: "ic_delete")
