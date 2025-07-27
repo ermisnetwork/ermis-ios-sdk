@@ -405,3 +405,7 @@
 /// The rate of the player, where the placeholder is the actual rate (e.g. x2).
 "audio.player.rate" = "x%@";
 
+/// The name or identifier of the user who sent the message.
+/// Example: "From user A"
+"from" = "From";
+
