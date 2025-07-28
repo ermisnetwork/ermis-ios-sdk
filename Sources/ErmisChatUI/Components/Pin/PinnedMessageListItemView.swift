@@ -64,20 +64,20 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
 
         leadingStackView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 0).isActive = true
         leadingStackView.pin(anchors: [.centerY], to: self)
-        leadingStackView.pin(anchors: [.leading], to: self, contant: 16)
+        leadingStackView.pin(anchors: [.leading], to: self, contant: 14)
         leadingStackView.addArrangedSubview(unpinButton)
         unpinButton.pin(anchors: [.width, .height], to: 32)
 
         centerStackView.addArrangedSubviews([textView, authorNameLabel])
-        centerStackView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 16).isActive = true
+        centerStackView.topAnchor.pin(equalTo: self.topAnchor, constant: 12).isActive = true
         centerStackView.pin(anchors: [.centerY], to: self)
-        centerStackView.leadingAnchor.pin(equalTo: leadingStackView.trailingAnchor, constant: 8).isActive = true
+        centerStackView.leadingAnchor.pin(equalTo: leadingStackView.trailingAnchor, constant: 12).isActive = true
 
         trailingStackView.addArrangedSubviews([imageView, gifImageView, videoPreview, showInChatButton])
         trailingStackView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 8).isActive = true
         trailingStackView.leadingAnchor.pin(equalTo: centerStackView.trailingAnchor, constant: 10).isActive = true
         trailingStackView.pin(anchors: [.trailing], to: self, contant: -16)
-        trailingStackView.pin(anchors: [.top, .centerY], to: self)
+        trailingStackView.pin(anchors: [.centerY], to: self)
 
         imageView.pin(anchors: [.width, .height], to: 40)
         gifImageView.pin(anchors: [.width, .height], to: 40)
@@ -245,7 +245,7 @@ extension PinnedMessageListItemView {
     private func createLeadingStack() -> ContainerStackView {
         let containerStackView = ContainerStackView()
         containerStackView.axis = .horizontal
-        containerStackView.spacing = 8
+        containerStackView.spacing = 4
         return containerStackView.withoutAutoresizingMaskConstraints
     }
 
@@ -253,14 +253,14 @@ extension PinnedMessageListItemView {
         let containerStackView = ContainerStackView()
         containerStackView.alignment = .leading
         containerStackView.axis = .vertical
-        containerStackView.spacing = 8
+        containerStackView.spacing = 4
         return containerStackView.withoutAutoresizingMaskConstraints
     }
 
     private func createTrailingStackView() -> ContainerStackView {
         let containerStackView = ContainerStackView()
         containerStackView.axis = .horizontal
-        containerStackView.spacing = 8
+        containerStackView.spacing = 4
         return containerStackView.withoutAutoresizingMaskConstraints
     }
 }
