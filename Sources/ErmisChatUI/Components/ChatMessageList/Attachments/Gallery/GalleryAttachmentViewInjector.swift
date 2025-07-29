@@ -106,7 +106,10 @@ open class GalleryAttachmentViewInjector: CustomCellViewInjector {
     /// - Returns The width/height ratio value of input attachment.
     ///
     open func ratioValue(for attachment: MessageAttachment<ImageAttachmentPayload>) -> CGFloat {
-        guard let width = attachment.originalWidth, let height = attachment.originalHeight else {
+        guard let width = attachment.originalWidth,
+              width != 0,
+              let height = attachment.originalHeight,
+              height != 0 else {
             return galleryViewDefaultAspectRatio
         }
         let ratio = CGFloat(width) / CGFloat(height)

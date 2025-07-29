@@ -1476,10 +1476,9 @@ open class ComposerViewController: _ViewController,
 
     public func resumeUnsentContent(_ unsentContent: ComposerContent) {
         self.preventHandleTextChanged = true
+        self.content = .init(with: unsentContent)
         self.previousText = unsentContent.previousText
         self.composerView.inputMessageView.textView.text = unsentContent.textViewText
-
-        self.content = .init(with: unsentContent)
         self.textViewDidChange(self.composerView.inputMessageView.textView)
         self.preventHandleTextChanged = false
     }
@@ -1528,15 +1527,17 @@ open class ComposerViewController: _ViewController,
         let commonPrefix = newText.commonPrefix(with: previousText)
         newText.removeFirst(commonPrefix.count)
         previousText.removeFirst(commonPrefix.count)
-
+        
         let commonSuffix = String(String(newText.reversed()).commonPrefix(with: String(previousText.reversed())).reversed())
 
         var changedText = textView.text ?? ""
         changedText.removeFirst(commonPrefix.count)
         changedText.removeLast(commonSuffix.count)
 
-        let previousChangeTextStartIndex = self.previousText.index(self.previousText.startIndex, offsetBy: commonPrefix.count)
-        var previousChangeTextEndIndex = self.previousText.index(self.previousText.endIndex, offsetBy: -commonSuffix.count)
+        let previousChangeTextStartIndex = self.previousText.index(self.previousText.startIndex,
+                                                                   offsetBy: commonPrefix.count)
+        var previousChangeTextEndIndex = self.previousText.index(self.previousText.endIndex,
+                                                                 offsetBy: -commonSuffix.count)
 
         let previousChangedTextRange = Range(uncheckedBounds: (previousChangeTextStartIndex,
                                                                previousChangeTextEndIndex))
