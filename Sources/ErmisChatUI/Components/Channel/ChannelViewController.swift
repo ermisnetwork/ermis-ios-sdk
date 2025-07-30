@@ -228,7 +228,11 @@ open class ChannelViewController: _ViewController,
         }
 
         messageListVC.swipeToReplyGestureHandler.onReply = { [weak self] message in
-            self?.messageComposerVC.content.quoteMessage(message)
+            guard let self else {
+                return
+            }
+            let newContent = self.messageComposerVC.content.quoteMessage(message)
+            self.messageComposerVC.setContent(newContent)
         }
 
         if let composerUnsentContent = channelController.channel?.composerUnsentContent {
@@ -614,8 +618,12 @@ open class ChannelViewController: _ViewController,
         switch actionItem {
         case is EditActionItem:
             dismiss(animated: true) { [weak self] in
-                self?.messageComposerVC.content.editMessage(message)
-                self?.messageComposerVC.composerView.inputMessageView.textView.becomeFirstResponder()
+                guard let self else {
+                    return
+                }
+                let newContent = self.messageComposerVC.content.editMessage(message)
+                self.messageComposerVC.setContent(newContent)
+                self.messageComposerVC.composerView.inputMessageView.textView.becomeFirstResponder()
             }
 
         case is DownloadActionItem:
@@ -630,7 +638,11 @@ open class ChannelViewController: _ViewController,
             }
         case is InlineReplyActionItem:
             dismiss(animated: true) { [weak self] in
-                self?.messageComposerVC.content.quoteMessage(message)
+                guard let self else {
+                    return
+                }
+                let newContent = self.messageComposerVC.content.quoteMessage(message)
+                self.messageComposerVC.setContent(newContent)
             }
         case is ThreadReplyActionItem:
             dismiss(animated: true) { [weak self] in

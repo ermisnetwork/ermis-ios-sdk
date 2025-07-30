@@ -184,8 +184,9 @@ open class ComposerViewController: _ViewController,
         /// Sets the content state to editing a message.
         ///
         /// - Parameter message: The message that the composer will edit.
-        public mutating func editMessage(_ message: ChatMessage) {
-            self = .init(
+        /// - Returns: New message content for editing a message
+        public func editMessage(_ message: ChatMessage) -> Content {
+            return .init(
                 text: message.text,
                 state: .edit,
                 editingMessage: message,
@@ -202,8 +203,9 @@ open class ComposerViewController: _ViewController,
         /// Sets the content state to quoting a message.
         ///
         /// - Parameter message: The message that the composer will quote.
-        public mutating func quoteMessage(_ message: ChatMessage) {
-            self = .init(
+        /// - Returns: New message content for quoting a message
+        public func quoteMessage(_ message: ChatMessage) -> Content {
+            return .init(
                 text: text,
                 state: .quote,
                 editingMessage: nil,
@@ -298,11 +300,6 @@ open class ComposerViewController: _ViewController,
         }
     }
 
-    private var textChangeRange: NSRange = .init(location: 0, length: 0)
-    private var previousText: String = ""
-    // Mention index info to calculate between content.text and textView.text
-    var mentionIndex: MentionsIndex?
-
     /// The component responsible for tracking cooldown timing when slow mode is enabled.
     open var cooldownTracker: CooldownTracker = CooldownTracker(timer: ScheduledErmisTimer(interval: 1))
 
@@ -379,9 +376,8 @@ open class ComposerViewController: _ViewController,
         channelController?.channel?.config ?? ChannelConfig()
     }
 
-    var shouldAutoUpdateTextViewContent: Bool = true
-    /// The boolean true if we want to prevent handle textview text did changed.
-    var preventHandleTextChanged: Bool = false
+    /// Information about the user's mention in the current text view.
+    var mentionTokens: [MentionToken] = []
 
     /// The component responsible for mention suggestions.
     open lazy var mentionSuggester = TypingSuggester(
@@ -596,38 +592,19 @@ open class ComposerViewController: _ViewController,
     }
 
     open func updateText() {
-        guard shouldAutoUpdateTextViewContent else {
-            return
-        }
         var displayText = content.text
 
         guard !content.mentionedUsers.isEmpty else {
             if composerView.inputMessageView.textView.text != displayText {
                 // Updating the text unnecessarily makes the caret jump to the end of input
-                preventHandleTextChanged = true
                 composerView.inputMessageView.textView.text = displayText
-                preventHandleTextChanged = false
             }
             return
         }
 
-        for mentionUser in content.mentionedUsers {
-            let mentionString = mentionUser.mentionString
-            let mentionDisplayString = mentionUser.mentionsDisplayString
-            guard mentionString != mentionDisplayString else {
-                continue
-            }
-            let ranges = displayText.ranges(of: mentionString)
-            for range in ranges.reversed() {
-                displayText = displayText.replacingCharacters(in: range, with: mentionDisplayString)
-            }
-        }
-
         if composerView.inputMessageView.textView.text != displayText {
             // Updating the text unnecessarily makes the caret jump to the end of input
-            preventHandleTextChanged = true
             composerView.inputMessageView.textView.text = displayText
-            preventHandleTextChanged = false
         }
     }
 
@@ -906,6 +883,13 @@ open class ComposerViewController: _ViewController,
     }
 
     // MARK: - Actions
+    /// Replace the current content with new content from outside.
+    func setContent(_ newContent: Content) {
+        var newContent = newContent
+        newContent.text = getDisplayMentionContent(from: newContent)
+        self.content = newContent
+        self.mentionTokens = getMentionTokens(from: newContent.text)
+    }
 
     @objc open func publishMessage(sender: UIButton) {
         if !canSendLinks, inputContainsLinks {
@@ -922,7 +906,8 @@ open class ComposerViewController: _ViewController,
                 presentAlert(title: L10n.Composer.Filterwords.contentContainBlockedKeywords)
                 return
             }
-            text = content.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            text = getMentionContent(from: content.text.trimmingCharacters(in: .whitespacesAndNewlines),
+                                     tokens: mentionTokens)
         }
 
         if let editingMessage = content.editingMessage {
@@ -1475,12 +1460,8 @@ open class ComposerViewController: _ViewController,
     }
 
     public func resumeUnsentContent(_ unsentContent: ComposerContent) {
-        self.preventHandleTextChanged = true
-        self.content = .init(with: unsentContent)
-        self.previousText = unsentContent.previousText
-        self.composerView.inputMessageView.textView.text = unsentContent.textViewText
-        self.textViewDidChange(self.composerView.inputMessageView.textView)
-        self.preventHandleTextChanged = false
+        let newContent = Content(with: unsentContent)
+        setContent(newContent)
     }
 
     public func textContentDidChanged() {
@@ -1497,8 +1478,6 @@ open class ComposerViewController: _ViewController,
         } else {
 
             let unsentContent = ComposerContent(text: content.text,
-                                                previousText: previousText,
-                                                textViewText: composerView.inputMessageView.textView.text,
                                                 state: content.state.rawValue,
                                                 hasMentionAll: content.hasMentionedAll,
                                                 mentionUsers: content.mentionedUsers,
@@ -1512,39 +1491,11 @@ open class ComposerViewController: _ViewController,
     // MARK: - UITextViewDelegate
 
     open func textViewDidChange(_ textView: UITextView) {
-        defer {
-            updateMenuButtonVisibility()
-        }
-        if preventHandleTextChanged {
-            return
-        }
+        updateAllMentionTokenRange(in: textView.text)
+        updateMenuButtonVisibility()
+        guard textView.text != content.text else { return }
 
-        preventHandleTextChanged = true
-        shouldAutoUpdateTextViewContent = false
-        var newText = textView.text ?? ""
-        var previousText = self.previousText
-
-        let commonPrefix = newText.commonPrefix(with: previousText)
-        newText.removeFirst(commonPrefix.count)
-        previousText.removeFirst(commonPrefix.count)
-        
-        let commonSuffix = String(String(newText.reversed()).commonPrefix(with: String(previousText.reversed())).reversed())
-
-        var changedText = textView.text ?? ""
-        changedText.removeFirst(commonPrefix.count)
-        changedText.removeLast(commonSuffix.count)
-
-        let previousChangeTextStartIndex = self.previousText.index(self.previousText.startIndex,
-                                                                   offsetBy: commonPrefix.count)
-        var previousChangeTextEndIndex = self.previousText.index(self.previousText.endIndex,
-                                                                 offsetBy: -commonSuffix.count)
-
-        let previousChangedTextRange = Range(uncheckedBounds: (previousChangeTextStartIndex,
-                                                               previousChangeTextEndIndex))
-        let nsRange = NSRange(previousChangedTextRange, in: self.previousText)
-        self.onTextViewChangeText(textView, currentText: self.previousText, in: nsRange, text: changedText)
-        //
-        self.textContentDidChanged()
+        content.text = textView.text
     }
 
     open func textView(
@@ -1552,113 +1503,46 @@ open class ComposerViewController: _ViewController,
         shouldChangeTextIn range: NSRange,
         replacementText text: String
     ) -> Bool {
-        if preventHandleTextChanged {
+        guard !content.mentionedUsers.isEmpty else {
             return true
         }
-        textChangeRange = range
-        previousText = textView.text
-        return true
-    }
 
-    public func textViewDidChangeSelection(_ textView: UITextView) {
-    }
+        // Check if changed range contain mention
+        var removeTokenIndexs: [Int] = []
+        var updatedRange: NSRange = range
 
-    func onTextViewChangeText(_ textView: UITextView, currentText: String, in range: NSRange, text: String) {
-        guard var messageTextRange = Range(range, in: currentText) else {
-            return
-        }
-
-        mentionIndex = calculateMentionIndex(message: currentText)
-
-        guard let mentionIndex = mentionIndex else {
-            return
-        }
-
-        shouldAutoUpdateTextViewContent = false
-
-        var overlapMessageRanges: [Range<String.Index>] = []
-        var overlapMessageRangeIndexs: [Int] = []
-
-        for (index, messageRange) in mentionIndex.messageRanges.enumerated() {
-            let nsRange = NSRange(messageRange, in: currentText)
-            guard let range = Range(nsRange, in: currentText) else {
+        for (index, token) in mentionTokens.enumerated() {
+            guard let mentionRange = Range(token.range, in: textView.text) else {
                 continue
             }
-            if range.overlaps(messageTextRange) {
-                overlapMessageRanges.append(range)
-                overlapMessageRangeIndexs.append(index)
+            if NSIntersectionRange(range, token.range).length > 0 {
+                removeTokenIndexs.append(index)
+                updatedRange = updatedRange.merge(with: token.range)
             }
-        }
-        var replaceText = text
-        var updatedText = currentText.replacingCharacters(in: messageTextRange, with: replaceText)
-
-        // Removed mention user if needed
-        if !overlapMessageRanges.isEmpty {
-            var removedUsers: Set<ChatUser> = []
-            let overlapContentRanges = overlapMessageRangeIndexs.map { mentionIndex.contentRanges[$0] }
-            for mentionedUser in content.mentionedUsers {
-                let mentionString = mentionedUser.mentionString
-                let ranges = content.text.ranges(of: mentionString)
-                if ranges.allSatisfy({ range in
-                    return overlapContentRanges.contains { overlapContentRange in
-                        overlapContentRange.contains(range.lowerBound) && overlapContentRange.contains(range.upperBound)
-                    }
-                }) {
-                    removedUsers.insert(mentionedUser)
-                }
-            }
-            content.mentionedUsers = content.mentionedUsers.subtracting(removedUsers)
         }
 
         //
-        var lowerIndexOffset: Int = 0
-        var upperIndexOffset: Int = 0
-        // Edit text contain mention users
-        if !overlapMessageRanges.isEmpty {
-            let firstMentionRange = overlapMessageRanges.first!
-            let lastMentionRange = overlapMessageRanges.last!
-            // Extent current message range if ovverlap mention range bound large than message range
-            if !messageTextRange.contains(firstMentionRange.lowerBound) {
-                messageTextRange = Range(uncheckedBounds: (firstMentionRange.lowerBound, messageTextRange.upperBound))
-            }
-
-            if !messageTextRange.contains(lastMentionRange.upperBound) {
-                messageTextRange = Range(uncheckedBounds: (messageTextRange.lowerBound, lastMentionRange.upperBound))
-            }
-
-            updatedText = currentText.replacingCharacters(in: messageTextRange, with: replaceText)
-
-            // calculate offset
-            let firstMentionRangeIndex = overlapMessageRangeIndexs.first!
-            let lastMentionRangeIndex = overlapMessageRangeIndexs.last!
-            upperIndexOffset = calculateMentionIndexOffset(at: lastMentionRangeIndex)
-            lowerIndexOffset = calculateMentionIndexOffset(at: firstMentionRangeIndex - 1)
-        } else {
-            let nearestLowerRangeIndex = mentionIndex.messageRanges.lastIndex(where: {
-                currentText.distance(from: $0.upperBound, to: messageTextRange.lowerBound) >= 0
-            }) ?? -1
-            lowerIndexOffset = calculateMentionIndexOffset(at: nearestLowerRangeIndex)
-            upperIndexOffset = lowerIndexOffset
+        guard !removeTokenIndexs.isEmpty else {
+            return true
         }
-        let tempText = content.text.appending(currentText)
-        let contentRangeLowerBound = tempText.index(messageTextRange.lowerBound, offsetBy: lowerIndexOffset)
-        let contentRangeUpperBound = tempText.index(messageTextRange.upperBound, offsetBy: upperIndexOffset)
-        let contentRange = Range(uncheckedBounds: (contentRangeLowerBound, contentRangeUpperBound))
-        // Manual update textView.text
-        let changedRange = NSRange(messageTextRange, in: currentText)
-        let caretLocation = changedRange.location
-        // Fix bug auto captlize text
-        self.preventHandleTextChanged = true
-        if textView.text != updatedText {
-            textView.text = updatedText
-            let newCaretLocation = caretLocation + replaceText.count
-            textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
+
+        let currentText = textView.text as? NSString ?? ""
+        textView.text = currentText.replacingCharacters(in: updatedRange, with: text)
+
+        // Update caret location
+        let newCaretLocation = updatedRange.location + text.count
+        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
+
+        // Remove overlap mention
+        for removeTokenIndex in removeTokenIndexs.sorted(by: >) {
+            mentionTokens.remove(at: removeTokenIndex)
         }
-        self.shouldAutoUpdateTextViewContent = false
-        self.content.text = self.content.text.replacingCharacters(in: contentRange, with: replaceText)
-        self.shouldAutoUpdateTextViewContent = true
-        self.preventHandleTextChanged = false
-        self.previousText = textView.text
+
+        updateAllMentionTokenRange(in: textView.text)
+        return false
+    }
+
+    public func textViewDidChangeSelection(_ textView: UITextView) {
     }
 
     // MARK: - UIImagePickerControllerDelegate
@@ -1973,120 +1857,32 @@ open class ComposerViewController: _ViewController,
         let text = textView.text as NSString
         let mentionString = mentionObject.mentionString + " "
         let mentionDisplayString = mentionObject.mentionsDisplayString + " "
+        let currentText = textView.text ?? ""
 
         guard mentionRange.length <= mentionDisplayString.count else {
             return self.dismissSuggestions()
         }
 
-        let currentText = textView.text ?? ""
-
-        let newRange = NSRange(location: mentionRange.location - 1,
+        let messageTextRange = NSRange(location: mentionRange.location - 1,
                                length: mentionRange.length + 1)
-        guard var messageTextRange = Range(newRange, in: currentText) else {
-            return
-        }
 
-        mentionIndex = calculateMentionIndex(message: currentText)
-
-        guard let mentionIndex = mentionIndex else {
-            return
-        }
-
-        var containOtherMention: Bool = false
-
-        shouldAutoUpdateTextViewContent = false
-
-        var overlapMessageRanges: [Range<String.Index>] = []
-        var overlapMessageRangeIndexs: [Int] = []
-
-        for (index, messageRange) in mentionIndex.messageRanges.enumerated() {
-            let nsRange = NSRange(messageRange, in: currentText)
-            guard let range = Range(nsRange, in: currentText) else {
-                continue
-            }
-            if range.overlaps(messageTextRange) {
-                overlapMessageRanges.append(range)
-                overlapMessageRangeIndexs.append(index)
-            }
-        }
-
-        var replaceText = mentionDisplayString
-        var updatedText = text.replacingCharacters(in: newRange, with: mentionDisplayString)
-        var lowerIndexOffset: Int = 0
-        var upperIndexOffset: Int = 0
-        // Removed mention user if needed
-        if !overlapMessageRanges.isEmpty {
-            var removedUsers: Set<ChatUser> = []
-            let overlapContentRanges = overlapMessageRangeIndexs.map { mentionIndex.contentRanges[$0] }
-            for mentionedUser in content.mentionedUsers {
-                let mentionString = mentionedUser.mentionString
-                let ranges = content.text.ranges(of: mentionString)
-                if ranges.allSatisfy({ range in
-                    return overlapContentRanges.contains { overlapContentRange in
-                        overlapContentRange.contains(range.lowerBound) && overlapContentRange.contains(range.upperBound)
-                    }
-                }) {
-
-                    removedUsers.insert(mentionedUser)
-                }
-            }
-            content.mentionedUsers = content.mentionedUsers.subtracting(removedUsers)
-        }
-        if !overlapMessageRanges.isEmpty {
-            let firstMentionRange = overlapMessageRanges.first!
-            let lastMentionRange = overlapMessageRanges.last!
-            // Extent current message range if ovverlap mention range bound large than message range
-            if !messageTextRange.contains(firstMentionRange.lowerBound) {
-                messageTextRange = Range(uncheckedBounds: (firstMentionRange.lowerBound, messageTextRange.upperBound))
-            }
-
-            if !messageTextRange.contains(lastMentionRange.upperBound) {
-                messageTextRange = Range(uncheckedBounds: (messageTextRange.lowerBound, lastMentionRange.upperBound))
-            }
-            updatedText = currentText.replacingCharacters(in: messageTextRange, with: mentionDisplayString)
-            // Calculate offset
-            let firstMentionRangeIndex = overlapMessageRangeIndexs.first!
-            let lastMentionRangeIndex = overlapMessageRangeIndexs.last!
-            upperIndexOffset = calculateMentionIndexOffset(at: lastMentionRangeIndex)
-            lowerIndexOffset = calculateMentionIndexOffset(at: firstMentionRangeIndex - 1)
-        } else {
-            let nearestLowerRangeIndex = mentionIndex.messageRanges.lastIndex(where: {
-                currentText.distance(from: $0.upperBound, to: messageTextRange.lowerBound) >= 0
-            }) ?? -1
-            lowerIndexOffset = calculateMentionIndexOffset(at: nearestLowerRangeIndex)
-            upperIndexOffset = lowerIndexOffset
-        }
-
-        let tempText = content.text.appending(currentText)
-        let contentRangeLowerBound = tempText.index(messageTextRange.lowerBound, offsetBy: lowerIndexOffset)
-        let contentRangeUpperBound = tempText.index(messageTextRange.upperBound, offsetBy: upperIndexOffset)
-
-
-        let caretLocation = textView.selectedRange.location
-        let newCaretLocation = caretLocation + (mentionDisplayString.count - typingMention.count)
-        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
-
-        guard let messageRange = textView.text.range(from: mentionRange) else {
-            return self.dismissSuggestions()
-        }
-
-        let contentRange = Range(uncheckedBounds: (lower: contentRangeLowerBound, upper: contentRangeUpperBound))
-
+        let newText = text.replacingCharacters(in: messageTextRange, with: mentionDisplayString)
+        self.content.text = newText
+        // Add mention user.
         switch mentionObject {
         case .allUser:
             self.content.hasMentionedAll = true
         case .mention(let chatUser):
             self.content.mentionedUsers.insert(chatUser)
         }
-        self.preventHandleTextChanged = true
-        self.shouldAutoUpdateTextViewContent = false
+        // Recalculate mention token
+        mentionTokens = getMentionTokens(from: newText)
 
-        self.content.text = content.text.replacingCharacters(in: contentRange, with: mentionString)
-        textView.text = updatedText
+        let caretLocation = textView.selectedRange.location
+        let newCaretLocation = caretLocation + (mentionDisplayString.count - typingMention.count)
+        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
 
-        self.preventHandleTextChanged = false
-        self.shouldAutoUpdateTextViewContent = true
-        self.updateMentionSuggestions()
+        self.dismissSuggestions()
     }
 
     /// searchUsers does an autocomplete search on a list of ChatUser and returns users with `id` or `name` containing the search string
@@ -2138,104 +1934,86 @@ extension ComposerViewController: ChannelControllerDelegate {
 }
 // MARK: - Helper for mention users
 extension ComposerViewController {
-    func calculateMentionIndex(message: String) -> MentionsIndex {
-        let mentionsUserIds = content.mentionedUsers.map(\.userId)
-
-        // Range of mention user id in text content.
-        var contentRanges: [Range<String.Index>] = []
-        contentRanges = content.mentionedUsers.reduce(into: contentRanges) { partialResult, mentionUser in
-            return partialResult.append(contentsOf: content.text.ranges(of: mentionUser.mentionString))
+    /// Recalculate token range values
+    func updateAllMentionTokenRange(in newText: String) {
+        for (index, token) in self.mentionTokens.enumerated() {
+            let range = (newText as NSString).range(of: token.mentionDisplayString)
+            if range.location != NSNotFound {
+                mentionTokens[index].range = range
+            }
         }
+    }
 
-        var messageRanges: [Range<String.Index>] = []
-
-        var indexOffsets: [Int] = []
-        var indexOffset = 0
-        for contentRange in contentRanges.sorted(by: { $0.lowerBound < $1.lowerBound}) {
-            let mentionString = String(content.text[contentRange])
-            guard let mentionUser = content.mentionedUsers.first(where: { mentionString.contains($0.userId)}) else {
+    /// Get display text from  text
+    /// This will parse all mention string  to mention display string
+    /// Ex: @123 -> @Ermis....
+    /// - Parameters:
+    ///   - content:Current content text.
+    ///  - Returns: The string that parse all mention text to mention display text.
+    func getDisplayMentionContent(from content: Content) -> String {
+        var displayMentionContent = content.text
+        for mentionUser in content.mentionedUsers {
+            let mentionString = mentionUser.mentionString
+            let mentionDisplayString = mentionUser.mentionsDisplayString
+            guard mentionString != mentionDisplayString else {
                 continue
             }
-            let mentionsDisplayString = mentionUser.mentionsDisplayString
-            let testRange = message.ranges(of: mentionsDisplayString)
-            let mentionDisplayLength = mentionsDisplayString.distance(from: mentionsDisplayString.startIndex, to: mentionsDisplayString.endIndex)
-            let location = NSRange(contentRange, in: content.text).location
-            let messageRange = NSRange(location: location + indexOffset, length: mentionDisplayLength)
-
-            indexOffset += mentionDisplayLength - mentionString.count
-            messageRanges.append(
-                 message.range(from: messageRange)!
-            )
-            indexOffsets.append(indexOffset)
-        }
-
-        return MentionsIndex(contentRanges: contentRanges,
-                             messageRanges: messageRanges,
-                             indexOffsets: indexOffsets)
-    }
-    // Must call calculate mention info before
-    func calculateMentionIndexOffset(at mentionIndex: Int? = nil) -> Int {
-        var indexOffset: Int = 0
-        guard let indexOffsets = self.mentionIndex?.indexOffsets else { return indexOffset }
-        for (index, offset) in indexOffsets.enumerated() {
-            if let mentionIndex = mentionIndex, index > mentionIndex {
-                break
+            let ranges = displayMentionContent.ranges(of: mentionString)
+            for range in ranges.reversed() {
+                displayMentionContent = displayMentionContent.replacingCharacters(in: range, with: mentionDisplayString)
             }
-            indexOffset = -offset
         }
-        return indexOffset
+        return displayMentionContent
     }
 
-    struct MentionsIndex {
-        var contentRanges: [Range<String.Index>]
-        var messageRanges: [Range<String.Index>]
-        var indexOffsets: [Int]
-    }
-
-    func removeOverlapMentionUserIfNeeded(changeTextRange: NSRange, currentText: String) {
-        guard var messageTextRange = Range(changeTextRange, in: currentText) else {
-            return
+    /// Get content from display text and mention token
+    /// This will parse all mention diplay text to mention string
+    /// Ex: @Ermis -> @123....
+    /// - Parameters:
+    ///   - displayText:Current display text.
+    ///   - tokens: Array of mention token inside the given display text.
+    ///  - Returns: The string that parse all mention display text to mention text.
+    func getMentionContent(from displayText: String, tokens: [MentionToken]) -> String {
+        // If don't have mention token -> no need to parse
+        guard !tokens.isEmpty else {
+            return displayText
         }
+        var mentionText = displayText
 
-        mentionIndex = calculateMentionIndex(message: currentText)
-
-        guard let mentionIndex = mentionIndex else {
-            return
-        }
-
-        shouldAutoUpdateTextViewContent = false
-
-        var overlapMessageRanges: [Range<String.Index>] = []
-        var overlapMessageRangeIndexs: [Int] = []
-
-        for (index, messageRange) in mentionIndex.messageRanges.enumerated() {
-            let nsRange = NSRange(messageRange, in: currentText)
-            guard let range = Range(nsRange, in: currentText) else {
+        // Replace mention display string with mention string
+        for token in tokens.reversed() {
+            guard let range = Range(token.range, in: displayText) else {
                 continue
             }
-            if range.overlaps(messageTextRange) {
-                overlapMessageRanges.append(range)
-                overlapMessageRangeIndexs.append(index)
-            }
+            mentionText.replaceSubrange(range, with: token.mentionString)
         }
+        return mentionText
+    }
 
-        // Removed mention user if needed
-        if !overlapMessageRanges.isEmpty {
-            var removedUsers: Set<ChatUser> = []
-            let overlapContentRanges = overlapMessageRangeIndexs.map { mentionIndex.contentRanges[$0] }
-            for mentionedUser in content.mentionedUsers {
-                let mentionString = mentionedUser.mentionString
-                let ranges = content.text.ranges(of: mentionString)
-                if ranges.allSatisfy({ range in
-                    return overlapContentRanges.contains { overlapContentRange in
-                        overlapContentRange.contains(range.lowerBound) && overlapContentRange.contains(range.upperBound)
-                    }
-                }) {
-                    removedUsers.insert(mentionedUser)
-                }
+    /// Find all mention token from given text.
+    ///  - Parameters:
+    ///    - text: The text content to find `MentionToken`.
+    ///    - Returns: The array of `MentionToken` inside given text.
+    func getMentionTokens(from text: String) -> [MentionToken] {
+        var tokens: [MentionToken] = []
+        tokens = content.mentionedUsers.reduce(into: []) { partialResult, mentionUser in
+            if let range = text.range(of: mentionUser.mentionsDisplayString) {
+                let nsRange = NSRange(range, in: text)
+                return partialResult.append(
+                    MentionToken(mentionString: mentionUser.mentionString,
+                                 mentionDisplayString: mentionUser.mentionsDisplayString,
+                                 range: nsRange)
+                )
             }
-            content.mentionedUsers = content.mentionedUsers.subtracting(removedUsers)
         }
+        return tokens.sorted { $0.range.location < $1.range.location }
+    }
+
+    /// A struct that holds information about a mentioned user within the text view's text.
+    struct MentionToken {
+        let mentionString: String
+        var mentionDisplayString: String
+        var range: NSRange
     }
 }
 

@@ -8,8 +8,6 @@ import Foundation
 @objc(ComposerContentDTO)
 final class ComposerContentDTO: NSManagedObject {
     @NSManaged var text: String
-    @NSManaged var previousText: String
-    @NSManaged var textViewText: String
     @NSManaged var state: String
     @NSManaged var hasMentionAll: Bool
     @NSManaged var threadMessage: MessageDTO?
@@ -20,8 +18,6 @@ final class ComposerContentDTO: NSManagedObject {
 
     func asModel() throws -> ComposerContent {
         .init(text: text,
-              previousText: previousText,
-              textViewText: textViewText,
               state: state,
               hasMentionAll: hasMentionAll,
               mentionUsers: Set(mentionUsers.compactMap({ try? $0.asModel()})),
@@ -36,8 +32,6 @@ extension ComposerContent {
     func asDTO(context: NSManagedObjectContext, projectId: String) -> ComposerContentDTO {
         let dto = ComposerContentDTO(context: context)
         dto.text = text
-        dto.previousText = previousText
-        dto.textViewText = textViewText
         dto.state = state
         dto.hasMentionAll = hasMentionAll
         dto.createdAt = createdAt.bridgeDate

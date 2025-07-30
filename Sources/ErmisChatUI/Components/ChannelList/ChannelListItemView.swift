@@ -159,7 +159,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             return typingUsersInfo
         }
 
-        if isShowUnsentContent, let unsentContentText = content.channel.composerUnsentContent?.textViewText {
+        if isShowUnsentContent, let unsentContentText = content.channel.composerUnsentContent?.text {
             return unsentContentText
         }
 
