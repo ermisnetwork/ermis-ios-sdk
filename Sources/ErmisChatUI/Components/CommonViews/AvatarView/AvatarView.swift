@@ -28,8 +28,6 @@ open class AvatarView: _ImageView, ComponentsProvider, RemoteImageDisplayable {
         }
     }
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     public required init(style: AvatarStyle) {
         super.init(frame: .zero)
         self.style = style
@@ -73,7 +71,6 @@ open class AvatarView: _ImageView, ComponentsProvider, RemoteImageDisplayable {
     }
 
     public func cancelLoading() {
-        cancelImageLoading()
         image = nil
     }
 }

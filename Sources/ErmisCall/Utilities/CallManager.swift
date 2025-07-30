@@ -269,6 +269,7 @@ class CallManager: NSObject, CXProviderDelegate {
     }
 
     package func reportOutgoingCallStarted(_ call: Call) {
+        log.debug("[PushKit] Report outgoing call: \(call.details.uuid)")
         let handle = CXHandle(type: .generic, value: call.details.cid.rawValue)
         var startCallAction = CXStartCallAction(call: call.details.uuid, handle: handle)
         startCallAction.isVideo = call.details.isVideo
@@ -278,6 +279,7 @@ class CallManager: NSObject, CXProviderDelegate {
     }
 
     package func reportUpdateCall(for callUUID: UUID, localizedCallName: String? = nil, hasVideo: Bool? = nil) {
+        log.debug("[PushKit] Report call update: \(callUUID)")
         let callUpdate = CXCallUpdate()
         if let hasVideo {
             callUpdate.hasVideo = hasVideo
@@ -293,7 +295,7 @@ class CallManager: NSObject, CXProviderDelegate {
     }
 
     package func reportOutgoingCallStartConnecting(_ event: CallSignalEvent?) {
-        log.debug("[ErmisCall] Report outgoing call: \(String(describing: event))")
+        log.debug("[CallKit] Report outgoing call start connecting: \(String(describing: event))")
         var callUUID = UUID()
         if let event, let call = call(with: event.callId) {
             callUUID = call.details.uuid
@@ -368,11 +370,6 @@ class CallManager: NSObject, CXProviderDelegate {
         log.debug("[CallKit] provider perform call answer: \(action).", subsystems: .call)
         Task {
             do {
-                guard ioAccessManager.isMicrophoneAccessGranted else {
-                    action.fail()
-                    return
-                }
-
                 delegate?.callManager(self, didAccept: currentCall)
                 try await currentCall?.connectionSocket()
                 try await currentCall?.acceptCall()
@@ -514,7 +511,12 @@ extension CallManager: EventsControllerDelegate {
             let isCurrentDevice = event.sessionId == self.sessionId
             let callUUID = getCallUUID(for: event.callId)
             let isCurrentCall = event.callId == currentCall?.details.callId
-
+            log.debug("""
+[CallKit] Call manager received event: 
+- UUID: \(callUUID)
+- Action: \(event.callAction)
+- Other: Is currentUser: \(isCurrentUser), isCurrentDevice: \(isCurrentDevice), is currentCall: \(isCurrentCall)
+""")
             switch event.callAction {
             case .createCall:
                 if isCurrentCall, isCurrentDevice, let currentCall {

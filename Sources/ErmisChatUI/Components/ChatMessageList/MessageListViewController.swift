@@ -16,6 +16,7 @@ open class MessageListViewController: _ViewController,
                                       FileActionContentViewDelegate,
                                       LinkPreviewViewDelegate,
                                       UITableViewDataSource,
+                                      UITableViewDataSourcePrefetching,
                                       UITableViewDelegate,
                                       UIGestureRecognizerDelegate,
                                       VoiceRecordingAttachmentPresentationViewDelegate
@@ -168,6 +169,19 @@ open class MessageListViewController: _ViewController,
     /// experience since the content size calculation is more precise.
     private var cellHeightsCache: [MessageId: CGFloat] = [:]
 
+
+    private var imagePrefetcher = ImagePrefetcher()
+
+    open override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        imagePrefetcher.isPaused = false
+    }
+
+    open override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        imagePrefetcher.isPaused = true
+    }
+
     override open func setUp() {
         super.setUp()
 
@@ -248,6 +262,7 @@ open class MessageListViewController: _ViewController,
 
         listView.delegate = self
         listView.dataSource = self
+        listView.prefetchDataSource = self
         listView.reloadData()
         DispatchQueue.main.async { [weak self] in
             self?.listView.adjustContentInsetToPositionMessagesAtTheTop()
@@ -791,6 +806,8 @@ open class MessageListViewController: _ViewController,
         return cell
     }
 
+
+
     open func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
         if let message = dataSource?.messageListVC(self, messageAt: indexPath) {
             cellHeightsCache[message.id] = cell.bounds.size.height
@@ -805,6 +822,25 @@ open class MessageListViewController: _ViewController,
         }
 
         return UITableView.automaticDimension
+    }
+
+    open func tableView(_ tableView: UITableView, prefetchRowsAt indexPaths: [IndexPath]) {
+        let messages = indexPaths.compactMap { dataSource?.messageListVC(self, messageAt: $0)}
+        let urls: [URL] = messages.reduce(into: []) { result, message in
+            result.append(contentsOf: message.imageAttachments.compactMap({ $0.imageURL }))
+            result.append(contentsOf: message.videoAttachments.compactMap({ $0.thumbnailURL}))
+        }
+//        imagePrefetcher.startPrefetching(with: urls)
+    }
+
+    open func tableView(_ tableView: UITableView, cancelPrefetchingForRowsAt indexPaths: [IndexPath]) {
+        let messages = indexPaths.compactMap { dataSource?.messageListVC(self, messageAt: $0)}
+        let urls: [URL] = messages.reduce(into: []) { result, message in
+            result.append(contentsOf: message.imageAttachments.compactMap({ $0.imageURL }))
+            result.append(contentsOf: message.videoAttachments.compactMap({ $0.thumbnailURL}))
+        }
+        log.debug("TTTT CANCLE PREFETCH URLS: \(urls)")
+//        imagePrefetcher.stopPrefetching(with: urls)
     }
 
     open func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -941,7 +977,7 @@ open class MessageListViewController: _ViewController,
         guard let indexPath = indexPath else {
             return log.error("IndexPath is not available")
         }
-        
+
         guard let message = dataSource?.messageListVC(self, messageAt: indexPath),
               let cid = message.cid else {
             log.error("Failed to take to tap on attachment at indexPath: \(indexPath)")
@@ -1091,7 +1127,6 @@ private extension MessageListViewController {
         // The old content offset and size should be stored before updating the list view.
         let oldContentOffset = listView.contentOffset
         let oldContentSize = listView.contentSize
-
         listView.updateMessages(with: changes) { [weak self] in
             // Calculate new content offset after loading next page
             let shouldAdjustContentOffset = oldContentOffset.y < 0 && self?.isFirstPageLoaded == false
@@ -1100,10 +1135,16 @@ private extension MessageListViewController {
             }
 
             UIView.performWithoutAnimation {
-                self?.scrollToBottomIfNeeded(with: changes, newestChange: newestChange)
-                self?.reloadMovedMessage(newestChange: newestChange)
-                self?.reloadPreviousMessagesForVisibleRemoves(with: changes)
-                self?.reloadPreviousMessageWhenInsertingNewMessage()
+                guard let self else {
+                    return
+                }
+                self.scrollToBottomIfNeeded(with: changes, newestChange: newestChange)
+                //                var additionalChanges = Set<IndexPath>()
+                //                additionalChanges.formUnion(self.reloadMovedMessage(newestChange: newestChange))
+                //                additionalChanges.formUnion(self.reloadPreviousMessagesForVisibleRemoves(with: changes))
+                //                additionalChanges.formUnion(self.reloadPreviousMessageWhenInsertingNewMessage(with: changes))
+                //                guard !additionalChanges.isEmpty else { return }
+                //                self.listView.reloadRows(at: additionalChanges.sorted(), with: .none)
             }
 
             self?.scrollPendingMessageIfNeeded()
@@ -1119,11 +1160,11 @@ private extension MessageListViewController {
         let isNewestChangeNotVisible = !listView.isLastCellFullyVisible && !listView.previousMessagesSnapshot.isEmpty
         let isLoadingNewPage = insertions.count > 1 && insertions.count == changes.count
         let shouldSkipMessages =
-            isFirstPageLoaded
-                && isNewestChangeNotVisible
-                && isNewestChangeInsertion
-                && isNewestChangeNotByCurrentUser
-                && !isLoadingNewPage
+        isFirstPageLoaded
+        && isNewestChangeNotVisible
+        && isNewestChangeInsertion
+        && isNewestChangeNotByCurrentUser
+        && !isLoadingNewPage
 
         guard shouldSkipMessages else {
             return false
@@ -1152,24 +1193,23 @@ private extension MessageListViewController {
 
     // If we are inserting messages at the bottom, update the previous cell
     // to hide the timestamp of the previous message if needed.
-    func reloadPreviousMessageWhenInsertingNewMessage() {
-        guard isFirstPageLoaded else { return }
-        if listView.isLastCellFullyVisible && listView.newMessagesSnapshot.count > 1 {
-            let previousMessageIndexPath = IndexPath(item: 1, section: 0)
-            listView.reloadRows(at: [previousMessageIndexPath], with: .none)
+    func reloadPreviousMessageWhenInsertingNewMessage(with changes: [ListChange<ChatMessage>]) -> [IndexPath] {
+        guard isFirstPageLoaded else { return [] }
+        guard listView.isLastCellFullyVisible && listView.newMessagesSnapshot.count > 1 else {
+            return []
         }
+        guard !changes.contains(where: { $0.indexPath.item == 1 && $0.isInsertion }) else { return [] }
+        return [IndexPath(item: 1, section: 0)]
     }
 
     // When there are deletions, we should update the previous message, so that we add the
     // avatar image is rendered back and the timestamp too. Since we have an inverted list, the previous
     // message has the same index of the deleted message after the deletion has been executed.
-    func reloadPreviousMessagesForVisibleRemoves(with changes: [ListChange<ChatMessage>]) {
+    func reloadPreviousMessagesForVisibleRemoves(with changes: [ListChange<ChatMessage>]) -> [IndexPath] {
         let visibleRemoves = changes.filter {
             $0.isRemove && isMessageVisible(at: $0.indexPath)
         }
-        visibleRemoves.forEach {
-            listView.reloadRows(at: [$0.indexPath], with: .none)
-        }
+        return visibleRemoves.map({ $0.indexPath })
     }
 
     // Scroll to the bottom if the new message was sent by
@@ -1185,10 +1225,7 @@ private extension MessageListViewController {
         }
     }
 
-    func reloadMovedMessage(newestChange: ListChange<ChatMessage>?) {
-        if newestChange?.isMove == true {
-            let movedIndexPath = IndexPath(item: 0, section: 0)
-            listView.reloadRows(at: [movedIndexPath], with: .none)
-        }
+    func reloadMovedMessage(newestChange: ListChange<ChatMessage>?) -> [IndexPath] {
+        return newestChange?.isMove == true ? [IndexPath(item: 0, section: 0)] : []
     }
 }

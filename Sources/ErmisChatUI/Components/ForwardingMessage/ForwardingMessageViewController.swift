@@ -91,7 +91,18 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
         _ controller: ChannelListController,
         didChangeChannels changes: [ListChange<Channel>]
     ) {
+        tableView.reloadData()
+    }
 
+    public func controller(_ controller: DataController, didChangeState state: DataController.State) {
+        switch state {
+        case .localDataFetched:
+            tableView.reloadData()
+        case .remoteDataFetched:
+            tableView.reloadData()
+        default:
+            break
+        }
     }
 
     // MARK: - TableView

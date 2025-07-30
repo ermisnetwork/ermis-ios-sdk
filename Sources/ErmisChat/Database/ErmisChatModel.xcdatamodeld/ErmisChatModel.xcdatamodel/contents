@@ -150,10 +150,8 @@
     <entity name="ComposerContentDTO" representedClassName="ComposerContentDTO" syncable="YES">
         <attribute name="createdAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="hasMentionAll" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
-        <attribute name="previousText" optional="YES" attributeType="String"/>
         <attribute name="state" optional="YES" attributeType="String"/>
         <attribute name="text" optional="YES" attributeType="String"/>
-        <attribute name="textViewText" optional="YES" attributeType="String"/>
         <relationship name="editingMessage" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="MessageDTO"/>
         <relationship name="mentionUsers" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="UserDTO"/>
         <relationship name="quotingMessage" optional="YES" maxCount="1" deletionRule="Nullify" destinationEntity="MessageDTO"/>

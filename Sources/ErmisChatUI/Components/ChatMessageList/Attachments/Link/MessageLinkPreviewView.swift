@@ -46,8 +46,6 @@ open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable,
     /// Constraint for `imagePreview`'s height.
     open var imagePreviewHeightConstraint: NSLayoutConstraint?
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     public var imageView: UIImageView {
         return imagePreview
     }
@@ -142,7 +140,6 @@ open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable,
         super.contentDidChanged()
 
         if content == nil {
-            cancelImageLoading()
             imageView.image = nil
             return
         }
@@ -180,9 +177,5 @@ open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable,
 
         guard UIApplication.shared.applicationState == .active else { return }
         updateContentIfNeeded()
-    }
-
-    deinit {
-        log.debug("TTT")
     }
 }

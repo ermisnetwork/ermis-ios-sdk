@@ -122,8 +122,7 @@ open class InputMessageView: _View, ComponentsProvider, ThemeProvider {
         if let quotingMessage = content.quotingMessage {
             quotedMessageView.content = .init(
                 message: quotingMessage,
-                avatarAlignment: quotingMessage.isSentByCurrentUser ? .trailing : .leading,
-                isParentMessageSentByCurrentUser: false,
+                repliedMessageAuthor: nil,
                 channel: content.channel
             )
         }

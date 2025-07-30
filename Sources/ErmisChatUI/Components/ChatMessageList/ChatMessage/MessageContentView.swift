@@ -287,6 +287,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     /// Constraint between bubble and reactions.
     public private(set) var bubbleToReactionsConstraint: NSLayoutConstraint?
 
+    // MARK: - Setup
     /// Makes sure the `layout(options: MessageLayoutOptions)` is called just once.
     /// - Parameter options: The options describing the layout of the content view.
     open func setUpUIIfNeeded(
@@ -352,7 +353,14 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             ? .fill
             : options.contains(.flipped) ? .trailing : .leading
 
+        // Quoted message
+        if options.contains(.quotedMessage) {
+            let quotedMessageView = createQuotedMessageView()
+            bubbleThreadFootnoteContainer.addArrangedSubview(quotedMessageView)
+        }
+
         // Bubble view
+        bubbleContentContainer.layoutMargins = .init(top: 11, left: 8, bottom: 11, right: 8)
         if options.contains(.bubble) {
             let bubbleView = createBubbleView()
             bubbleView.embed(bubbleContentContainer)
@@ -360,7 +368,6 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             if options.contains(.continuousBubble) && !options.contains(.threadInfo) {
                 mainContainer.layoutMargins.bottom = 0
             }
-
             bubbleThreadFootnoteContainer.addArrangedSubview(bubbleView)
         } else {
             bubbleThreadFootnoteContainer.addArrangedSubview(bubbleContentContainer)
@@ -459,12 +466,6 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
                 errorIndicatorView.topAnchor.pin(equalTo: errorIndicatorContainer.topAnchor),
                 errorIndicatorView.bottomAnchor.pin(equalTo: (bubbleView ?? bubbleContentContainer).bottomAnchor)
             ]
-        }
-
-        // Quoted message
-        if options.contains(.quotedMessage) {
-            let quotedMessageView = createQuotedMessageView()
-            bubbleContentContainer.addArrangedSubview(quotedMessageView)
         }
 
         // Text
@@ -759,14 +760,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
         // Quoted message view
         let quotedMessageContent = content?.quotedMessage
-        var avatarAliment: QuotedAvatarAlignment? = nil
-        if let quotedMessageContent {
-            avatarAliment = quotedMessageContent.isSentByCurrentUser ? .trailing : .leading
-        }
         quotedMessageView?.content = .init(
                     message: quotedMessageContent,
-                    avatarAlignment: avatarAliment,
-                    isParentMessageSentByCurrentUser: content?.isSentByCurrentUser ?? false,
+                    repliedMessageAuthor: content?.author,
                     channel: channel
                 )
         // Thread info

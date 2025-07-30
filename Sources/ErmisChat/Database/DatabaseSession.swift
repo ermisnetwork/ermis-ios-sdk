@@ -525,7 +525,7 @@ extension DatabaseSession {
             let currentPreviewCreatedAt = channelDTO.previewMessage?.createdAt.bridgeDate ?? .distantPast
             if newPreviewCreatedAt > currentPreviewCreatedAt {
                 channelDTO.previewMessage = newPreview
-                channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt
+                channelDTO.lastMessageAt = newPreviewCreatedAt.bridgeDate
             }
         case .messageUpdated:
             let currentPreviewAt = channelDTO.previewMessage?.textUpdatedAt?.bridgeDate ?? channelDTO.previewMessage?.createdAt.bridgeDate ?? .distantPast
@@ -534,7 +534,7 @@ extension DatabaseSession {
             if currentPreviewAt <= updatedMessageCreatedAt {
                 let newPreview = preview(for: cid)
                 channelDTO.previewMessage = newPreview
-                channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt
+                channelDTO.lastMessageAt = updatedMessageCreatedAt.bridgeDate
             }
         case .messageDeleted where channelDTO.previewMessage?.id == payload.message?.id:
             let newPreview = preview(for: cid)

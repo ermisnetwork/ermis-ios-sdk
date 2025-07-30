@@ -91,6 +91,10 @@ open class ChannelListViewController: _ViewController,
     /// updates when the channel list is not visible in the window.
     private(set) var skippedRendering = false
     private(set) var skipChannelUpdates = true
+    /// Flag to check when channel list is reloading or not.
+    private(set) var isReloadingChannelList = false
+    /// Has pending reload channel list or not, if has continue reload.
+    private var hasPendingReloadChannels = false
 
     /// List of user has fetch info
     private var userIdsHasFetchedInfo: Set<String> = []
@@ -299,11 +303,34 @@ open class ChannelListViewController: _ViewController,
     open func animateReloadCollectionView(previousChannels: [Channel],
                                           newChannels: [Channel],
                                           completion: (() -> Void)?) {
-        let stagedChangeset = StagedChangeset(source: previousChannels, target: newChannels)
-        collectionView.reload(using: stagedChangeset, reconfigure: { _ in false }) { [weak self] newChannels in
-            self?.channels = newChannels
-            completion?()
+        guard !isReloadingChannelList else {
+            hasPendingReloadChannels = true
+            return
         }
+        if !Thread.isMainThread {
+            DispatchQueue.main.async(execute: {
+                self.animateReloadCollectionView(previousChannels: previousChannels, newChannels: newChannels, completion: completion)
+            })
+            return
+        }
+        isReloadingChannelList = true
+        let stagedChangeset = StagedChangeset(source: previousChannels, target: newChannels)
+        collectionView.reload(using: stagedChangeset,
+                              reconfigure: { _ in true },
+                              setData: { [weak self] newChannels in
+            self?.channels = newChannels
+        }, completion: { [weak self] in
+            guard let self else {
+                return
+            }
+            self.isReloadingChannelList = false
+            if hasPendingReloadChannels {
+                self.hasPendingReloadChannels = false
+                reloadChannels(completion: completion)
+            } else {
+                completion?()
+            }
+        })
     }
 
     /// Loads the next page of channels.
@@ -585,7 +612,7 @@ open class ChannelListViewController: _ViewController,
     }
 }
 
-extension Channel: Differentiable {
+extension Channel: Differentiable, Hashable {
     public func isContentEqual(to source: Channel) -> Bool {
         cid == source.cid &&
         name == source.name &&
@@ -611,5 +638,13 @@ extension Channel: Differentiable {
         cooldownDuration == source.cooldownDuration &&
         previewMessage == source.previewMessage &&
         composerUnsentContent == source.composerUnsentContent
+    }
+
+    public var differenceIdentifier: Int {
+        return hashValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(cid)
     }
 }

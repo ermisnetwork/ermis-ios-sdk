@@ -68,7 +68,6 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     open override func prepareForReuse() {
         super.prepareForReuse()
-        cancelImageLoading()
         imageView.image = nil
     }
 }

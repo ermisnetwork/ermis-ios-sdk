@@ -16,43 +16,50 @@ extension MessageListView {
             source: previousSnapshot,
             target: newSnapshot
         )
-        // This is need because DiffKit doesn't provide a completion block for when the reload is finished.
-        // The CATransaction notifies when animations are finished executing between begin() and commit().
-        CATransaction.begin()
-        CATransaction.setCompletionBlock(completion)
         reload(
             using: changeset,
-            with: animation()
-        ) { [weak self] newMessages in
-            self?.onNewDataSource?(newMessages)
-        }
-        CATransaction.commit()
+            with: animation(),
+            reconfigure: { indexPath in
+                return false
+            }, setData: { [weak self] newMessages in
+                self?.onNewDataSource?(newMessages)
+
+            }, completion: completion
+        )
     }
 }
 
-extension ChatMessage: Differentiable {
+extension ChatMessage: Differentiable, Hashable {
     public func isContentEqual(to source: ChatMessage) -> Bool {
         id == source.id
-            && updatedAt == source.updatedAt
-            && replyCount == source.replyCount
-            && isShadowed == source.isShadowed
-            && text == source.text
-            && textUpdatedAt == source.textUpdatedAt
-            && localState == source.localState
-            && type == source.type
-            && command == source.command
-            && arguments == source.arguments
-            && parentMessageId == source.parentMessageId
-            && isFlaggedByCurrentUser == source.isFlaggedByCurrentUser
-            && reactionCounts == source.reactionCounts
-            && reactionScores == source.reactionScores
-            && translations == source.translations
-            && currentUserReactionsCount == source.currentUserReactionsCount
-            && threadParticipantsCount == source.threadParticipantsCount
-            && readByCount == source.readByCount
-            && quotedMessage == source.quotedMessage
-            && author == source.author
-            && allAttachments == source.allAttachments
+        && updatedAt == source.updatedAt
+        && replyCount == source.replyCount
+        && isShadowed == source.isShadowed
+        && text == source.text
+        && textUpdatedAt == source.textUpdatedAt
+        && localState == source.localState
+        && type == source.type
+        && command == source.command
+        && arguments == source.arguments
+        && parentMessageId == source.parentMessageId
+        && isFlaggedByCurrentUser == source.isFlaggedByCurrentUser
+        && reactionCounts == source.reactionCounts
+        && reactionScores == source.reactionScores
+        && translations == source.translations
+        && currentUserReactionsCount == source.currentUserReactionsCount
+        && threadParticipantsCount == source.threadParticipantsCount
+        && readByCount == source.readByCount
+        && quotedMessage == source.quotedMessage
+        && author == source.author
+        && allAttachments == source.allAttachments
+    }
+
+    public var differenceIdentifier: Int {
+        return hashValue
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 }
 

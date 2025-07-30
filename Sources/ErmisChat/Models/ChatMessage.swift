@@ -417,6 +417,7 @@ extension ChatMessage: Hashable {
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+        hasher.combine(latestReactions.isEmpty ? "No reactions" : "Reactions")
     }
 }
 
