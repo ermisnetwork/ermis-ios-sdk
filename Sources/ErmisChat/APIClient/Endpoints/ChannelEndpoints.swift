@@ -471,7 +471,7 @@ extension Endpoint {
     ///  /// - Returns: The endpoint to enable/disable topics in a channel.
     static func enableTopic(cid: ChannelId, isEnable: Bool) -> Endpoint<EmptyResponse> {
         return .init(
-            path: isEnable ? .enableTopics(channelId: cid) : .enableTopics(channelId: cid),
+            path: isEnable ? .enableTopics(channelId: cid) : .disableTopics(channelId: cid),
             method: .post,
             query: nil,
             body: nil,
