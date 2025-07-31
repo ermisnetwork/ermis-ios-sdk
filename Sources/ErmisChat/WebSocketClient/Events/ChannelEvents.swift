@@ -283,3 +283,69 @@ public struct ChannelPinnedEvent: ChannelSpecificEvent {
     /// The date a channel was hidden.
     public let createdAt: Date
 }
+
+class ChannelTopicEnableEventDTO: EventDTO {
+    let cid: ChannelId
+    let createdAt: Date
+    let user: UserPayload
+    let payload: EventPayload
+
+    init(from response: EventPayload) throws {
+        cid = try response.value(at: \.cid)
+        createdAt = try response.value(at: \.createdAt)
+        user = try response.value(at: \.user)
+        payload = response
+    }
+
+    func toDomainEvent(session: DatabaseSession) -> Event? {
+        guard let userDTO = session.user(id: user.id, projectId: cid.projectId) else { return nil }
+
+        return try? ChannelEnableTopicEvent(
+            cid: cid,
+            user: userDTO.asModel(),
+            isEnableTopic: true,
+            createdAt: createdAt
+        )
+    }
+}
+
+
+class ChannelTopicDisableEventDTO: EventDTO {
+    let cid: ChannelId
+    let createdAt: Date
+    let user: UserPayload
+    let payload: EventPayload
+
+    init(from response: EventPayload) throws {
+        cid = try response.value(at: \.cid)
+        createdAt = try response.value(at: \.createdAt)
+        user = try response.value(at: \.user)
+        payload = response
+    }
+
+    func toDomainEvent(session: DatabaseSession) -> Event? {
+        guard let userDTO = session.user(id: user.id, projectId: cid.projectId) else { return nil }
+
+        return try? ChannelEnableTopicEvent(
+            cid: cid,
+            user: userDTO.asModel(),
+            isEnableTopic: false,
+            createdAt: createdAt
+        )
+    }
+}
+
+/// Triggered when a channel is enable / disable topic.
+public struct ChannelEnableTopicEvent: ChannelSpecificEvent {
+    /// The hidden channel identifier.
+    public let cid: ChannelId
+
+    /// The user who enabled topic of  the channel.
+    public let user: ChatUser
+
+    /// Is topic enabled or disabled
+    public let isEnableTopic: Bool
+
+    /// The date a channel was hidden.
+    public let createdAt: Date
+}
