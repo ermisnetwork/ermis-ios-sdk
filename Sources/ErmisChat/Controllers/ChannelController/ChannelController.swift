@@ -310,6 +310,19 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
             }
         })
     }
+    
+    public func enableTopics(enabled: Bool, completion: ((Error?) -> Void)? = nil) {
+        guard let channel else {
+            channelModificationFailed(completion)
+            return
+        }
+        
+        updater.topinChannel(cid: channel.cid, isPinned: enabled) { [weak self] result in
+            self?.callback {
+                completion?(result.error)
+            }
+        }
+    }
 
     /// Delete the channel this controller manages.
     /// - Parameters:

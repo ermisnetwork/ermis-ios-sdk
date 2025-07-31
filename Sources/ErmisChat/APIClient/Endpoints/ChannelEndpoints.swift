@@ -463,5 +463,20 @@ extension Endpoint {
             needConnectionId: true
         )
     }
+    
+    /// Create the endpoint to enable/disable topics in a channel.
+    /// /// - Parameters:
+    ///  - cid: The channel identifier.
+    ///  - isEnable: The boolean value, `true` if we want to enable topics in the channel with given `cid`.
+    ///  /// - Returns: The endpoint to enable/disable topics in a channel.
+    static func enableTopic(cid: ChannelId, isEnable: Bool) -> Endpoint<EmptyResponse> {
+        return .init(
+            path: isEnable ? .enableTopics(channelId: cid) : .enableTopics(channelId: cid),
+            method: .post,
+            query: nil,
+            body: nil,
+            needConnectionId: true
+        )
+    }
 
 }

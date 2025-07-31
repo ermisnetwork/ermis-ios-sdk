@@ -43,6 +43,16 @@ struct ChannelVisibilityEventMiddleware: EventMiddleware {
                     throw ClientError.ChannelDoesNotExist(cid: event.cid)
                 }
                 channelDTO.isPinned = false
+            case let event as ChannelTopicEnableEventDTO:
+                guard let channelDTO = session.channel(cid: event.cid) else {
+                    throw ClientError.ChannelDoesNotExist(cid: event.cid)
+                }
+                channelDTO.topicsEnabled = true
+            case let event as ChannelTopicDisableEventDTO:
+                guard let channelDTO = session.channel(cid: event.cid) else {
+                    throw ClientError.ChannelDoesNotExist(cid: event.cid)
+                }
+                channelDTO.topicsEnabled = false
 
             // New Message will unhide the channel
             // but we won't get `ChannelVisibleEvent` for this case

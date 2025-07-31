@@ -309,6 +309,8 @@ extension ChannelListController: EventsControllerDelegate {
             unlinkChannelIfNeeded(updatedChannelEvent.channel)
         } else if let channelVisibleEvent = event as? ChannelVisibleEvent, let channel = dataStore.channel(cid: channelVisibleEvent.cid) {
             linkChannelIfNeeded(channel)
+        } else if let channelHiddenEvent = event as? ChannelEnableTopicEvent, let channel = dataStore.channel(cid: channelHiddenEvent.cid) {
+            linkChannelIfNeeded(channel)
         }
     }
 
