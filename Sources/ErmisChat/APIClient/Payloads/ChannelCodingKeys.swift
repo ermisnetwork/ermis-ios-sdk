@@ -56,6 +56,10 @@ public enum ChannelCodingKeys: String, CodingKey, CaseIterable {
     /// This value will be 0 if the channel is not in slow mode.
     case cooldownDuration = "member_message_cooldown"
     case projectId = "project_id"
+    /// Toics enabled flag.
+    case topicsEnabled = "topics_enabled"
+    /// Close a topic flag.
+    case isClosedTopic = "is_closed_topic"
     ///
     case invitedAt = "invited_at"
 }
