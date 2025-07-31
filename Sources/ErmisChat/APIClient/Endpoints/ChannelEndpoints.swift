@@ -471,30 +471,12 @@ extension Endpoint {
     ///  /// - Returns: The endpoint to enable/disable topics in a channel.
     static func enableTopic(cid: ChannelId, isEnable: Bool) -> Endpoint<EmptyResponse> {
         return .init(
-            path: isEnable ? .enableTopics(channelId: cid) : .disableTopics(channelId: cid),
+            path: isEnable ? .enableTopics(channelId: cid) : .enableTopics(channelId: cid),
             method: .post,
             query: nil,
             body: nil,
             needConnectionId: true
         )
     }
-    
-    /// Create the endpoint to create channel.
-    ///
-    /// - Parameters:
-    ///   - query: The `ChannelQuery` to create channel.
-    /// - Returns: The endpoint to create new channel.
-    static func createTopic(query: ChannelQuery) -> Endpoint<ChannelPayload> {
-        return createOrUpdateChannel(path: .createTopic(query.apiPath), query: query)
-    }
-    
-    private static func createOrUpdateTopic(path: EndpointPath, query: ChannelQuery) -> Endpoint<ChannelPayload> {
-        .init(
-            path: path,
-            method: .post,
-            query: nil,
-            body: query,
-            needConnectionId: true
-        )
-    }
+
 }
