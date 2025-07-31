@@ -64,6 +64,9 @@ class ChannelDTO: NSManagedObject {
     @NSManaged var memberListQueries: Set<ChannelMemberListQueryDTO>
     @NSManaged var previewMessage: MessageDTO?
     @NSManaged var composerUnsentContent: ComposerContentDTO?
+    @NSManaged var isClosedTopic: Bool
+    @NSManaged var topicsEnabled: Bool
+    @NSManaged var topics: Set<ChannelDTO>?
 
     var projectId: String? {
         guard let channelId = try? ChannelId(cid: cid) else {
@@ -214,6 +217,9 @@ extension NSManagedObjectContext {
         if let memberCapabilities = payload.memberCapabilities {
             dto.memberCapabilities = memberCapabilities
         }
+                
+        dto.isClosedTopic = payload.isClosedTopic ?? false
+        dto.topicsEnabled = payload.topicsEnabled ?? false
 
         dto.filterWords = payload.filterWords
 
@@ -318,6 +324,13 @@ extension NSManagedObjectContext {
             dto.membership = membership
         } else if let member = payload.channel.members?.first(where: { $0.userId == dto.membership?.user.userId }) {
             dto.membership = try saveMember(payload: member, channelId: payload.channel.cid, query: nil, cache: cache)
+        }
+        
+        if let topics = payload.topics {
+            try topics.forEach {
+                let topics = try saveChannel(payload: $0, query: nil, cache: nil)
+                dto.topics?.insert(topics)
+            }
         }
 
         dto.watcherCount = Int64(clamping: payload.watcherCount ?? 0)
@@ -530,7 +543,11 @@ extension Channel {
                 .loadLastActiveMembers(cid: cid, context: context)
                 .compactMap { try? $0.asModel() }
         }
-
+        
+        let topics = dto.topics.map {
+            $0.compactMap { try? $0.relationshipAsModel(depth: depth) }
+        } ?? []
+        
         let config = try? dto.config?.asModel()
         let  ownCapabilities = dto.ownCapabilities ?? []
         let memberCapabilities = dto.memberCapabilities ?? []
@@ -550,6 +567,8 @@ extension Channel {
             isHidden: dto.isHidden,
             isPublic: dto.isPublic,
             isPinned: dto.isPinned,
+            topicEnabled: dto.topicsEnabled,
+            isClosedTopic: dto.isClosedTopic,
             createdBy: dto.createdBy?.asModel(),
             config: dto.config?.asModel(),
             ownCapabilities: Set((dto.ownCapabilities ?? []).compactMap(ChannelCapability.init(rawValue:))),
@@ -567,6 +586,7 @@ extension Channel {
             cooldownDuration: Int(dto.cooldownDuration),
             //            invitedMembers: [],
             latestMessages: { fetchMessages() },
+            topics: topics,
             lastMessageFromCurrentUser: { fetchLatestMessageFromUser() },
             pinnedMessages: {
                 dto.pinnedMessages.compactMap {

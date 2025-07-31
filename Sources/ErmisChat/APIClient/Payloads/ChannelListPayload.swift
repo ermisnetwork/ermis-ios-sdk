@@ -43,6 +43,8 @@ struct ChannelPayload {
     let isHidden: Bool?
 
     let isPinned: Bool?
+    
+    let topics: [ChannelPayload]?
 }
 
 extension ChannelPayload {
@@ -66,6 +68,7 @@ extension ChannelPayload: Decodable {
         case watcherCount = "watcher_count"
         case hidden
         case isPinned = "is_pinned"
+        case topics
     }
 
     init(from decoder: Decoder) throws {
@@ -80,7 +83,8 @@ extension ChannelPayload: Decodable {
             pinnedMessages: try container.decodeArrayIfPresentIgnoringFailures([MessagePayload].self, forKey: .pinnedMessages),
             channelReads: try container.decodeArrayIfPresentIgnoringFailures([ChannelReadPayload].self, forKey: .channelReads) ?? [],
             isHidden: try container.decodeIfPresent(Bool.self, forKey: .hidden),
-            isPinned: try container.decodeIfPresent(Bool.self, forKey: .isPinned)
+            isPinned: try container.decodeIfPresent(Bool.self, forKey: .isPinned),
+            topics: try container.decodeArrayIfPresentIgnoringFailures([ChannelPayload].self, forKey: .topics)
         )
     }
 }
@@ -141,6 +145,10 @@ struct ChannelDetailPayload {
     /// Cooldown duration for the channel, if it's in slow mode.
     /// This value will be 0 if the channel is not in slow mode.
     let cooldownDuration: Int
+    
+    let topicsEnabled: Bool?
+    
+    let isClosedTopic: Bool?
 
     public var isDirectMessageChannel: Bool {
         cid.type == .messaging
@@ -178,7 +186,9 @@ extension ChannelDetailPayload: Decodable {
             members: try container.decodeArrayIfPresentIgnoringFailures([MemberPayload].self, forKey: .members),
             memberCount: try container.decodeIfPresent(Int.self, forKey: .memberCount) ?? 0,
             team: try container.decodeIfPresent(String.self, forKey: .team),
-            cooldownDuration: (try container.decodeIfPresent(Int.self, forKey: .cooldownDuration) ?? 0) / 1000
+            cooldownDuration: (try container.decodeIfPresent(Int.self, forKey: .cooldownDuration) ?? 0) / 1000,
+            topicsEnabled: try container.decodeIfPresent(Bool.self, forKey: .topicsEnabled),
+            isClosedTopic: try container.decodeIfPresent(Bool.self, forKey: .isClosedTopic)
         )
     }
 }
