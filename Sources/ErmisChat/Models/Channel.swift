@@ -61,6 +61,10 @@ public struct Channel {
 
     /// The total number of members in the channel.
     public let memberCount: Int
+    
+    public let topicsEnabled: Bool
+    
+    public let isClosedTopic: Bool
 
     /// A list of members of this channel.
     ///
@@ -162,6 +166,8 @@ public struct Channel {
     public var previewMessage: ChatMessage? { _previewMessage }
     // "Move to async?"
     @CoreDataLazy private var _previewMessage: ChatMessage?
+    
+    public var topics: [Channel]?
 
     public var composerUnsentContent: ComposerContent?
 
@@ -198,6 +204,8 @@ public struct Channel {
         isHidden: Bool,
         isPublic: Bool,
         isPinned: Bool?,
+        topicEnabled: Bool = false,
+        isClosedTopic: Bool = false,
         createdBy: ChatUser? = nil,
         config: ChannelConfig? = .init(),
         ownCapabilities: Set<ChannelCapability> = [],
@@ -214,6 +222,7 @@ public struct Channel {
         reads: [ChannelRead] = [],
         cooldownDuration: Int = 0,
         latestMessages: @escaping (() -> [ChatMessage]) = { [] },
+        topics: [Channel]?,
         lastMessageFromCurrentUser: @escaping (() -> ChatMessage?) = { nil },
         pinnedMessages: @escaping (() -> [ChatMessage]) = { [] },
         previewMessage: @escaping () -> ChatMessage?,
@@ -233,6 +242,8 @@ public struct Channel {
         self.isHidden = isHidden
         self.isPublic = isPublic
         self.isPinned = isPinned ?? false
+        self.topicsEnabled = topicEnabled
+        self.isClosedTopic = isClosedTopic
         self.createdBy = createdBy
         self.config = config
         self.ownCapabilities = ownCapabilities
@@ -248,6 +259,7 @@ public struct Channel {
             }
             return $0.lastReadAt < $1.lastReadAt
         })
+        self.topics = topics
         self.cooldownDuration = cooldownDuration
         self.composerUnsentContent = composerUnsentContent
         $_unreadCount = (unreadCount, underlyingContext)
