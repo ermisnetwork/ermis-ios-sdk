@@ -355,6 +355,10 @@ class ChannelUpdater: Worker {
     func pinChannel(cid: ChannelId, isPinned: Bool, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
         channelRepository.setPinned(cid: cid, isPinned: isPinned, completion: completion)
     }
+    
+    func topinChannel(cid: ChannelId, isPinned: Bool, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
+        channelRepository.setTopic(cid: cid, isEnable: isPinned, completion: completion)
+    }
 
     ///
     /// When slow mode is enabled, users can only send a message every `cooldownDuration` time interval.
