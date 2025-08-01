@@ -89,8 +89,14 @@ class ChannelUpdater: Worker {
             }
         }
 
-        let endpoint: Endpoint<ChannelPayload> = isChannelCreate ? .createChannel(query: channelQuery) :
-            .updateChannel(query: channelQuery)
+        let endpoint: Endpoint<ChannelPayload> = {
+            if channelQuery.parentCid != nil {
+                return .createTopic(query: channelQuery)
+            } else {
+                return isChannelCreate ? .createChannel(query: channelQuery) :
+                    .updateChannel(query: channelQuery)
+            }
+        }()
 
         if isInRecoveryMode {
             apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
@@ -552,5 +558,20 @@ class ChannelUpdater: Worker {
             return messagePayload
         }
         return nil
+    }
+}
+
+// MARK: Topic
+extension ChannelUpdater {
+    
+    /// Adds a new topic to the channel.
+    /// - Parameters:
+    ///  - query: The channel query used in the request.
+    ///  - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    ///  **Note**: This method is used to create a topic in a parent channel. The parent channel must be specified in the query.
+    func addTopic(_ query: ChannelQuery, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .createTopic(query: query)) {
+            completion?($0.error)
+        }
     }
 }

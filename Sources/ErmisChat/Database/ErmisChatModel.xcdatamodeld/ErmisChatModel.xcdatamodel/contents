@@ -61,6 +61,7 @@
         <attribute name="newestMessageAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="oldestMessageAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="ownCapabilities" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer"/>
+        <attribute name="parentcid" optional="YES" attributeType="String"/>
         <attribute name="saveMessage" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>
         <attribute name="team" optional="YES" attributeType="String"/>
         <attribute name="topicsEnabled" optional="YES" attributeType="Boolean" usesScalarValueType="YES"/>

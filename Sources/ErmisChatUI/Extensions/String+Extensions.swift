@@ -88,15 +88,6 @@ extension String {
     }
 }
 
-public extension String {
-    /// Generate channel Id
-    static var randomId: String {
-        var string = UUID().uuidString
-        string.removeAll(where: { $0 == "-"})
-        return string
-    }
-}
-
 extension String {
     var length: Int {
         return (self as NSString).length

@@ -386,6 +386,8 @@ protocol DatabaseSession: UserDatabaseSession,
     QueuedRequestDatabaseSession {}
 
 extension DatabaseSession {
+    
+
     @discardableResult
     func saveChannel(payload: ChannelPayload) throws -> ChannelDTO {
         try saveChannel(payload: payload, query: nil, cache: nil)

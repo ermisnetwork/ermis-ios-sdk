@@ -1138,6 +1138,39 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     }
 }
 
+// MARK: - Topic
+extension ChannelController {
+    
+    public func createTopic(title: String,
+                            completion: ((Error?) -> Void)? = nil) {
+        /// Perform action only if channel is already created on backend side and have a valid `cid`.
+        guard let cid = cid, isChannelAlreadyCreated else {
+            channelModificationFailed(completion)
+            return
+        }
+        
+        let data = ChannelEditDetailPayload(
+            cid: .init(type: .topic,
+                       projectId: channelQuery.projectId,
+                       id: String.randomId),
+            name: title,
+            description: nil,
+            imageURL: nil,
+            isPublic: true,
+            saveMessage: true,
+            members: [],
+            invites: [],
+            coolDownDuration: nil,
+            filterWords: nil)
+        
+        updater.addTopic(ChannelQuery(channelPayload: data,
+                                      projectId: channelQuery.projectId,
+                                      parentCid: channelQuery.cid)) {
+            completion?($0)
+        }
+    }
+}
+
 // MARK: - Environment
 
 extension ChannelController {

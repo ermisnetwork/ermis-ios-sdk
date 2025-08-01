@@ -8,6 +8,7 @@ import Foundation
 @objc(ChannelDTO)
 class ChannelDTO: NSManagedObject {
     @NSManaged var cid: String
+    @NSManaged var parentcid: String?
     @NSManaged var name: String?
     @NSManaged var cDescription: String?
     @NSManaged var imageURL: URL?
@@ -218,6 +219,7 @@ extension NSManagedObjectContext {
             dto.memberCapabilities = memberCapabilities
         }
                 
+        dto.parentcid = payload.parentcid?.rawValue
         dto.isClosedTopic = payload.isClosedTopic ?? false
         dto.topicsEnabled = payload.topicsEnabled ?? false
 
@@ -271,6 +273,7 @@ extension NSManagedObjectContext {
             let member = try saveMember(payload: memberPayload, channelId: payload.cid, query: nil, cache: cache)
             dto.members.insert(member)
         }
+        
 
         if let query = query {
             let queryDTO = saveQuery(query: query)
@@ -463,7 +466,12 @@ extension Channel {
         guard let cid = try? ChannelId(cid: dto.cid), let context = dto.managedObjectContext else {
             throw InvalidModel(dto)
         }
-
+        
+        var parentCid: ChannelId? = nil
+        if dto.parentcid == nil, let parentCidValidated = try? ChannelId(cid: dto.cid) {
+            parentCid = parentCidValidated
+        }
+        
         let reads: [ChannelRead] = try dto.reads.map { try $0.asModel() }
 
         let unreadCount: () -> ChannelUnreadCount = {
@@ -555,6 +563,7 @@ extension Channel {
 
         return try Channel(
             cid: cid,
+            parentCid: parentCid,
             name: dto.name,
             description: dto.cDescription,
             imageURL: dto.imageURL,
@@ -599,6 +608,11 @@ extension Channel {
             composerUnsentContent: dto.composerUnsentContent?.asModel()
         )
     }
+}
+
+// MARK: - Topic
+extension ChannelDTO {
+    
 }
 
 // MARK: - Helpers
