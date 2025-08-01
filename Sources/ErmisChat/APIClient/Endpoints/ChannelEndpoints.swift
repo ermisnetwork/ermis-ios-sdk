@@ -478,5 +478,23 @@ extension Endpoint {
             needConnectionId: true
         )
     }
-
+    
+    /// Create the endpoint to create channel.
+    ///
+    /// - Parameters:
+    ///   - query: The `ChannelQuery` to create channel.
+    /// - Returns: The endpoint to create new channel.
+    static func createTopic(query: ChannelQuery) -> Endpoint<ChannelPayload> {
+        return createOrUpdateChannel(path: .createTopic(query.apiPath), query: query)
+    }
+    
+    private static func createOrUpdateTopic(path: EndpointPath, query: ChannelQuery) -> Endpoint<ChannelPayload> {
+        .init(
+            path: path,
+            method: .post,
+            query: nil,
+            body: query,
+            needConnectionId: true
+        )
+    }
 }

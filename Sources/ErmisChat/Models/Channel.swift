@@ -10,6 +10,9 @@ import Foundation
 public struct Channel {
     /// The `ChannelId` of the channel.
     public let cid: ChannelId
+    
+    /// The parent channel id if this channel is a topic.
+    public let parentCid: ChannelId?
 
     /// Name for this channel.
     public let name: String?
@@ -192,6 +195,7 @@ public struct Channel {
 
     init(
         cid: ChannelId,
+        parentCid: ChannelId? = nil,
         name: String?,
         description: String?,
         imageURL: URL?,
@@ -230,6 +234,7 @@ public struct Channel {
         composerUnsentContent: ComposerContent? = nil
     ) {
         self.cid = cid
+        self.parentCid = parentCid
         self.name = name
         self.cDescription = description
         self.imageURL = imageURL

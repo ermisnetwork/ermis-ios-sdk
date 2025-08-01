@@ -12,6 +12,7 @@ public struct ChannelQuery: Encodable {
         case members
         case watchers
         case projectId = "project_id"
+        case parentCid = "parent_cid"
     }
 
     /// Channel id this query handles.
@@ -28,6 +29,8 @@ public struct ChannelQuery: Encodable {
     let channelPayload: ChannelEditDetailPayload?
 
     let projectId: String
+    
+    let parentCid: ChannelId?
 
     /// `ChannelId` this query handles.
     /// If `id` part is missing then it's impossible to create valid `ChannelId`.
@@ -44,6 +47,7 @@ public struct ChannelQuery: Encodable {
     ///   - watchersLimit: a number of watchers for the channel to be retrieved.
     public init(
         cid: ChannelId,
+        parentCid: ChannelId? = nil,
         pageSize: Int? = .messagesPageSize,
         paginationParameter: PaginationParameter? = nil,
         membersLimit: Int? = nil,
@@ -54,6 +58,7 @@ public struct ChannelQuery: Encodable {
         channelPayload = nil
 
         pagination = MessagesPagination(pageSize: pageSize ?? .messagesPageSize, parameter: paginationParameter)
+        self.parentCid = parentCid
         self.membersLimit = membersLimit
         self.watchersLimit = watchersLimit
         self.projectId = cid.projectId
@@ -62,13 +67,14 @@ public struct ChannelQuery: Encodable {
     /// Init a channel query.
     /// - Parameters:
     ///   - channelPayload: a payload that has data needed for channel creation.
-    init(channelPayload: ChannelEditDetailPayload, projectId: String) {
+    init(channelPayload: ChannelEditDetailPayload, projectId: String, parentCid: ChannelId? = nil) {
         id = channelPayload.id
         type = channelPayload.type
         self.channelPayload = channelPayload
         pagination = nil
         membersLimit = nil
         watchersLimit = nil
+        self.parentCid = parentCid
         self.projectId = projectId
     }
 
@@ -95,6 +101,9 @@ public struct ChannelQuery: Encodable {
         try membersLimit.map { try container.encode(Pagination(pageSize: $0), forKey: .members) }
         try watchersLimit.map { try container.encode(Pagination(pageSize: $0), forKey: .watchers) }
         try container.encodeIfPresent(projectId, forKey: .projectId)
+        if let parentCid = parentCid {
+            try container.encode(parentCid.rawValue, forKey: .parentCid)
+        }
     }
 }
 

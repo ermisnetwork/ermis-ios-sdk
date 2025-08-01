@@ -51,6 +51,7 @@ enum EndpointPath: Codable {
     case getAttachments(cid: ChannelId)
     case enableTopics(channelId: ChannelId)
     case disableTopics(channelId: ChannelId)
+    case createTopic(String)
 
     case sendMessage(ChannelId)
     case message(MessageId)
@@ -257,6 +258,8 @@ enum EndpointPath: Codable {
             return "channels/\(channelId.apiPath)/topics/enable"
         case .disableTopics(let channelId):
             return "channels/\(channelId.apiPath)/topics/disable"
+        case .createTopic(let queryString):
+            return "channels/\(queryString)/query"
         }
     }
 
