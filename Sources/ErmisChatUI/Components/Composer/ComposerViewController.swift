@@ -376,6 +376,8 @@ open class ComposerViewController: _ViewController,
         channelController?.channel?.config ?? ChannelConfig()
     }
 
+    var shouldAutoUpdateTextViewContent = true
+
     /// Information about the user's mention in the current text view.
     var mentionTokens: [MentionToken] = []
 
@@ -592,6 +594,10 @@ open class ComposerViewController: _ViewController,
     }
 
     open func updateText() {
+        guard shouldAutoUpdateTextViewContent else {
+            return
+        }
+
         var displayText = content.text
 
         guard !content.mentionedUsers.isEmpty else {
@@ -886,9 +892,10 @@ open class ComposerViewController: _ViewController,
     /// Replace the current content with new content from outside.
     func setContent(_ newContent: Content) {
         var newContent = newContent
-        newContent.text = getDisplayMentionContent(from: newContent)
+        let (newText, mentionTokens) = getDisplayMentionContent(from: newContent)
+        newContent.text = newText
         self.content = newContent
-        self.mentionTokens = getMentionTokens(from: newContent.text)
+        self.mentionTokens = mentionTokens
     }
 
     @objc open func publishMessage(sender: UIButton) {
@@ -906,7 +913,7 @@ open class ComposerViewController: _ViewController,
                 presentAlert(title: L10n.Composer.Filterwords.contentContainBlockedKeywords)
                 return
             }
-            text = getMentionContent(from: content.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            text = getMentionContent(from: content.text,
                                      tokens: mentionTokens)
         }
 
@@ -1477,7 +1484,9 @@ open class ComposerViewController: _ViewController,
             channelController?.saveComposerUnsentContent(nil)
         } else {
 
-            let unsentContent = ComposerContent(text: content.text,
+            let unsentContent = ComposerContent(text: getMentionContent(from: content.text,
+                                                                        tokens: mentionTokens),
+                                                displayText: content.text,
                                                 state: content.state.rawValue,
                                                 hasMentionAll: content.hasMentionedAll,
                                                 mentionUsers: content.mentionedUsers,
@@ -1491,11 +1500,11 @@ open class ComposerViewController: _ViewController,
     // MARK: - UITextViewDelegate
 
     open func textViewDidChange(_ textView: UITextView) {
-        updateAllMentionTokenRange(in: textView.text)
         updateMenuButtonVisibility()
         guard textView.text != content.text else { return }
-
+        shouldAutoUpdateTextViewContent = false
         content.text = textView.text
+        shouldAutoUpdateTextViewContent = true
     }
 
     open func textView(
@@ -1523,22 +1532,24 @@ open class ComposerViewController: _ViewController,
 
         //
         guard !removeTokenIndexs.isEmpty else {
+            let newText = (textView.text as NSString).replacingCharacters(in: range, with: text)
+            updateAllMentionTokenRange(replaceTextRange: range , indexOffset: (newText as NSString).length - (textView.text as NSString).length)
             return true
         }
 
         let currentText = textView.text as? NSString ?? ""
-        textView.text = currentText.replacingCharacters(in: updatedRange, with: text)
 
         // Update caret location
-        let newCaretLocation = updatedRange.location + text.count
-        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
+        let newCaretLocation = updatedRange.location + (text as NSString).length
 
         // Remove overlap mention
         for removeTokenIndex in removeTokenIndexs.sorted(by: >) {
             mentionTokens.remove(at: removeTokenIndex)
         }
-
-        updateAllMentionTokenRange(in: textView.text)
+        let newText = currentText.replacingCharacters(in: updatedRange, with: text)
+        updateAllMentionTokenRange(replaceTextRange: updatedRange, indexOffset: (newText as NSString).length - (currentText as NSString).length)
+        textView.text = newText
+        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
         return false
     }
 
@@ -1852,7 +1863,9 @@ open class ComposerViewController: _ViewController,
         present(alert, animated: true)
     }
 
-    func insertMentionObject(_ mentionObject: MentionSuggestionView.Content, at mentionRange: NSRange, typingMention: String) {
+    func insertMentionObject(_ mentionObject: MentionSuggestionView.Content,
+                             at mentionRange: NSRange,
+                             typingMention: String) {
         let textView = self.composerView.inputMessageView.textView
         let text = textView.text as NSString
         let mentionString = mentionObject.mentionString + " "
@@ -1867,21 +1880,32 @@ open class ComposerViewController: _ViewController,
                                length: mentionRange.length + 1)
 
         let newText = text.replacingCharacters(in: messageTextRange, with: mentionDisplayString)
+        shouldAutoUpdateTextViewContent = false
         self.content.text = newText
+        textView.text = newText
+        // Update current mention index if needed
+        updateAllMentionTokenRange(replaceTextRange: messageTextRange, indexOffset: newText.length - currentText.length)
         // Add mention user.
         switch mentionObject {
         case .allUser:
             self.content.hasMentionedAll = true
         case .mention(let chatUser):
             self.content.mentionedUsers.insert(chatUser)
+            // Recalculate mention token
+            let newToken = MentionToken(mentionString: mentionObject.mentionString,
+                                        mentionDisplayString: mentionObject.mentionsDisplayString,
+                                        range: NSRange(location: messageTextRange.location,
+                                                       length: (mentionObject.mentionsDisplayString as NSString).length))
+            if let firstIndex = mentionTokens.firstIndex(where: { $0.range.location > newToken.range.location }) {
+                mentionTokens.insert(newToken, at: firstIndex)
+            } else {
+                mentionTokens.append(newToken)
+            }
         }
-        // Recalculate mention token
-        mentionTokens = getMentionTokens(from: newText)
 
-        let caretLocation = textView.selectedRange.location
-        let newCaretLocation = caretLocation + (mentionDisplayString.count - typingMention.count)
-        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
-
+        let caretLocation = messageTextRange.location + mentionDisplayString.count
+        textView.selectedRange = NSRange(location: caretLocation, length: 0)
+        shouldAutoUpdateTextViewContent = true
         self.dismissSuggestions()
     }
 
@@ -1935,35 +1959,77 @@ extension ComposerViewController: ChannelControllerDelegate {
 // MARK: - Helper for mention users
 extension ComposerViewController {
     /// Recalculate token range values
-    func updateAllMentionTokenRange(in newText: String) {
-        for (index, token) in self.mentionTokens.enumerated() {
-            let range = (newText as NSString).range(of: token.mentionDisplayString)
-            if range.location != NSNotFound {
-                mentionTokens[index].range = range
+    func updateAllMentionTokenRange(replaceTextRange: NSRange, indexOffset: Int) {
+        let updatedTokens = mentionTokens.map { token in
+            if token.range.location >= replaceTextRange.location {
+                return MentionToken(mentionString: token.mentionString,
+                                    mentionDisplayString: token.mentionDisplayString,
+                                    range: NSRange(location: token.range.location + indexOffset,
+                                                   length: token.range.length)
+                                    )
+
+            } else {
+                return token
             }
         }
+        self.mentionTokens = updatedTokens
     }
 
-    /// Get display text from  text
-    /// This will parse all mention string  to mention display string
+    /// Get display text from content text
+    /// This will parse all mention string  to mention display string and update mentiontokens with new content
     /// Ex: @123 -> @Ermis....
     /// - Parameters:
     ///   - content:Current content text.
     ///  - Returns: The string that parse all mention text to mention display text.
-    func getDisplayMentionContent(from content: Content) -> String {
-        var displayMentionContent = content.text
-        for mentionUser in content.mentionedUsers {
-            let mentionString = mentionUser.mentionString
-            let mentionDisplayString = mentionUser.mentionsDisplayString
-            guard mentionString != mentionDisplayString else {
-                continue
-            }
-            let ranges = displayMentionContent.ranges(of: mentionString)
-            for range in ranges.reversed() {
-                displayMentionContent = displayMentionContent.replacingCharacters(in: range, with: mentionDisplayString)
-            }
+    func getDisplayMentionContent(from content: Content) -> (String, [MentionToken]) {
+        let mentionTokens: [MentionToken] = content.mentionedUsers.reduce(into: []) { partialResult, mentionUser in
+            let ranges = content.text.ranges(of: mentionUser.mentionString)
+                .map({ range in
+                    let nsRange = NSRange(range, in: content.text)
+                    return MentionToken(mentionString: mentionUser.mentionString,
+                                        mentionDisplayString: mentionUser.mentionsDisplayString,
+                                        range: nsRange)
+                })
+            partialResult.append(contentsOf: ranges)
+        }.sorted(by: { $0.range.location < $1.range.location})
+
+        var mentionDisplayRangeLocations: [Int] = []
+
+        var lastMentionRangeLocation = 0
+
+        var displayMentionContent: String = ""
+        let contentTextLength = content.text.length
+        for mentionToken in mentionTokens {
+            let mentionRange = mentionToken.range
+            // Copy text befor mention.
+            let beforeRange = NSRange(location: lastMentionRangeLocation,
+                                      length: mentionRange.location - lastMentionRangeLocation)
+            let beforeString = content.text.subString(from: beforeRange)
+            displayMentionContent.append(beforeString)
+            // Add mention display range location
+            mentionDisplayRangeLocations.append(displayMentionContent.length)
+            // Add mention display text.
+            displayMentionContent.append(mentionToken.mentionDisplayString)
+            lastMentionRangeLocation = mentionToken.range.upperBound
         }
-        return displayMentionContent
+        // If have text after lastmention, add it.
+        if lastMentionRangeLocation < contentTextLength {
+            let lastRange = NSRange(location: lastMentionRangeLocation,
+                                    length: contentTextLength - lastMentionRangeLocation)
+            let afterString = content.text.subString(from: lastRange)
+            displayMentionContent.append(afterString)
+        }
+
+
+        let mentionDisplayTokens = zip(mentionDisplayRangeLocations, mentionTokens)
+            .map { mentionDisplayRangeLocation, mentionToken in
+                let mentionDisplayRange = NSRange(location: mentionDisplayRangeLocation,
+                                                  length: (mentionToken.mentionDisplayString as NSString).length)
+                return MentionToken(mentionString: mentionToken.mentionString,
+                                    mentionDisplayString: mentionToken.mentionDisplayString,
+                                    range: mentionDisplayRange)
+            }
+        return (displayMentionContent, mentionDisplayTokens)
     }
 
     /// Get content from display text and mention token
@@ -1974,10 +2040,6 @@ extension ComposerViewController {
     ///   - tokens: Array of mention token inside the given display text.
     ///  - Returns: The string that parse all mention display text to mention text.
     func getMentionContent(from displayText: String, tokens: [MentionToken]) -> String {
-        // If don't have mention token -> no need to parse
-        guard !tokens.isEmpty else {
-            return displayText
-        }
         var mentionText = displayText
 
         // Replace mention display string with mention string
@@ -1985,28 +2047,9 @@ extension ComposerViewController {
             guard let range = Range(token.range, in: displayText) else {
                 continue
             }
-            mentionText.replaceSubrange(range, with: token.mentionString)
+            mentionText = mentionText.replacingCharacters(in: range, with: token.mentionString)
         }
-        return mentionText
-    }
-
-    /// Find all mention token from given text.
-    ///  - Parameters:
-    ///    - text: The text content to find `MentionToken`.
-    ///    - Returns: The array of `MentionToken` inside given text.
-    func getMentionTokens(from text: String) -> [MentionToken] {
-        var tokens: [MentionToken] = []
-        tokens = content.mentionedUsers.reduce(into: []) { partialResult, mentionUser in
-            if let range = text.range(of: mentionUser.mentionsDisplayString) {
-                let nsRange = NSRange(range, in: text)
-                return partialResult.append(
-                    MentionToken(mentionString: mentionUser.mentionString,
-                                 mentionDisplayString: mentionUser.mentionsDisplayString,
-                                 range: nsRange)
-                )
-            }
-        }
-        return tokens.sorted { $0.range.location < $1.range.location }
+        return mentionText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// A struct that holds information about a mentioned user within the text view's text.

@@ -11,36 +11,49 @@ extension UITextView {
         let mentionString = mentionUser.mentionString
         let mentionDisplayedString = mentionUser.mentionsDisplayString
 
-        let attributeText = NSMutableAttributedString(attributedString: attributedText)
-        var string = attributeText.string
+        let updatedAttributeText = NSMutableAttributedString(string: "")
 
-        let ranges = string.ranges(of: mentionString)
-        var indexOffset: Int = 0
-
-        var messageRanges: [Range<String.Index>] = []
-        var tempString = string
-
-        for range in ranges {
-            tempString.append(mentionDisplayedString)
+        let pattern = mentionString
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return
         }
 
-        var mentionOtherUserTextColor = isSendByCurrentUser
-        ? Theme.default.colors.outgoingMentionOtherUserText
-        : Theme.default.colors.incomingMentionOtherUserText
+        var lastMentionRangeLocation = 0
+        regex.enumerateMatches(in: attributedText.string, range: attributedText.string.nsRange) { match, _, _ in
+            guard let match else {
+                return
+            }
+            // Copy attributed text befor mention
+            let beforeRange = NSRange(location: lastMentionRangeLocation,
+                                      length: match.range.location - lastMentionRangeLocation)
+            let beforeAttributedString = attributedText.attributedSubstring(from: beforeRange)
+            updatedAttributeText.append(beforeAttributedString)
+            //
 
-        var mentionCurrentUserTextColor = Theme.default.colors.mentionUserText
+            var mentionOtherUserTextColor = isSendByCurrentUser
+            ? Theme.default.colors.outgoingMentionOtherUserText
+            : Theme.default.colors.incomingMentionOtherUserText
 
-        for range in ranges.map { NSRange($0, in: string)}.reversed() {
-            attributeText.replaceCharacters(in: range, with: mentionUser.mentionsDisplayString)
-            let newRange = NSRange(location: range.location, length: mentionUser.mentionsDisplayString.count)
-            attributeText.addAttribute(.link, value: "", range: newRange)
-            attributeText.addAttribute(.foregroundColor, value: isCurrentUser
-                                       ? mentionCurrentUserTextColor
-                                       : mentionOtherUserTextColor, range: newRange)
-            attributeText.addAttribute(.font, value: font?.bold, range: newRange)
+            var mentionCurrentUserTextColor = Theme.default.colors.mentionUserText
+            let mentionAttributedString = NSAttributedString(
+                string: mentionDisplayedString, attributes: [
+                    .link: "",
+                    .foregroundColor: isCurrentUser ? mentionCurrentUserTextColor : mentionCurrentUserTextColor,
+                    .font: font?.bold
+                ]
+            )
+            // Append mention displayed string
+            updatedAttributeText.append(mentionAttributedString)
+            lastMentionRangeLocation = match.range.upperBound
+        }
+        // If have text after last mention, add it.
+        if lastMentionRangeLocation < attributedText.length {
+            let lastRange = NSRange(location: lastMentionRangeLocation, length: attributedText.length - lastMentionRangeLocation)
+            let afterAttributedText = attributedText.attributedSubstring(from: lastRange)
+            updatedAttributeText.append(afterAttributedText)
         }
 
-        attributedText = attributeText
+        attributedText = updatedAttributeText
     }
 
     func highlightMentionAllUsers() {

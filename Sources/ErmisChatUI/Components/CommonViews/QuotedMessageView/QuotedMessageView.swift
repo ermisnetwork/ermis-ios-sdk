@@ -189,8 +189,9 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
             setDeletedText()
             hideAttachmentPreview()
         } else if let message = message {
-            setText(message.text)
-            if isAttachmentsEmpty || message.isDeleted {
+            if !message.text.isEmpty {
+                setText(message.text)
+            } else if isAttachmentsEmpty {
                 hideAttachmentPreview()
             } else {
                 setAttachmentPreview(for: message)

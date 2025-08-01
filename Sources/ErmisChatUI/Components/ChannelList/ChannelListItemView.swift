@@ -159,7 +159,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             return typingUsersInfo
         }
 
-        if isShowUnsentContent, let unsentContentText = content.channel.composerUnsentContent?.text {
+        if isShowUnsentContent, let unsentContentText = content.channel.composerUnsentContent?.displayText {
             return unsentContentText
         }
 
@@ -267,7 +267,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         channelStatusImageView.tintColor = theme.colors.error
 
         subtitleLabel.textColor = theme.colors.subtitleText
-        subtitleLabel.font = theme.fonts.footnote
+        subtitleLabel.font = theme.fonts.body
 
         subtitleImageView.tintColor = subtitleLabel.textColor
         subtitleImageView.contentMode = .scaleAspectFit
