@@ -10,6 +10,7 @@ public enum ChannelType: Codable, Hashable {
     case team
     case general
     case meeting
+    case topic
 
     /// A channel type title.
     public var title: String { rawValue.capitalized }
@@ -21,6 +22,7 @@ public enum ChannelType: Codable, Hashable {
         case .team: return "team"
         case .general: return "general"
         case .meeting: return "meeting"
+        case .topic: return "topic"
         }
     }
 
@@ -37,6 +39,8 @@ public enum ChannelType: Codable, Hashable {
             self = .general
         case "meeting":
             self = .meeting
+        case "topic":
+            self = .topic
         default:
             self = .meeting
             log.error("Unsupported channel type: \(rawValue), use .meeting as default")

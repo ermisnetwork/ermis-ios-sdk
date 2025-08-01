@@ -87,12 +87,3 @@ extension String {
         self[self.index(startIndex, offsetBy: index)]
     }
 }
-
-public extension String {
-    /// Generate channel Id
-    static var randomId: String {
-        var string = UUID().uuidString
-        string.removeAll(where: { $0 == "-"})
-        return string
-    }
-}

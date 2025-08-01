@@ -10,6 +10,8 @@ public enum ChannelCodingKeys: String, CodingKey, CaseIterable {
     case id
     /// A combination of channel id and type.
     case cid
+    /// A combination of channel id and type of the parent channel type.
+    case parentcid = "parent_cid"
     /// Name for the channel.
     case name
     case cDescription = "description"

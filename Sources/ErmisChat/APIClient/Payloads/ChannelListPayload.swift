@@ -91,6 +91,8 @@ extension ChannelPayload: Decodable {
 
 struct ChannelDetailPayload {
     let cid: ChannelId
+    
+    let parentcid: ChannelId?
 
     let name: String?
 
@@ -161,6 +163,7 @@ extension ChannelDetailPayload: Decodable {
 
         self.init(
             cid: try container.decode(ChannelId.self, forKey: .cid),
+            parentcid: try container.decodeIfPresent(ChannelId.self, forKey: .parentcid),
             name: try container.decodeIfPresent(String.self, forKey: .name),
             cDescription: try container.decodeIfPresent(String.self, forKey: .cDescription),
             // Unfortunately, the built-in URL decoder fails, if the string is empty. We need to

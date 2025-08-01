@@ -141,6 +141,7 @@ class ErmisClientFactory {
             UserWatchingEventMiddleware(),
             UserUpdateMiddleware(),
             ChannelVisibilityEventMiddleware(),
+            ChannelTopicEventMiddleware (),
             EventDTOConverterMiddleware()
         ]
 
