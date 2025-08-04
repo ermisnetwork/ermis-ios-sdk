@@ -34,34 +34,7 @@ open class TopicListRouter: NavigationRouter<TopicListViewController>,
     ///   - cid: The `ChannelId` of the channel the should be presented.
     ///   - messageId: The `MessageId` to where the channel should jump to when opening the channel.
     open func showChannel(for cid: ChannelId, at messageId: MessageId?) {
-        let vc = components.channelVC.init()
-
-        if let messageId = messageId {
-            vc.channelController = rootViewController.controller.client.channelController(
-                for: ChannelQuery(
-                    cid: cid,
-                    pageSize: .messagesPageSize,
-                    paginationParameter: .around(messageId)
-                ),
-                channelListQuery: rootViewController.controller.query
-            )
-        } else {
-            vc.channelController = rootViewController.controller.client.channelController(
-                for: cid,
-                channelListQuery: rootViewController.controller.query
-            )
-        }
-
-        if let splitVC = rootViewController.splitViewController {
-            splitVC.showDetailViewController(UINavigationController(rootViewController: vc), sender: self)
-        } else if let navigationVC = rootViewController.navigationController {
-            navigationVC.show(vc, sender: self)
-        } else {
-            let navigationVC = UINavigationController(rootViewController: vc)
-            navigationVC.transitioningDelegate = modalTransitioningDelegate
-            navigationVC.modalPresentationStyle = .custom
-            rootViewController.show(navigationVC, sender: self)
-        }
+        
     }
 
     /// Reset current detailVC if not in collapse mode

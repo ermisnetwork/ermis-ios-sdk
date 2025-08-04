@@ -11,7 +11,7 @@ open class TopicListCollectionViewCell: _CollectionViewCell,
                                           UIProvider {
     /// The `ChannelListItemView` instance used as content view.
     open private(set) lazy var itemView: TopicListItemView = components
-        .topicListItemContentViews
+        .topicListItemContentView
         .init()
         .withoutAutoresizingMaskConstraints
 
