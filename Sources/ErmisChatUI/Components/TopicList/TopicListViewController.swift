@@ -13,7 +13,7 @@ import Combine
 open class TopicListViewController: _ViewController,
                                     UICollectionViewDataSource,
                                     UICollectionViewDelegate,
-                                    ChannelListControllerDelegate,
+                                    ChannelControllerDelegate,
                                     SwipeableViewDelegate,
                                     UIProvider {
 
@@ -21,9 +21,7 @@ open class TopicListViewController: _ViewController,
     public private(set) var channels: [Channel] = []
     
     /// The `ChannelListController` instance that provides channels data.
-    public var controller: ChannelListController!
-
-    private var isPaginatingChannels: Bool = false
+    public var controller: ChannelController!
 
     /// A boolean value that determines if the chat channel list view states are shown and handled by the SDK.
     open var isChannelListStatesEnabled: Bool {
@@ -121,7 +119,7 @@ open class TopicListViewController: _ViewController,
     ///   - storyboardId: The `storyboardId` that is set in your `UIStoryboard` reference
     /// - Returns: A newly created `TopicListViewController`
     public static func make(
-        with controller: ChannelListController,
+        with controller: ChannelController,
         storyboard: UIStoryboard? = nil,
         storyboardId: String? = nil
     ) -> Self {
@@ -280,16 +278,14 @@ open class TopicListViewController: _ViewController,
     /// use the `replaceChannelListController()` function instead of this one.
     ///
     /// - Parameter query: The new channel list query.
-    public func replaceQuery(_ query: ChannelListQuery) {
-        let newController = controller.client.channelListController(
-            query: query
-        )
+    public func replaceChannel(_ chanelId: ChannelId) {
+        let newController = controller.client.channelController(for: chanelId)
         replaceChannelListController(newController)
     }
     
     /// Replaces the channel list controller and loads the new data.
     /// - Parameter controller: The new channel list controller.
-    public func replaceChannelListController(_ controller: ChannelListController) {
+    public func replaceChannelListController(_ controller: ChannelController) {
         self.controller = controller
         self.controller.delegate = self
         self.controller.synchronize()
@@ -299,7 +295,7 @@ open class TopicListViewController: _ViewController,
     /// Updates the list view with the most updated channels.
     open func reloadChannels(completion: (() -> Void)? = nil) {
         let previousChannels = channels
-        let newChannels = Array(controller.channels)
+        let newChannels = Array(controller.channel?.topics ?? [])
         animateReloadCollectionView(previousChannels: previousChannels,
                                     newChannels: newChannels,
                                     completion: completion)
@@ -358,7 +354,7 @@ open class TopicListViewController: _ViewController,
     }
     /// Condition to show emptyView or not
     open func shouldShowEmptyView() -> Bool {
-        return controller.channels.isEmpty
+        return controller.channel?.topics?.isEmpty ?? true
     }
 
     override open func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -390,7 +386,7 @@ open class TopicListViewController: _ViewController,
             return
         }
         isFetchingMissingUserInfo = true
-        controller.fetchUsers(with: ids) { [weak self] result in
+        controller.client.fetchUsers(with: ids) { [weak self] result in
             switch result {
             case .success:
                 self?.userIdsHasFetchedInfo.formUnion(ids)
@@ -510,7 +506,7 @@ open class TopicListViewController: _ViewController,
 
             switch newState {
             case .initialized:
-                isLoading = controller.channels.isEmpty
+                isLoading = controller.channel?.topics?.isEmpty ?? true
             case .localDataFetched:
                 reloadChannels()
             case .remoteDataFetched:
@@ -539,7 +535,7 @@ open class TopicListViewController: _ViewController,
         } else {
             switch newState {
             case .initialized:
-                if controller.channels.isEmpty {
+                if controller.channel?.topics?.isEmpty ?? true {
                     loadingIndicator.startAnimating()
                 } else {
                     loadingIndicator.stopAnimating()
@@ -567,7 +563,7 @@ extension TopicListViewController {
         _ collectionView: UICollectionView,
         cellForItemAt indexPath: IndexPath
     ) -> UICollectionViewCell {
-        let cell = collectionView.dequeueReusableCell(with: components.channelListCell, for: indexPath)
+        let cell = collectionView.dequeueReusableCell(with: components.topicListCell, for: indexPath)
         guard let channel = getChannel(at: indexPath) else { return cell }
 
         cell.itemView.content = .init(
@@ -602,5 +598,14 @@ extension TopicListViewController {
         }
         guard let channel = getChannel(at: indexPath) else { return }
         router.showChannel(for: channel.cid)
+    }
+    
+    
+    // MARK: - ChannelControllerDelegate
+    public func channelController(
+        _ channelController: ChannelController,
+        didUpdateChannel channel: EntityChange<Channel>
+    ) {
+        reloadChannels()
     }
 }

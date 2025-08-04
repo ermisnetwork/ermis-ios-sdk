@@ -62,6 +62,17 @@ open class ChannelListRouter: NavigationRouter<ChannelListViewController>, Compo
             rootViewController.show(navigationVC, sender: self)
         }
     }
+    
+    
+    open func showTopic (for cid: ChannelId) {
+        let channelController = rootViewController.controller.client.channelController(
+            for: cid,
+            channelListQuery: rootViewController.controller.query
+        )
+        let vc = TopicListViewController.make(with: channelController)
+
+        setDetailViewController(vc, animated: true)
+    }
 
     /// Reset current detailVC if not in collapse mode
     open func unselectedChannel(_ channel: Channel?) {
