@@ -87,14 +87,3 @@ extension String {
         self[self.index(startIndex, offsetBy: index)]
     }
 }
-
-extension String {
-    var length: Int {
-        return (self as NSString).length
-    }
-
-    func subString(from nsRange: NSRange) -> String {
-        guard let range = Range(nsRange, in: self) else { return "" }
-        return String(self[range])
-    }
-}
