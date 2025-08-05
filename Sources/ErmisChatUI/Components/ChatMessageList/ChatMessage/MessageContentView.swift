@@ -322,7 +322,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
                         label.text = L10n.Message.System.messageForwarded
                     }
                 }
-                
+
                 label.font = theme.fonts.caption1
                 label.textColor = theme.colors.subtitleText
                 bubbleThreadFootnoteContainer.insertArrangedSubview(label, at: 0)
@@ -350,8 +350,8 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
         // Bubble - Thread - Metadata
         bubbleThreadFootnoteContainer.alignment = customCellViewInjector?.fillAllAvailableWidth == true
-            ? .fill
-            : options.contains(.flipped) ? .trailing : .leading
+        ? .fill
+        : options.contains(.flipped) ? .trailing : .leading
 
         // Quoted message
         if options.contains(.quotedMessage) {
@@ -360,7 +360,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         }
 
         // Bubble view
-        bubbleContentContainer.layoutMargins = .init(top: 11, left: 8, bottom: 11, right: 8)
+        bubbleContentContainer.layoutMargins = .init(top: 8, left: 16, bottom: 8, right: 16)
         if options.contains(.bubble) {
             let bubbleView = createBubbleView()
             bubbleView.embed(bubbleContentContainer)
@@ -471,12 +471,12 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         // Text
         if options.contains(.text) {
             let textView = createTextView()
-            
+
             if customCellViewInjector != nil {
                 let dividerView = createDividerView()
                 bubbleContentContainer.addArrangedSubview(dividerView, respectsLayoutMargins: true)
             }
-            
+
             bubbleContentContainer.addArrangedSubview(textView, respectsLayoutMargins: true)
         }
 
@@ -489,31 +489,32 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             reactionsBubbleView.addSubview(reactionsView)
             reactionsView.pin(to: reactionsBubbleView.layoutMarginsGuide)
 
-            bubbleToReactionsConstraint = (bubbleView ?? bubbleContentContainer).topAnchor
-                .pin(equalTo: reactionsBubbleView.centerYAnchor, constant: 5)
-            constraintsToActivate += [
-                reactionsBubbleView.topAnchor.pin(equalTo: topAnchor),
-                bubbleToReactionsConstraint,
-                reactionsBubbleView.centerXAnchor.pin(
-                    equalTo: options.contains(.flipped) ?
-                        (bubbleView ?? bubbleContentContainer).leadingAnchor :
-                        (bubbleView ?? bubbleContentContainer).trailingAnchor,
-                    constant: options.contains(.flipped) ? -8 : 8
-                ).priority(.defaultLow),
-                options.contains(.flipped) ? 
-                reactionsBubbleView.trailingAnchor.pin(lessThanOrEqualTo: mainContainer.trailingAnchor, constant: -8) :
-                reactionsBubbleView.leadingAnchor.pin(greaterThanOrEqualTo: mainContainer.leadingAnchor, constant: 8)
+            let bubble = bubbleView ?? bubbleContentContainer
+            bubbleThreadFootnoteContainer.setCustomSpacing(18, after: bubble)
 
-            ]
-            .compactMap { $0 }
+            bubbleToReactionsConstraint = bubble.bottomAnchor
+                .pin(equalTo: reactionsBubbleView.centerYAnchor, constant: -4)
+
+            if options.contains(.flipped) {
+                constraintsToActivate += [
+                    bubbleToReactionsConstraint,
+                    reactionsBubbleView.trailingAnchor.pin(equalTo: bubble.trailingAnchor, constant: -8),
+                    reactionsBubbleView.leadingAnchor.pin(greaterThanOrEqualTo: mainContainer.leadingAnchor, constant: 8),
+                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24)
+                ].compactMap({ $0})
+            } else {
+                constraintsToActivate += [
+                    bubbleToReactionsConstraint,
+                    reactionsBubbleView.leadingAnchor.pin(equalTo: bubble.leadingAnchor, constant: 8),
+                    reactionsBubbleView.trailingAnchor.pin(lessThanOrEqualTo: mainContainer.trailingAnchor, constant: -8),
+                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24)
+                ].compactMap({ $0})
+            }
         } else {
             if let reactionsView {
                 reactionsView.removeFromSuperview()
                 self.reactionsView = nil
             }
-            constraintsToActivate += [
-                mainContainer.topAnchor.pin(equalTo: topAnchor)
-            ]
         }
 
         // Main container
@@ -568,6 +569,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         }
 
         constraintsToActivate += [
+            mainContainer.topAnchor.pin(equalTo: topAnchor),
             mainContainer.bottomAnchor.pin(equalTo: bottomAnchor),
             customCellViewInjector?.fillAllAvailableWidth == true
                 ? mainContainer.widthAnchor.pin(
@@ -792,6 +794,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             .init(
                 useBigIcons: false,
                 reactions: $0.reactionsData,
+                showTotalCount: true,
                 didTapOnReaction: nil
             )
         }

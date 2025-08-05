@@ -181,7 +181,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
 
     override open func contentDidChanged() {
         let message = content?.message
-
+        containerView.alignment = content?.isRepliedMessageSentByCurrentUser == true ? .trailing : .leading
         updateDescriptionLabel()
         updateQuoteMarkViewPosition()
 
@@ -214,6 +214,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
             descriptionLabel.text = "Have answered \(author.displayName)"
         }
         descriptionLabel.isHidden = content?.repliedMessageAuthor == nil
+        descriptionLabel.textAlignment = content?.isRepliedMessageSentByCurrentUser == false ? .left : .right
     }
 
     /// Update quote markview alignment to left or right base on the parent sender.

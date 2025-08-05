@@ -38,7 +38,7 @@ extension UITextView {
             let mentionAttributedString = NSAttributedString(
                 string: mentionDisplayedString, attributes: [
                     .link: "",
-                    .foregroundColor: isCurrentUser ? mentionCurrentUserTextColor : mentionCurrentUserTextColor,
+                    .foregroundColor: isCurrentUser ? mentionCurrentUserTextColor : mentionOtherUserTextColor,
                     .font: font?.bold
                 ]
             )

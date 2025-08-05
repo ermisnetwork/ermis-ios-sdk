@@ -60,10 +60,13 @@ open class MessageReactionItemView: _Button, ThemeProvider {
             var configuration = self.configuration ?? UIButton.Configuration.bordered()
             configuration.background = .clear()
             configuration.contentInsets = .zero
-            configuration.cornerStyle = .capsule
+            configuration.titlePadding = 0
+            configuration.cornerStyle = .fixed
+            configuration.background.cornerRadius = 10
             self.configuration = configuration
         } else {
             self.contentEdgeInsets = .zero
+            self.titleEdgeInsets = .zero
             layer.borderWidth = 1
             backgroundColor = .clear
         }
@@ -104,7 +107,7 @@ open class MessageReactionItemView: _Button, ThemeProvider {
 
         if #available(iOS 15.0, *) {
             var configuration = self.configuration
-            var bgConfiguration = UIBackgroundConfiguration.listPlainCell()
+            var bgConfiguration = configuration?.background ?? .listPlainCell()
             bgConfiguration.backgroundColor = reactionImageTint
             configuration?.background = bgConfiguration
             self.configuration = configuration
@@ -135,7 +138,7 @@ open class MessageReactionItemView: _Button, ThemeProvider {
 
         return NSAttributedString(string: reaction.emojiString,
                                   attributes: [
-                                    .font: content.useBigIcon ? theme.fonts.body : theme.fonts.caption2
+                                    .font: content.useBigIcon ? theme.fonts.headline : theme.fonts.footnote
         ])
     }
 }
