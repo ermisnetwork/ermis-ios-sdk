@@ -86,4 +86,8 @@ open class ChannelListCollectionViewCell: _CollectionViewCell,
 
         return preferredAttributes
     }
+
+    open override func updateConfiguration(using state: UICellConfigurationState) {
+        super.updateConfiguration(using: state)
+    }
 }

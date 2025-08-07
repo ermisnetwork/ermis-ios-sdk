@@ -30,11 +30,14 @@ extension UITextView {
             updatedAttributeText.append(beforeAttributedString)
             //
 
-            var mentionOtherUserTextColor = isSendByCurrentUser
+            let mentionOtherUserTextColor = isSendByCurrentUser
             ? Theme.default.colors.outgoingMentionOtherUserText
             : Theme.default.colors.incomingMentionOtherUserText
 
-            var mentionCurrentUserTextColor = Theme.default.colors.mentionUserText
+            let mentionCurrentUserTextColor = isSendByCurrentUser
+            ? Theme.default.colors.outgoingMentionUserText
+            : Theme.default.colors.incomingMentionUserText
+
             let mentionAttributedString = NSAttributedString(
                 string: mentionDisplayedString, attributes: [
                     .link: "",
@@ -56,17 +59,21 @@ extension UITextView {
         attributedText = updatedAttributeText
     }
 
-    func highlightMentionAllUsers() {
+    func highlightMentionAllUsers(isSendByCurrentUser: Bool) {
         linkTextAttributes = [:]
         let attributeText = NSMutableAttributedString(attributedString: attributedText)
-        var string = attributeText.string
-        
+        let string = attributeText.string
+
+        let mentionAllTextColor = isSendByCurrentUser
+        ? Theme.default.colors.outgoingMentionUserText
+        : Theme.default.colors.incomingMentionUserText
+
         string.ranges(of: "@all", options: [.caseInsensitive])
             .map({ NSRange($0, in: string)})
             .forEach{
                 attributeText.addAttribute(.link, value: "", range: $0)
                 attributeText.addAttribute(.foregroundColor,
-                                           value: Theme.default.colors.mentionUserText,
+                                           value: mentionAllTextColor,
                                            range: $0)
                 attributeText.addAttribute(.font, value: font?.bold, range: $0)
             }

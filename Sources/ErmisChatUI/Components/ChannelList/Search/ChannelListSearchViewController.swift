@@ -48,7 +48,6 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
             withReuseIdentifier: separatorReuseIdentifier
         )
 
-        collectionView.dataSource = self
         collectionView.delegate = self
 
         viewPaginationHandler.bottomThreshold = 800
@@ -102,6 +101,7 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
     // MARK: - State Handling
 
     override open func controller(_ controller: DataController, didChangeState state: DataController.State) {
+        super.controller(controller, didChangeState: state)
         switch state {
         case .initialized, .localDataFetched:
             if hasEmptyResults {

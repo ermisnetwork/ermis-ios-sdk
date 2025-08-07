@@ -34,22 +34,6 @@ open class ContactSearchViewController: ContactListSearchViewController {
 
     // MARK: - Collection View Implementations
 
-    override open func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = super.collectionView(collectionView, cellForItemAt: indexPath)
-        guard let channelListCell = cell as? InvitedChannelCollectionViewCell,
-              let channel = channelListCell.itemView.content?.channel else {
-            return cell
-        }
-
-        channelListCell.itemView.content = .init(
-            channel: channel,
-            currentUserId: controller.client.currentUserId,
-            searchResult: .init(text: currentSearchText, message: nil)
-        )
-
-        return channelListCell
-    }
-
     override open func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         defer {
             collectionView.deselectItem(at: indexPath, animated: true)

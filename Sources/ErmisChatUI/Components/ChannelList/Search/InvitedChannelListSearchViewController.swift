@@ -47,7 +47,6 @@ open class InvitedChannelListSearchViewController: InvitedChannelListViewControl
             withReuseIdentifier: separatorReuseIdentifier
         )
 
-        collectionView.dataSource = self
         collectionView.delegate = self
 
         viewPaginationHandler.bottomThreshold = 800

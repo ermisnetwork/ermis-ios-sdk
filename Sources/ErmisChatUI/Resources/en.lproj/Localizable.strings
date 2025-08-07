@@ -357,6 +357,9 @@
 /// Show as title of send button in forward screen when forward state is error.
 "forward.state.error" = "Resend";
 
+/// Share
+"share.send-to" = "Send to";
+
 /// Shown in the gallery preview, indicating which image is currently presented.
 /// The first placeholder is the number of the selected image.
 /// The second placeholder is the total number of images in the attachment.

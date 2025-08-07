@@ -9,13 +9,17 @@ import Combine
 /// A `UIViewController` subclass  that shows list of channels.
 @available(iOSApplicationExtension, unavailable)
 open class ChannelListViewController: _ViewController,
-                                      UICollectionViewDataSource,
                                       UICollectionViewDelegate,
                                       ChannelListControllerDelegate,
                                       UIProvider,
                                       SwipeableViewDelegate {
     /// The data of the channel list.
-    public private(set) var channels: [Channel] = []
+    public var channels: [Channel] {
+        return dataSource?.snapshot().itemIdentifiers ?? []
+    }
+
+    /// DiffirenceDataSource
+    public var dataSource: UICollectionViewDiffableDataSource<String, Channel>?
 
     /// The `ChannelListController` instance that provides channels data.
     public var controller: ChannelListController!
@@ -93,9 +97,8 @@ open class ChannelListViewController: _ViewController,
     private(set) var skipChannelUpdates = true
     /// Flag to check when channel list is reloading or not.
     private(set) var isReloadingChannelList = false
-    /// Has pending reload channel list or not, if has continue reload.
+    /// Has pending reload channel list or not, if has reloaded channel.
     private var hasPendingReloadChannels = false
-
     /// List of user has fetch info
     private var userIdsHasFetchedInfo: Set<String> = []
     ///
@@ -142,9 +145,9 @@ open class ChannelListViewController: _ViewController,
 
     override open func setUp() {
         super.setUp()
+        setupDiffableDataSource()
         controller.delegate = self
         controller.synchronize()
-        reloadChannels()
 
         collectionView.register(
             components.channelListCell.self,
@@ -157,7 +160,7 @@ open class ChannelListViewController: _ViewController,
             withReuseIdentifier: separatorReuseIdentifier
         )
 
-        collectionView.dataSource = self
+//        collectionView.dataSource = self
         collectionView.delegate = self
 
         userAvatarView.controller = controller.client.currentUserController()
@@ -188,6 +191,8 @@ open class ChannelListViewController: _ViewController,
                 height: 64
             )
         }
+
+        reloadChannels()
 
         NotificationCenter.default.publisher(for: .callVCDidHidden)
             .receive(on: RunLoop.main)
@@ -290,47 +295,42 @@ open class ChannelListViewController: _ViewController,
         reloadChannels()
     }
 
-    /// Updates the list view with the most updated channels.
-    open func reloadChannels(completion: (() -> Void)? = nil) {
-        let previousChannels = channels
-        let newChannels = Array(controller.channels)
-        animateReloadCollectionView(previousChannels: previousChannels,
-                                    newChannels: newChannels,
-                                    completion: completion)
+    /// Build data source snapshot for collection view.
+    /// By default, all channels are displaying in "all" section.
+    open func buildSnapshot(from channels: [Channel]) -> NSDiffableDataSourceSnapshot<String , Channel> {
+        var snapshot = NSDiffableDataSourceSnapshot<String, Channel>()
+        snapshot.appendSections(["all"])
+        snapshot.appendItems(channels, toSection: "all")
+        return snapshot
     }
 
-    /// Reload collectionView when channel is udpate
-    open func animateReloadCollectionView(previousChannels: [Channel],
-                                          newChannels: [Channel],
-                                          completion: (() -> Void)?) {
+    /// Updates the list view with the most updated channels.
+    open func reloadChannels(completion: (() -> Void)? = nil) {
         guard !isReloadingChannelList else {
             hasPendingReloadChannels = true
             return
         }
-        if !Thread.isMainThread {
-            DispatchQueue.main.async(execute: {
-                self.animateReloadCollectionView(previousChannels: previousChannels, newChannels: newChannels, completion: completion)
-            })
-            return
-        }
+
         isReloadingChannelList = true
-        let stagedChangeset = StagedChangeset(source: previousChannels, target: newChannels)
-        collectionView.reload(using: stagedChangeset,
-                              reconfigure: { _ in true },
-                              setData: { [weak self] newChannels in
-            self?.channels = newChannels
-        }, completion: { [weak self] in
+        let newChannels = Array(controller.channels)
+        var snapshot = buildSnapshot(from: newChannels)
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource?.apply(snapshot, animatingDifferences: true) { [weak self] in
             guard let self else {
                 return
             }
+            let snapshot = self.dataSource?.snapshot() ?? snapshot
+
             self.isReloadingChannelList = false
+
             if hasPendingReloadChannels {
-                self.hasPendingReloadChannels = false
+                hasPendingReloadChannels = false
                 reloadChannels(completion: completion)
             } else {
                 completion?()
+                onChannelReloaded()
             }
-        })
+        }
     }
 
     /// Loads the next page of channels.
@@ -343,6 +343,11 @@ open class ChannelListViewController: _ViewController,
         //        controller.loadNextChannels { [weak self] _ in
         //            self?.isPaginatingChannels = false
         //        }
+    }
+
+    /// Called when channel reloaded.
+    open func onChannelReloaded() {
+        // Implement on subclass.
     }
 
     @objc open func didTapOnCurrentUserAvatar(_ sender: Any) {
@@ -412,22 +417,38 @@ open class ChannelListViewController: _ViewController,
 
     // MARK: - Collection View
 
-    open func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        channels.count
+    /// Setup UICollectionViewDiffableDataSource
+    public func setupDiffableDataSource() {
+        dataSource = UICollectionViewDiffableDataSource<String, Channel>(collectionView: collectionView, cellProvider: { [weak self] collectionView, indexPath, channel in
+            guard let self else {
+                return nil
+            }
+
+            return self.cellItem(for: collectionView, indexPath: indexPath, channel: channel)
+        })
+
+        dataSource?.supplementaryViewProvider = { [weak self] collectionView, kind, indexPath in
+            return self?.supplementaryView(for: collectionView, kind, indexPath)
+        }
     }
 
-    open func collectionView(
-        _ collectionView: UICollectionView,
-        cellForItemAt indexPath: IndexPath
-    ) -> UICollectionViewCell {
+    /// Get cell item of UICollectionView at indexPath.
+    ///  - Parameters:
+    ///   - collectionView: The `UICollectionView` instance.
+    ///   - indexPath: The indexPath of the cell
+    ///   - channel: The channel at that indexPath
+    ///  - Returns: The `UICollectionViewCell` at indexPath
+    open func cellItem(for collectionView: UICollectionView,
+                       indexPath: IndexPath,
+                       channel: Channel) -> UICollectionViewCell? {
         let cell = collectionView.dequeueReusableCell(with: components.channelListCell, for: indexPath)
-        guard let channel = getChannel(at: indexPath) else { return cell }
 
         cell.itemView.content = .init(
             channel: channel,
             currentUserId: controller.client.currentUserId,
             searchResult: nil
         )
+
         cell.swipeableView.delegate = self
         cell.swipeableView.indexPath = { [weak cell, weak self] in
             guard let cell = cell else { return nil }
@@ -435,6 +456,26 @@ open class ChannelListViewController: _ViewController,
         }
 
         return cell
+    }
+
+    /// Get supplimentaryView  of UICollectionView at indexPath
+    ///  - Parameters:
+    ///   - collectionView: The `UICollectionView` instance.
+    ///   - kind: The supplementary view kind
+    ///   - indexPath: The indexPath of the cell
+    ///  - Returns: The `UICollectionReusableView` at indexPath
+    open func supplementaryView(for collectionView: UICollectionView,
+                                _ kind: String,
+                                _ indexPath: IndexPath) -> UICollectionReusableView? {
+        collectionView.dequeueReusableSupplementaryView(
+            ofKind: ListCollectionViewLayout.separatorKind,
+            withReuseIdentifier: separatorReuseIdentifier,
+            for: indexPath
+        )
+    }
+    
+    open func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        channels.count
     }
 
     open func collectionView(
@@ -453,6 +494,7 @@ open class ChannelListViewController: _ViewController,
         defer {
             collectionView.deselectItem(at: indexPath, animated: true)
         }
+
         guard let channel = getChannel(at: indexPath) else { return }
         router.showChannel(for: channel.cid)
     }
@@ -612,7 +654,7 @@ open class ChannelListViewController: _ViewController,
     }
 }
 
-extension Channel: Differentiable, Hashable {
+extension Channel: Differentiable, Hashable, Equatable {
     public func isContentEqual(to source: Channel) -> Bool {
         cid == source.cid &&
         name == source.name &&
@@ -645,6 +687,10 @@ extension Channel: Differentiable, Hashable {
     }
 
     public func hash(into hasher: inout Hasher) {
-        hasher.combine(cid)
+        hasher.combine(cid.rawValue)
+    }
+
+    static func == (lhs: Channel, rhs: Channel) -> Bool {
+        return lhs.isContentEqual(to: rhs)
     }
 }

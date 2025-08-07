@@ -636,6 +636,11 @@ internal enum L10n {
       }
     }
   }
+
+  internal enum Share {
+    /// Send to
+    internal static var sendTo: String { L10n.tr("Localizable", "share.send-to") }
+  }
 }
 
 // MARK: - Implementation Details

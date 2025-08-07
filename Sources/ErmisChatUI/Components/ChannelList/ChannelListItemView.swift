@@ -339,7 +339,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         titleLabel.text = titleText
         if isShowUnsentContent {
             let subtitleAttributedString = NSMutableAttributedString(string: "\(L10n.ChannelList.LastMessage.draft): ",
-                                                               attributes: [.foregroundColor: theme.colors.error])
+                                                               attributes: [.foregroundColor: theme.colors.draftMessageText])
             subtitleAttributedString.append(.init(string: subtitleText ?? ""))
             subtitleLabel.attributedText = subtitleAttributedString
         } else {

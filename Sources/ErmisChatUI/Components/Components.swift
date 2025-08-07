@@ -485,13 +485,12 @@ public struct Components {
     public var forwardingMessageViewController: ForwardingMessageViewController.Type = ForwardingMessageViewController.self
 
     // MARK: - Share
-
-//    /// The view show details of channel in share screen.
-//    public var shareItemView: ShareItemView.Type = ShareItemView.self
+    /// The view show details of channel in share screen.
+    public var shareItemView: ShareItemView.Type = ShareItemView.self
     /// The cell show details of channel in share screen.
-//    public var shareTableViewCell: ShareTableViewCell.Type = ShareTableViewCell.self
+    public var shareTableViewCell: ShareTableViewCell.Type = ShareTableViewCell.self
     /// The view controller used to select channel which attachment wil be shared.
-//    public var shareViewController: ShareViewController.Type = ShareViewController.self
+    public var shareViewController: ShareViewController.Type = ShareViewController.self
 
     // MARK: - Pin
     /// The view that show lastest pinned message.

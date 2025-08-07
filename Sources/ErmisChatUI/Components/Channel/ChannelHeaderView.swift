@@ -64,10 +64,10 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
         }
         channelAvatarView.pin(anchors: [.centerY], to: self)
         channelAvatarView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor).isActive = true
-        channelAvatarView.pin(anchors: [.width, .height], to: 44)
+        channelAvatarView.pin(anchors: [.width, .height], to: 40)
 
         if isCenterAlignment {
-            titleContainerView.trailingAnchor.pin(lessThanOrEqualTo: self.trailingAnchor).isActive = true
+            titleContainerView.trailingAnchor.pin(lessThanOrEqualTo: self.trailingAnchor, constant: -16).isActive = true
         } else {
             titleContainerView.pin(anchors: [.trailing], to: self)
         }

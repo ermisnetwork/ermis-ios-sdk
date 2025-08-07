@@ -44,9 +44,9 @@ open class MentionSuggestionView: _View, UIProvider {
     override open func setUpTheme() {
         super.setUpTheme()
         backgroundColor = theme.colors.surfaceContainer
-        usernameLabel.font = theme.fonts.headline.bold
+        usernameLabel.font = theme.fonts.body.semiBold
 
-        usernameTagLabel.font = theme.fonts.subheadline.bold
+        usernameTagLabel.font = theme.fonts.callout
         usernameTagLabel.textColor = theme.colors.subtitleText
 
         usernameLabel.textColor = theme.colors.text

@@ -704,7 +704,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         }
 
         if content?.mentionedAll == true {
-            textView?.highlightMentionAllUsers()
+            textView?.highlightMentionAllUsers(isSendByCurrentUser: content?.isSentByCurrentUser ?? false)
         }
 
         // Avatar
@@ -902,7 +902,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             textView?.isScrollEnabled = false
             textView?.backgroundColor = .clear
             textView?.adjustsFontForContentSizeCategory = true
-            textView?.textContainerInset = .init(top: 0, left: 8, bottom: 0, right: 8)
+            textView?.textContainerInset = .init(top: 0, left: 0, bottom: 0, right: 0)
             textView?.textContainer.lineFragmentPadding = 0
             textView?.font = theme.fonts.body
             textView?.backgroundColor = .clear

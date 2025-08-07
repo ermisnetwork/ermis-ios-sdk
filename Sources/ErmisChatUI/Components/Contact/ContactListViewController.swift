@@ -48,8 +48,8 @@ class ContactListViewController: ChannelListViewController, UICollectionViewDele
         navigationItem.searchController?.searchBar.placeholder = L10n.ChannelList.search
     }
     // MARK: -
-    open
-    override func reloadChannels(completion: (() -> Void)? = nil) {
+
+    open override func buildSnapshot(from channels: [Channel]) -> NSDiffableDataSourceSnapshot<String, Channel> {
         let newChannels = Array(controller.channels).sorted(by: {
             let lLastMessageAt = $0.lastMessageAt ?? $0.updatedAt
             let rLastMessageAt = $1.lastMessageAt ?? $1.updatedAt
@@ -66,12 +66,16 @@ class ContactListViewController: ChannelListViewController, UICollectionViewDele
         }
 
         self.contacts = []
+        var snapshot = NSDiffableDataSourceSnapshot<String, Channel>()
+
         for key in newContacts.keys.sorted() {
             self.contacts.append(.init(title: key, channels: newContacts[key] ?? []))
+            snapshot.appendSections([key])
+            snapshot.appendItems(newContacts[key] ?? [], toSection: key)
         }
 
-        self.collectionView.reloadData()
-        completion?()
+        return snapshot
+
     }
 
     open
@@ -90,13 +94,8 @@ class ContactListViewController: ChannelListViewController, UICollectionViewDele
         return section.channels.count
     }
 
-    open
-    override func collectionView(
-        _ collectionView: UICollectionView,
-        cellForItemAt indexPath: IndexPath
-    ) -> UICollectionViewCell {
+    open override func cellItem(for collectionView: UICollectionView, indexPath: IndexPath, channel: Channel) -> UICollectionViewCell? {
         let cell = collectionView.dequeueReusableCell(with: components.contactListCell, for: indexPath)
-        guard let channel = getChannel(at: indexPath) else { return cell }
 
         cell.itemView.content = .init(
             channel: channel,
@@ -106,12 +105,7 @@ class ContactListViewController: ChannelListViewController, UICollectionViewDele
         return cell
     }
 
-    open
-    override func collectionView(
-        _ collectionView: UICollectionView,
-        viewForSupplementaryElementOfKind kind: String,
-        at indexPath: IndexPath
-    ) -> UICollectionReusableView {
+    open override func supplementaryView(for collectionView: UICollectionView, _ kind: String, _ indexPath: IndexPath) -> UICollectionReusableView? {
         switch kind {
         case UICollectionView.elementKindSectionHeader:
             let header = collectionView.dequeueReusableSupplementaryView(ofKind: kind,

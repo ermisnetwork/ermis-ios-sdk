@@ -15,7 +15,7 @@ open class ChannelSearchViewController: ChannelListSearchViewController {
     // MARK: - ChannelListSearchViewController Abstract Implementations
 
     override open var hasEmptyResults: Bool {
-        channels.isEmpty
+        return false//channels.isEmpty
     }
 
     override open func loadSearchResults(with text: String) {
@@ -40,10 +40,10 @@ open class ChannelSearchViewController: ChannelListSearchViewController {
 
     // MARK: - Collection View Implementations
 
-    override open func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = super.collectionView(collectionView, cellForItemAt: indexPath)
-        guard let channelListCell = cell as? ChannelListCollectionViewCell,
-              let channel = channelListCell.itemView.content?.channel else {
+    open override func cellItem(for collectionView: UICollectionView, indexPath: IndexPath, channel: Channel) -> UICollectionViewCell? {
+        let cell = collectionView.dequeueReusableCell(with: components.channelListCell, for: indexPath)
+
+        guard let channelListCell = cell as? ChannelListCollectionViewCell else {
             return cell
         }
 
