@@ -12,6 +12,8 @@ internal enum L10n {
   }
   /// From
   internal static var from: String { L10n.tr("Localizable", "from") }
+  /// No preview available
+  internal static var noPreviewAvailable: String { L10n.tr("Localizable", "no_preview_available") }
   /// You
   internal static var you: String { L10n.tr("Localizable", "you") }
 
