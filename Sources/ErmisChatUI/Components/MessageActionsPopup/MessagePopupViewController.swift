@@ -92,6 +92,7 @@ open class MessagePopupViewController: _ViewController, ComponentsProvider {
         let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(didTapOnView))
         tapRecognizer.cancelsTouchesInView = false
         view.addGestureRecognizer(tapRecognizer)
+        scrollView.contentInsetAdjustmentBehavior = .always
     }
 
     override open func setUpTheme() {
