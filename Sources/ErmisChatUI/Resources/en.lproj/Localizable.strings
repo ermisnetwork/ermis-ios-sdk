@@ -409,3 +409,6 @@
 /// Example: "From user A"
 "from" = "From";
 
+/// The default title of link preview when don't have any infomation.
+"no_preview_available" = "No preview available";
+
