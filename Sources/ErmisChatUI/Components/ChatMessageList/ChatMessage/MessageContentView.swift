@@ -366,7 +366,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             bubbleView.embed(bubbleContentContainer)
 
             if options.contains(.continuousBubble) && !options.contains(.threadInfo) {
-                mainContainer.layoutMargins.bottom = 0
+                mainContainer.layoutMargins.bottom = 4
+            } else {
+                mainContainer.layoutMargins.bottom = 12
             }
             bubbleThreadFootnoteContainer.addArrangedSubview(bubbleView)
         } else {
@@ -490,8 +492,14 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             reactionsView.pin(to: reactionsBubbleView.layoutMarginsGuide)
 
             let bubble = bubbleView ?? bubbleContentContainer
-            bubbleThreadFootnoteContainer.setCustomSpacing(18, after: bubble)
 
+            // Add extral space for reaction
+            if footnoteSubviews.isEmpty {
+                bubbleThreadFootnoteContainer.isLayoutMarginsRelativeArrangement = true
+                bubbleThreadFootnoteContainer.layoutMargins.bottom = 18
+            } else {
+                bubbleThreadFootnoteContainer.setCustomSpacing(18, after: bubble)
+            }
             bubbleToReactionsConstraint = bubble.bottomAnchor
                 .pin(equalTo: reactionsBubbleView.centerYAnchor, constant: -4)
 
@@ -500,14 +508,14 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
                     bubbleToReactionsConstraint,
                     reactionsBubbleView.trailingAnchor.pin(equalTo: bubble.trailingAnchor, constant: -8),
                     reactionsBubbleView.leadingAnchor.pin(greaterThanOrEqualTo: mainContainer.leadingAnchor, constant: 8),
-                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24)
+                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24),
                 ].compactMap({ $0})
             } else {
                 constraintsToActivate += [
                     bubbleToReactionsConstraint,
                     reactionsBubbleView.leadingAnchor.pin(equalTo: bubble.leadingAnchor, constant: 8),
                     reactionsBubbleView.trailingAnchor.pin(lessThanOrEqualTo: mainContainer.trailingAnchor, constant: -8),
-                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24)
+                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24),
                 ].compactMap({ $0})
             }
         } else {
@@ -1168,20 +1176,21 @@ private extension ChatMessage {
 
 extension MessageLayoutOptions {
     var roundedCorners: CACornerMask {
-        if contains(.continuousBubble) {
-            return .all
-        } else if contains(.firstSequenceBubble) {
+        if contains(.firstSequenceBubble) {
             if contains(.flipped) {
                 return CACornerMask.all.subtracting(.layerMaxXMaxYCorner)
             } else {
                 return CACornerMask.all.subtracting(.layerMinXMaxYCorner)
             }
-        } else {
+        } else if contains(.lastSequenceBubble) {
             if contains(.flipped) {
                 return CACornerMask.all.subtracting(.layerMaxXMinYCorner)
             } else {
                 return CACornerMask.all.subtracting(.layerMinXMinYCorner)
             }
+        } else {
+            // Continuous bubble
+            return .all
         }
     }
 }

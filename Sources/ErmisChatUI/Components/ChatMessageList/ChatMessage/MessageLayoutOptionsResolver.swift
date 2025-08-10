@@ -72,9 +72,12 @@ open class MessageLayoutOptionsResolver {
         if message.isSentByCurrentUser {
             options.insert(.flipped)
         }
+
         if isFirstInSequence {
             options.insert(.firstSequenceBubble)
-        } else if isLastInSequence {
+        }
+
+        if isLastInSequence {
             options.insert(.lastSequenceBubble)
         } else {
             options.insert(.continuousBubble)
