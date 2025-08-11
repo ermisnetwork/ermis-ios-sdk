@@ -298,6 +298,7 @@ open class ChannelViewController: _ViewController,
             headerView.channelController = client.channelController(for: cid, parentId: parentCid)
             // Load message for topics
             loadMessageListView()
+            
         } else  {
             headerView.channelController = client.channelController(for: cid)
             // Check chanel is enale or disable topic
@@ -406,43 +407,60 @@ open class ChannelViewController: _ViewController,
     }
     
     private func loadMessageListView() {
-        if messageListVC.parent != nil {
-            return
-        }
-        
-        topicListVC.removeFromParent()
+        // Remove all related child view controllers and views
+        removeAllMessageListSubviews()
+
         addChildViewController(messageListVC, targetView: view)
         messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
         messageListVC.view.pin(anchors: [.leading, .trailing], to: view.safeAreaLayoutGuide)
-        
+
         view.addSubview(invitingView)
         invitingViewHeightConstraint = invitingView.heightAnchor.constraint(equalToConstant: invitingHeight)
         invitingView.pin(anchors: [.leading, .trailing], to: view)
-        
-        addChildViewController(messageComposerVC, targetView: view)
-        messageComposerVC.view.pin(anchors: [.leading, .trailing], to: view)
-        messageComposerVC.view.topAnchor.pin(equalTo: invitingView.bottomAnchor).isActive = true
-        messageComposerBottomConstraint = messageComposerVC.view.bottomAnchor.pin(equalTo: view.bottomAnchor)
-        NSLayoutConstraint.activate([
-            messageListTopConstraint!,
-            invitingViewHeightConstraint!,
-            invitingView.makeConstraint(attribute: .top, toItem: messageListVC.view, attribute: .bottom),
-            messageComposerBottomConstraint!
-            
-        ])
-        
-        
-        
+
+        updateMessageComposerAndConstraints()
+
         view.addSubview(pinnedMessageView)
         pinnedMessageView.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16).isActive = true
         pinnedMessageView.pin(anchors: [.leading], to: view, contant: 16)
         pinnedMessageView.pin(anchors: [.centerX], to: view)
         pinnedMessageView.heightAnchor.pin(greaterThanOrEqualToConstant: 72).isActive = true
-        
-        // Accept Invitation View
+
         view.addSubview(acceptInvitationView)
         acceptInvitationView.pin(anchors: [.top, .bottom, .leading, .trailing], to: view)
         updateInvitationView()
+    }
+
+    private func removeAllMessageListSubviews() {
+        topicListVC.removeFromParentViewController()
+        messageComposerVC.removeFromParentViewController()
+        invitingView.removeFromSuperview()
+        pinnedMessageView.removeFromSuperview()
+        acceptInvitationView.removeFromSuperview()
+        messageListVC.removeFromParentViewController()
+    }
+
+    private func updateMessageComposerAndConstraints() {
+        var messageListBottomConstraint: NSLayoutConstraint
+
+        if channelController.channel?.isClosedTopic == true {
+            messageComposerBottomConstraint?.isActive = false
+            messageListBottomConstraint = messageListVC.view.bottomAnchor.pin(equalTo: view.bottomAnchor)
+        } else {
+            addChildViewController(messageComposerVC, targetView: view)
+            messageComposerVC.view.pin(anchors: [.leading, .trailing], to: view)
+            messageComposerVC.view.topAnchor.pin(equalTo: invitingView.bottomAnchor).isActive = true
+            messageComposerBottomConstraint = messageComposerVC.view.bottomAnchor.pin(equalTo: view.bottomAnchor)
+            messageComposerBottomConstraint?.isActive = true
+            messageListBottomConstraint = messageListVC.view.bottomAnchor.pin(equalTo: messageComposerVC.view.topAnchor)
+        }
+
+        NSLayoutConstraint.activate([
+            messageListTopConstraint!,
+            invitingViewHeightConstraint!,
+            invitingView.makeConstraint(attribute: .top, toItem: messageListVC.view, attribute: .bottom),
+            messageListBottomConstraint
+        ])
     }
 
     // MARK: - Actions
@@ -822,6 +840,7 @@ open class ChannelViewController: _ViewController,
         updateScrollToBottomButtonCount()
         updateJumpToUnreadRelatedComponents()
 
+        messageListVC.isInteractionMessage = !(channelController.channel?.isClosedTopic ?? false)
         if let channel = self.channelController.channel,
            let lastestPinnedMessage = channel.pinnedMessages.first {
             pinnedMessageView.content = .init(message: lastestPinnedMessage,

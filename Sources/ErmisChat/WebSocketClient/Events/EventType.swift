@@ -60,6 +60,10 @@ public extension EventType {
     static let channelTopicDisable: Self = "channel.topic.disabled"
     /// When a channel topic was created.
     static let channelTopicCreated: Self = "channel.topic.created"
+    /// When a channel topic was closed.
+    static let channelTopicClosed: Self = "channel.topic.closed"
+    /// When a channel topic was reopened.
+    static let channelTopicReopen: Self = "channel.topic.reopen"
 
     // MARK: Message Events
 
@@ -172,6 +176,8 @@ extension EventType {
         case .channelTopicEnable: return try ChannelTopicEnableEventDTO(from: response)
         case .channelTopicDisable: return try ChannelTopicDisableEventDTO(from: response)
         case .channelTopicCreated: return try ChannelTopicCreatedEventDTO(from: response)
+        case .channelTopicClosed: return try ChannelTopicClosedEventDTO(from: response)
+        case .channelTopicReopen: return try ChannelTopicReopenedEventDTO(from: response)
 
         case .messageNew: return try MessageNewEventDTO(from: response)
         case .messageUpdated: return try MessageUpdatedEventDTO(from: response)
