@@ -414,3 +414,107 @@ public struct ChannelTopicCreatedEvent: ChannelSpecificEvent {
     /// The date a channel was hidden.
     public let createdAt: Date
 }
+
+
+class ChannelTopicClosedEventDTO: EventDTO {
+    let cid: ChannelId
+    let parentCid: ChannelId
+    let channelId: String
+    let channelType: ChannelType
+    let createdAt: Date
+    let user: UserPayload
+    let payload: EventPayload
+
+    init(from response: EventPayload) throws {
+        cid = try response.value(at: \.cid)
+        createdAt = try response.value(at: \.createdAt)
+        user = try response.value(at: \.user)
+        parentCid = try response.value(at: \.parentCid)
+        channelId = try response.value(at: \.channelId)
+        channelType = try response.value(at: \.channelType)
+        payload = response
+    }
+
+    func toDomainEvent(session: DatabaseSession) -> Event? {
+        
+        guard let channelDTO = session.channel(cid: cid),
+              let userDTO = session.user(id: user.id, projectId: cid.projectId) else { return nil }
+
+        return try? ChannelTopicClosedEvent(cid: cid,
+                                             parentCid: parentCid,
+                                             user: userDTO.asModel(),
+                                             channelId: channelId,
+                                             channelType: channelType,
+                                             createdAt: createdAt)
+    }
+}
+
+public struct ChannelTopicClosedEvent: ChannelSpecificEvent {
+    /// The channel identifier.
+    /// The hidden channel identifier.
+    public let cid: ChannelId
+    
+    public let parentCid: ChannelId
+    
+    /// The user who enabled topic of  the channel.
+    public let user: ChatUser
+    
+    public let channelId: String
+    
+    public let channelType: ChannelType
+    
+    /// The date a channel was hidden.
+    public let createdAt: Date
+}
+
+
+class ChannelTopicReopenedEventDTO: EventDTO {
+    let cid: ChannelId
+    let parentCid: ChannelId
+    let channelId: String
+    let channelType: ChannelType
+    let createdAt: Date
+    let user: UserPayload
+    let payload: EventPayload
+
+    init(from response: EventPayload) throws {
+        cid = try response.value(at: \.cid)
+        createdAt = try response.value(at: \.createdAt)
+        user = try response.value(at: \.user)
+        parentCid = try response.value(at: \.parentCid)
+        channelId = try response.value(at: \.channelId)
+        channelType = try response.value(at: \.channelType)
+        payload = response
+    }
+
+    func toDomainEvent(session: DatabaseSession) -> Event? {
+        
+        guard let channelDTO = session.channel(cid: cid),
+              let userDTO = session.user(id: user.id, projectId: cid.projectId) else { return nil }
+
+        return try? ChannelTopicReopenedEvent(cid: cid,
+                                             parentCid: parentCid,
+                                             user: userDTO.asModel(),
+                                             channelId: channelId,
+                                             channelType: channelType,
+                                             createdAt: createdAt)
+    }
+}
+
+public struct ChannelTopicReopenedEvent: ChannelSpecificEvent {
+    /// The channel identifier.
+    /// The hidden channel identifier.
+    public let cid: ChannelId
+    
+    public let parentCid: ChannelId
+    
+    /// The user who enabled topic of  the channel.
+    public let user: ChatUser
+    
+    public let channelId: String
+    
+    public let channelType: ChannelType
+    
+    /// The date a channel was hidden.
+    public let createdAt: Date
+}

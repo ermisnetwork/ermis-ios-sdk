@@ -574,4 +574,16 @@ extension ChannelUpdater {
             completion?($0.error)
         }
     }
+    
+    func closeTopic(_ cid: ChannelId, data: CloseAndReopenTopic, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .closeTopic(cid: cid, data: data)) {
+            completion?($0.error)
+        }
+    }
+    
+    func reopenTopic(_ cid: ChannelId, data: CloseAndReopenTopic, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .reopenTopic(cid: cid, data: data)) {
+            completion?($0.error)
+        }
+    }
 }

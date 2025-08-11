@@ -135,13 +135,13 @@ class ErmisClientFactory {
                 newProcessedMessageIds: { [weak center] in center?.newMessageIds ?? [] }
             ),
             UserTypingStateUpdaterMiddleware(),
+            ChannelTopicEventMiddleware (),
             ChannelTruncatedEventMiddleware(),
             MemberEventMiddleware(),
             UserChannelBanEventsMiddleware(),
             UserWatchingEventMiddleware(),
             UserUpdateMiddleware(),
             ChannelVisibilityEventMiddleware(),
-            ChannelTopicEventMiddleware (),
             EventDTOConverterMiddleware()
         ]
 

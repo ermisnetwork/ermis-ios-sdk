@@ -479,6 +479,26 @@ extension Endpoint {
         )
     }
     
+    static func closeTopic(cid: ChannelId, data: CloseAndReopenTopic) -> Endpoint<EmptyResponse> {
+        return .init(
+            path: .closeTopic(channelId: cid),
+            method: .post,
+            query: nil,
+            body: data,
+            needConnectionId: true
+        )
+    }
+    
+    static func reopenTopic(cid: ChannelId, data: CloseAndReopenTopic) -> Endpoint<EmptyResponse> {
+        return .init(
+            path: .reopenTopic(channelId: cid),
+            method: .post,
+            query: nil,
+            body: data,
+            needConnectionId: true
+        )
+    }
+    
     /// Create the endpoint to create channel.
     ///
     /// - Parameters:
@@ -488,6 +508,12 @@ extension Endpoint {
         return createOrUpdateChannel(path: .createTopic(query.apiPath), query: query)
     }
     
+    /// Create the endpoint for update topic.
+    ///
+    /// - Parameters:
+    ///  - path: If we want to create a new topic, using `createTopic` path.
+    ///  - query: The `ChannelQuery` to update topic.
+    ///  - Returns: The endpoint to update the topic.
     private static func createOrUpdateTopic(path: EndpointPath, query: ChannelQuery) -> Endpoint<ChannelPayload> {
         .init(
             path: path,

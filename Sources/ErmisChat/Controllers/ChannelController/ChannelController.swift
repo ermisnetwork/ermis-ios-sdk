@@ -1198,6 +1198,24 @@ extension ChannelController {
             completion?($0)
         }
     }
+    
+    public func closeTopic(completion: ((Error?) -> Void)? = nil) {
+        /// Perform action only if channel is already created on backend side and have a valid `cid`.
+        guard let parentCid = parentCid, let topicId = cid else {
+            return
+        }
+        
+        updater.closeTopic(parentCid, data: CloseAndReopenTopic(projectId: client.projectId, topicId: topicId.rawValue))
+    }
+    
+    public func reopenTopic(completion: ((Error?) -> Void)? = nil) {
+        /// Perform action only if channel is already created on backend side and have a valid `cid`.
+        guard let parentCid = parentCid, let topicId = cid else {
+            return
+        }
+        
+        updater.reopenTopic(parentCid, data: CloseAndReopenTopic(projectId: client.projectId, topicId: topicId.rawValue))
+    }
 }
 
 // MARK: - Environment
