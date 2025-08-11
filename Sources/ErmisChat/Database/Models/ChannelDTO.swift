@@ -127,6 +127,25 @@ class ChannelDTO: NSManagedObject {
         request.predicate = NSPredicate(format: "cid == %@", cid.rawValue)
         return request
     }
+    
+    static func fetchTopicRequest(for parentCid: ChannelId) -> NSFetchRequest<ChannelDTO> {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \ChannelDTO.parentcid, ascending: true),
+            NSSortDescriptor(keyPath: \ChannelDTO.isPinned, ascending: false),
+            NSSortDescriptor(keyPath: \ChannelDTO.updatedAt, ascending: false),
+            NSSortDescriptor(keyPath: \ChannelDTO.lastMessageAt, ascending: false),
+        ]
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid.rawValue, parentCid.rawValue)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
+        return request
+    }
 
     static func load(cid: ChannelId, context: NSManagedObjectContext) -> ChannelDTO? {
         let request = fetchRequest(for: cid)
@@ -218,8 +237,10 @@ extension NSManagedObjectContext {
         if let memberCapabilities = payload.memberCapabilities {
             dto.memberCapabilities = memberCapabilities
         }
-                
+    
         dto.parentcid = payload.parentcid?.rawValue
+    
+        
         dto.isClosedTopic = payload.isClosedTopic ?? false
         dto.topicsEnabled = payload.topicsEnabled ?? false
 
@@ -439,6 +460,28 @@ extension ChannelDTO {
         request.fetchBatchSize = query.pagination.pageSize
         return request
     }
+    
+    static func loadTopics(
+        parentCid: String,
+        sort: [Sorting<ChannelListSortingKey>],
+        context: NSManagedObjectContext,
+    ) -> [ChannelDTO] {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+
+        // Fetch results controller requires at least one sorting descriptor.
+        let sortDescriptors = sort.compactMap { $0.key.sortDescriptor(isAscending: $0.isAscending) }
+        request.sortDescriptors = sortDescriptors.isEmpty ? [ChannelListSortingKey.defaultSortDescriptor] : sortDescriptors
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid, parentCid)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
+        return load(by: request, context: context)
+
+    }
 }
 
 extension ChannelDTO {
@@ -526,6 +569,17 @@ extension Channel {
                 )
                 .compactMap { try? $0.relationshipAsModel(depth: depth) }
         }
+        
+        let fetchTopic: () -> [Channel] = {
+            guard dto.isValid else { return [] }
+            return ChannelDTO
+                .loadTopics(parentCid: dto.cid, sort: [
+                    Sorting<ChannelListSortingKey>(key: .createdAt, isAscending: false),
+                    Sorting<ChannelListSortingKey>(key: .lastMessageAt, isAscending: false),
+                    Sorting<ChannelListSortingKey>(key: .isPinned, isAscending: false),
+                ], context: context)
+                .compactMap { try? $0.relationshipAsModel(depth: depth) }
+        }
 
         let fetchLatestMessageFromUser: () -> ChatMessage? = {
             guard dto.isValid, let currentUser = context.currentUser,
@@ -595,7 +649,7 @@ extension Channel {
             cooldownDuration: Int(dto.cooldownDuration),
             //            invitedMembers: [],
             latestMessages: { fetchMessages() },
-            topics: topics,
+            topics: { fetchTopic() },
             lastMessageFromCurrentUser: { fetchLatestMessageFromUser() },
             pinnedMessages: {
                 dto.pinnedMessages.compactMap {

@@ -18,11 +18,12 @@ public extension ErmisClient {
     ///
     func channelController(
         for cid: ChannelId,
+        parentId: ChannelId? = nil,
         channelListQuery: ChannelListQuery? = nil,
         messageOrdering: MessageOrdering = .topToBottom
     ) -> ChannelController {
         .init(
-            channelQuery: .init(cid: cid),
+            channelQuery: .init(cid: cid, parentCid: parentId),
             channelListQuery: channelListQuery,
             client: self,
             messageOrdering: messageOrdering

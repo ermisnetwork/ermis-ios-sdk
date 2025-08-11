@@ -20,6 +20,8 @@ extension ChannelController {
 
         /// The messages related to the channel.
         @Published public private(set) var messages: LazyCachedMapCollection<ChatMessage> = []
+        
+        @Published public private(set) var topics: LazyCachedMapCollection<Channel> = []
 
         /// The current state of the Controller.
         @Published public private(set) var state: DataController.State
@@ -47,6 +49,10 @@ extension ChannelController.ObservableObject: ChannelControllerDelegate {
         didUpdateChannel channel: EntityChange<Channel>
     ) {
         self.channel = channelController.channel
+    }
+    
+    public func channelController(_ channelController: ChannelController, didUpdateTopic topics: [ListChange<Channel>]) {
+        self.topics = channelController.topics
     }
 
     public func channelController(

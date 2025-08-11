@@ -451,6 +451,11 @@ public struct Components {
     public var isInvitedChannelListStatesEnabled = false
     
     // MARK: - Topic
+    public var topicListVC: TopicListViewController.Type = TopicListViewController.self
+    
+    /// The view in the channel cell that shows channel actions on swipe.
+    public var topicActionsView: SwipeableView.Type = SwipeableView.self
+    
     /// The cell separator in the channel list.
     public var topicCellSeparator: UICollectionReusableView.Type = CellSeparatorReusableView.self
     

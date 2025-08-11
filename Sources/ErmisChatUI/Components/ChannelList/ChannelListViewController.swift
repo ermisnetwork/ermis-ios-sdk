@@ -679,7 +679,8 @@ extension Channel: Differentiable, Hashable, Equatable {
         reads == source.reads &&
         cooldownDuration == source.cooldownDuration &&
         previewMessage == source.previewMessage &&
-        composerUnsentContent == source.composerUnsentContent
+        composerUnsentContent == source.composerUnsentContent &&
+        topics == source.topics
     }
 
     public var differenceIdentifier: Int {

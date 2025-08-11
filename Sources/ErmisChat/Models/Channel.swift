@@ -170,7 +170,10 @@ public struct Channel {
     // "Move to async?"
     @CoreDataLazy private var _previewMessage: ChatMessage?
     
-    public var topics: [Channel]?
+    public var topics: [Channel]? { _topics }
+
+    // "Move to async?"
+    @CoreDataLazy private var _topics: [Channel]?
 
     public var composerUnsentContent: ComposerContent?
 
@@ -226,7 +229,7 @@ public struct Channel {
         reads: [ChannelRead] = [],
         cooldownDuration: Int = 0,
         latestMessages: @escaping (() -> [ChatMessage]) = { [] },
-        topics: [Channel]?,
+        topics: @escaping (() -> [Channel]?) = { nil },
         lastMessageFromCurrentUser: @escaping (() -> ChatMessage?) = { nil },
         pinnedMessages: @escaping (() -> [ChatMessage]) = { [] },
         previewMessage: @escaping () -> ChatMessage?,
@@ -264,7 +267,6 @@ public struct Channel {
             }
             return $0.lastReadAt < $1.lastReadAt
         })
-        self.topics = topics
         self.cooldownDuration = cooldownDuration
         self.composerUnsentContent = composerUnsentContent
         $_unreadCount = (unreadCount, underlyingContext)
@@ -275,6 +277,7 @@ public struct Channel {
         $_lastActiveWatchers = (lastActiveWatchers, underlyingContext)
         $_pinnedMessages = (pinnedMessages, underlyingContext)
         $_previewMessage = (previewMessage, underlyingContext)
+        $_topics = (topics, underlyingContext)
     }
 }
 
@@ -405,6 +408,10 @@ public struct ChannelCapability: RawRepresentable, ExpressibleByStringLiteral, H
 }
 
 public extension Channel {
+    
+    var isAdminInTopic: Bool {
+        membership?.memberRole == .owner
+    }
     /// Can the current user delete own messages from the channel.
     var canDeleteOwnMessage: Bool {
         (membership != nil && memberCapabilities.contains(.deleteOwnMessage)) || membership?.memberRole != .member

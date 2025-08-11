@@ -221,12 +221,14 @@ class ChannelHiddenEventDTO: EventDTO {
 
 class ChannelPinnedEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -237,6 +239,7 @@ class ChannelPinnedEventDTO: EventDTO {
 
         return try? ChannelPinnedEvent(
             cid: cid,
+            parentCid: parentCid,
             user: userDTO.asModel(),
             isPinned: true,
             createdAt: createdAt
@@ -246,12 +249,14 @@ class ChannelPinnedEventDTO: EventDTO {
 
 class ChannelUnpinnedEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -262,6 +267,7 @@ class ChannelUnpinnedEventDTO: EventDTO {
 
         return try? ChannelPinnedEvent(
             cid: cid,
+            parentCid: parentCid,
             user: userDTO.asModel(),
             isPinned: false,
             createdAt: createdAt
@@ -273,6 +279,9 @@ class ChannelUnpinnedEventDTO: EventDTO {
 public struct ChannelPinnedEvent: ChannelSpecificEvent {
     /// The hidden channel identifier.
     public let cid: ChannelId
+    
+    /// The parent channel identifier, if applicable.
+    public let parentCid: ChannelId?
 
     /// The user who pinned the channel.
     public let user: ChatUser
