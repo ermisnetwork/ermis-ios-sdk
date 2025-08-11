@@ -25,12 +25,7 @@ struct ChannelTopicEventMiddleware: EventMiddleware {
                                              isHidden: false,
                                              isPinned: false,
                                              topics: [])
-                let topic = try session.saveChannel(payload: payload)
-                if channel.topics == nil {
-                    channel.topics = []
-                }
-                
-                channel.topics?.insert(topic)
+                try session.saveChannel(payload: payload)
             }
         } catch {
             log.error("Failed to write the `truncatedAt` field update in the database, error: \(error)")

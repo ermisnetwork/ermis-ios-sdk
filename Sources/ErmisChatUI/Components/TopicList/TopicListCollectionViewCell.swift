@@ -17,7 +17,7 @@ open class TopicListCollectionViewCell: _CollectionViewCell,
 
     /// The `SwipeableView` instance which is used for revealing buttons when cell is swiped.
     open private(set) lazy var swipeableView: SwipeableView = components
-        .channelActionsView.init()
+        .topicActionsView.init()
         .withoutAutoresizingMaskConstraints
 
     override public func prepareForReuse() {

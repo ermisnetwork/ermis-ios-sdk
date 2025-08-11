@@ -101,6 +101,7 @@ public extension Filter where Scope: AnyChannelListFilterScope {
         .and([
             .in(.members, values: [.init(userId: memberId, projectId: projectId)]),
             .in(.channelRoles, values: ["owner", "member", "pending", "moder"]),
+            .in(.channelType, values: [ChannelType.general.rawValue, ChannelType.messaging.rawValue, ChannelType.team.rawValue]),
             .equal(.projectId, to: projectId)
         ])
     }

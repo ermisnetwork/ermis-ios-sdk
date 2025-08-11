@@ -25,15 +25,15 @@ open class TopicListRouter: NavigationRouter<TopicListViewController>,
     /// Shows the view controller with messages for the provided cid.
     ///
     /// - Parameter cid: The `ChannelId` of the channel the should be presented.
-    open func showChannel(for cid: ChannelId) {
-        showChannel(for: cid, at: nil)
+    open func showTopic(for cid: ChannelId, parentCid: ChannelId) {
+        showTopic(for: cid, parentCid: parentCid, at: nil)
     }
 
     /// Shows the view controller with messages for the provided cid and jumps to the given message id.
     /// - Parameters:
     ///   - cid: The `ChannelId` of the channel the should be presented.
     ///   - messageId: The `MessageId` to where the channel should jump to when opening the channel.
-    open func showChannel(for cid: ChannelId, at messageId: MessageId?) {
+    open func showTopic(for cid: ChannelId, parentCid: ChannelId, at messageId: MessageId?) {
         
     }
 
@@ -45,7 +45,7 @@ open class TopicListRouter: NavigationRouter<TopicListViewController>,
     /// Called when a user tapped `More` swipe action on a channel
     ///
     /// - Parameter cid: `ChannelId` of a channel swipe acton was used on
-    open func didTapMoreButton(for cid: ChannelId) {
+    open func didTapMoreButton(for cid: ChannelId, parentCid: ChannelId?) {
         log.info(
             """
             Tapping `more` swipe action for channel is not handled. Subclass `ChannelListRouter` and provide your \
@@ -57,7 +57,7 @@ open class TopicListRouter: NavigationRouter<TopicListViewController>,
     /// Called when a user tapped `Delete` swipe action on a channel
     ///
     /// - Parameter cid: `ChannelId` of a channel swipe acton was used on
-    open func didTapDeleteButton(for cid: ChannelId) {
+    open func didTapDeleteButton(for cid: ChannelId, parentCid: ChannelId?) {
         log.info(
             """
             Tapping `delete` swipe action for channel is not handled. Subclass `ChannelListRouter` and provide your \

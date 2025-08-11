@@ -397,8 +397,8 @@ open class TopicListItemView: _View,
     }
 
     /// The default channel title text.
-    open func channelTitleText(for channel: Channel) -> String? {
-        formatters
+    open func channelTitleText(for channel: Channel) -> String? {    
+        return formatters
             .channelName
             .format(channel: channel, forCurrentUserId: channel.membership?.userId)
     }

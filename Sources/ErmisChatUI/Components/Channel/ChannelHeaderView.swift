@@ -82,7 +82,12 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
         super.contentDidChanged()
 
         titleContainerView.content = .init(title: titleText, subtitle: subtitleText)
-        channelAvatarView.content = .init(from: channelController?.channel)
+        
+        if let parentChannel = channelController?.parentChannel {
+            channelAvatarView.content = .init(from: parentChannel)
+        } else {
+            channelAvatarView.content = .init(from: channelController?.channel)
+        }  
     }
 
     /// The title text used to render the title label. By default it is the channel name.
@@ -96,6 +101,13 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
 
     /// The subtitle text used in the subtitle label. By default it shows member online status.
     open var subtitleText: String? {
+        if let parentChannel = channelController?.parentChannel {
+            return formatters.channelName.format(
+                channel: parentChannel,
+                forCurrentUserId: currentUserId
+            )
+        }
+        
         guard let channel = channelController?.channel else { return nil }
         guard let currentUserId = self.currentUserId else { return nil }
 

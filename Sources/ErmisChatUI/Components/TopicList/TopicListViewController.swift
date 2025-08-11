@@ -13,7 +13,6 @@ import Combine
 open class TopicListViewController: _ViewController,
                                     UICollectionViewDataSource,
                                     UICollectionViewDelegate,
-                                    ChannelControllerDelegate,
                                     SwipeableViewDelegate,
                                     UIProvider {
 
@@ -148,9 +147,6 @@ open class TopicListViewController: _ViewController,
     
     override open func setUp() {
         super.setUp()
-        controller.delegate = self
-        controller.synchronize()
-        reloadChannels()
 
         collectionView.register(
             components.topicListCell.self,
@@ -287,7 +283,6 @@ open class TopicListViewController: _ViewController,
     /// - Parameter controller: The new channel list controller.
     public func replaceChannelListController(_ controller: ChannelController) {
         self.controller = controller
-        self.controller.delegate = self
         self.controller.synchronize()
         reloadChannels()
     }
@@ -295,7 +290,10 @@ open class TopicListViewController: _ViewController,
     /// Updates the list view with the most updated channels.
     open func reloadChannels(completion: (() -> Void)? = nil) {
         let previousChannels = channels
-        let newChannels = Array(controller.channel?.topics ?? [])
+        
+        
+        var newChannels = Array(controller.topics ?? [])
+        
         animateReloadCollectionView(previousChannels: previousChannels,
                                     newChannels: newChannels,
                                     completion: completion)
@@ -449,7 +447,7 @@ open class TopicListViewController: _ViewController,
     /// - Parameter indexPath: IndexPath of given cell to fetch the content of it.
     open func deleteButtonPressedForCell(at indexPath: IndexPath) {
         guard let channel = getChannel(at: indexPath) else { return }
-        router.didTapDeleteButton(for: channel.cid)
+        router.didTapDeleteButton(for: channel.cid, parentCid: controller.channel?.cid)
         closeSwipeableView(at: indexPath)
     }
 
@@ -457,7 +455,7 @@ open class TopicListViewController: _ViewController,
     /// - Parameter indexPath: IndexPath of given cell to fetch the content of it.
     open func moreButtonPressedForCell(at indexPath: IndexPath) {
         guard let channel = getChannel(at: indexPath) else { return }
-        router.didTapMoreButton(for: channel.cid)
+        router.didTapMoreButton(for: channel.cid, parentCid: controller.channel?.cid)
         closeSwipeableView(at: indexPath)
     }
 
@@ -468,27 +466,24 @@ open class TopicListViewController: _ViewController,
     }
     
     // MARK: - ChannelListControllerDelegate
-    open func controllerWillChangeChannels(_ controller: ChannelListController) {
-        collectionView.layoutIfNeeded()
-    }
-
-    open func controller(
-        _ controller: ChannelListController,
-        didChangeChannels changes: [ListChange<Channel>]
-    ) {
-        if skipChannelUpdates {
-            skippedRendering = true
-            reloadChannels()
+    func updateTopics(_ topics: [ListChange<Channel>]) {
+            animateReloadCollectionView(previousChannels: channels,
+                                        newChannels: Array(controller.topics),
+                                        completion: nil)
             switch controller.state {
             case .remoteDataFetched:
                 emptyView.isVisible = shouldShowEmptyView()
             default:
                 break
             }
-            return
-        }
         handleStateChanges(controller.state)
     }
+    
+    open func controllerWillChangeChannels(_ controller: ChannelListController) {
+        collectionView.layoutIfNeeded()
+    }
+
+    
 
     // MARK: - DataControllerStateDelegate
 
@@ -597,7 +592,10 @@ extension TopicListViewController {
             collectionView.deselectItem(at: indexPath, animated: true)
         }
         guard let channel = getChannel(at: indexPath) else { return }
-        router.showChannel(for: channel.cid)
+        guard let parentChannel = controller.channel else { return }
+            
+        router.showTopic(for: channel.cid, parentCid: parentChannel.cid)
+            
     }
     
     
