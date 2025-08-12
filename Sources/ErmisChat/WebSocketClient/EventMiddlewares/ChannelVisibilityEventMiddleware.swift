@@ -10,10 +10,10 @@ struct ChannelVisibilityEventMiddleware: EventMiddleware {
         do {
             switch event {
             case let event as ChannelDeletedEventDTO:
-                guard let channelDTO = session.channel(cid: event.channel.cid) else {
+                guard let channelDTO = session.channel(cid: event.cid) else {
                     return event
                 }
-                channelDTO.deletedAt = event.channel.updatedAt.bridgeDate
+                channelDTO.deletedAt = Date().bridgeDate
             case let event as ChannelVisibleEventDTO:
                 guard let channelDTO = session.channel(cid: event.cid) else {
                     throw ClientError.ChannelDoesNotExist(cid: event.cid)

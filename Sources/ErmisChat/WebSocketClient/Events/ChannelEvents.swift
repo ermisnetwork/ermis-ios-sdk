@@ -69,21 +69,21 @@ public struct ChannelDeletedEvent: ChannelSpecificEvent {
 
 class ChannelDeletedEventDTO: EventDTO {
     let user: UserPayload?
-    let channel: ChannelDetailPayload
     let createdAt: Date
     let payload: EventPayload
+    let cid: ChannelId
 
     init(from response: EventPayload) throws {
         user = try? response.value(at: \.user)
-        channel = try response.value(at: \.channel)
         createdAt = try response.value(at: \.createdAt)
+        cid = try response.value(at: \.cid)
         payload = response
     }
 
     func toDomainEvent(session: DatabaseSession) -> Event? {
-        guard let channelDTO = session.channel(cid: channel.cid) else { return nil }
+        guard let channelDTO = session.channel(cid: cid) else { return nil }
 
-        let userDTO = user.flatMap { session.user(id: $0.id, projectId: channel.cid.projectId) }
+        let userDTO = user.flatMap { session.user(id: $0.id, projectId: cid.projectId) }
 
         return try? ChannelDeletedEvent(
             channel: channelDTO.asModel(),

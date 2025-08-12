@@ -195,10 +195,6 @@ open class TopicListItemView: _View,
                 return previewMessageTextForCurrentUser(messageText: text)
             }
 
-            if content.channel.memberCount == 2 {
-                return previewMessageTextFor1on1Channel(messageText: text)
-            }
-
             return previewMessageTextFromAnotherUser(previewMessage.author, messageText: text)
         }
 
