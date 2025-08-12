@@ -828,12 +828,33 @@ open class ChannelViewController: _ViewController,
             shouldClosedWhenLoad = true
         }
         
-        if headerView.channelController == nil, let cid = channelController.cid {
-            headerView.channelController = client.channelController(for: cid)
+        if channel.item.deletedAt != nil {
+            closed()
+            shouldClosedWhenLoad = true
         }
         
+        if headerView.channelController == nil, let cid = channelController.cid {
+            headerView.channelController = client.channelController(for: cid,
+                                                                    parentId: channelController.parentCid)
+        }
         
-        setUpUI()
+        if let parent = channelController.parentChannel {
+            if parent.topicsEnabled == true {
+                
+                loadMessageListView()
+            } else {
+                closed()
+                shouldClosedWhenLoad = true
+            }
+            
+        } else {
+            if channel.item.topicsEnabled == true {
+                loadTopicListView()
+            } else {
+                loadMessageListView()
+            }
+        }
+        
         contentDidChanged()
         
         updateInvitationView()

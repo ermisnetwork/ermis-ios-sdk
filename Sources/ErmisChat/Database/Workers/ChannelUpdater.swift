@@ -91,7 +91,7 @@ class ChannelUpdater: Worker {
 
         let endpoint: Endpoint<ChannelPayload> = {
             if channelQuery.parentCid != nil {
-                return .createTopic(query: channelQuery)
+                return .createTopic(isUpdate: isChannelCreate, query: channelQuery)
             } else {
                 return isChannelCreate ? .createChannel(query: channelQuery) :
                     .updateChannel(query: channelQuery)
@@ -362,8 +362,8 @@ class ChannelUpdater: Worker {
         channelRepository.setPinned(cid: cid, isPinned: isPinned, completion: completion)
     }
     
-    func topinChannel(cid: ChannelId, isPinned: Bool, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
-        channelRepository.setTopic(cid: cid, isEnable: isPinned, completion: completion)
+    func topinChannel(cid: ChannelId, projectId: String, isPinned: Bool, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
+        channelRepository.setTopic(cid: cid, projectId: projectId, isEnable: isPinned, completion: completion)
     }
 
     ///
@@ -569,8 +569,8 @@ extension ChannelUpdater {
     ///  - query: The channel query used in the request.
     ///  - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
     ///  **Note**: This method is used to create a topic in a parent channel. The parent channel must be specified in the query.
-    func addTopic(_ query: ChannelQuery, completion: ((Error?) -> Void)? = nil) {
-        apiClient.request(endpoint: .createTopic(query: query)) {
+    func addTopic(isUpdate: Bool, _ query: ChannelQuery, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .createTopic(isUpdate: isUpdate, query: query)) {
             completion?($0.error)
         }
     }
