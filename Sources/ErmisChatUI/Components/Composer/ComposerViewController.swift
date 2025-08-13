@@ -921,6 +921,7 @@ open class ComposerViewController: _ViewController,
             editMessage(withId: editingMessage.id, newText: text)
             channelController?.sendStopTypingEvent()
             content.clear()
+            mentionTokens = []
             channelController?.saveComposerUnsentContent(nil)
         } else {
             createNewMessage(text: text)
@@ -930,6 +931,7 @@ open class ComposerViewController: _ViewController,
                 cooldownTracker.start(with: cooldownDuration)
             }
             content.clear()
+            mentionTokens = []
             channelController?.saveComposerUnsentContent(nil)
         }
     }
@@ -1018,6 +1020,7 @@ open class ComposerViewController: _ViewController,
 
     @objc open func clearContent(sender: UIButton) {
         content.clear()
+        mentionTokens = []
     }
 
     /// Creates a new message and notifies the delegate that a new message was created.
