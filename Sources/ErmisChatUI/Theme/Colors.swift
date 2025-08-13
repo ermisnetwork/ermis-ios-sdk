@@ -17,12 +17,14 @@ public class Colors {
     public var outgoingMessageText = BaseColor.onPrimary
     public var quotedMessageText = BaseColor.onSurfaceVariant
 
-    public var mentionUserText = BaseColor.error
+    public var incomingMentionUserText = BaseColor.error
+    public var outgoingMentionUserText = BaseColor.error
     public var incomingMentionOtherUserText = BaseColor.onSurface
     public var outgoingMentionOtherUserText = BaseColor.onPrimary
 
     public var systemMessageText = BaseColor.onSurfaceVariant
     public var textLinkColor = BaseColor.primary
+    public var draftMessageText = BaseColor.error
 
     public var messageListSeparatorText = BaseColor.onSurface
 

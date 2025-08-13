@@ -41,6 +41,13 @@ public struct ChannelListSortingKey: SortingKey, Equatable {
         remoteKey: ChannelCodingKeys.lastMessageAt.rawValue
     )
 
+    /// Sort channels by the invited time.
+    public static let invitedAt = Self(
+        keyPath: \.membership?.memberCreatedAt,
+        localKey: #keyPath(ChannelDTO.membership.memberCreatedAt),
+        remoteKey: ChannelCodingKeys.invitedAt.rawValue
+    )
+
     /// Sort channels by number of members.
     public static let memberCount = Self(
         keyPath: \.memberCount,

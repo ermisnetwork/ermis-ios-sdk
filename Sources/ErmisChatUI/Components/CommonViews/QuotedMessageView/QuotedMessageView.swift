@@ -173,7 +173,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         textView.textContainer.lineBreakMode = .byTruncatingTail
         textView.textContainer.lineFragmentPadding = .zero
         textView.backgroundColor = .clear
-        textView.font = theme.fonts.body
+        textView.font = theme.fonts.callout
         textView.textContainerInset = .zero
 
         bubbleContainerView.backgroundColor = theme.colors.bubbleQuotedMessageBackground
@@ -259,7 +259,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         }
 
         if content?.message?.mentionedAll == true {
-            textView.highlightMentionAllUsers()
+            textView.highlightMentionAllUsers(isSendByCurrentUser: false)
         }
     }
 

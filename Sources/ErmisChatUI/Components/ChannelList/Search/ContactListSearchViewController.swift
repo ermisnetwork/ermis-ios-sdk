@@ -48,13 +48,13 @@ open class ContactListSearchViewController: ContactListViewController, UISearchR
             withReuseIdentifier: separatorReuseIdentifier
         )
 
-        collectionView.dataSource = self
         collectionView.delegate = self
 
         viewPaginationHandler.bottomThreshold = 800
         viewPaginationHandler.onNewBottomPage = { [weak self] in
             self?.loadMoreSearchResults()
         }
+        setupDiffableDataSource()
     }
 
     override open func setUpTheme() {

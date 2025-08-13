@@ -64,13 +64,8 @@ class InvitedChannelListViewController: ChannelListViewController, EventsControl
         return channels[safe: index]
     }
 
-    open
-    override func collectionView(
-        _ collectionView: UICollectionView,
-        cellForItemAt indexPath: IndexPath
-    ) -> UICollectionViewCell {
+    open override func cellItem(for collectionView: UICollectionView, indexPath: IndexPath, channel: Channel) -> UICollectionViewCell? {
         let cell = collectionView.dequeueReusableCell(with: components.invitedChannelCell, for: indexPath)
-        guard let channel = getChannel(at: indexPath) else { return cell }
 
         cell.itemView.content = .init(
             channel: channel,
@@ -85,6 +80,7 @@ class InvitedChannelListViewController: ChannelListViewController, EventsControl
         }
 
         return cell
+
     }
 
     open override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {

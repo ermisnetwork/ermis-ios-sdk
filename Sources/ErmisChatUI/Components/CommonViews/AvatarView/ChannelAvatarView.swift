@@ -179,6 +179,7 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
                                       placeholder: UIImage? = nil,
                                       placeHolderString: String? = nil) {
         log.debug("Load image from URL: \(url)")
+        presenceAvatarView.avatarView.cancelLoading()
         presenceAvatarView.avatarView.loadImage(from: url,
                                                 with: ImageLoaderOptions(
             resize: .init(components.avatarThumbnailSize),

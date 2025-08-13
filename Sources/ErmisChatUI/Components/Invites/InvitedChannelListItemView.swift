@@ -44,6 +44,12 @@ class InvitedChannelListItemView: _View, UIProvider, SwiftUIRepresentable {
             public let text: String
             /// The message that belongs to a message search result.
             public let message: ChatMessage?
+
+            /// Initialize from `text` and `message`
+            public init(text: String, message: ChatMessage?) {
+                self.text = text
+                self.message = message
+            }
         }
     }
 
@@ -180,6 +186,11 @@ class InvitedChannelListItemView: _View, UIProvider, SwiftUIRepresentable {
     /// The item's view background color when highlighted.
     open var contentHighlightedBackgroundColor: UIColor {
         theme.colors.surfaceContainer
+    }
+
+    open override func setUp() {
+        super.setUp()
+        timestampLabel.isHidden = true
     }
 
     override open func setUpTheme() {
