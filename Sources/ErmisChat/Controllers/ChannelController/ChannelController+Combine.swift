@@ -20,6 +20,11 @@ extension ChannelController {
     public var messagesChangesPublisher: AnyPublisher<[ListChange<ChatMessage>], Never> {
         basePublishers.messagesChanges.keepAlive(self)
     }
+    
+    /// A publisher emitting a new value every time the list of the messages matching the query changes.
+    public var topicsChangesPublisher: AnyPublisher<[ListChange<Channel>], Never> {
+        basePublishers.topicChanges.keepAlive(self)
+    }
 
     /// A publisher emitting a new value every time member event received.
     public var memberEventPublisher: AnyPublisher<MemberEvent, Never> {
@@ -46,6 +51,9 @@ extension ChannelController {
 
         /// A backing subject for `messagesChangesPublisher`.
         let messagesChanges: PassthroughSubject<[ListChange<ChatMessage>], Never> = .init()
+        
+        /// A backing subject for `messagesChangesPublisher`.
+        let topicChanges: PassthroughSubject<[ListChange<Channel>], Never> = .init()
 
         /// A backing subject for `memberEventPublisher`.
         let memberEvent: PassthroughSubject<MemberEvent, Never> = .init()
@@ -63,6 +71,10 @@ extension ChannelController {
 }
 
 extension ChannelController.BasePublishers: ChannelControllerDelegate {
+    func channelController(_ channelController: ChannelController, didUpdateTopic topics: [ListChange<Channel>]) {
+        topicChanges.send(topics)
+    }
+    
     func controller(_ controller: DataController, didChangeState state: DataController.State) {
         self.state.send(state)
     }

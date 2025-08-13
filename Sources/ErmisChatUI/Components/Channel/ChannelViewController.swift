@@ -53,6 +53,10 @@ open class ChannelViewController: _ViewController,
     open private(set) lazy var messageComposerVC = components
         .messageComposerVC
         .init()
+    
+    open lazy var topicListVC: TopicListViewController = components
+        .topicListVC
+        .init()
 
     /// The audioPlayer  that will be used for the playback of VoiceRecordings
     open private(set) lazy var audioPlayer: AudioPlaying = components
@@ -179,6 +183,8 @@ open class ChannelViewController: _ViewController,
         super.setUp()
 
         eventsController.delegate = self
+        
+        topicListVC.controller = channelController
 
         messageListVC.delegate = self
         messageListVC.dataSource = self
@@ -283,41 +289,27 @@ open class ChannelViewController: _ViewController,
 
         view.backgroundColor = theme.colors.surface
 
-        addChildViewController(messageListVC, targetView: view)
-
-        messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
-        messageListVC.view.pin(anchors: [.leading, .trailing], to: view.safeAreaLayoutGuide)
-
-        view.addSubview(invitingView)
-        invitingViewHeightConstraint = invitingView.heightAnchor.constraint(equalToConstant: invitingHeight)
-        invitingView.pin(anchors: [.leading, .trailing], to: view)
-
-        addChildViewController(messageComposerVC, targetView: view)
-        messageComposerVC.view.pin(anchors: [.leading, .trailing], to: view)
-        messageComposerVC.view.topAnchor.pin(equalTo: invitingView.bottomAnchor).isActive = true
-        messageComposerBottomConstraint = messageComposerVC.view.bottomAnchor.pin(equalTo: view.bottomAnchor)
-        NSLayoutConstraint.activate([
-            messageListTopConstraint!,
-            invitingViewHeightConstraint!,
-            invitingView.makeConstraint(attribute: .top, toItem: messageListVC.view, attribute: .bottom),
-            messageComposerBottomConstraint!
-
-        ])
-
-        if let cid = channelController.cid {
-            headerView.channelController = client.channelController(for: cid)
+        guard let cid = channelController.cid else {
+            log.error("ChannelController doesn't have a valid cid")
+            return
         }
+        
+        if let parentCid = channelController.parentCid {
+            headerView.channelController = client.channelController(for: cid, parentId: parentCid)
+            // Load message for topics
+            loadMessageListView()
+            
+        } else  {
+            headerView.channelController = client.channelController(for: cid)
+            // Check chanel is enale or disable topic
+            if channelController.channel?.topicsEnabled == true {
+                loadTopicListView()
+            } else {
+                loadMessageListView()
+            }
+        }
+        
 
-        view.addSubview(pinnedMessageView)
-        pinnedMessageView.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16).isActive = true
-        pinnedMessageView.pin(anchors: [.leading], to: view, contant: 16)
-        pinnedMessageView.pin(anchors: [.centerX], to: view)
-        pinnedMessageView.heightAnchor.pin(greaterThanOrEqualToConstant: 72).isActive = true
-
-        // Accept Invitation View
-        view.addSubview(acceptInvitationView)
-        acceptInvitationView.pin(anchors: [.top, .bottom, .leading, .trailing], to: view)
-        updateInvitationView()
         navigationItem.leftItemsSupplementBackButton = true
         navigationItem.leftBarButtonItem = UIBarButtonItem(customView: headerView)
         navigationItem.largeTitleDisplayMode = .never
@@ -332,7 +324,6 @@ open class ChannelViewController: _ViewController,
 
     override open func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-//        channelController.delegate = self
         keyboardHandler.start()
 
         if shouldMarkChannelRead {
@@ -394,6 +385,82 @@ open class ChannelViewController: _ViewController,
     private func setChannelControllerToComposerIfNeeded(cid: ChannelId?) {
         guard messageComposerVC.channelController == nil, let cid = cid else { return }
         messageComposerVC.channelController = client.channelController(for: cid)
+    }
+    
+    private func loadTopicListView() {
+        if topicListVC.parent != nil {
+            return
+        }
+        
+        messageListVC.removeFromParent()
+        messageListVC.view.removeFromSuperview()
+        
+        invitingView.removeFromSuperview()
+        messageComposerVC.removeFromParent()
+        messageComposerVC.view.removeFromSuperview()
+        
+        pinnedMessageView.removeFromSuperview()
+        acceptInvitationView.removeFromSuperview()
+
+        addChildViewController(topicListVC, targetView: view)
+        topicListVC.view.pin(anchors: [.top, .leading, .trailing, .bottom], to: view.safeAreaLayoutGuide)
+    }
+    
+    private func loadMessageListView() {
+        // Remove all related child view controllers and views
+        removeAllMessageListSubviews()
+
+        addChildViewController(messageListVC, targetView: view)
+        messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        messageListVC.view.pin(anchors: [.leading, .trailing], to: view.safeAreaLayoutGuide)
+
+        view.addSubview(invitingView)
+        invitingViewHeightConstraint = invitingView.heightAnchor.constraint(equalToConstant: invitingHeight)
+        invitingView.pin(anchors: [.leading, .trailing], to: view)
+
+        updateMessageComposerAndConstraints()
+
+        view.addSubview(pinnedMessageView)
+        pinnedMessageView.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16).isActive = true
+        pinnedMessageView.pin(anchors: [.leading], to: view, contant: 16)
+        pinnedMessageView.pin(anchors: [.centerX], to: view)
+        pinnedMessageView.heightAnchor.pin(greaterThanOrEqualToConstant: 72).isActive = true
+
+        view.addSubview(acceptInvitationView)
+        acceptInvitationView.pin(anchors: [.top, .bottom, .leading, .trailing], to: view)
+        updateInvitationView()
+    }
+
+    private func removeAllMessageListSubviews() {
+        topicListVC.removeFromParentViewController()
+        messageComposerVC.removeFromParentViewController()
+        invitingView.removeFromSuperview()
+        pinnedMessageView.removeFromSuperview()
+        acceptInvitationView.removeFromSuperview()
+        messageListVC.removeFromParentViewController()
+    }
+
+    private func updateMessageComposerAndConstraints() {
+        var messageListBottomConstraint: NSLayoutConstraint
+
+        if channelController.channel?.isClosedTopic == true {
+            messageComposerBottomConstraint?.isActive = false
+            messageListBottomConstraint = messageListVC.view.bottomAnchor.pin(equalTo: view.bottomAnchor)
+        } else {
+            addChildViewController(messageComposerVC, targetView: view)
+            messageComposerVC.view.pin(anchors: [.leading, .trailing], to: view)
+            messageComposerVC.view.topAnchor.pin(equalTo: invitingView.bottomAnchor).isActive = true
+            messageComposerBottomConstraint = messageComposerVC.view.bottomAnchor.pin(equalTo: view.bottomAnchor)
+            messageComposerBottomConstraint?.isActive = true
+            messageListBottomConstraint = messageListVC.view.bottomAnchor.pin(equalTo: messageComposerVC.view.topAnchor)
+        }
+
+        NSLayoutConstraint.activate([
+            messageListTopConstraint!,
+            invitingViewHeightConstraint!,
+            invitingView.makeConstraint(attribute: .top, toItem: messageListVC.view, attribute: .bottom),
+            messageListBottomConstraint
+        ])
     }
 
     // MARK: - Actions
@@ -760,14 +827,41 @@ open class ChannelViewController: _ViewController,
             closed()
             shouldClosedWhenLoad = true
         }
+        
+        if channel.item.deletedAt != nil {
+            closed()
+            shouldClosedWhenLoad = true
+        }
+        
+        if headerView.channelController == nil, let cid = channelController.cid {
+            headerView.channelController = client.channelController(for: cid,
+                                                                    parentId: channelController.parentCid)
+        }
+        
+        if let parent = channelController.parentChannel {
+            if parent.topicsEnabled == true {
+                
+                loadMessageListView()
+            } else {
+                closed()
+                shouldClosedWhenLoad = true
+            }
+            
+        } else {
+            if channel.item.topicsEnabled == true {
+                loadTopicListView()
+            } else {
+                loadMessageListView()
+            }
+        }
+        
+        contentDidChanged()
+        
+        updateInvitationView()
         updateScrollToBottomButtonCount()
         updateJumpToUnreadRelatedComponents()
 
-        if headerView.channelController == nil, let cid = channelController.cid {
-            headerView.channelController = client.channelController(for: cid)
-        }
-        updateInvitationView()
-
+        messageListVC.isInteractionMessage = !(channelController.channel?.isClosedTopic ?? false)
         if let channel = self.channelController.channel,
            let lastestPinnedMessage = channel.pinnedMessages.first {
             pinnedMessageView.content = .init(message: lastestPinnedMessage,
@@ -778,6 +872,8 @@ open class ChannelViewController: _ViewController,
             pinnedMessageView.content = nil
             messageListVC.listView.defaultContentInsetTop = 0
         }
+        
+        
     }
 
     open func channelController(
@@ -795,6 +891,10 @@ open class ChannelViewController: _ViewController,
         } else {
             messageListVC.showTypingIndicator(typingUsers: typingUsersWithoutCurrentUser)
         }
+    }
+    
+    public func channelController(_ channelController: ChannelController, didUpdateTopic topics: [ListChange<Channel>]) {
+        topicListVC.updateTopics(topics)
     }
 
     // MARK: - EventsControllerDelegate

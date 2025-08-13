@@ -8,6 +8,7 @@ import Foundation
 @objc(ChannelDTO)
 class ChannelDTO: NSManagedObject {
     @NSManaged var cid: String
+    @NSManaged var parentcid: String?
     @NSManaged var name: String?
     @NSManaged var cDescription: String?
     @NSManaged var imageURL: URL?
@@ -64,6 +65,9 @@ class ChannelDTO: NSManagedObject {
     @NSManaged var memberListQueries: Set<ChannelMemberListQueryDTO>
     @NSManaged var previewMessage: MessageDTO?
     @NSManaged var composerUnsentContent: ComposerContentDTO?
+    @NSManaged var isClosedTopic: Bool
+    @NSManaged var topicsEnabled: Bool
+    @NSManaged var topics: Set<ChannelDTO>?
 
     var projectId: String? {
         guard let channelId = try? ChannelId(cid: cid) else {
@@ -121,6 +125,25 @@ class ChannelDTO: NSManagedObject {
         let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \ChannelDTO.updatedAt, ascending: false)]
         request.predicate = NSPredicate(format: "cid == %@", cid.rawValue)
+        return request
+    }
+    
+    static func fetchTopicRequest(for parentCid: ChannelId) -> NSFetchRequest<ChannelDTO> {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \ChannelDTO.parentcid, ascending: true),
+            NSSortDescriptor(keyPath: \ChannelDTO.isPinned, ascending: false),
+            NSSortDescriptor(keyPath: \ChannelDTO.updatedAt, ascending: false),
+            NSSortDescriptor(keyPath: \ChannelDTO.lastMessageAt, ascending: false),
+        ]
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid.rawValue, parentCid.rawValue)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
         return request
     }
 
@@ -214,6 +237,12 @@ extension NSManagedObjectContext {
         if let memberCapabilities = payload.memberCapabilities {
             dto.memberCapabilities = memberCapabilities
         }
+    
+        dto.parentcid = payload.parentcid?.rawValue
+    
+        
+        dto.isClosedTopic = payload.isClosedTopic ?? false
+        dto.topicsEnabled = payload.topicsEnabled ?? false
 
         dto.filterWords = payload.filterWords
 
@@ -265,6 +294,7 @@ extension NSManagedObjectContext {
             let member = try saveMember(payload: memberPayload, channelId: payload.cid, query: nil, cache: cache)
             dto.members.insert(member)
         }
+        
 
         if let query = query {
             let queryDTO = saveQuery(query: query)
@@ -318,6 +348,13 @@ extension NSManagedObjectContext {
             dto.membership = membership
         } else if let member = payload.channel.members?.first(where: { $0.userId == dto.membership?.user.userId }) {
             dto.membership = try saveMember(payload: member, channelId: payload.channel.cid, query: nil, cache: cache)
+        }
+        
+        if let topics = payload.topics {
+            try topics.forEach {
+                let topics = try saveChannel(payload: $0, query: nil, cache: nil)
+                dto.topics?.insert(topics)
+            }
         }
 
         dto.watcherCount = Int64(clamping: payload.watcherCount ?? 0)
@@ -423,6 +460,28 @@ extension ChannelDTO {
         request.fetchBatchSize = query.pagination.pageSize
         return request
     }
+    
+    static func loadTopics(
+        parentCid: String,
+        sort: [Sorting<ChannelListSortingKey>],
+        context: NSManagedObjectContext,
+    ) -> [ChannelDTO] {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+
+        // Fetch results controller requires at least one sorting descriptor.
+        let sortDescriptors = sort.compactMap { $0.key.sortDescriptor(isAscending: $0.isAscending) }
+        request.sortDescriptors = sortDescriptors.isEmpty ? [ChannelListSortingKey.defaultSortDescriptor] : sortDescriptors
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid, parentCid)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
+        return load(by: request, context: context)
+
+    }
 }
 
 extension ChannelDTO {
@@ -450,7 +509,12 @@ extension Channel {
         guard let cid = try? ChannelId(cid: dto.cid), let context = dto.managedObjectContext else {
             throw InvalidModel(dto)
         }
-
+        
+        var parentCid: ChannelId? = nil
+        if dto.parentcid == nil, let parentCidValidated = try? ChannelId(cid: dto.cid) {
+            parentCid = parentCidValidated
+        }
+        
         let reads: [ChannelRead] = try dto.reads.map { try $0.asModel() }
 
         let unreadCount: () -> ChannelUnreadCount = {
@@ -505,6 +569,17 @@ extension Channel {
                 )
                 .compactMap { try? $0.relationshipAsModel(depth: depth) }
         }
+        
+        let fetchTopic: () -> [Channel] = {
+            guard dto.isValid else { return [] }
+            return ChannelDTO
+                .loadTopics(parentCid: dto.cid, sort: [
+                    Sorting<ChannelListSortingKey>(key: .createdAt, isAscending: false),
+                    Sorting<ChannelListSortingKey>(key: .lastMessageAt, isAscending: false),
+                    Sorting<ChannelListSortingKey>(key: .isPinned, isAscending: false),
+                ], context: context)
+                .compactMap { try? $0.relationshipAsModel(depth: depth) }
+        }
 
         let fetchLatestMessageFromUser: () -> ChatMessage? = {
             guard dto.isValid, let currentUser = context.currentUser,
@@ -530,7 +605,11 @@ extension Channel {
                 .loadLastActiveMembers(cid: cid, context: context)
                 .compactMap { try? $0.asModel() }
         }
-
+        
+        let topics = dto.topics.map {
+            $0.compactMap { try? $0.relationshipAsModel(depth: depth) }
+        } ?? []
+        
         let config = try? dto.config?.asModel()
         let  ownCapabilities = dto.ownCapabilities ?? []
         let memberCapabilities = dto.memberCapabilities ?? []
@@ -538,6 +617,7 @@ extension Channel {
 
         return try Channel(
             cid: cid,
+            parentCid: parentCid,
             name: dto.name,
             description: dto.cDescription,
             imageURL: dto.imageURL,
@@ -550,6 +630,8 @@ extension Channel {
             isHidden: dto.isHidden,
             isPublic: dto.isPublic,
             isPinned: dto.isPinned,
+            topicEnabled: dto.topicsEnabled,
+            isClosedTopic: dto.isClosedTopic,
             createdBy: dto.createdBy?.asModel(),
             config: dto.config?.asModel(),
             ownCapabilities: Set((dto.ownCapabilities ?? []).compactMap(ChannelCapability.init(rawValue:))),
@@ -567,6 +649,7 @@ extension Channel {
             cooldownDuration: Int(dto.cooldownDuration),
             //            invitedMembers: [],
             latestMessages: { fetchMessages() },
+            topics: { fetchTopic() },
             lastMessageFromCurrentUser: { fetchLatestMessageFromUser() },
             pinnedMessages: {
                 dto.pinnedMessages.compactMap {
@@ -579,6 +662,11 @@ extension Channel {
             composerUnsentContent: dto.composerUnsentContent?.asModel()
         )
     }
+}
+
+// MARK: - Topic
+extension ChannelDTO {
+    
 }
 
 // MARK: - Helpers

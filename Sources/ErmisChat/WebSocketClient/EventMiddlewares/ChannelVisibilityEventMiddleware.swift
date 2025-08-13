@@ -10,10 +10,10 @@ struct ChannelVisibilityEventMiddleware: EventMiddleware {
         do {
             switch event {
             case let event as ChannelDeletedEventDTO:
-                guard let channelDTO = session.channel(cid: event.channel.cid) else {
+                guard let channelDTO = session.channel(cid: event.cid) else {
                     return event
                 }
-                channelDTO.deletedAt = event.channel.updatedAt.bridgeDate
+                channelDTO.deletedAt = Date().bridgeDate
             case let event as ChannelVisibleEventDTO:
                 guard let channelDTO = session.channel(cid: event.cid) else {
                     throw ClientError.ChannelDoesNotExist(cid: event.cid)
@@ -43,6 +43,16 @@ struct ChannelVisibilityEventMiddleware: EventMiddleware {
                     throw ClientError.ChannelDoesNotExist(cid: event.cid)
                 }
                 channelDTO.isPinned = false
+            case let event as ChannelTopicEnableEventDTO:
+                guard let channelDTO = session.channel(cid: event.cid) else {
+                    throw ClientError.ChannelDoesNotExist(cid: event.cid)
+                }
+                channelDTO.topicsEnabled = true
+            case let event as ChannelTopicDisableEventDTO:
+                guard let channelDTO = session.channel(cid: event.cid) else {
+                    throw ClientError.ChannelDoesNotExist(cid: event.cid)
+                }
+                channelDTO.topicsEnabled = false
 
             // New Message will unhide the channel
             // but we won't get `ChannelVisibleEvent` for this case

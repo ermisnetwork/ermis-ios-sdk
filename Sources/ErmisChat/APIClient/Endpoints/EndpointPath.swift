@@ -50,6 +50,12 @@ enum EndpointPath: Codable {
     case uploadAttachment(channelId: ChannelId, type: String)
     case channelDetailUpdate(cid: ChannelId)
     case getAttachments(cid: ChannelId)
+    case enableTopics(channelId: ChannelId)
+    case disableTopics(channelId: ChannelId)
+    case createTopic(String)
+    case editTopic(String)
+    case closeTopic(channelId: ChannelId)
+    case reopenTopic(channelId: ChannelId)
 
     case sendMessage(ChannelId)
     case message(MessageId)
@@ -254,6 +260,18 @@ enum EndpointPath: Codable {
             return "uss/v1/users/join"
         case .signal:
             return "signal"
+        case .enableTopics(let channelId):
+            return "channels/\(channelId.apiPath)/topics/enable"
+        case .disableTopics(let channelId):
+            return "channels/\(channelId.apiPath)/topics/disable"
+        case .createTopic(let queryString):
+            return "channels/\(queryString)/query"
+        case .editTopic(let queryString):
+            return "channels/\(queryString)/topics"
+        case .closeTopic(let channelId):
+            return "channels/\(channelId.apiPath)/topics/close"
+        case .reopenTopic(let channelId):
+            return "channels/\(channelId.apiPath)/topics/reopen"
         }
     }
 

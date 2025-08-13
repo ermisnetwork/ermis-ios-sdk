@@ -474,5 +474,69 @@ extension Endpoint {
             needConnectionId: true
         )
     }
-
+    
+    /// Create the endpoint to enable/disable topics in a channel.
+    /// /// - Parameters:
+    ///  - cid: The channel identifier.
+    ///  - isEnable: The boolean value, `true` if we want to enable topics in the channel with given `cid`.
+    ///  /// - Returns: The endpoint to enable/disable topics in a channel.
+    static func enableTopic(cid: ChannelId,
+                            projectId: String,
+                            isEnable: Bool) -> Endpoint<EmptyResponse> {
+        return .init(
+            path: isEnable ? .enableTopics(channelId: cid) : .disableTopics(channelId: cid),
+            method: .post,
+            query: nil,
+            body: [
+                "project_id": projectId,
+            ],
+            needConnectionId: true
+        )
+    }
+    
+    static func closeTopic(cid: ChannelId, data: CloseAndReopenTopic) -> Endpoint<EmptyResponse> {
+        return .init(
+            path: .closeTopic(channelId: cid),
+            method: .post,
+            query: nil,
+            body: data,
+            needConnectionId: true
+        )
+    }
+    
+    static func reopenTopic(cid: ChannelId, data: CloseAndReopenTopic) -> Endpoint<EmptyResponse> {
+        return .init(
+            path: .reopenTopic(channelId: cid),
+            method: .post,
+            query: nil,
+            body: data,
+            needConnectionId: true
+        )
+    }
+    
+    /// Create the endpoint to create channel.
+    ///
+    /// - Parameters:
+    ///   - query: The `ChannelQuery` to create channel.
+    /// - Returns: The endpoint to create new channel.
+    static func createTopic(isUpdate: Bool, query: ChannelQuery) -> Endpoint<ChannelPayload> {
+        return createOrUpdateTopic(path: isUpdate ? .editTopic(query.apiPath) : .createTopic(query.apiPath), query: query)
+    }
+    
+    
+    /// Create the endpoint for update topic.
+    ///
+    /// - Parameters:
+    ///  - path: If we want to create a new topic, using `createTopic` path.
+    ///  - query: The `ChannelQuery` to update topic.
+    ///  - Returns: The endpoint to update the topic.
+    private static func createOrUpdateTopic(path: EndpointPath, query: ChannelQuery) -> Endpoint<ChannelPayload> {
+        .init(
+            path: path,
+            method: .post,
+            query: nil,
+            body: query,
+            needConnectionId: true
+        )
+    }
 }
