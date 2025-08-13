@@ -12,6 +12,7 @@ class EventPayload: Decodable {
         case eventType = "type"
         case connectionId = "connection_id"
         case cid
+        case parentCid = "parent_cid"
         case channelType = "channel_type"
         case channelId = "channel_id"
         case currentUser = "me"
@@ -45,6 +46,9 @@ class EventPayload: Decodable {
     let eventType: EventType
     let connectionId: String?
     let cid: ChannelId?
+    let parentCid: ChannelId?
+    let channelType: ChannelType?
+    let channelId: String?
     let currentUser: CurrentUserPayload?
     let user: UserPayload?
     let userId: String?
@@ -77,6 +81,9 @@ class EventPayload: Decodable {
         eventType: EventType,
         connectionId: String? = nil,
         cid: ChannelId? = nil,
+        parentCid: ChannelId? = nil,
+        channelType: ChannelType? = nil,
+        channelId: String? = nil,
         projectId: String = "",
         currentUser: CurrentUserPayload? = nil,
         user: UserPayload? = nil,
@@ -108,6 +115,7 @@ class EventPayload: Decodable {
         self.eventType = eventType
         self.connectionId = connectionId
         self.cid = cid
+        self.parentCid = parentCid
         self.projectId = projectId
         self.currentUser = currentUser
         self.user = user
@@ -135,6 +143,8 @@ class EventPayload: Decodable {
         self.isVideo = isVideo
         self.signal = signal
         self.callAction = callAction
+        self.channelType = channelType
+        self.channelId = channelId
     }
 
     required init(from decoder: Decoder) throws {
@@ -171,6 +181,9 @@ class EventPayload: Decodable {
         isVideo = try container.decodeIfPresent(Bool.self, forKey: .isVideo)
         signal = try container.decodeIfPresent(CallSignal.self, forKey: .signal)
         callAction = try container.decodeIfPresent(CallAction.self, forKey: .callAction)
+        parentCid = try container.decodeIfPresent(ChannelId.self, forKey: .parentCid)
+        channelType = try container.decodeIfPresent(ChannelType.self, forKey: .channelType)
+        channelId = try container.decodeIfPresent(String.self, forKey: .channelId)
     }
 
     func event() throws -> Event {
@@ -188,6 +201,7 @@ private extension PartialKeyPath where Root == EventPayload {
         case \EventPayload.eventType: return "eventType"
         case \EventPayload.connectionId: return "connectionId"
         case \EventPayload.cid: return "cid"
+        case \EventPayload.parentCid: return "parentCid"
         case \EventPayload.currentUser: return "currentUser"
         case \EventPayload.user: return "user"
         case \EventPayload.createdBy: return "createdBy"

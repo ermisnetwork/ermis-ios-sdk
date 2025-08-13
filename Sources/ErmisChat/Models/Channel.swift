@@ -10,6 +10,9 @@ import Foundation
 public struct Channel {
     /// The `ChannelId` of the channel.
     public let cid: ChannelId
+    
+    /// The parent channel id if this channel is a topic.
+    public let parentCid: ChannelId?
 
     /// Name for this channel.
     public let name: String?
@@ -61,6 +64,10 @@ public struct Channel {
 
     /// The total number of members in the channel.
     public let memberCount: Int
+    
+    public let topicsEnabled: Bool
+    
+    public let isClosedTopic: Bool
 
     /// A list of members of this channel.
     ///
@@ -162,6 +169,11 @@ public struct Channel {
     public var previewMessage: ChatMessage? { _previewMessage }
     // "Move to async?"
     @CoreDataLazy private var _previewMessage: ChatMessage?
+    
+    public var topics: [Channel]? { _topics }
+
+    // "Move to async?"
+    @CoreDataLazy private var _topics: [Channel]?
 
     public var composerUnsentContent: ComposerContent?
 
@@ -186,6 +198,7 @@ public struct Channel {
 
     init(
         cid: ChannelId,
+        parentCid: ChannelId? = nil,
         name: String?,
         description: String?,
         imageURL: URL?,
@@ -198,6 +211,8 @@ public struct Channel {
         isHidden: Bool,
         isPublic: Bool,
         isPinned: Bool?,
+        topicEnabled: Bool = false,
+        isClosedTopic: Bool = false,
         createdBy: ChatUser? = nil,
         config: ChannelConfig? = .init(),
         ownCapabilities: Set<ChannelCapability> = [],
@@ -214,6 +229,7 @@ public struct Channel {
         reads: [ChannelRead] = [],
         cooldownDuration: Int = 0,
         latestMessages: @escaping (() -> [ChatMessage]) = { [] },
+        topics: @escaping (() -> [Channel]?) = { nil },
         lastMessageFromCurrentUser: @escaping (() -> ChatMessage?) = { nil },
         pinnedMessages: @escaping (() -> [ChatMessage]) = { [] },
         previewMessage: @escaping () -> ChatMessage?,
@@ -221,6 +237,7 @@ public struct Channel {
         composerUnsentContent: ComposerContent? = nil
     ) {
         self.cid = cid
+        self.parentCid = parentCid
         self.name = name
         self.cDescription = description
         self.imageURL = imageURL
@@ -233,6 +250,8 @@ public struct Channel {
         self.isHidden = isHidden
         self.isPublic = isPublic
         self.isPinned = isPinned ?? false
+        self.topicsEnabled = topicEnabled
+        self.isClosedTopic = isClosedTopic
         self.createdBy = createdBy
         self.config = config
         self.ownCapabilities = ownCapabilities
@@ -258,6 +277,7 @@ public struct Channel {
         $_lastActiveWatchers = (lastActiveWatchers, underlyingContext)
         $_pinnedMessages = (pinnedMessages, underlyingContext)
         $_previewMessage = (previewMessage, underlyingContext)
+        $_topics = (topics, underlyingContext)
     }
 }
 
@@ -388,6 +408,10 @@ public struct ChannelCapability: RawRepresentable, ExpressibleByStringLiteral, H
 }
 
 public extension Channel {
+    
+    var isAdminInTopic: Bool {
+        membership?.memberRole == .owner
+    }
     /// Can the current user delete own messages from the channel.
     var canDeleteOwnMessage: Bool {
         (membership != nil && memberCapabilities.contains(.deleteOwnMessage)) || membership?.memberRole != .member

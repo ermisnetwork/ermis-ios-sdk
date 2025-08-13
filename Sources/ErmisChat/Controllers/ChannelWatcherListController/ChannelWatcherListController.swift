@@ -9,7 +9,9 @@ extension ErmisClient {
     /// Creates a new `ChannelWatcherListController` with the provided query.
     /// - Parameter query: The query specifying the pagination options for watchers the controller should fetch.
     /// - Returns: A new instance of `ChannelMemberListController`.
-    public func watcherListController(query: ChannelWatcherListQuery) -> ChannelWatcherListController {
+    public func watcherListController(query: ChannelWatcherListQuery)
+        -> ChannelWatcherListController
+    {
         .init(query: query, client: self)
     }
 }
@@ -55,7 +57,8 @@ public class ChannelWatcherListController: DataController, DelegateCallable, Dat
     }
 
     /// The observer used to observe the changes in the database.
-    private lazy var watchersObserver: ListDatabaseObserverWrapper<ChatUser, UserDTO> = createWatchersObserver()
+    private lazy var watchersObserver: ListDatabaseObserverWrapper<ChatUser, UserDTO> =
+        createWatchersObserver()
 
     /// The worker used to fetch the remote data and communicate with servers.
     private lazy var updater: ChannelUpdater = self.environment.channelUpdaterBuilder(
@@ -91,7 +94,8 @@ public class ChannelWatcherListController: DataController, DelegateCallable, Dat
         }
 
         updater.channelWatchers(query: query) { error in
-            self.state = error == nil ? .remoteDataFetched : .remoteDataFetchFailed(ClientError(with: error))
+            self.state =
+                error == nil ? .remoteDataFetched : .remoteDataFetchFailed(ClientError(with: error))
             self.callback { completion?(error) }
         }
     }
@@ -125,7 +129,8 @@ public class ChannelWatcherListController: DataController, DelegateCallable, Dat
             try watchersObserver.startObserving()
             state = .localDataFetched
         } catch {
-            log.error("Failed to perform fetch request with error: \(error). This is an internal error.")
+            log.error(
+                "Failed to perform fetch request with error: \(error). This is an internal error.")
             state = .localDataFetchFailed(ClientError(with: error))
         }
     }
@@ -133,29 +138,31 @@ public class ChannelWatcherListController: DataController, DelegateCallable, Dat
 
 extension ChannelWatcherListController {
     struct Environment {
-        var channelUpdaterBuilder: (
-            _ channelRepository: ChannelRepository,
-            _ callRepository: CallRepository,
-            _ paginationStateHandler: MessagesPaginationStateHandling,
-            _ database: DatabaseContainer,
-            _ apiClient: APIClient
-        ) -> ChannelUpdater = ChannelUpdater.init
+        var channelUpdaterBuilder:
+            (
+                _ channelRepository: ChannelRepository,
+                _ callRepository: CallRepository,
+                _ paginationStateHandler: MessagesPaginationStateHandling,
+                _ database: DatabaseContainer,
+                _ apiClient: APIClient
+            ) -> ChannelUpdater = ChannelUpdater.init
 
-        var watcherListObserverBuilder: (
-            _ isBackgroundMappingEnabled: Bool,
-            _ database: DatabaseContainer,
-            _ fetchRequest: NSFetchRequest<UserDTO>,
-            _ itemCreator: @escaping (UserDTO) throws -> ChatUser,
-            _ controllerType: NSFetchedResultsController<UserDTO>.Type
-        ) -> ListDatabaseObserverWrapper<ChatUser, UserDTO> = {
-            ListDatabaseObserverWrapper(
-                isBackground: $0,
-                database: $1,
-                fetchRequest: $2,
-                itemCreator: $3,
-                fetchedResultsControllerType: $4
-            )
-        }
+        var watcherListObserverBuilder:
+            (
+                _ isBackgroundMappingEnabled: Bool,
+                _ database: DatabaseContainer,
+                _ fetchRequest: NSFetchRequest<UserDTO>,
+                _ itemCreator: @escaping (UserDTO) throws -> ChatUser,
+                _ controllerType: NSFetchedResultsController<UserDTO>.Type
+            ) -> ListDatabaseObserverWrapper<ChatUser, UserDTO> = {
+                ListDatabaseObserverWrapper(
+                    isBackground: $0,
+                    database: $1,
+                    fetchRequest: $2,
+                    itemCreator: $3,
+                    fetchedResultsControllerType: $4
+                )
+            }
     }
 }
 
@@ -168,14 +175,16 @@ extension ChannelWatcherListController {
     }
 }
 
-public extension ChannelWatcherListController {
+extension ChannelWatcherListController {
     /// Load next set of watchers from backend.
     ///
     /// - Parameters:
     ///   - limit: Limit for page size. Offset is defined automatically by the controller.
     ///   - completion: The completion. Will be called on a **callbackQueue** when the network request is finished.
     ///                 If request fails, the completion will be called with an error.
-    func loadNextWatchers(limit: Int = .channelWatchersPageSize, completion: ((Error?) -> Void)? = nil) {
+    public func loadNextWatchers(
+        limit: Int = .channelWatchersPageSize, completion: ((Error?) -> Void)? = nil
+    ) {
         var updatedQuery = query
         updatedQuery.pagination = .init(pageSize: limit, offset: watchers.count)
         updater.channelWatchers(query: updatedQuery) { error in

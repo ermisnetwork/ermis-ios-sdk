@@ -26,6 +26,17 @@ public protocol ChannelControllerDelegate: DataControllerStateDelegate {
         _ channelController: ChannelController,
         didChangeTypingUsers typingUsers: Set<ChatUser>
     )
+    
+    func channelController(
+        _ channelController: ChannelController,
+        didUpdateTopic topics: [ListChange<Channel>]
+    )
+    
+    /// The controller observed a change in the `Channel` entity.
+    func channelController(
+        _ channelController: ChannelController,
+        didUpdateParentChannel channel: EntityChange<Channel>
+    )
 }
 
 public extension ChannelControllerDelegate {
@@ -44,5 +55,15 @@ public extension ChannelControllerDelegate {
     func channelController(
         _ channelController: ChannelController,
         didChangeTypingUsers: Set<ChatUser>
+    ) {}
+    
+    func channelController(
+        _ channelController: ChannelController,
+        didUpdateTopic topics: [ListChange<Channel>]
+    ) {}
+    
+    func channelController(
+        _ channelController: ChannelController,
+        didUpdateParentChannel channel: EntityChange<Channel>
     ) {}
 }
