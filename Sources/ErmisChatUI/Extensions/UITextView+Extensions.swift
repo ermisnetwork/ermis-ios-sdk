@@ -42,7 +42,7 @@ extension UITextView {
                 string: mentionDisplayedString, attributes: [
                     .link: "",
                     .foregroundColor: isCurrentUser ? mentionCurrentUserTextColor : mentionOtherUserTextColor,
-                    .font: font?.bold
+                    .font: font?.semiBold
                 ]
             )
             // Append mention displayed string
@@ -75,7 +75,7 @@ extension UITextView {
                 attributeText.addAttribute(.foregroundColor,
                                            value: mentionAllTextColor,
                                            range: $0)
-                attributeText.addAttribute(.font, value: font?.bold, range: $0)
+                attributeText.addAttribute(.font, value: font?.semiBold, range: $0)
             }
 
         attributedText = attributeText

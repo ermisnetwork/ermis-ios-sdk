@@ -262,7 +262,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         super.setUpTheme()
         backgroundColor = contentBackgroundColor
 
-        titleLabel.font = theme.fonts.body.bold
+        titleLabel.font = theme.fonts.body.semiBold
 
         channelStatusImageView.tintColor = theme.colors.error
 
