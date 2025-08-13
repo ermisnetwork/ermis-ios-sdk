@@ -62,4 +62,6 @@ public enum ChannelCodingKeys: String, CodingKey, CaseIterable {
     case topicsEnabled = "topics_enabled"
     /// Close a topic flag.
     case isClosedTopic = "is_closed_topic"
+    /// Invited at date.
+    case invitedAt = "invited_at"
 }
