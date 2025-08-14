@@ -510,9 +510,21 @@ internal enum L10n {
       internal static func messageUnpinned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.message-unpinned", String(describing: p1))
       }
+      /// %@ has promoted you to Owner
+      internal static func otherPromotedYouToOwner(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.other-promoted-you-to-owner", String(describing: p1))
+      }
+      /// %@ truncated all messages of this channel
+      internal static func otherTruncatedMessages(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.other-truncated-messages", String(describing: p1))
+      }
       /// %@ updated member permission of group
       internal static func otherUpdatedMemberPermission(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-updated-member-permission", String(describing: p1))
+      }
+      /// %@ has promoted member %@ to Owner
+      internal static func promotedToOwner(_ p1: Any, _ p2: Any) -> String {
+        return L10n.tr("Localizable", "message.system.promoted-to-owner", String(describing: p1), String(describing: p2))
       }
       /// Member %@ made this group private
       internal static func setChannelPrivate(_ p1: Any) -> String {
@@ -544,10 +556,16 @@ internal enum L10n {
       internal static var youLeave: String { L10n.tr("Localizable", "message.system.you-leave") }
       /// You assigned as the moderator for this group
       internal static var youPromoted: String { L10n.tr("Localizable", "message.system.you-promoted") }
+      /// You have promoted member %@ to Owner
+      internal static func youPromotedOtherToOwner(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.you-promoted-other-to-owner", String(describing: p1))
+      }
       /// You made this group private
       internal static var youSetChannelPrivate: String { L10n.tr("Localizable", "message.system.you-set-channel-private") }
       /// You made this group public
       internal static var youSetChannelPublic: String { L10n.tr("Localizable", "message.system.you-set-channel-public") }
+      /// You truncated all messages of this channel
+      internal static var youTruncatedMessages: String { L10n.tr("Localizable", "message.system.you-truncated-messages") }
       /// You unbanned and now can interact in this group
       internal static var youUnbanned: String { L10n.tr("Localizable", "message.system.you-unbanned") }
       /// You updated member permission of group

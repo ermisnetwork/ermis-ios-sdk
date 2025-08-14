@@ -35,6 +35,7 @@ enum UserPayloadsCodingKeys: String, CodingKey, CaseIterable {
 // MARK: - GET users
 
 /// An object describing the incoming user JSON payload.
+package
 class UserPayload: Decodable {
     let id: String
     let projectId: String
@@ -105,6 +106,7 @@ class UserPayload: Decodable {
         self.email = email
     }
 
+    package
     required init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: UserPayloadsCodingKeys.self)
         
