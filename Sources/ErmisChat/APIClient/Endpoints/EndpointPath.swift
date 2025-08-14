@@ -32,6 +32,7 @@ enum EndpointPath: Codable {
     case createChannel(String)
     case updateChannel(String)
     case deleteChannel(String)
+    case truncatedChannel(channelId: ChannelId)
     case channelUpdate(String)
     case joinChannel(channelType: String)
     case channelSearch
@@ -157,6 +158,8 @@ enum EndpointPath: Codable {
             return "channels/\(queryString)/query"
         case .deleteChannel(let payloadPath):
             return "channels/\(payloadPath)"
+        case .truncatedChannel(channelId: let channelId):
+            return "channels/\(channelId.apiPath)/truncate"
         case .channelUpdate(let payloadPath):
             return "channels/\(payloadPath)"
         case .muteChannel(let channelId):

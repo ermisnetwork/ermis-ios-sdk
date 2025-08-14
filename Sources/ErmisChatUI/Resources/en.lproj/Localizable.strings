@@ -248,6 +248,16 @@
 "message.system.member-leave" = "%@ left this group";
 /// Show when you leave channel.
 "message.system.you-leave" = "You left this group";
+/// Show when you truncated all messages.
+"message.system.you-truncated-messages" = "You truncated all messages of this channel";
+/// Show when other member truncated all messages.
+"message.system.other-truncated-messages" = "%@ truncated all messages of this channel";
+/// Show when you promoted other to owner.
+"message.system.you-promoted-other-to-owner" = "You have promoted member %@ to Owner";
+/// Show when other promoted you to owner.
+"message.system.other-promoted-you-to-owner" = "%@ has promoted you to Owner";
+/// Show when Owner pomoted other to owner.
+"message.system.promoted-to-owner" = "%@ has promoted member %@ to Owner";
 // Show when channel public / private
 "message.system.set-channel-public" = "Member %@ made this group public";
 "message.system.you-set-channel-public" = "You made this group public";
@@ -267,7 +277,10 @@
 "message.system.your-message-forwarded" = "You have forwarded a message";
 /// Show when a message was forwarded.
 "message.system.message-forwarded" = "A message has been forwarded";
-
+/// Show when you reject a friend request from other.
+"message.system.you-reject-add-friend-request" = "You rejected friend request from %@";
+/// Show when user reject your friend request.
+"message.system.other-reject-add-friend-request" = "%@ rejected to join this channel.";
 /// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
 "attachment.max-size-exceeded" = "File size exceeds the limit. Maximum allowed: 100MB.";
 

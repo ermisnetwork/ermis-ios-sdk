@@ -543,6 +543,7 @@ public enum SystemMessage {
     case ownerPromoted(oldId: String, newId: String)
     case messagePinned(userId: String, messageId: String)
     case messageUnpinned(userId: String, messageId: String)
+    case inviteMessagingRejected(userId: String)
 
     case unknown(systemMessage: String)
 
@@ -624,6 +625,8 @@ public enum SystemMessage {
                 return
             }
             self = .messageUnpinned(userId: userId, messageId: String(messageId))
+        case 21:
+            self = .inviteMessagingRejected(userId: userId)
         default:
             self = .unknown(systemMessage: systemMessage)
         }
