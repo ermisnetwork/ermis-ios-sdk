@@ -19,6 +19,13 @@ public struct ChannelListSortingKey: SortingKey, Equatable {
         localKey: #keyPath(ChannelDTO.createdAt),
         remoteKey: ChannelCodingKeys.createdAt.rawValue
     )
+    
+    /// Sort channels by date they were created.
+    public static let parentcid = Self(
+        keyPath: \.parentCid,
+        localKey: #keyPath(ChannelDTO.parentcid),
+        remoteKey: ChannelCodingKeys.parentcid.rawValue
+    )
 
     /// Sort channels by date they were updated.
     public static let updatedAt = Self(

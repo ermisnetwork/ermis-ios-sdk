@@ -65,11 +65,18 @@ open class ChannelListRouter: NavigationRouter<ChannelListViewController>, Compo
     
     
     open func showTopic (for cid: ChannelId) {
-        let channelController = rootViewController.controller.client.channelController(
-            for: cid,
-            channelListQuery: rootViewController.controller.query
+        
+        let topicListQuery: ChannelListQuery
+        topicListQuery = .init(
+            filter: .topics(parentcID: cid, projectId: cid.projectId),
+            sort: [
+                .init(key: .isPinned),
+                .init(key: .default)
+            ]
         )
-        let vc = TopicListViewController.make(with: channelController)
+
+        let channelListController = rootViewController.controller.client.channelListController(query: topicListQuery)
+        let vc = TopicListViewController.make(with: channelListController)
 
         setDetailViewController(vc, animated: true)
     }
