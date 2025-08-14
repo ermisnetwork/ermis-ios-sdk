@@ -461,6 +461,29 @@ extension ChannelDTO {
         return request
     }
     
+    static func topicListFetchRequest(
+        parentCid: ChannelId,
+        query: ChannelListQuery
+    ) -> NSFetchRequest<ChannelDTO> {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+
+        // Fetch results controller requires at least one sorting descriptor.
+        let sortDescriptors = query.sort.compactMap { $0.key.sortDescriptor(isAscending: $0.isAscending) }
+        request.sortDescriptors = sortDescriptors.isEmpty ? [ChannelListSortingKey.defaultSortDescriptor] : sortDescriptors
+
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid.rawValue, parentCid.rawValue)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+        
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
+        request.fetchLimit = query.pagination.pageSize
+        request.fetchBatchSize = query.pagination.pageSize
+        return request
+    }
+    
     static func loadTopics(
         parentCid: String,
         sort: [Sorting<ChannelListSortingKey>],
@@ -511,7 +534,7 @@ extension Channel {
         }
         
         var parentCid: ChannelId? = nil
-        if dto.parentcid == nil, let parentCidValidated = try? ChannelId(cid: dto.cid) {
+        if dto.parentcid != nil, let parentCidValidated = try? ChannelId(cid: dto.parentcid!) {
             parentCid = parentCidValidated
         }
         

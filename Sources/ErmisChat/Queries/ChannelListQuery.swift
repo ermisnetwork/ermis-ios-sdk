@@ -105,6 +105,16 @@ public extension Filter where Scope: AnyChannelListFilterScope {
             .equal(.projectId, to: projectId)
         ])
     }
+    
+    static func topics(parentcID: ChannelId, projectId: String) -> Filter<Scope> {
+        .and([
+            .in(.channelRoles, values: ["owner", "member", "pending", "moder"]),
+            .in(.channelType, values: [ChannelType.topic.rawValue, ChannelType.team.rawValue]),
+            .equal(.init(rawValue: "include_parent"), to: true),
+            .equal(.parentCid, to: parentcID.rawValue),
+            .equal(.projectId, to: projectId)
+        ])
+    }
 
     static func publicChannel(projectId: String) -> Filter<Scope> {
         .and([
@@ -160,6 +170,10 @@ extension FilterKey where Scope: AnyChannelListFilterScope {
 
     static var channelType: FilterKey<Scope, String> {
         .init(rawValue: "type", keyPathString: #keyPath(ChannelDTO.typeRawValue))
+    }
+    
+    static var parentCid: FilterKey<Scope, String> {
+        .init(rawValue: "parent_cid", keyPathString: #keyPath(ChannelDTO.parentcid))
     }
 
     static var isBlocked: FilterKey<Scope, Bool> {

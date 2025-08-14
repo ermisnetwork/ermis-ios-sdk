@@ -11,16 +11,21 @@ import Combine
 
 @available(iOSApplicationExtension, unavailable)
 open class TopicListViewController: _ViewController,
-                                    UICollectionViewDataSource,
                                     UICollectionViewDelegate,
-                                    SwipeableViewDelegate,
-                                    UIProvider {
+                                    ChannelListControllerDelegate,
+                                    UIProvider,
+                                    SwipeableViewDelegate {
 
     /// The data of the channel list.
-    public private(set) var channels: [Channel] = []
-    
+    public var channels: [Channel] {
+        return dataSource?.snapshot().itemIdentifiers ?? []
+    }
+
+    /// DiffirenceDataSource
+    public var dataSource: UICollectionViewDiffableDataSource<String, Channel>?
+
     /// The `ChannelListController` instance that provides channels data.
-    public var controller: ChannelController!
+    public var controller: ChannelListController!
 
     /// A boolean value that determines if the chat channel list view states are shown and handled by the SDK.
     open var isChannelListStatesEnabled: Bool {
@@ -118,7 +123,7 @@ open class TopicListViewController: _ViewController,
     ///   - storyboardId: The `storyboardId` that is set in your `UIStoryboard` reference
     /// - Returns: A newly created `TopicListViewController`
     public static func make(
-        with controller: ChannelController,
+        with controller: ChannelListController,
         storyboard: UIStoryboard? = nil,
         storyboardId: String? = nil
     ) -> Self {
@@ -147,7 +152,10 @@ open class TopicListViewController: _ViewController,
     
     override open func setUp() {
         super.setUp()
-
+        setupDiffableDataSource()
+        controller.delegate = self
+        controller.synchronize()
+        
         collectionView.register(
             components.topicListCell.self,
             forCellWithReuseIdentifier: components.topicListCell.reuseIdentifier
@@ -159,7 +167,6 @@ open class TopicListViewController: _ViewController,
             withReuseIdentifier: separatorReuseIdentifier
         )
 
-        collectionView.dataSource = self
         collectionView.delegate = self
 
         userAvatarView.controller = controller.client.currentUserController()
@@ -188,6 +195,8 @@ open class TopicListViewController: _ViewController,
                 height: 64
             )
         }
+        
+        reloadChannels()
 
         NotificationCenter.default.publisher(for: .callVCDidHidden)
             .receive(on: RunLoop.main)
@@ -274,63 +283,62 @@ open class TopicListViewController: _ViewController,
     /// use the `replaceChannelListController()` function instead of this one.
     ///
     /// - Parameter query: The new channel list query.
-    public func replaceChannel(_ chanelId: ChannelId) {
-        let newController = controller.client.channelController(for: chanelId)
+    public func replaceQuery(_ query: ChannelListQuery) {
+        let newController = controller.client.channelListController(
+            query: query
+        )
         replaceChannelListController(newController)
     }
-    
+
     /// Replaces the channel list controller and loads the new data.
     /// - Parameter controller: The new channel list controller.
-    public func replaceChannelListController(_ controller: ChannelController) {
+    public func replaceChannelListController(_ controller: ChannelListController) {
         self.controller = controller
+        self.controller.delegate = self
         self.controller.synchronize()
         reloadChannels()
     }
     
-    /// Updates the list view with the most updated channels.
-    open func reloadChannels(completion: (() -> Void)? = nil) {
-        let previousChannels = channels
-        
-        
-        var newChannels = Array(controller.topics ?? [])
-        
-        animateReloadCollectionView(previousChannels: previousChannels,
-                                    newChannels: newChannels,
-                                    completion: completion)
+    open func buildSnapshot(from channels: [Channel]) -> NSDiffableDataSourceSnapshot<String , Channel> {
+        var snapshot = NSDiffableDataSourceSnapshot<String, Channel>()
+        snapshot.appendSections(["all"])
+        snapshot.appendItems(channels, toSection: "all")
+        return snapshot
     }
 
-    /// Reload collectionView when channel is udpate
-    open func animateReloadCollectionView(previousChannels: [Channel],
-                                          newChannels: [Channel],
-                                          completion: (() -> Void)?) {
+    
+    /// Updates the list view with the most updated channels.
+    open func reloadChannels(completion: (() -> Void)? = nil) {
         guard !isReloadingChannelList else {
             hasPendingReloadChannels = true
             return
         }
-        if !Thread.isMainThread {
-            DispatchQueue.main.async(execute: {
-                self.animateReloadCollectionView(previousChannels: previousChannels, newChannels: newChannels, completion: completion)
-            })
-            return
-        }
+
         isReloadingChannelList = true
-        let stagedChangeset = StagedChangeset(source: previousChannels, target: newChannels)
-        collectionView.reload(using: stagedChangeset,
-                              reconfigure: { _ in true },
-                              setData: { [weak self] newChannels in
-            self?.channels = newChannels
-        }, completion: { [weak self] in
+        let newChannels = Array(controller.channels)
+        var snapshot = buildSnapshot(from: newChannels)
+        snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        dataSource?.apply(snapshot, animatingDifferences: true) { [weak self] in
             guard let self else {
                 return
             }
+            let snapshot = self.dataSource?.snapshot() ?? snapshot
+
             self.isReloadingChannelList = false
+
             if hasPendingReloadChannels {
-                self.hasPendingReloadChannels = false
+                hasPendingReloadChannels = false
                 reloadChannels(completion: completion)
             } else {
                 completion?()
+                onChannelReloaded()
             }
-        })
+        }
+    }
+
+    
+    open func onChannelReloaded() {
+        // Implement on subclass.
     }
     
     @objc open func didTapOnCurrentUserAvatar(_ sender: Any) {
@@ -352,7 +360,7 @@ open class TopicListViewController: _ViewController,
     }
     /// Condition to show emptyView or not
     open func shouldShowEmptyView() -> Bool {
-        return controller.channel?.topics?.isEmpty ?? true
+        return controller.channels.isEmpty
     }
 
     override open func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -366,6 +374,79 @@ open class TopicListViewController: _ViewController,
             parent.isUIHostingController
         else { return }
         setupParentNavigation(parent: parent)
+    }
+    
+    /// Setup UICollectionViewDiffableDataSource
+    public func setupDiffableDataSource() {
+        dataSource = UICollectionViewDiffableDataSource<String, Channel>(collectionView: collectionView, cellProvider: { [weak self] collectionView, indexPath, channel in
+            guard let self else {
+                return UICollectionViewCell()
+            }
+
+            return self.cellItem(for: collectionView, indexPath: indexPath, channel: channel)
+        })
+
+        dataSource?.supplementaryViewProvider = { [weak self] collectionView, kind, indexPath in
+            return self?.supplementaryView(for: collectionView, kind, indexPath)
+        }
+    }
+
+    /// Get cell item of UICollectionView at indexPath.
+    ///  - Parameters:
+    ///   - collectionView: The `UICollectionView` instance.
+    ///   - indexPath: The indexPath of the cell
+    ///   - channel: The channel at that indexPath
+    ///  - Returns: The `UICollectionViewCell` at indexPath
+    open func cellItem(for collectionView: UICollectionView,
+                       indexPath: IndexPath,
+                       channel: Channel) -> UICollectionViewCell? {
+        let cell = collectionView.dequeueReusableCell(with: components.topicListCell, for: indexPath)
+
+        cell.itemView.content = .init(
+            channel: channel,
+            currentUserId: controller.client.currentUserId,
+            searchResult: nil
+        )
+
+        cell.swipeableView.delegate = self
+        cell.swipeableView.indexPath = { [weak cell, weak self] in
+            guard let cell = cell else { return nil }
+            return self?.collectionView.indexPath(for: cell)
+        }
+
+        return cell
+    }
+
+    /// Get supplimentaryView  of UICollectionView at indexPath
+    ///  - Parameters:
+    ///   - collectionView: The `UICollectionView` instance.
+    ///   - kind: The supplementary view kind
+    ///   - indexPath: The indexPath of the cell
+    ///  - Returns: The `UICollectionReusableView` at indexPath
+    open func supplementaryView(for collectionView: UICollectionView,
+                                _ kind: String,
+                                _ indexPath: IndexPath) -> UICollectionReusableView? {
+        collectionView.dequeueReusableSupplementaryView(
+            ofKind: ListCollectionViewLayout.separatorKind,
+            withReuseIdentifier: separatorReuseIdentifier,
+            for: indexPath
+        )
+    }
+    
+    open func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        channels.count
+    }
+
+    open func collectionView(
+        _ collectionView: UICollectionView,
+        viewForSupplementaryElementOfKind kind: String,
+        at indexPath: IndexPath
+    ) -> UICollectionReusableView {
+        collectionView.dequeueReusableSupplementaryView(
+            ofKind: ListCollectionViewLayout.separatorKind,
+            withReuseIdentifier: separatorReuseIdentifier,
+            for: indexPath
+        )
     }
     
     // MARK: - User info
@@ -447,7 +528,7 @@ open class TopicListViewController: _ViewController,
     /// - Parameter indexPath: IndexPath of given cell to fetch the content of it.
     open func deleteButtonPressedForCell(at indexPath: IndexPath) {
         guard let channel = getChannel(at: indexPath) else { return }
-        router.didTapDeleteButton(for: channel.cid, parentCid: controller.channel?.cid)
+        router.didTapDeleteButton(for: channel.cid, parentCid: channel.parentCid)
         closeSwipeableView(at: indexPath)
     }
 
@@ -455,7 +536,7 @@ open class TopicListViewController: _ViewController,
     /// - Parameter indexPath: IndexPath of given cell to fetch the content of it.
     open func moreButtonPressedForCell(at indexPath: IndexPath) {
         guard let channel = getChannel(at: indexPath) else { return }
-        router.didTapMoreButton(for: channel.cid, parentCid: controller.channel?.cid)
+        router.didTapMoreButton(for: channel.cid, parentCid: channel.parentCid)
         closeSwipeableView(at: indexPath)
     }
 
@@ -465,26 +546,9 @@ open class TopicListViewController: _ViewController,
         }
     }
     
-    // MARK: - ChannelListControllerDelegate
-    func updateTopics(_ topics: [ListChange<Channel>]) {
-            animateReloadCollectionView(previousChannels: channels,
-                                        newChannels: Array(controller.topics),
-                                        completion: nil)
-            switch controller.state {
-            case .remoteDataFetched:
-                emptyView.isVisible = shouldShowEmptyView()
-            default:
-                break
-            }
-        handleStateChanges(controller.state)
-    }
-    
     open func controllerWillChangeChannels(_ controller: ChannelListController) {
         collectionView.layoutIfNeeded()
     }
-
-    
-
     // MARK: - DataControllerStateDelegate
 
     open func controller(_ controller: DataController, didChangeState state: DataController.State) {
@@ -501,7 +565,7 @@ open class TopicListViewController: _ViewController,
 
             switch newState {
             case .initialized:
-                isLoading = controller.channel?.topics?.isEmpty ?? true
+                isLoading = controller.channels.isEmpty ?? true
             case .localDataFetched:
                 reloadChannels()
             case .remoteDataFetched:
@@ -530,7 +594,7 @@ open class TopicListViewController: _ViewController,
         } else {
             switch newState {
             case .initialized:
-                if controller.channel?.topics?.isEmpty ?? true {
+                if controller.channels.isEmpty ?? true {
                     loadingIndicator.startAnimating()
                 } else {
                     loadingIndicator.stopAnimating()
@@ -546,15 +610,9 @@ open class TopicListViewController: _ViewController,
             }
         }
     }
-}
 
-// MARK: - CollectionViewDelegate
-extension TopicListViewController {
-    open func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
-        channels.count
-    }
 
-    open func collectionView(
+    @objc(collectionView:cellForItemAtIndexPath:) open func collectionView(
         _ collectionView: UICollectionView,
         cellForItemAt indexPath: IndexPath
     ) -> UICollectionViewCell {
@@ -575,35 +633,33 @@ extension TopicListViewController {
         return cell
     }
 
-    open func collectionView(
-        _ collectionView: UICollectionView,
-        viewForSupplementaryElementOfKind kind: String,
-        at indexPath: IndexPath
-    ) -> UICollectionReusableView {
-        collectionView.dequeueReusableSupplementaryView(
-            ofKind: ListCollectionViewLayout.separatorKind,
-            withReuseIdentifier: separatorReuseIdentifier,
-            for: indexPath
-        )
-    }
 
     open func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         defer {
             collectionView.deselectItem(at: indexPath, animated: true)
         }
         guard let channel = getChannel(at: indexPath) else { return }
-        guard let parentChannel = controller.channel else { return }
             
-        router.showTopic(for: channel.cid, parentCid: parentChannel.cid)
-            
+        router.showTopic(for: channel.cid, parentCid: channel.parentCid ?? channel.cid)
     }
     
     
     // MARK: - ChannelControllerDelegate
-    public func channelController(
-        _ channelController: ChannelController,
-        didUpdateChannel channel: EntityChange<Channel>
+    open func controller(
+        _ controller: ChannelListController,
+        didChangeChannels changes: [ListChange<Channel>]
     ) {
-        reloadChannels()
+        if skipChannelUpdates {
+            skippedRendering = true
+            reloadChannels()
+            switch controller.state {
+            case .remoteDataFetched:
+                emptyView.isVisible = shouldShowEmptyView()
+            default:
+                break
+            }
+            return
+        }
+        handleStateChanges(controller.state)
     }
 }

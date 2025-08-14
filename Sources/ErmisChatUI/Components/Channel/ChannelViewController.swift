@@ -183,8 +183,31 @@ open class ChannelViewController: _ViewController,
         super.setUp()
 
         eventsController.delegate = self
-        
-        topicListVC.controller = channelController
+        let topicListQuery: ChannelListQuery?
+        if let parentCid = channelController.parentCid {
+            topicListQuery = .init(
+                filter: .topics(parentcID: parentCid, projectId: client.projectId),
+                sort: [
+                    Sorting<ChannelListSortingKey>(key: .createdAt, isAscending: true),
+                    Sorting<ChannelListSortingKey>(key: .isPinned, isAscending: true),
+                ]
+            )
+            
+            let channelListController = channelController.client.channelListController(parentCid: parentCid,
+                                                                                       query: topicListQuery!)
+            topicListVC.controller = channelListController
+        } else {
+            topicListQuery = .init(
+                filter: .topics(parentcID: channelController.channel!.cid, projectId: client.projectId),
+                sort: [
+                    .init(key: .parentcid, isAscending: true),
+                    .init(key: .isPinned)
+                ]
+            )
+            let channelListController = channelController.client.channelListController(parentCid: channelController.channel!.cid,
+                                                                                       query: topicListQuery!)
+            topicListVC.controller = channelListController
+        }
 
         messageListVC.delegate = self
         messageListVC.dataSource = self
@@ -894,7 +917,6 @@ open class ChannelViewController: _ViewController,
     }
     
     public func channelController(_ channelController: ChannelController, didUpdateTopic topics: [ListChange<Channel>]) {
-        topicListVC.updateTopics(topics)
     }
 
     // MARK: - EventsControllerDelegate
