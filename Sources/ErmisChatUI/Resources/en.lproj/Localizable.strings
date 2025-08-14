@@ -277,7 +277,10 @@
 "message.system.your-message-forwarded" = "You have forwarded a message";
 /// Show when a message was forwarded.
 "message.system.message-forwarded" = "A message has been forwarded";
-
+/// Show when you reject a friend request from other.
+"message.system.you-reject-add-friend-request" = "You rejected friend request from %@";
+/// Show when user reject your friend request.
+"message.system.other-reject-add-friend-request" = "%@ rejected to join this channel.";
 /// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
 "attachment.max-size-exceeded" = "File size exceeds the limit. Maximum allowed: 100MB.";
 

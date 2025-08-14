@@ -84,6 +84,17 @@ extension Endpoint {
         )
     }
 
+    /// Create the endpoint for delete all messages of the channel..
+    ///
+    /// - Parameters:
+    ///   - cid: The identifier of channel.
+    /// - Returns: The endpoint to delete  all messages of the channel.
+    static func truncatedChannel(cid: ChannelId) -> Endpoint<EmptyResponse> {
+        .init(path: .truncatedChannel(channelId: cid),
+              method: .delete,
+              body: nil)
+    }
+
     /// Create the endpoint to send a message to channel.
     ///
     /// - Parameters:

@@ -514,6 +514,10 @@ internal enum L10n {
       internal static func otherPromotedYouToOwner(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-promoted-you-to-owner", String(describing: p1))
       }
+      /// %@ rejected your friend request.
+      internal static func otherRejectAddFriendRequest(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.other-reject-add-friend-request", String(describing: p1))
+      }
       /// %@ truncated all messages of this channel
       internal static func otherTruncatedMessages(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-truncated-messages", String(describing: p1))
@@ -559,6 +563,10 @@ internal enum L10n {
       /// You have promoted member %@ to Owner
       internal static func youPromotedOtherToOwner(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.you-promoted-other-to-owner", String(describing: p1))
+      }
+      /// You rejected friend request from %@
+      internal static func youRejectAddFriendRequest(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.you-reject-add-friend-request", String(describing: p1))
       }
       /// You made this group private
       internal static var youSetChannelPrivate: String { L10n.tr("Localizable", "message.system.you-set-channel-private") }

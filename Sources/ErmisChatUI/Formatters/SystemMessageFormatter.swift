@@ -155,6 +155,13 @@ class DefaultSystemMessageFormatter: SystemMessageFormatter {
             } else {
                 return L10n.Message.System.promotedToOwner(oldUserName, newUserName)
             }
+        case .inviteMessagingRejected(userId: let userId):
+            let userName = userName(of: userId, in: channel)
+            if userId == channel.membership?.userId {
+                return L10n.Message.System.youRejectAddFriendRequest(userName)
+            } else {
+                return L10n.Message.System.otherRejectAddFriendRequest(userName)
+            }
         @unknown default:
             return nil
         }
