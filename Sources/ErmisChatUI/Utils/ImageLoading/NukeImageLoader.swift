@@ -9,8 +9,20 @@ extension ImageTask: Cancellable {}
 
 /// The class which is responsible for loading images from URLs.
 /// Internally uses `Nuke`'s shared object of `ImagePipeline` to load the image.
-open class NukeImageLoader: ImageLoading {
-    public init() {}
+open class NukeImageLoader: ImageLoading, ImagePipelineDelegate {
+    public init() {
+        let dataCache = try! DataCache(name: "network.ermis.uhm.data-cache")
+        dataCache.sizeLimit = 414_515_200 // 200 mb
+
+        var configuration = ImagePipeline.shared.configuration
+        configuration.dataCache = dataCache
+        configuration.imageCache = ImageCache.shared
+        configuration.isDecompressionEnabled = false
+        let config = URLSessionConfiguration.default
+        config.urlCache = URLCache.shared
+        configuration.dataLoader = DataLoader(configuration: config)
+        ImagePipeline.shared = ImagePipeline(configuration: configuration)
+    }
 
     open var avatarThumbnailSize: CGSize {
         Components.default.avatarThumbnailSize
@@ -21,7 +33,7 @@ open class NukeImageLoader: ImageLoading {
     }
     
     var imagePipeline: NukeImagePipelineLoading {
-        ImagePipeline.shared
+        return ImagePipeline.shared
     }
 
     private lazy var operationQueue: OperationQueue = {
@@ -39,8 +51,9 @@ open class NukeImageLoader: ImageLoading {
         completion: ((Result<UIImage, Error>) -> Void)?
     ) -> Cancellable? {
         guard let url = url, !url.absoluteString.isEmpty else {
-            imageView.image = options.placeholder
-            imageView.image = options.placeholder ?? PlaceholderImageGenerator.shared.getPlaceHolderImage(from: options.placeHolderString ?? " ")
+            let placeHolder = options.placeholder ?? PlaceholderImageGenerator.shared.getPlaceHolderImage(from: options.placeHolderString ?? " ")
+            imageView.image = placeHolder
+            completion?(.success(placeHolder))
             return nil
         }
         let urlRequest = imageCDN.urlRequest(forImageUrl: url, resize: options.resize)

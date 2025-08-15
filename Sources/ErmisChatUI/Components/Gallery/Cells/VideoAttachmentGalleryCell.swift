@@ -25,8 +25,6 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         .playerView.init()
         .withoutAutoresizingMaskConstraints
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     public var imageView: UIImageView {
         return animationPlaceholderImageView
     }
@@ -92,7 +90,6 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     open override func prepareForReuse() {
         super.prepareForReuse()
-        cancelImageLoading()
         imageView.image = nil
         player.pause()
         player.replaceCurrentItem(with: nil)

@@ -59,8 +59,8 @@ public struct Components {
     /// A view show when calls are happen, this will help user back to call screen.
     public var ongoingCallVIew: OngoingCallView.Type = OngoingCallView.self
 
-    /// A button for choosing files.
-    public var fileButton: UIButton.Type = FileButton.self
+    /// A button for choosing emoji and sticker.
+    public var stickerButton: UIButton.Type = StickerButton.self
 
     /// A button for choosing photos.
     public var photoButton: UIButton.Type = PhotoButton.self
@@ -68,8 +68,8 @@ public struct Components {
     /// A button for opening command list.
     public var commandsButton: UIButton.Type = CommandButton.self
 
-    /// A button for shrinking the input view to allow more space.
-    public var shrinkInputButton: UIButton.Type = ShrinkInputButton.self
+    /// A button for showing actions menu in composer..
+    public var composerMenu: ComposerMenuButton.Type = ComposerMenuButton.self
 
     /// A button used for sending a message.
     public var sendButton: UIButton.Type = SendButton.self
@@ -485,13 +485,12 @@ public struct Components {
     public var forwardingMessageViewController: ForwardingMessageViewController.Type = ForwardingMessageViewController.self
 
     // MARK: - Share
-
-//    /// The view show details of channel in share screen.
-//    public var shareItemView: ShareItemView.Type = ShareItemView.self
+    /// The view show details of channel in share screen.
+    public var shareItemView: ShareItemView.Type = ShareItemView.self
     /// The cell show details of channel in share screen.
-//    public var shareTableViewCell: ShareTableViewCell.Type = ShareTableViewCell.self
+    public var shareTableViewCell: ShareTableViewCell.Type = ShareTableViewCell.self
     /// The view controller used to select channel which attachment wil be shared.
-//    public var shareViewController: ShareViewController.Type = ShareViewController.self
+    public var shareViewController: ShareViewController.Type = ShareViewController.self
 
     // MARK: - Pin
     /// The view that show lastest pinned message.

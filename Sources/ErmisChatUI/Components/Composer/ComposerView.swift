@@ -84,11 +84,11 @@ open class ComposerView: _View, UIProvider {
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "confirmButton")
 
-    /// A button to open the user file picker.
-    public private(set) lazy var fileButton: UIButton = components
-        .fileButton.init()
+    /// A button to select emoj / sticker.
+    public private(set) lazy var stickerButton: UIButton = components
+        .stickerButton.init()
         .withoutAutoresizingMaskConstraints
-        .withAccessibilityIdentifier(identifier: "fileButton")
+        .withAccessibilityIdentifier(identifier: "stickerButton")
 
     /// A button to open the user attachments.
     public private(set) lazy var photoButton: UIButton = components
@@ -102,9 +102,9 @@ open class ComposerView: _View, UIProvider {
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "commandsButton")
 
-    /// A Button for shrinking the input view to allow more space for other actions.
-    public private(set) lazy var shrinkInputButton: UIButton = components
-        .shrinkInputButton.init()
+    /// A Button for showing actions menu.
+    public private(set) lazy var composerMenuButton: ComposerMenuButton = components
+        .composerMenu.init()
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "shrinkInputButton")
 
@@ -170,22 +170,23 @@ open class ComposerView: _View, UIProvider {
         trailingContainer.addArrangedSubview(sendButton)
         trailingContainer.addArrangedSubview(cooldownView)
         trailingContainer.addArrangedSubview(confirmButton)
+
         cooldownView.isHidden = true
         confirmButton.isHidden = true
         if components.isVoiceRecordingEnabled {
             trailingContainer.addArrangedSubview(recordButton)
         }
+        trailingContainer.addArrangedSubview(photoButton)
+        trailingContainer.addArrangedSubview(stickerButton)
 
         leadingContainer.axis = .horizontal
         leadingContainer.alignment = .center
         leadingContainer.spacing = 0
         leadingContainer.distribution = .equal
         leadingContainer.directionalLayoutMargins = .zero
-        leadingContainer.addArrangedSubview(fileButton)
-        leadingContainer.addArrangedSubview(photoButton)
         leadingContainer.addArrangedSubview(commandsButton)
-        leadingContainer.addArrangedSubview(shrinkInputButton)
-        shrinkInputButton.isHidden = true
+        leadingContainer.addArrangedSubview(composerMenuButton)
+        leadingContainer.heightAnchor.pin(greaterThanOrEqualToConstant: 46).isActive = true
 
         dismissButton.widthAnchor.pin(equalToConstant: 24).isActive = true
         dismissButton.heightAnchor.pin(equalToConstant: 24).isActive = true
@@ -193,16 +194,16 @@ open class ComposerView: _View, UIProvider {
         titleLabel.centerXAnchor.pin(equalTo: centerXAnchor).isActive = true
         titleLabel.pin(anchors: [.top, .bottom], to: headerView)
 
-        [sendButton, confirmButton, recordButton]
+        [sendButton, confirmButton, recordButton, photoButton, stickerButton]
             .forEach { button in
                 button.pin(anchors: [.width], to: 35)
-                button.pin(anchors: [.height], to: 40)
+                button.pin(anchors: [.height], to: 46)
             }
 
-        [shrinkInputButton, fileButton, photoButton, commandsButton]
+        [composerMenuButton, commandsButton]
             .forEach { button in
-                button.pin(anchors: [.width], to: 28)
-                button.pin(anchors: [.height], to: 40)
+                button.pin(anchors: [.width], to: 38)
+                button.pin(anchors: [.height], to: 38)
             }
     }
 }

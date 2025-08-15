@@ -142,6 +142,29 @@ class ChannelUpdater: Worker {
         }
     }
 
+    /// Deletes all messages of the specific channel.
+    /// - Parameters:
+    ///   - cid: The channel identifier.
+    ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    func deleteChannelMessages(cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .truncatedChannel(cid: cid)) { [weak self] result in
+            switch result {
+            case .success:
+                self?.database.write {
+                    if let channel = $0.channel(cid: cid) {
+                        channel.truncatedAt = channel.lastMessageAt ?? channel.createdAt
+                    }
+                } completion: { error in
+                    completion?(error)
+                }
+            case let .failure(error):
+                log.error("Truncated channel on request fail \(error)")
+                // Note: not removing local channel if not removed on backend
+                completion?(result.error)
+            }
+        }
+    }
+
     /// Creates a new message in the local DB and sets its local state to `.pendingSend`.
     ///
     /// - Parameters:

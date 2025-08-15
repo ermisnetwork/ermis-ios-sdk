@@ -287,6 +287,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     /// Constraint between bubble and reactions.
     public private(set) var bubbleToReactionsConstraint: NSLayoutConstraint?
 
+    // MARK: - Setup
     /// Makes sure the `layout(options: MessageLayoutOptions)` is called just once.
     /// - Parameter options: The options describing the layout of the content view.
     open func setUpUIIfNeeded(
@@ -312,6 +313,20 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     open func layout(options: MessageLayoutOptions) {
         defer {
             customCellViewInjector?.contentViewDidLayout(options: options)
+            if options.contains(.forwardedMessageIndicator) {
+                let label = UILabel()
+                if let content = content {
+                    if content.isSentByCurrentUser {
+                        label.text = L10n.Message.System.yourMessageForwarded
+                    } else {
+                        label.text = L10n.Message.System.messageForwarded
+                    }
+                }
+
+                label.font = theme.fonts.caption1
+                label.textColor = theme.colors.subtitleText
+                bubbleThreadFootnoteContainer.insertArrangedSubview(label, at: 0)
+            }
         }
 
         var constraintsToActivate: [NSLayoutConstraint] = []
@@ -335,18 +350,26 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
         // Bubble - Thread - Metadata
         bubbleThreadFootnoteContainer.alignment = customCellViewInjector?.fillAllAvailableWidth == true
-            ? .fill
-            : options.contains(.flipped) ? .trailing : .leading
+        ? .fill
+        : options.contains(.flipped) ? .trailing : .leading
+
+        // Quoted message
+        if options.contains(.quotedMessage) {
+            let quotedMessageView = createQuotedMessageView()
+            bubbleThreadFootnoteContainer.addArrangedSubview(quotedMessageView)
+        }
 
         // Bubble view
+        bubbleContentContainer.layoutMargins = .init(top: 8, left: 16, bottom: 8, right: 16)
         if options.contains(.bubble) {
             let bubbleView = createBubbleView()
             bubbleView.embed(bubbleContentContainer)
 
             if options.contains(.continuousBubble) && !options.contains(.threadInfo) {
-                mainContainer.layoutMargins.bottom = 0
+                mainContainer.layoutMargins.bottom = 4
+            } else {
+                mainContainer.layoutMargins.bottom = 12
             }
-
             bubbleThreadFootnoteContainer.addArrangedSubview(bubbleView)
         } else {
             bubbleThreadFootnoteContainer.addArrangedSubview(bubbleContentContainer)
@@ -447,21 +470,15 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             ]
         }
 
-        // Quoted message
-        if options.contains(.quotedMessage) {
-            let quotedMessageView = createQuotedMessageView()
-            bubbleContentContainer.addArrangedSubview(quotedMessageView)
-        }
-
         // Text
         if options.contains(.text) {
             let textView = createTextView()
-            
+
             if customCellViewInjector != nil {
                 let dividerView = createDividerView()
                 bubbleContentContainer.addArrangedSubview(dividerView, respectsLayoutMargins: true)
             }
-            
+
             bubbleContentContainer.addArrangedSubview(textView, respectsLayoutMargins: true)
         }
 
@@ -474,31 +491,38 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             reactionsBubbleView.addSubview(reactionsView)
             reactionsView.pin(to: reactionsBubbleView.layoutMarginsGuide)
 
-            bubbleToReactionsConstraint = (bubbleView ?? bubbleContentContainer).topAnchor
-                .pin(equalTo: reactionsBubbleView.centerYAnchor, constant: 5)
-            constraintsToActivate += [
-                reactionsBubbleView.topAnchor.pin(equalTo: topAnchor),
-                bubbleToReactionsConstraint,
-                reactionsBubbleView.centerXAnchor.pin(
-                    equalTo: options.contains(.flipped) ?
-                        (bubbleView ?? bubbleContentContainer).leadingAnchor :
-                        (bubbleView ?? bubbleContentContainer).trailingAnchor,
-                    constant: options.contains(.flipped) ? -8 : 8
-                ).priority(.defaultLow),
-                options.contains(.flipped) ? 
-                reactionsBubbleView.trailingAnchor.pin(lessThanOrEqualTo: mainContainer.trailingAnchor, constant: -8) :
-                reactionsBubbleView.leadingAnchor.pin(greaterThanOrEqualTo: mainContainer.leadingAnchor, constant: 8)
+            let bubble = bubbleView ?? bubbleContentContainer
 
-            ]
-            .compactMap { $0 }
+            // Add extral space for reaction
+            if footnoteSubviews.isEmpty {
+                bubbleThreadFootnoteContainer.isLayoutMarginsRelativeArrangement = true
+                bubbleThreadFootnoteContainer.layoutMargins.bottom = 18
+            } else {
+                bubbleThreadFootnoteContainer.setCustomSpacing(18, after: bubble)
+            }
+            bubbleToReactionsConstraint = bubble.bottomAnchor
+                .pin(equalTo: reactionsBubbleView.centerYAnchor, constant: -4)
+
+            if options.contains(.flipped) {
+                constraintsToActivate += [
+                    bubbleToReactionsConstraint,
+                    reactionsBubbleView.trailingAnchor.pin(equalTo: bubble.trailingAnchor, constant: -8),
+                    reactionsBubbleView.leadingAnchor.pin(greaterThanOrEqualTo: mainContainer.leadingAnchor, constant: 8),
+                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24),
+                ].compactMap({ $0})
+            } else {
+                constraintsToActivate += [
+                    bubbleToReactionsConstraint,
+                    reactionsBubbleView.leadingAnchor.pin(equalTo: bubble.leadingAnchor, constant: 8),
+                    reactionsBubbleView.trailingAnchor.pin(lessThanOrEqualTo: mainContainer.trailingAnchor, constant: -8),
+                    reactionsBubbleView.heightAnchor.pin(equalToConstant: 24),
+                ].compactMap({ $0})
+            }
         } else {
             if let reactionsView {
                 reactionsView.removeFromSuperview()
                 self.reactionsView = nil
             }
-            constraintsToActivate += [
-                mainContainer.topAnchor.pin(equalTo: topAnchor)
-            ]
         }
 
         // Main container
@@ -553,6 +577,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         }
 
         constraintsToActivate += [
+            mainContainer.topAnchor.pin(equalTo: topAnchor),
             mainContainer.bottomAnchor.pin(equalTo: bottomAnchor),
             customCellViewInjector?.fillAllAvailableWidth == true
                 ? mainContainer.widthAnchor.pin(
@@ -679,7 +704,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         }
 
         if content?.mentionedAll == true {
-            textView?.highlightMentionAllUsers()
+            textView?.highlightMentionAllUsers(isSendByCurrentUser: content?.isSentByCurrentUser ?? false)
         }
 
         // Avatar
@@ -745,14 +770,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
         // Quoted message view
         let quotedMessageContent = content?.quotedMessage
-        var avatarAliment: QuotedAvatarAlignment? = nil
-        if let quotedMessageContent {
-            avatarAliment = quotedMessageContent.isSentByCurrentUser ? .trailing : .leading
-        }
         quotedMessageView?.content = .init(
                     message: quotedMessageContent,
-                    avatarAlignment: avatarAliment,
-                    isParentMessageSentByCurrentUser: content?.isSentByCurrentUser ?? false,
+                    repliedMessageAuthor: content?.author,
                     channel: channel
                 )
         // Thread info
@@ -782,6 +802,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             .init(
                 useBigIcons: false,
                 reactions: $0.reactionsData,
+                showTotalCount: true,
                 didTapOnReaction: nil
             )
         }
@@ -801,7 +822,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         guard UIApplication.shared.applicationState == .active else { return }
         // We need to update the content and manually apply the updated `tintColor`
         // to the subviews which don't listen for `tintColor` updates.
-        updateContentIfNeeded()
+//        updateContentIfNeeded()
     }
 
     /// Cleans up the view so it is ready to display another message.
@@ -881,7 +902,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             textView?.isScrollEnabled = false
             textView?.backgroundColor = .clear
             textView?.adjustsFontForContentSizeCategory = true
-            textView?.textContainerInset = .init(top: 0, left: 8, bottom: 0, right: 8)
+            textView?.textContainerInset = .init(top: 0, left: 0, bottom: 0, right: 0)
             textView?.textContainer.lineFragmentPadding = 0
             textView?.font = theme.fonts.body
             textView?.backgroundColor = .clear
@@ -1155,20 +1176,21 @@ private extension ChatMessage {
 
 extension MessageLayoutOptions {
     var roundedCorners: CACornerMask {
-        if contains(.continuousBubble) {
-            return .all
-        } else if contains(.firstSequenceBubble) {
+        if contains(.firstSequenceBubble) {
             if contains(.flipped) {
                 return CACornerMask.all.subtracting(.layerMaxXMaxYCorner)
             } else {
                 return CACornerMask.all.subtracting(.layerMinXMaxYCorner)
             }
-        } else {
+        } else if contains(.lastSequenceBubble) {
             if contains(.flipped) {
                 return CACornerMask.all.subtracting(.layerMaxXMinYCorner)
             } else {
                 return CACornerMask.all.subtracting(.layerMinXMinYCorner)
             }
+        } else {
+            // Continuous bubble
+            return .all
         }
     }
 }

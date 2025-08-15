@@ -248,6 +248,16 @@
 "message.system.member-leave" = "%@ left this group";
 /// Show when you leave channel.
 "message.system.you-leave" = "You left this group";
+/// Show when you truncated all messages.
+"message.system.you-truncated-messages" = "You truncated all messages of this channel";
+/// Show when other member truncated all messages.
+"message.system.other-truncated-messages" = "%@ truncated all messages of this channel";
+/// Show when you promoted other to owner.
+"message.system.you-promoted-other-to-owner" = "You have promoted member %@ to Owner";
+/// Show when other promoted you to owner.
+"message.system.other-promoted-you-to-owner" = "%@ has promoted you to Owner";
+/// Show when Owner pomoted other to owner.
+"message.system.promoted-to-owner" = "%@ has promoted member %@ to Owner";
 // Show when channel public / private
 "message.system.set-channel-public" = "Member %@ made this group public";
 "message.system.you-set-channel-public" = "You made this group public";
@@ -263,7 +273,14 @@
 "message.system.message-pinned" = "%@ pinned a message";
 /// Show when user unpinned a message.
 "message.system.message-unpinned" = "%@ unpinned a message";
-
+/// Show when your message was forwarded.
+"message.system.your-message-forwarded" = "You have forwarded a message";
+/// Show when a message was forwarded.
+"message.system.message-forwarded" = "A message has been forwarded";
+/// Show when you reject a friend request from other.
+"message.system.you-reject-add-friend-request" = "You rejected friend request from %@";
+/// Show when user reject your friend request.
+"message.system.other-reject-add-friend-request" = "%@ rejected to join this channel.";
 /// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
 "attachment.max-size-exceeded" = "File size exceeds the limit. Maximum allowed: 100MB.";
 
@@ -293,7 +310,7 @@
 /// Shown as title in the composer when replying to a message.
 "composer.title.reply" = "Reply to Message";
 /// Shown as a placeholder in the composer input text view.
-"composer.placeholder.message" = "Send a message";
+"composer.placeholder.message" = "Write a message";
 /// Shown in the placeholder in the composer input text view, when sending messages is disabled for the channel.
 "composer.placeholder.messageDisabled" = "You can't send messages in this group";
 /// Shown in the placeholder in the composer input text view, when the channel is in slow mode.
@@ -315,6 +332,12 @@
 "composer.picker.camera" = "Camera";
 /// Text for the cancel button in the attachment picker in the composer.
 "composer.picker.cancel" = "Cancel";
+/// Text for location item title in menu.
+"composer.menu.location" = "Location";
+/// Text for share file item title in menu.
+"composer.menu.share-file" = "Share File";
+/// Text for create poll item title in menu.
+"composer.menu.create-poll" = "Create Poll";
 /// Shown as title in the popup shown when links are disabled in the chat.
 "composer.links-disabled.title" = "Links are disabled";
 /// Shown as message in the popup shown when links are disabled in the chat.
@@ -346,6 +369,9 @@
 "forward.state.forwarded" = "Sent";
 /// Show as title of send button in forward screen when forward state is error.
 "forward.state.error" = "Resend";
+
+/// Share
+"share.send-to" = "Send to";
 
 /// Shown in the gallery preview, indicating which image is currently presented.
 /// The first placeholder is the number of the selected image.
@@ -394,4 +420,11 @@
 
 /// The rate of the player, where the placeholder is the actual rate (e.g. x2).
 "audio.player.rate" = "x%@";
+
+/// The name or identifier of the user who sent the message.
+/// Example: "From user A"
+"from" = "From";
+
+/// The default title of link preview when don't have any infomation.
+"no_preview_available" = "No preview available";
 

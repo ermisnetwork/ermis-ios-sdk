@@ -64,8 +64,6 @@ open class ChannelAcceptInvitationView: _View, UIProvider {
         didSet { updateContentIfNeeded() }
     }
 
-    open var delegate: ChannelAcceptInvitationViewDelegate?
-
     /// Text of `titleLabel` which contains the channel name.
     open var titleText: String? {
         guard let channel = content.channel else {
@@ -85,6 +83,8 @@ open class ChannelAcceptInvitationView: _View, UIProvider {
     }
 
     var isLoading: Bool = false
+
+    public weak var delegate: ChannelAcceptInvitationViewDelegate?
 
     open override func setUp() {
         super.setUp()

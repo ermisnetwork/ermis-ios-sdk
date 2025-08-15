@@ -109,7 +109,8 @@ open class MessageListView: UITableView, BaseViewProtocol, ComponentsProvider {
             components.append(String(describing: customCellViewInjectorType))
         }
         
-        return components.joined(separator: "_")
+        let reuseIdentifier = components.joined(separator: "_")
+        return reuseIdentifier
     }
 
     /// Returns the reuse identifier of the given cell.
@@ -222,17 +223,15 @@ open class MessageListView: UITableView, BaseViewProtocol, ComponentsProvider {
             !self.skippedMessages.contains($0.id)
         }
         adjustContentInsetToPositionMessagesAtTheTop()
-        UIView.performWithoutAnimation {
-            reloadMessages(
-                previousSnapshot: previousMessagesSnapshot,
-                newSnapshot: newMessagesWithoutSkipped,
-                with: .fade,
-                completion: { [weak self] in
-                    completion?()
-                    self?.adjustContentInsetToPositionMessagesAtTheTop()
-                }
-            )
-        }
+        reloadMessages(
+            previousSnapshot: previousMessagesSnapshot,
+            newSnapshot: newMessagesWithoutSkipped,
+            with: .fade,
+            completion: { [weak self] in
+                completion?()
+                self?.adjustContentInsetToPositionMessagesAtTheTop()
+            }
+        )
     }
 
     /// Reset the skipped messages and reload the message list

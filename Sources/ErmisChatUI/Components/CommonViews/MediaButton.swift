@@ -8,11 +8,16 @@ import UIKit
 /// A button that is being used in the VoiceRecording flow and represents a functionality on the playback.
 /// - Note: As a MediaButton the theme is common between light/dark mode.
 open class MediaButton: _Button, ThemeProvider {
+    
+    open var isEnabledHighlight: Bool = true
+    
     override open var isHighlighted: Bool {
         didSet {
-            backgroundColor = isHighlighted
-            ? theme.colors.surfaceContainerHigh
-            : theme.colors.white
+            if isEnabledHighlight {
+                backgroundColor = isHighlighted
+                ? theme.colors.surfaceContainerHigh
+                : theme.colors.white
+            }
         }
     }
 
@@ -23,9 +28,15 @@ open class MediaButton: _Button, ThemeProvider {
 
         tintColor = theme.colors.black
         setTitleColor(theme.colors.black, for: .normal)
-        backgroundColor = isHighlighted
-        ? theme.colors.surfaceContainerHigh
+        
+        if isEnabledHighlight {
+            backgroundColor = isHighlighted
+            ? theme.colors.surfaceContainerHigh
             : theme.colors.white
+        } else {
+            backgroundColor = theme.colors.white
+        }
+        
         layer.shadowColor = tintColor.cgColor
     }
 

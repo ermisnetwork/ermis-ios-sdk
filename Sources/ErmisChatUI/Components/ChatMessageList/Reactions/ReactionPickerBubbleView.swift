@@ -44,6 +44,7 @@ open class ReactionPickerBubbleView: _View, UIProvider {
             .init(
                 useBigIcons: $0.style.isBig,
                 reactions: $0.reactions,
+                showTotalCount: false,
                 didTapOnReaction: $0.didTapOnReaction
             )
         }

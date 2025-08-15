@@ -36,10 +36,10 @@ open class InvitedChannelSearchViewController: InvitedChannelListSearchViewContr
 
     // MARK: - Collection View Implementations
 
-    override open func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
-        let cell = super.collectionView(collectionView, cellForItemAt: indexPath)
-        guard let channelListCell = cell as? InvitedChannelCollectionViewCell,
-              let channel = channelListCell.itemView.content?.channel else {
+    open override func cellItem(for collectionView: UICollectionView, indexPath: IndexPath, channel: Channel) -> UICollectionViewCell? {
+        let cell = collectionView.dequeueReusableCell(with: components.invitedChannelCell, for: indexPath)
+
+        guard let channelListCell = cell as? InvitedChannelCollectionViewCell else {
             return cell
         }
 
@@ -50,6 +50,7 @@ open class InvitedChannelSearchViewController: InvitedChannelListSearchViewContr
         )
 
         return channelListCell
+
     }
 
     override open func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {

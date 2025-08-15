@@ -72,6 +72,8 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
         guard channelLoadedAvatarCID != content.cid else { return }
         // If the channel has an avatar set, load that avatar
         if let channelAvatarUrl = content.imageUrl {
+            presenceAvatarView.isHidden = false
+            combinedAvatarView.isHidden = true
             loadChannelAvatar(from: channelAvatarUrl)
             return
         }
@@ -179,6 +181,7 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
                                       placeholder: UIImage? = nil,
                                       placeHolderString: String? = nil) {
         log.debug("Load image from URL: \(url)")
+        presenceAvatarView.avatarView.cancelLoading()
         presenceAvatarView.avatarView.loadImage(from: url,
                                                 with: ImageLoaderOptions(
             resize: .init(components.avatarThumbnailSize),

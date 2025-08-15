@@ -72,9 +72,12 @@ open class MessageLayoutOptionsResolver {
         if message.isSentByCurrentUser {
             options.insert(.flipped)
         }
+
         if isFirstInSequence {
             options.insert(.firstSequenceBubble)
-        } else if isLastInSequence {
+        }
+
+        if isLastInSequence {
             options.insert(.lastSequenceBubble)
         } else {
             options.insert(.continuousBubble)
@@ -126,6 +129,10 @@ open class MessageLayoutOptionsResolver {
         }
         if isLastInSequence && canShowDeliveryStatus(for: message, in: channel) {
             options.insert(.deliveryStatusIndicator)
+        }
+        
+        if message.forwardChannelId != nil {
+            options.insert(.forwardedMessageIndicator)
         }
 
         return options

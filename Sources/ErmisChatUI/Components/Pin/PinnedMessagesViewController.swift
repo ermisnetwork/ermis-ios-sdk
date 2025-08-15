@@ -71,7 +71,7 @@ extension PinnedMessagesViewController: UITableViewDataSource, UITableViewDelega
     }
     
     public func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let cell = tableView.dequeueReusableCell(with: PinnedMessageCell.self, for: indexPath)
+        let cell = tableView.dequeueReusableCell(with: components.pinnedMessageCell, for: indexPath)
         if let channel = channel {
             let message = pinnedMessages[indexPath.row]
             cell.content = .init(message: message, channel: channel)
@@ -95,7 +95,7 @@ extension PinnedMessagesViewController: UITableViewDataSource, UITableViewDelega
 extension PinnedMessagesViewController {
     private func createTableView() -> UITableView {
         let tableView = UITableView()
-        tableView.register(PinnedMessageCell.self)
+        tableView.register(components.pinnedMessageCell)
         tableView.rowHeight = UITableView.automaticDimension
         tableView.separatorStyle = .none
         tableView.backgroundColor = .systemBackground
@@ -107,6 +107,11 @@ extension PinnedMessagesViewController {
 }
 // MARK: - PinnedMessageCellDelegate
 extension PinnedMessagesViewController: PinnedMessageCellDelegate {
+    public func pinnedMessageCell(_ cell: PinnedMessageCell, didSelectShowInChat message: ChatMessage) {
+        close()
+        delegate?.pinnedMessageViewController(self, didSelected: message)
+    }
+
     public func pinnedMessageCell(_ cell: PinnedMessageCell, didSelectedUnPin message: ChatMessage) {
         self.alertsRouter.showMessageUnpinConfirmationAlert { [weak self] confirmed in
             guard let self, confirmed else { return }

@@ -20,15 +20,51 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
     }
 
     // MARK: - Configuration Properties
-
     /// The colour of the waveform bar that isn't part of the "played" duration.
-    open var barColor: UIColor { theme.colors.subTitleTextLow }
+    private var _barColor: UIColor?
+
+    open var barColor: UIColor? {
+        set {
+            _barColor = newValue ?? theme.colors.subTitleTextLow
+        }
+        
+        get {
+            _barColor ?? theme.colors.subTitleTextLow
+        }
+    }
 
     /// The colour of the waveform bar that is part of the "played" duration.
-    open var highlightedBarColor: UIColor { theme.colors.primary }
+    private var _highlightedBarColor: UIColor?
+    
+    open var highlightedBarColor: UIColor? {
+        set {
+            _highlightedBarColor = newValue ?? theme.colors.primary
+        }
+        
+        get {
+            _highlightedBarColor ?? theme.colors.primary
+        }
+    }
+
 
     /// The colour of the waveform bar's background.
-    open var barBackgroundColor: UIColor { theme.colors.surface }
+    private var _barBackgroundColor: UIColor?
+    
+    open var barBackgroundColor: UIColor? {
+        set {
+            _barBackgroundColor = newValue ?? theme.colors.surface
+        }
+        
+        get {
+            _barBackgroundColor ?? theme.colors.surface
+        }
+    }
+
+        
+    
+    
+    
+    open var customMaximumBarHeight: CGFloat?
 
     /// The rendering mode of the waveform. On `.write` the view scrolls to accommodate new points
     /// while in `.read` it scales(up or down) all dataPoints to it's current size.
@@ -114,7 +150,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
 
         let maskContext = UIGraphicsGetCurrentContext()
 
-        barBackgroundColor.set()
+        barBackgroundColor!.set()
 
         drawMeteringLevelBars(inContext: maskContext!)
 
@@ -146,7 +182,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
         let colorLocations: [CGFloat] = [0.0, 1.0]
         let colors: [CGColor]
 
-        let color = highlightedBarColor
+        let color = highlightedBarColor!
         colors = [color.cgColor, color.cgColor]
 
         let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: colorLocations)
@@ -173,13 +209,22 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
         squarePath.close()
         squarePath.addClip()
 
-        barColor.set()
+        barColor!.set()
         squarePath.fill()
 
         context.restoreGState()
     }
 
     // MARK: - Bars
+    public func configure(
+        barWidth: CGFloat? = nil,
+        barInterItem: CGFloat? = nil,
+        barCornerRadius: CGFloat? = nil
+    ) {
+        meteringLevelBarWidth = barWidth ?? meteringLevelBarWidth
+        meteringLevelBarInterItem = barInterItem ?? meteringLevelBarInterItem
+        meteringLevelBarCornerRadius = barCornerRadius ?? meteringLevelBarCornerRadius
+    }
 
     private func drawMeteringLevelBars(inContext context: CGContext) {
         if audioVisualizationMode == .write {
@@ -222,7 +267,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
         )
         let barPath: UIBezierPath = UIBezierPath(roundedRect: barRect, cornerRadius: meteringLevelBarCornerRadius)
 
-        barBackgroundColor.set()
+        barBackgroundColor!.set()
         barPath.fill()
 
         context.restoreGState()
@@ -235,7 +280,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
     }
 
     private var maximumBarHeight: CGFloat {
-        bounds.size.height
+        (customMaximumBarHeight != nil) ?  customMaximumBarHeight! : bounds.size.height
     }
 
     private var minimumBarHeight: CGFloat {

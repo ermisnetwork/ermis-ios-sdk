@@ -21,8 +21,6 @@ public struct LinkAttachmentPayload: AttachmentPayload {
     public var title: String?
     /// A text, usually description of the link content.
     public var text: String?
-    /// An author, usually the link origin. (e.g. `YouTube`, `Spotify`)
-    public var author: String?
     /// A link for displaying an attachment.
     /// Can be different from the original link, depends on the enriching rules.
     public var titleLink: URL?
@@ -49,7 +47,6 @@ public struct LinkAttachmentPayload: AttachmentPayload {
         self.originalURL = originalURL
         self.title = title
         self.text = text
-        self.author = author
         self.titleLink = titleLink
         self.assetURL = assetURL
         self.previewURL = previewURL
@@ -67,7 +64,6 @@ extension LinkAttachmentPayload: Encodable {
         try container.encode(originalURL, forKey: .ogURL)
         try container.encodeIfPresent(title, forKey: .title)
         try container.encodeIfPresent(text, forKey: .text)
-        try container.encodeIfPresent(author, forKey: .author)
         try container.encodeIfPresent(titleLink, forKey: .titleLink)
         try container.encodeIfPresent(assetURL, forKey: .assetURL)
         try container.encodeIfPresent(previewURL, forKey: .thumbURL)

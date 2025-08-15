@@ -21,8 +21,6 @@ open class ImageAttachmentComposerPreview: _View, UIProvider, RemoteImageDisplay
     open private(set) lazy var imageView: UIImageView = UIImageView()
         .withoutAutoresizingMaskConstraints
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     override open func setUpTheme() {
         super.setUpTheme()
 

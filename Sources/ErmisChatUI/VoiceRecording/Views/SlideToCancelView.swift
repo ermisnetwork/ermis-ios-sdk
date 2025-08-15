@@ -54,7 +54,7 @@ open class SlideToCancelView: _View, UIProvider {
             container.topAnchor.pin(equalTo: topAnchor),
             container.bottomAnchor.pin(equalTo: bottomAnchor),
             container.centerXAnchor.pin(equalTo: centerXAnchor),
-            container.heightAnchor.pin(equalToConstant: 40)
+            container.heightAnchor.pin(equalToConstant: 46)
         ])
     }
 

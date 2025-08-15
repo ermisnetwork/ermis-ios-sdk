@@ -159,7 +159,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             return typingUsersInfo
         }
 
-        if isShowUnsentContent, let unsentContentText = content.channel.composerUnsentContent?.textViewText {
+        if isShowUnsentContent, let unsentContentText = content.channel.composerUnsentContent?.displayText {
             return unsentContentText
         }
 
@@ -262,12 +262,12 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         super.setUpTheme()
         backgroundColor = contentBackgroundColor
 
-        titleLabel.font = theme.fonts.body.bold
+        titleLabel.font = theme.fonts.body.semiBold
 
         channelStatusImageView.tintColor = theme.colors.error
 
         subtitleLabel.textColor = theme.colors.subtitleText
-        subtitleLabel.font = theme.fonts.footnote
+        subtitleLabel.font = theme.fonts.body
 
         subtitleImageView.tintColor = subtitleLabel.textColor
         subtitleImageView.contentMode = .scaleAspectFit
@@ -339,7 +339,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         titleLabel.text = titleText
         if isShowUnsentContent {
             let subtitleAttributedString = NSMutableAttributedString(string: "\(L10n.ChannelList.LastMessage.draft): ",
-                                                               attributes: [.foregroundColor: theme.colors.error])
+                                                               attributes: [.foregroundColor: theme.colors.draftMessageText])
             subtitleAttributedString.append(.init(string: subtitleText ?? ""))
             subtitleLabel.attributedText = subtitleAttributedString
         } else {

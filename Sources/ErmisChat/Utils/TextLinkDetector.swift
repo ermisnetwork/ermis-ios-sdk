@@ -49,16 +49,15 @@ public class TextLinkDetector {
     /// - Returns: An array of the parsed links that contain the url and the location of the link.
     public func links(in text: String) -> [TextLink] {
         guard let detector = self.detector else { return [] }
-        let matches = detector.matches(in: text, options: [], range: fullRange(of: text))
+        let matches = detector.matches(in: text, options: [], range: fullRange(of: text)).filter({ match in
+            guard let url = match.url else { return false }
+            return !url.absoluteString.contains("mailto:")
+        })
         return matches.compactMap { $0.toTextLink(with: text) }
     }
 
     private func fullRange(of text: String) -> NSRange {
-        // utf16 is used to make sure every char counts as 1 independent of special symbols.
-        // Example: João
-        //    utf16.count == 4
-        //    utf8.count == 5
-        NSRange(location: 0, length: text.utf16.count)
+        NSRange(location: 0, length: (text as NSString).length)
     }
 }
 

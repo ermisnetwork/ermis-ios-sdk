@@ -70,8 +70,6 @@ open class ComposerLinkPreviewView: _View, UIProvider, RemoteImageDisplayable {
         32
     }
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     public var imageView: UIImageView {
         return imagePreviewView
     }

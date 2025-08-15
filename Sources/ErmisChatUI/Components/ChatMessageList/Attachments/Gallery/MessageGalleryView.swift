@@ -12,40 +12,6 @@ open class MessageGalleryView: _View, UIProvider {
         didSet { updateContentIfNeeded() }
     }
 
-    // Previews indices locations:
-    // When one item available:
-    // -------
-    // |     |
-    // |  0  |
-    // |     |
-    // -------
-    // When two items available:
-    // -------------
-    // |     |     |
-    // |  0  |  1  |
-    // |     |     |
-    // -------------
-    // When three items available:
-    // -------------
-    // |     |     |
-    // |  0  |     |
-    // |     |     |
-    // ------|  1  |
-    // |     |     |
-    // |  2  |     |
-    // |     |     |
-    // -------------
-    // When four and more items available:
-    // -------------
-    // |     |     |
-    // |  0  |  1  |
-    // |     |     |
-    // -------------
-    // |     |     |
-    // |  2  |  3  |
-    // |     |     |
-    // -------------
-    /// The spots gallery items takes.
     public private(set) lazy var itemSpots = [
         UIView()
             .withoutAutoresizingMaskConstraints
@@ -72,12 +38,12 @@ open class MessageGalleryView: _View, UIProvider {
         .withAccessibilityIdentifier(identifier: "previewsContainerView")
 
     /// Left container for previews.
-    public private(set) lazy var leftPreviewsContainerView = ContainerStackView()
+    public private(set) lazy var topPreviewContainerView = ContainerStackView()
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "leftPreviewsContainerView")
 
     /// Right container for previews.
-    public private(set) lazy var rightPreviewsContainerView = ContainerStackView()
+    public private(set) lazy var bottomPreviewContainerView = ContainerStackView()
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "rightPreviewsContainerView")
 
@@ -86,31 +52,31 @@ open class MessageGalleryView: _View, UIProvider {
     override open func setUpUI() {
         super.setUpUI()
 
-        previewsContainerView.axis = .horizontal
+        previewsContainerView.axis = .vertical
         previewsContainerView.distribution = .equal
         previewsContainerView.alignment = .fill
         previewsContainerView.spacing = 2
         previewsContainerView.isLayoutMarginsRelativeArrangement = true
-        previewsContainerView.directionalLayoutMargins = .init(top: 2, leading: 2, bottom: 2, trailing: 2)
+        previewsContainerView.directionalLayoutMargins = .zero
         embed(previewsContainerView)
 
-        leftPreviewsContainerView.spacing = 2
-        leftPreviewsContainerView.axis = .vertical
-        leftPreviewsContainerView.distribution = .equal
-        leftPreviewsContainerView.alignment = .fill
-        previewsContainerView.addArrangedSubview(leftPreviewsContainerView)
+        topPreviewContainerView.spacing = 2
+        topPreviewContainerView.axis = .horizontal
+        topPreviewContainerView.distribution = .equal
+        topPreviewContainerView.alignment = .fill
+        previewsContainerView.addArrangedSubview(topPreviewContainerView)
 
-        leftPreviewsContainerView.addArrangedSubview(itemSpots[0])
-        leftPreviewsContainerView.addArrangedSubview(itemSpots[2])
+        topPreviewContainerView.addArrangedSubview(itemSpots[0])
+        topPreviewContainerView.addArrangedSubview(itemSpots[1])
 
-        rightPreviewsContainerView.spacing = 2
-        rightPreviewsContainerView.axis = .vertical
-        rightPreviewsContainerView.distribution = .equal
-        rightPreviewsContainerView.alignment = .fill
-        previewsContainerView.addArrangedSubview(rightPreviewsContainerView)
+        bottomPreviewContainerView.spacing = 2
+        bottomPreviewContainerView.axis = .horizontal
+        bottomPreviewContainerView.distribution = .equal
+        bottomPreviewContainerView.alignment = .fill
+        previewsContainerView.addArrangedSubview(bottomPreviewContainerView)
 
-        rightPreviewsContainerView.addArrangedSubview(itemSpots[1])
-        rightPreviewsContainerView.addArrangedSubview(itemSpots[3])
+        bottomPreviewContainerView.addArrangedSubview(itemSpots[2])
+        bottomPreviewContainerView.addArrangedSubview(itemSpots[3])
 
         addSubview(moreItemsOverlay)
         moreItemsOverlay.pin(to: itemSpots[3])
@@ -118,12 +84,12 @@ open class MessageGalleryView: _View, UIProvider {
 
     override open func setUpTheme() {
         super.setUpTheme()
-
+        self.backgroundColor = theme.colors.surface
         moreItemsOverlay.font = theme.fonts.title
         moreItemsOverlay.adjustsFontForContentSizeCategory = true
         moreItemsOverlay.textAlignment = .center
         moreItemsOverlay.textColor = theme.colors.white
-        moreItemsOverlay.backgroundColor = theme.colors.surfaceContainerHigh
+        moreItemsOverlay.backgroundColor = theme.colors.surfaceContainerHigh.withAlphaComponent(0.4)
     }
 
     override open func contentDidChanged() {
@@ -142,22 +108,16 @@ open class MessageGalleryView: _View, UIProvider {
         isHidden = false
 
         // Add previews to the spots
-        if content.count == 3 {
-            itemSpots[0].embed(content[0])
-            itemSpots[1].embed(content[1])
-            itemSpots[3].embed(content[2])
-        } else {
-            zip(itemSpots, content).forEach { $0.embed($1) }
-        }
+        zip(itemSpots, content).forEach { $0.embed($1) }
 
         // Show taken spots, hide empty ones
         itemSpots.forEach { spot in
             spot.isHidden = spot.subviews.isEmpty
         }
 
-        rightPreviewsContainerView.isHidden = rightPreviewsContainerView.subviews
+        bottomPreviewContainerView.isHidden = bottomPreviewContainerView.subviews
             .allSatisfy(\.isHidden)
-        leftPreviewsContainerView.isHidden = leftPreviewsContainerView.subviews
+        topPreviewContainerView.isHidden = topPreviewContainerView.subviews
             .allSatisfy(\.isHidden)
         previewsContainerView.isHidden = previewsContainerView.subviews
             .allSatisfy(\.isHidden)

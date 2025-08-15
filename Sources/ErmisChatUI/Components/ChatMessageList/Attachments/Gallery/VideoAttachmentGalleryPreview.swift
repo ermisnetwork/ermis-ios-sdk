@@ -37,8 +37,6 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
     open private(set) lazy var playButton = UIButton()
         .withoutAutoresizingMaskConstraints
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     override open func setUpTheme() {
         super.setUpTheme()
 
@@ -84,7 +82,6 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
         super.contentDidChanged()
 
         if content == nil {
-            cancelImageLoading()
             imageView.image = nil
             return
         }

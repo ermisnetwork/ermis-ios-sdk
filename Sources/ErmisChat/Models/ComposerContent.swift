@@ -6,13 +6,10 @@ import CoreData
 import Foundation
 
 public struct ComposerContent {
-    // Composer text content.
+    // Composer text content that parse all user mention display name to user's id.
     public let text: String
-
-    public let previousText: String
-
-    public let textViewText: String
-
+    // The display text in textview.
+    public let displayText: String
     // A `ComposerState` rawValue of composer.
     public let state: String
     // Composer text contain mention all user or not.
@@ -30,8 +27,7 @@ public struct ComposerContent {
 
 
     public init(text: String,
-                previousText: String,
-                textViewText: String,
+                displayText: String,
                 state: String,
                 hasMentionAll: Bool,
                 mentionUsers: Set<ChatUser>,
@@ -40,8 +36,7 @@ public struct ComposerContent {
                 editingMessage: ChatMessage?,
                 createdAt: Date) {
         self.text = text
-        self.previousText = previousText
-        self.textViewText = textViewText
+        self.displayText = displayText
         self.state = state
         self.hasMentionAll = hasMentionAll
         self.mentionUsers = mentionUsers

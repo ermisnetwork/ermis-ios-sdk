@@ -94,6 +94,9 @@ public extension MessageLayoutOption {
 
     /// If set the delivery status will be shown.
     static let deliveryStatusIndicator: Self = "deliveryStatusIndicator"
+    
+    /// If set the message will have a forwarded indicator.
+    static let forwardedMessageIndicator: Self = "forwardedMessageIndicator"
 
     /// If set all the content will have centered alignment. By default, the system messages are centered.
     ///

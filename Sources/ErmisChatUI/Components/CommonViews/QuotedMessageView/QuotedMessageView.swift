@@ -6,43 +6,31 @@ import AVKit
 import ErmisChat
 import UIKit
 
-/// The quoted author's avatar position in relation with the text message.
-/// New custom alignments can be added with extensions and by overriding the `QuotedMessageView.setAvatarAlignment()`.
-public struct QuotedAvatarAlignment: RawRepresentable, Equatable {
-    /// The avatar will be aligned to the leading, and the message content on the trailing.
-    public static let leading = QuotedAvatarAlignment(rawValue: 0)
-    /// The avatar will be aligned to the trailing, and the message content on the leading.
-    public static let trailing = QuotedAvatarAlignment(rawValue: 1)
-
-    public let rawValue: Int
-
-    public init(rawValue: Int) {
-        self.rawValue = rawValue
-    }
-}
-
 /// A view that displays a quoted message.
 open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteImageDisplayable {
     /// The content of the view.
     public struct Content {
         /// The quoted message.
         public let message: ChatMessage?
-        /// The avatar position in relation with the text message.
-        public let avatarAlignment: QuotedAvatarAlignment?
         /// The boolean true if parent message sent by current user.
-        public let isParentMessageSentByCurrentUser: Bool
+        public let repliedMessageAuthor: ChatUser?
         /// The channel which the message belongs to.
         public let channel: Channel?
 
+        public var isRepliedMessageSentByCurrentUser: Bool {
+            guard let repliedMessageAuthor, let channel else {
+                return false
+            }
+            return repliedMessageAuthor.userId == channel.membership?.userId
+        }
+
         public init(
             message: ChatMessage?,
-            avatarAlignment: QuotedAvatarAlignment?,
-            isParentMessageSentByCurrentUser: Bool,
+            repliedMessageAuthor: ChatUser?,
             channel: Channel? = nil
         ) {
             self.message = message
-            self.avatarAlignment = avatarAlignment
-            self.isParentMessageSentByCurrentUser = isParentMessageSentByCurrentUser
+            self.repliedMessageAuthor = repliedMessageAuthor
             self.channel = channel
         }
     }
@@ -65,16 +53,25 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "containerView")
 
-    /// The avatar view of the author's quoted message.
-    open private(set) lazy var authorAvatarView: AvatarView = components
-        .avatarView.init(style: .circular)
+    /// The label on top to show the reply context
+    open private(set) lazy var descriptionLabel: UILabel = .init()
         .withoutAutoresizingMaskConstraints
-        .withAccessibilityIdentifier(identifier: "authorAvatarView")
+        .withAccessibilityIdentifier(identifier: "answerByLabel")
 
-    /// The container view that holds the `textView` and the `attachmentPreview`.
+    /// The container view that holds the `quoteMarkView` and the `bubbleContainerView`.
     open private(set) lazy var contentContainerView: ContainerStackView = ContainerStackView()
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "contentContainerView")
+
+    /// The view to mark this message is replied
+    open private(set) lazy var quoteMarkView = UIView()
+        .withoutAutoresizingMaskConstraints
+        .withAccessibilityIdentifier(identifier: "quoteMarkView")
+
+    /// The container view that holds the `textView` and the `attachmentPreview`.
+    open private(set) lazy var bubbleContainerView: ContainerStackView = ContainerStackView()
+        .withoutAutoresizingMaskConstraints
+        .withAccessibilityIdentifier(identifier: "bubbleContainerView")
 
     /// The `UITextView` that contains quoted message content.
     open private(set) lazy var textView: UITextView = UITextView()
@@ -93,71 +90,64 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
             .init()
             .withoutAutoresizingMaskConstraints
 
-    /// The size of the avatar view that belongs to the author of the quoted message.
-    open var authorAvatarSize: CGSize { .init(width: 24, height: 24) }
-
     /// The size of the attachments preview.s
     open var attachmentPreviewSize: CGSize { .init(width: 34, height: 34) }
 
     /// The component responsible to detect links in the message text.
     public let linkDetector = TextLinkDetector()
 
-    public weak var imageDownloadTask: (any Cancellable)?
-
     public var imageView: UIImageView {
         return attachmentPreviewView
     }
-
+    // MARK: - Setup
     override open func setUp() {
         super.setUp()
-
+        quoteMarkView.layer.cornerRadius = 1.5
         textView.isEditable = false
         textView.dataDetectorTypes = .link
         textView.isScrollEnabled = false
         textView.adjustsFontForContentSizeCategory = true
         textView.isUserInteractionEnabled = false
-    }
 
-    override open func setUpTheme() {
-        super.setUpTheme()
-
-        textView.textContainer.maximumNumberOfLines = 6
-        textView.textContainer.lineBreakMode = .byTruncatingTail
-        textView.textContainer.lineFragmentPadding = .zero
-        textView.backgroundColor = .clear
-        textView.font = theme.fonts.body
-        textView.textContainerInset = .zero
-
-        authorAvatarView.contentMode = .scaleAspectFill
-
-        contentContainerView.layer.cornerRadius = 16
-        contentContainerView.layer.borderWidth = 1
-        contentContainerView.layer.borderColor = theme.colors.outline.cgColor
-        contentContainerView.layer.masksToBounds = true
+        bubbleContainerView.layer.cornerRadius = 12
+        bubbleContainerView.layer.masksToBounds = true
     }
 
     override open func setUpUI() {
         preservesSuperviewLayoutMargins = true
-
         containerView.isLayoutMarginsRelativeArrangement = true
-        containerView.spacing = .auto
-        containerView.alignment = .bottom
+        containerView.alignment = .leading
+        containerView.axis = .vertical
+        containerView.spacing = 4
 
         contentContainerView.isLayoutMarginsRelativeArrangement = true
-        contentContainerView.alignment = .top
+        contentContainerView.spacing = 8
+        contentContainerView.alignment = .center
+        contentContainerView.distribution = .natural
+        contentContainerView.axis = .horizontal
+        contentContainerView.layoutMargins = .zero
+
+        bubbleContainerView.isLayoutMarginsRelativeArrangement = true
+        bubbleContainerView.alignment = .top
+        bubbleContainerView.layoutMargins = .init(top: 8, left: 16, bottom: 8, right: 16)
 
         embed(containerView)
 
-        containerView.addArrangedSubview(authorAvatarView)
-        containerView.addArrangedSubview(contentContainerView)
+        containerView.addArrangedSubviews([
+            descriptionLabel,
+            contentContainerView
+        ])
 
-        contentContainerView.addArrangedSubview(attachmentPreviewView)
-        contentContainerView.addArrangedSubview(voiceRecordingAttachmentQuotedPreview)
-        contentContainerView.addArrangedSubview(textView)
+        contentContainerView.addArrangedSubview(quoteMarkView)
+        contentContainerView.addArrangedSubview(bubbleContainerView)
+
+        bubbleContainerView.addArrangedSubview(attachmentPreviewView)
+        bubbleContainerView.addArrangedSubview(voiceRecordingAttachmentQuotedPreview)
+        bubbleContainerView.addArrangedSubview(textView)
 
         NSLayoutConstraint.activate([
-            authorAvatarView.widthAnchor.pin(equalToConstant: authorAvatarSize.width),
-            authorAvatarView.heightAnchor.pin(equalToConstant: authorAvatarSize.height)
+            quoteMarkView.widthAnchor.pin(equalToConstant: 3),
+            quoteMarkView.heightAnchor.pin(equalTo: self.bubbleContainerView.heightAnchor, constant: -12)
         ])
 
         NSLayoutConstraint.activate([
@@ -171,23 +161,37 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         voiceRecordingAttachmentQuotedPreview.isHidden = true
     }
 
+    override open func setUpTheme() {
+        super.setUpTheme()
+
+        descriptionLabel.textColor = theme.colors.subtitleText
+        descriptionLabel.font = theme.fonts.footnote.semiBold
+
+        quoteMarkView.backgroundColor = theme.colors.primary
+
+        textView.textContainer.maximumNumberOfLines = 6
+        textView.textContainer.lineBreakMode = .byTruncatingTail
+        textView.textContainer.lineFragmentPadding = .zero
+        textView.backgroundColor = .clear
+        textView.font = theme.fonts.callout
+        textView.textContainerInset = .zero
+
+        bubbleContainerView.backgroundColor = theme.colors.bubbleQuotedMessageBackground
+    }
+
     override open func contentDidChanged() {
         let message = content?.message
-
-        contentContainerView.backgroundColor = content?.isParentMessageSentByCurrentUser == true
-        ? theme.colors.outgoingBubbleQuotedMessageBackground
-        : theme.colors.incommingBubbleQuotedMessageBackground
+        containerView.alignment = content?.isRepliedMessageSentByCurrentUser == true ? .trailing : .leading
+        updateDescriptionLabel()
+        updateQuoteMarkViewPosition()
 
         if message?.isDeleted == true || message == nil {
             setDeletedText()
             hideAttachmentPreview()
-            setAvatarAlignment(content?.avatarAlignment)
         } else if let message = message {
-            setText(message.text)
-            setAvatar(imageUrl: message.author.imageURL, senderName: message.author.name)
-            setAvatarAlignment(content?.avatarAlignment)
-
-            if isAttachmentsEmpty || message.isDeleted {
+            if !message.text.isEmpty {
+                setText(message.text)
+            } else if isAttachmentsEmpty {
                 hideAttachmentPreview()
             } else {
                 setAttachmentPreview(for: message)
@@ -200,6 +204,32 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
             textView.text = translatedText
         }
     }
+    // MARK: - Action
+
+    /// Update content of description label
+    open func updateDescriptionLabel() {
+        if content?.message?.author.userId == content?.channel?.membership?.userId {
+            descriptionLabel.text = "Have answered you"
+        } else if let author = content?.message?.author {
+            descriptionLabel.text = "Have answered \(author.displayName)"
+        }
+        descriptionLabel.isHidden = content?.repliedMessageAuthor == nil
+        descriptionLabel.textAlignment = content?.isRepliedMessageSentByCurrentUser == false ? .left : .right
+    }
+
+    /// Update quote markview alignment to left or right base on the parent sender.
+    open func updateQuoteMarkViewPosition() {
+        contentContainerView.removeArrangedSubview(quoteMarkView)
+        if content?.isRepliedMessageSentByCurrentUser == true {
+            contentContainerView.addArrangedSubview(quoteMarkView)
+        } else {
+            contentContainerView.insertArrangedSubview(quoteMarkView, at: 0)
+        }
+        NSLayoutConstraint.activate([
+            quoteMarkView.widthAnchor.pin(equalToConstant: 3),
+            quoteMarkView.heightAnchor.pin(equalTo: self.bubbleContainerView.heightAnchor, constant: -12)
+        ])
+    }
 
     /// Sets the text of the quoted message.
     /// - Parameter text: A string representing the text of the quoted message.
@@ -208,9 +238,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         let attributedText = NSMutableAttributedString(
             string: text,
             attributes: [
-                .foregroundColor: content?.isParentMessageSentByCurrentUser == true
-                ? theme.colors.outgoingQuotedMessageText
-                : theme.colors.incommingQuotedMessageText,
+                .foregroundColor: theme.colors.subtitleText,
                 .font: theme.fonts.body
             ]
         )
@@ -226,12 +254,12 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
             mentionedUsers.forEach {
                 textView.highlightMentions($0,
                                            isCurrentUser: $0.userId == content?.channel?.membership?.userId,
-                                           isSendByCurrentUser: content?.isParentMessageSentByCurrentUser ?? false)
+                                           isSendByCurrentUser: false)
             }
         }
 
         if content?.message?.mentionedAll == true {
-            textView.highlightMentionAllUsers()
+            textView.highlightMentionAllUsers(isSendByCurrentUser: false)
         }
     }
 
@@ -240,48 +268,11 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         let attributedText = NSMutableAttributedString(
             string: text,
             attributes: [
-                .foregroundColor: content?.isParentMessageSentByCurrentUser == true
-                ? theme.colors.outgoingQuotedMessageText
-                : theme.colors.incommingQuotedMessageText,
+                .foregroundColor: theme.colors.quotedMessageText,
                 .font: theme.fonts.body
             ]
         )
         textView.attributedText = attributedText
-    }
-
-    /// Sets the avatar image from a url or sets the placeholder image if the url is `nil`.
-    /// - Parameter imageUrl: The url of the image.
-    open func setAvatar(imageUrl: URL?, senderName: String?) {
-        authorAvatarView.loadImage(from: imageUrl,
-                                   with: ImageLoaderOptions(
-                                    resize: .init(components.avatarThumbnailSize),
-                                    placeHolderString: senderName
-                                   ))
-    }
-
-    /// Sets the avatar position in relation of the text bubble.
-    /// - Parameter alignment: The avatar alignment of the author of the quoted message.
-    open func setAvatarAlignment(_ alignment: QuotedAvatarAlignment?) {
-        containerView.removeArrangedSubview(authorAvatarView)
-
-        switch alignment {
-        case .leading:
-            containerView.insertArrangedSubview(authorAvatarView, at: 0)
-            contentContainerView.layer.maskedCorners = [
-                .layerMinXMinYCorner,
-                .layerMaxXMinYCorner,
-                .layerMaxXMaxYCorner
-            ]
-        case .trailing:
-            containerView.addArrangedSubview(authorAvatarView)
-            contentContainerView.layer.maskedCorners = [
-                .layerMinXMinYCorner,
-                .layerMaxXMinYCorner,
-                .layerMinXMaxYCorner
-            ]
-        default:
-            break
-        }
     }
 
     /// Sets the attachment content to the preview view.

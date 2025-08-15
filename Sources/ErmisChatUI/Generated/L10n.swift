@@ -10,6 +10,10 @@ internal enum L10n {
   internal static func currentSelection(_ p1: Int, _ p2: Int) -> String {
     return L10n.tr("Localizable", "current-selection", p1, p2)
   }
+  /// From
+  internal static var from: String { L10n.tr("Localizable", "from") }
+  /// No preview available
+  internal static var noPreviewAvailable: String { L10n.tr("Localizable", "no_preview_available") }
   /// You
   internal static var you: String { L10n.tr("Localizable", "you") }
 
@@ -59,13 +63,13 @@ internal enum L10n {
 
   internal enum Channel {
     internal enum Invitation {
-      /// Accept the invite to see all messages of this channel
+      /// Accept the invite to see all messages of this group
       internal static var accceptRequireMessage: String { L10n.tr("Localizable", "channel.invitation.accceptRequireMessage") }
       /// Accept the invite to see all messages of this conversation
       internal static var directAccceptRequireMessage: String { L10n.tr("Localizable", "channel.invitation.directAccceptRequireMessage") }
       /// Get tokens
       internal static var getTokens: String { L10n.tr("Localizable", "channel.invitation.get-tokens") }
-      /// Join channel %@
+      /// Join group %@
       internal static func joinChannel(_ p1: Any) -> String {
         return L10n.tr("Localizable", "channel.invitation.join-channel", String(describing: p1))
       }
@@ -99,7 +103,7 @@ internal enum L10n {
       internal static func andXMore(_ p1: Any) -> String {
         return L10n.tr("Localizable", "channel.name.andXMore", String(describing: p1))
       }
-      /// NoChannel
+      /// No Group
       internal static var missing: String { L10n.tr("Localizable", "channel.name.missing") }
     }
   }
@@ -116,7 +120,7 @@ internal enum L10n {
       internal static var title: String { L10n.tr("Localizable", "channelList.empty.title") }
     }
     internal enum Error {
-      /// Error loading channels
+      /// Error loading groups
       internal static var message: String { L10n.tr("Localizable", "channelList.error.message") }
     }
     internal enum LastMessage {
@@ -162,7 +166,7 @@ internal enum L10n {
   internal enum Composer {
     /// Join
     internal static var joinButton: String { L10n.tr("Localizable", "composer.join-button") }
-    /// Join channel to send message.
+    /// Join group to send message.
     internal static var joinChannelTitle: String { L10n.tr("Localizable", "composer.join-channel-title") }
     internal enum Checkmark {
       /// Also send as direct message
@@ -173,10 +177,18 @@ internal enum L10n {
       internal static var contentContainBlockedKeywords: String { L10n.tr("Localizable", "composer.filterwords.content-contain-blocked-keywords") }
     }
     internal enum LinksDisabled {
-      /// Members in this channel are not allowed to send links.
+      /// Members in this group are not allowed to send links.
       internal static var subtitle: String { L10n.tr("Localizable", "composer.links-disabled.subtitle") }
       /// Links are disabled
       internal static var title: String { L10n.tr("Localizable", "composer.links-disabled.title") }
+    }
+    internal enum Menu {
+      /// Create Poll
+      internal static var createPoll: String { L10n.tr("Localizable", "composer.menu.create-poll") }
+      /// Location
+      internal static var location: String { L10n.tr("Localizable", "composer.menu.location") }
+      /// Share File
+      internal static var shareFile: String { L10n.tr("Localizable", "composer.menu.share-file") }
     }
     internal enum Picker {
       /// Camera
@@ -193,9 +205,9 @@ internal enum L10n {
       internal static var photoTitle: String { L10n.tr("Localizable", "composer.picker.photo-title") }
     }
     internal enum Placeholder {
-      /// Send a message
+      /// Write a message
       internal static var message: String { L10n.tr("Localizable", "composer.placeholder.message") }
-      /// You can't send messages in this channel
+      /// You can't send messages in this group
       internal static var messageDisabled: String { L10n.tr("Localizable", "composer.placeholder.messageDisabled") }
       /// Slow mode ON
       internal static var slowMode: String { L10n.tr("Localizable", "composer.placeholder.slowMode") }
@@ -289,7 +301,7 @@ internal enum L10n {
 
   internal enum InvitedChannelList {
     internal enum Empty {
-      /// No invited channels.
+      /// No invited.
       internal static var title: String { L10n.tr("Localizable", "invitedChannelList.empty.title") }
     }
   }
@@ -436,35 +448,35 @@ internal enum L10n {
       internal static var attachmentUploadingFailed: String { L10n.tr("Localizable", "message.sending.attachment-uploading-failed") }
     }
     internal enum System {
-      /// Cooldown feature enabled by Channel Admin. Cooldown duration set to %@
+      /// Cooldown feature enabled by Group Admin. Cooldown duration set to %@
       internal static func adjustCooldown(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.adjust-cooldown", String(describing: p1))
       }
-      /// %@ changed the channel description
+      /// %@ changed the group description
       internal static func channelDesciptionUpdated(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.channel-desciption-updated", String(describing: p1))
       }
-      /// %@ changed the channel avatar
+      /// %@ changed the group avatar
       internal static func channelImageUpdated(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.channel-image-updated", String(describing: p1))
       }
-      /// %@ changed the channel name to "%@"
+      /// %@ changed the group name to "%@"
       internal static func channelNameUpdated(_ p1: Any, _ p2: Any) -> String {
         return L10n.tr("Localizable", "message.system.channel-name-updated", String(describing: p1), String(describing: p2))
       }
-      /// %@ update channel filter words
+      /// %@ update group filter words
       internal static func filterWordsChanged(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.filter-words-changed", String(describing: p1))
       }
-      /// %@ banned from interacting in this channel by Channel Admin
+      /// %@ banned from interacting in this group by Group Admin
       internal static func memberBanned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-banned", String(describing: p1))
       }
-      /// %@ removed as the moderator from this channel
+      /// %@ removed as the moderator from this group
       internal static func memberDemoted(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-demoted", String(describing: p1))
       }
-      /// %@ joined this channel
+      /// %@ joined this group
       internal static func memberJoinedChannel(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-joined-channel", String(describing: p1))
       }
@@ -472,22 +484,24 @@ internal enum L10n {
       internal static func memberJoinedConversation(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-joined-conversation", String(describing: p1))
       }
-      /// %@ left this channel
+      /// %@ left this group
       internal static func memberLeave(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-leave", String(describing: p1))
       }
-      /// %@ assigned as the moderator for this channel
+      /// %@ assigned as the moderator for this group
       internal static func memberPromoted(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-promoted", String(describing: p1))
       }
-      /// %@ removed from this channel
+      /// %@ removed from this group
       internal static func memberRemoved(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-removed", String(describing: p1))
       }
-      /// %@ unbanned and now can interact in this channel
+      /// %@ unbanned and now can interact in this group
       internal static func memberUnbanned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-unbanned", String(describing: p1))
       }
+      /// A message has been forwarded
+      internal static var messageForwarded: String { L10n.tr("Localizable", "message.system.message-forwarded") }
       /// %@ pinned a message
       internal static func messagePinned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.message-pinned", String(describing: p1))
@@ -496,48 +510,76 @@ internal enum L10n {
       internal static func messageUnpinned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.message-unpinned", String(describing: p1))
       }
-      /// %@ updated member permission of channel
+      /// %@ has promoted you to Owner
+      internal static func otherPromotedYouToOwner(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.other-promoted-you-to-owner", String(describing: p1))
+      }
+      /// %@ rejected your friend request.
+      internal static func otherRejectAddFriendRequest(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.other-reject-add-friend-request", String(describing: p1))
+      }
+      /// %@ truncated all messages of this channel
+      internal static func otherTruncatedMessages(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.other-truncated-messages", String(describing: p1))
+      }
+      /// %@ updated member permission of group
       internal static func otherUpdatedMemberPermission(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-updated-member-permission", String(describing: p1))
       }
-      /// Member %@ made this channel private
+      /// %@ has promoted member %@ to Owner
+      internal static func promotedToOwner(_ p1: Any, _ p2: Any) -> String {
+        return L10n.tr("Localizable", "message.system.promoted-to-owner", String(describing: p1), String(describing: p2))
+      }
+      /// Member %@ made this group private
       internal static func setChannelPrivate(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.set-channel-private", String(describing: p1))
       }
-      /// Member %@ made this channel public
+      /// Member %@ made this group public
       internal static func setChannelPublic(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.set-channel-public", String(describing: p1))
       }
       /// Cooldown has been disabled
       internal static var turnOffCooldown: String { L10n.tr("Localizable", "message.system.turn-off-cooldown") }
-      /// Cooldown feature enabled by Channel Admin. Cooldown duration set to %@
+      /// Cooldown feature enabled by Group Admin. Cooldown duration set to %@
       internal static func turnOnCooldown(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.turn-on-cooldown", String(describing: p1))
       }
-      /// %@ declined to join this channel
+      /// %@ declined to join this group
       internal static func userRejectedInvitation(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.user-rejected-invitation", String(describing: p1))
       }
-      /// You banned from interacting in this channel by Channel Admin
+      /// You banned from interacting in this group by Group Admin
       internal static var youBanned: String { L10n.tr("Localizable", "message.system.you-banned") }
-      /// You removed as the moderator from this channel
+      /// You removed as the moderator from this group
       internal static var youDemoted: String { L10n.tr("Localizable", "message.system.you-demoted") }
-      /// You joined this channel
+      /// You joined this group
       internal static var youJoinedChannel: String { L10n.tr("Localizable", "message.system.you-joined-channel") }
       /// You joined this conversation
       internal static var youJoinedConversation: String { L10n.tr("Localizable", "message.system.you-joined-conversation") }
-      /// You left this channel
+      /// You left this group
       internal static var youLeave: String { L10n.tr("Localizable", "message.system.you-leave") }
-      /// You assigned as the moderator for this channel
+      /// You assigned as the moderator for this group
       internal static var youPromoted: String { L10n.tr("Localizable", "message.system.you-promoted") }
-      /// You made this channel private
+      /// You have promoted member %@ to Owner
+      internal static func youPromotedOtherToOwner(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.you-promoted-other-to-owner", String(describing: p1))
+      }
+      /// You rejected friend request from %@
+      internal static func youRejectAddFriendRequest(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.system.you-reject-add-friend-request", String(describing: p1))
+      }
+      /// You made this group private
       internal static var youSetChannelPrivate: String { L10n.tr("Localizable", "message.system.you-set-channel-private") }
-      /// You made this channel public
+      /// You made this group public
       internal static var youSetChannelPublic: String { L10n.tr("Localizable", "message.system.you-set-channel-public") }
-      /// You unbanned and now can interact in this channel
+      /// You truncated all messages of this channel
+      internal static var youTruncatedMessages: String { L10n.tr("Localizable", "message.system.you-truncated-messages") }
+      /// You unbanned and now can interact in this group
       internal static var youUnbanned: String { L10n.tr("Localizable", "message.system.you-unbanned") }
-      /// You updated member permission of channel
+      /// You updated member permission of group
       internal static var youUpdatedMemberPermission: String { L10n.tr("Localizable", "message.system.you-updated-member-permission") }
+      /// You have forwarded a message
+      internal static var yourMessageForwarded: String { L10n.tr("Localizable", "message.system.your-message-forwarded") }
     }
     internal enum Thread {
       internal enum Replies {
@@ -619,6 +661,11 @@ internal enum L10n {
         return L10n.tr("Localizable", "recording.presentation.name", p1)
       }
     }
+  }
+
+  internal enum Share {
+    /// Send to
+    internal static var sendTo: String { L10n.tr("Localizable", "share.send-to") }
   }
 }
 

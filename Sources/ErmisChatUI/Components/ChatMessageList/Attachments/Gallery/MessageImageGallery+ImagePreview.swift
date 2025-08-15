@@ -25,7 +25,7 @@ extension MessageGalleryView {
             content?.id
         }
 
-        private var gifLoadingHandler = SwiftyGifLoadingHandler()
+        private lazy var gifLoadingHandler = SwiftyGifLoadingHandler()
 
         public var didTapOnAttachment: ((MessageImageAttachment) -> Void)?
         public var didTapOnUploadingActionButton: ((MessageImageAttachment) -> Void)?
@@ -40,6 +40,7 @@ extension MessageGalleryView {
             let imageView = UIImageView()
             imageView.contentMode = .scaleAspectFill
             imageView.layer.masksToBounds = true
+            imageView.clipsToBounds = true
             return imageView
                 .withoutAutoresizingMaskConstraints
                 .withAccessibilityIdentifier(identifier: "imageView")
@@ -66,7 +67,6 @@ extension MessageGalleryView {
 
         override open func setUp() {
             super.setUp()
-
             let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(didTapOnAttachment(_:)))
             addGestureRecognizer(tapRecognizer)
 

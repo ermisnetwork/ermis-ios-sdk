@@ -24,7 +24,7 @@ public extension Theme {
             }
         }
 
-        private static func loadSafely(systemName: String, assetsFallback: String) -> UIImage {
+        private static func loadSafely(systemName: String, assetsFallback: String = "app") -> UIImage {
             return UIImage(systemName: systemName) ?? loadImageSafely(with: assetsFallback)
 
         }
@@ -43,11 +43,11 @@ public extension Theme {
         public var more = loadImageSafely(with: "icn_more")
         public var share: UIImage = loadSafely(systemName: "square.and.arrow.up", assetsFallback: "share")
 
+        public var add: UIImage = loadSafely(systemName: "plus")
         public var commands: UIImage = loadImageSafely(with: "bolt")
         public var smallBolt: UIImage = loadImageSafely(with: "bolt_small")
         public var openAttachments: UIImage = loadImageSafely(with: "clip")
-        public var shrinkInputArrow: UIImage = loadImageSafely(with: "arrow_shrink_input")
-        public var sendArrow: UIImage = loadImageSafely(with: "arrow_send")
+        public var send: UIImage = loadImageSafely(with: "arrow_send")
         public var scrollDownArrow: UIImage = loadImageSafely(with: "arrow_down")
         public var whiteCheckmark: UIImage = loadImageSafely(with: "checkmark_white")
         public var confirmCheckmark: UIImage = loadImageSafely(with: "checkmark_confirm")
@@ -57,12 +57,18 @@ public extension Theme {
         public var emptyContactList: UIImage = loadImageSafely(with: "empty_contact_list")
         public var emptySearch: UIImage = loadImageSafely(with: "empty_search")
         public var download: UIImage = loadSafely(systemName: "download", assetsFallback: "download")
+        public var sticker: UIImage = loadSafely(systemName: "face.smiling")
         public var photo: UIImage = loadImageSafely(with: "photo")
         public var check: UIImage = loadImageSafely(with: "ic_check")
         public var info: UIImage = loadImageSafely(with: "ic_info")
         public var block: UIImage = loadImageSafely(with: "block")
         public var mute: UIImage = loadImageSafely(with: "ic_mute_user")
         public var favorite: UIImage = loadImageSafely(with: "ic_favorite")
+        // Composer Menu
+        public var composerMenuLocation: UIImage = loadSafely(systemName: "location.circle.fill")
+        public var composerMenuFile: UIImage = loadSafely(systemName: "document.circle")
+        public var composerMenuPoll: UIImage = loadSafely(systemName: "chart.bar.xaxis.ascending")
+
         // MARK: - Recording
 
         public var mic: UIImage = loadSafely(systemName: "mic", assetsFallback: "mic")
@@ -187,6 +193,7 @@ public extension Theme {
         public var messageActionForward: UIImage = loadImageSafely(with: "ic_forward")
         public var messageActionPin: UIImage = loadImageSafely(with: "ic_pin")
         public var messageActionUnpin: UIImage = loadImageSafely(with: "ic_unpin")
+        public var messageActionShowInChat: UIImage = loadImageSafely(with: "ic_show_in_chat")
         public var messageActionBlockUser: UIImage = loadImageSafely(with: "ic_block_user")
         public var messageActionMuteUser: UIImage = loadImageSafely(with: "ic_mute_user")
         public var messageActionDelete: UIImage = loadImageSafely(with: "ic_delete")

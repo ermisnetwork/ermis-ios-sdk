@@ -15,15 +15,16 @@ public class Colors {
 
     public var incommingMessageText = BaseColor.onSurface
     public var outgoingMessageText = BaseColor.onPrimary
-    public var incommingQuotedMessageText = BaseColor.onSurface
-    public var outgoingQuotedMessageText = BaseColor.onPrimary
+    public var quotedMessageText = BaseColor.onSurfaceVariant
 
-    public var mentionUserText = BaseColor.error
+    public var incomingMentionUserText = BaseColor.error
+    public var outgoingMentionUserText = BaseColor.error
     public var incomingMentionOtherUserText = BaseColor.onSurface
     public var outgoingMentionOtherUserText = BaseColor.onPrimary
 
     public var systemMessageText = BaseColor.onSurfaceVariant
     public var textLinkColor = BaseColor.primary
+    public var draftMessageText = BaseColor.error
 
     public var messageListSeparatorText = BaseColor.onSurface
 
@@ -34,8 +35,7 @@ public class Colors {
 
     public var incommingBubbleMessageBackground = BaseColor.surfaceContainer
     public var outgoingBubbleMessageBackground = BaseColor.primary
-    public var incommingBubbleQuotedMessageBackground = BaseColor.surfaceContainerLow
-    public var outgoingBubbleQuotedMessageBackground = BaseColor.primaryDark
+    public var bubbleQuotedMessageBackground = BaseColor.surfaceContainerLowest
     public var messageListSeparatorBackground = BaseColor.surfaceContainerHigh
     public var systemMessageBackground = BaseColor.surfaceContainerLowest
     

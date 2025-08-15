@@ -389,9 +389,7 @@ public class ContainerStackView: UIView {
             }
         }
 
-        customConstraints.forEach {
-            $0.isActive = true
-        }
+        NSLayoutConstraint.activate(customConstraints)
 
         for (view, constraint) in customLeadingConstraintsByView where !view.isHidden {
             constraint.isActive = true

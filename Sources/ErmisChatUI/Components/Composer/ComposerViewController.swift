@@ -184,8 +184,9 @@ open class ComposerViewController: _ViewController,
         /// Sets the content state to editing a message.
         ///
         /// - Parameter message: The message that the composer will edit.
-        public mutating func editMessage(_ message: ChatMessage) {
-            self = .init(
+        /// - Returns: New message content for editing a message
+        public func editMessage(_ message: ChatMessage) -> Content {
+            return .init(
                 text: message.text,
                 state: .edit,
                 editingMessage: message,
@@ -202,8 +203,9 @@ open class ComposerViewController: _ViewController,
         /// Sets the content state to quoting a message.
         ///
         /// - Parameter message: The message that the composer will quote.
-        public mutating func quoteMessage(_ message: ChatMessage) {
-            self = .init(
+        /// - Returns: New message content for quoting a message
+        public func quoteMessage(_ message: ChatMessage) -> Content {
+            return .init(
                 text: text,
                 state: .quote,
                 editingMessage: nil,
@@ -298,11 +300,6 @@ open class ComposerViewController: _ViewController,
         }
     }
 
-    private var textChangeRange: NSRange = .init(location: 0, length: 0)
-    private var previousText: String = ""
-    // Mention index info to calculate between content.text and textView.text
-    var mentionIndex: MentionsIndex?
-
     /// The component responsible for tracking cooldown timing when slow mode is enabled.
     open var cooldownTracker: CooldownTracker = CooldownTracker(timer: ScheduledErmisTimer(interval: 1))
 
@@ -379,9 +376,10 @@ open class ComposerViewController: _ViewController,
         channelController?.channel?.config ?? ChannelConfig()
     }
 
-    var shouldAutoUpdateTextViewContent: Bool = true
-    /// The boolean true if we want to prevent handle textview text did changed.
-    var preventHandleTextChanged: Bool = false
+    var shouldAutoUpdateTextViewContent = true
+
+    /// Information about the user's mention in the current text view.
+    var mentionTokens: [MentionToken] = []
 
     /// The component responsible for mention suggestions.
     open lazy var mentionSuggester = TypingSuggester(
@@ -490,13 +488,15 @@ open class ComposerViewController: _ViewController,
         // Set the delegate for handling the pasting of UIImages in the text view
         composerView.inputMessageView.textView.clipboardAttachmentDelegate = self
 
-        composerView.fileButton.addTarget(self, action: #selector(showFilePicker), for: .touchUpInside)
-        composerView.photoButton.addTarget(self, action: #selector(showPhotoPicker), for: .touchUpInside)
         composerView.sendButton.addTarget(self, action: #selector(publishMessage), for: .touchUpInside)
         composerView.confirmButton.addTarget(self, action: #selector(publishMessage), for: .touchUpInside)
-        composerView.shrinkInputButton.addTarget(self, action: #selector(shrinkInput), for: .touchUpInside)
+        composerView.photoButton.addTarget(self, action: #selector(showPhotoPicker), for: .touchUpInside)
+        composerView.stickerButton.addTarget(self, action: #selector(showStickerPicker), for: .touchUpInside)
         composerView.commandsButton.addTarget(self, action: #selector(showAvailableCommands), for: .touchUpInside)
         composerView.dismissButton.addTarget(self, action: #selector(clearContent(sender:)), for: .touchUpInside)
+        composerView.composerMenuButton.onMenuItemDidTapped = { [weak self] item in
+            self?.onMenuButtonDidSelected(item: item)
+        }
         composerView.inputMessageView.clearButton.addTarget(
             self,
             action: #selector(clearContent(sender:)),
@@ -573,8 +573,8 @@ open class ComposerViewController: _ViewController,
         updateCommandsButtonVisibility()
         updateConfirmButtonVisibility()
         updateSendButtonVisibility()
-        updateFileButtonVisibility()
         updatePhotoButtonVisibility()
+        updateStickerButtonVisibility()
         updateHeaderViewVisibility()
         updateRecordButtonVisibility()
         updateCooldownView()
@@ -597,35 +597,20 @@ open class ComposerViewController: _ViewController,
         guard shouldAutoUpdateTextViewContent else {
             return
         }
+
         var displayText = content.text
 
         guard !content.mentionedUsers.isEmpty else {
             if composerView.inputMessageView.textView.text != displayText {
                 // Updating the text unnecessarily makes the caret jump to the end of input
-                preventHandleTextChanged = true
                 composerView.inputMessageView.textView.text = displayText
-                preventHandleTextChanged = false
             }
             return
         }
 
-        for mentionUser in content.mentionedUsers {
-            let mentionString = mentionUser.mentionString
-            let mentionDisplayString = mentionUser.mentionsDisplayString
-            guard mentionString != mentionDisplayString else {
-                continue
-            }
-            let ranges = displayText.ranges(of: mentionString)
-            for range in ranges.reversed() {
-                displayText = displayText.replacingCharacters(in: range, with: mentionDisplayString)
-            }
-        }
-
         if composerView.inputMessageView.textView.text != displayText {
             // Updating the text unnecessarily makes the caret jump to the end of input
-            preventHandleTextChanged = true
             composerView.inputMessageView.textView.text = displayText
-            preventHandleTextChanged = false
         }
     }
 
@@ -633,6 +618,18 @@ open class ComposerViewController: _ViewController,
         if !content.isEmpty && channelConfig?.typingEventsEnabled == true,
            UIApplication.shared.applicationState == .active {
             channelController?.sendKeystrokeEvent(parentMessageId: content.threadMessage?.id)
+        }
+    }
+
+    open func updateMenuButtonVisibility() {
+        let textView = composerView.inputMessageView.textView
+        Animate {
+            let leadingViews = self.composerView.leadingContainer.subviews
+            let isNotShrinkInputButton: (UIView) -> Bool = { $0 !== self.composerView.composerMenuButton }
+            let isLeadingActionsVisible = leadingViews
+                .filter { isNotShrinkInputButton($0) && self.composerView.composerMenuButton.isHidden }
+                .filter(\.isHidden).isEmpty
+            self.composerView.composerMenuButton.isHidden = self.content.isVoiceRecording //textView.text.isEmpty || self.content .hasCommand || !isLeadingActionsVisible
         }
     }
 
@@ -648,13 +645,13 @@ open class ComposerViewController: _ViewController,
         Animate {
             switch self.content.state {
             case .new:
-                self.composerView.recordButton.isHidden = isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
+                self.composerView.recordButton.isHidden = !isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
             case .recording:
                 self.composerView.recordButton.isHidden = false
             case .recordingLocked:
                 self.composerView.recordButton.isHidden = true
             case .quote:
-                self.composerView.recordButton.isHidden = isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
+                self.composerView.recordButton.isHidden = !isSendButtonHidden || !isVoiceRecordingEnabled || !self.isAttachmentsEnabled
             case .edit:
                 self.composerView.recordButton.isHidden = isConfirmButtonHidden || !self.isAttachmentsEnabled
             default:
@@ -701,27 +698,27 @@ open class ComposerViewController: _ViewController,
         composerView.confirmButton.isEnabled = !content.isEmpty
     }
 
-    open func updateFileButtonVisibility() {
-        guard isSendMessageEnabled else {
-            composerView.fileButton.isHidden = true
-            return
-        }
-
-        let isFileButtonHidden = !isAttachmentsEnabled || content.hasCommand || !composerView.shrinkInputButton.isHidden
-        Animate {
-            self.composerView.fileButton.isHidden = isFileButtonHidden
-        }
-    }
-
     open func updatePhotoButtonVisibility() {
         guard isSendMessageEnabled else {
             composerView.photoButton.isHidden = true
             return
         }
 
-        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || !composerView.shrinkInputButton.isHidden
+        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || !content.isEmpty || content.isVoiceRecording
         Animate {
             self.composerView.photoButton.isHidden = isPhotoButtonHidden
+        }
+    }
+
+    open func updateStickerButtonVisibility() {
+        guard isSendMessageEnabled else {
+            composerView.stickerButton.isHidden = true
+            return
+        }
+
+        let isStickerButtonHidden = !isAttachmentsEnabled || content.hasCommand || !content.isEmpty || content.isVoiceRecording
+        Animate {
+            self.composerView.stickerButton.isHidden = isStickerButtonHidden
         }
     }
 
@@ -731,7 +728,7 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        let isCommandsButtonHidden = !isCommandsEnabled || content.hasCommand || !composerView.shrinkInputButton.isHidden
+        let isCommandsButtonHidden = !isCommandsEnabled || content.hasCommand || !composerView.composerMenuButton.isHidden
         Animate {
             self.composerView.commandsButton.isHidden = isCommandsButtonHidden
         }
@@ -835,7 +832,7 @@ open class ComposerViewController: _ViewController,
         Animate {
             switch self.content.state {
             case .new, .quote:
-                self.composerView.sendButton.isHidden = self.isSlowModeOn
+                self.composerView.sendButton.isHidden = self.isSlowModeOn || self.content.isEmpty
             case .edit, .recording, .recordingLocked:
                 self.composerView.sendButton.isHidden = true
             default:
@@ -892,6 +889,14 @@ open class ComposerViewController: _ViewController,
     }
 
     // MARK: - Actions
+    /// Replace the current content with new content from outside.
+    func setContent(_ newContent: Content) {
+        var newContent = newContent
+        let (newText, mentionTokens) = getDisplayMentionContent(from: newContent)
+        newContent.text = newText
+        self.content = newContent
+        self.mentionTokens = mentionTokens
+    }
 
     @objc open func publishMessage(sender: UIButton) {
         if !canSendLinks, inputContainsLinks {
@@ -908,13 +913,15 @@ open class ComposerViewController: _ViewController,
                 presentAlert(title: L10n.Composer.Filterwords.contentContainBlockedKeywords)
                 return
             }
-            text = content.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            text = getMentionContent(from: content.text,
+                                     tokens: mentionTokens)
         }
 
         if let editingMessage = content.editingMessage {
             editMessage(withId: editingMessage.id, newText: text)
             channelController?.sendStopTypingEvent()
             content.clear()
+            mentionTokens = []
             channelController?.saveComposerUnsentContent(nil)
         } else {
             createNewMessage(text: text)
@@ -924,6 +931,7 @@ open class ComposerViewController: _ViewController,
                 cooldownTracker.start(with: cooldownDuration)
             }
             content.clear()
+            mentionTokens = []
             channelController?.saveComposerUnsentContent(nil)
         }
     }
@@ -970,6 +978,28 @@ open class ComposerViewController: _ViewController,
         return [showMediaPickerAction, cancelAction]
     }
 
+    open func onMenuButtonDidSelected(item: ComposerMenuItemType) {
+        switch item {
+        case .location:
+            presentAlert(message: "Feature under develop")
+        case .file:
+            showFilePicker()
+        case .poll:
+            presentAlert(message: "Feature under develop")
+        case .custom(let string):
+            // Implement in subclass if want to add custom type button.
+            break
+        }
+    }
+
+    @objc open func showAvailableCommands(sender: UIButton) {
+        if suggestionsVC.isPresented {
+            dismissSuggestions()
+        } else {
+            showCommandSuggestions(for: "")
+        }
+    }
+
     @objc open func showPhotoPicker(sender: UIButton) {
         let isCameraAvailable = UIImagePickerController.isSourceTypeAvailable(.camera)
         if isCameraAvailable {
@@ -984,32 +1014,13 @@ open class ComposerViewController: _ViewController,
         }
     }
 
-    @objc open func shrinkInput(sender: UIButton) {
-        Animate {
-            self.composerView.shrinkInputButton.isHidden = true
-            self.composerView.leadingContainer.subviews
-                .filter { $0 !== self.composerView.shrinkInputButton }
-                .forEach {
-                    $0.isHidden = false
-                }
-
-            // If attachment uploads is disabled, don't ever show the attachments button
-            if !self.isAttachmentsEnabled {
-                self.composerView.fileButton.isHidden = true
-            }
-        }
-    }
-
-    @objc open func showAvailableCommands(sender: UIButton) {
-        if suggestionsVC.isPresented {
-            dismissSuggestions()
-        } else {
-            showCommandSuggestions(for: "")
-        }
+    @objc open func showStickerPicker(sender: UIButton) {
+        presentAlert(message: "Feature under develop")
     }
 
     @objc open func clearContent(sender: UIButton) {
         content.clear()
+        mentionTokens = []
     }
 
     /// Creates a new message and notifies the delegate that a new message was created.
@@ -1459,13 +1470,8 @@ open class ComposerViewController: _ViewController,
     }
 
     public func resumeUnsentContent(_ unsentContent: ComposerContent) {
-        self.preventHandleTextChanged = true
-        self.previousText = unsentContent.previousText
-        self.composerView.inputMessageView.textView.text = unsentContent.textViewText
-
-        self.content = .init(with: unsentContent)
-        self.textViewDidChange(self.composerView.inputMessageView.textView)
-        self.preventHandleTextChanged = false
+        let newContent = Content(with: unsentContent)
+        setContent(newContent)
     }
 
     public func textContentDidChanged() {
@@ -1481,9 +1487,9 @@ open class ComposerViewController: _ViewController,
             channelController?.saveComposerUnsentContent(nil)
         } else {
 
-            let unsentContent = ComposerContent(text: content.text,
-                                                previousText: previousText,
-                                                textViewText: composerView.inputMessageView.textView.text,
+            let unsentContent = ComposerContent(text: getMentionContent(from: content.text,
+                                                                        tokens: mentionTokens),
+                                                displayText: content.text,
                                                 state: content.state.rawValue,
                                                 hasMentionAll: content.hasMentionedAll,
                                                 mentionUsers: content.mentionedUsers,
@@ -1497,37 +1503,11 @@ open class ComposerViewController: _ViewController,
     // MARK: - UITextViewDelegate
 
     open func textViewDidChange(_ textView: UITextView) {
-        defer {
-            updateShrinkButtonVisibility()
-        }
-        if preventHandleTextChanged {
-            return
-        }
-
-        preventHandleTextChanged = true
+        updateMenuButtonVisibility()
+        guard textView.text != content.text else { return }
         shouldAutoUpdateTextViewContent = false
-        var newText = textView.text ?? ""
-        var previousText = self.previousText
-
-        let commonPrefix = newText.commonPrefix(with: previousText)
-        newText.removeFirst(commonPrefix.count)
-        previousText.removeFirst(commonPrefix.count)
-
-        let commonSuffix = String(String(newText.reversed()).commonPrefix(with: String(previousText.reversed())).reversed())
-
-        var changedText = textView.text ?? ""
-        changedText.removeFirst(commonPrefix.count)
-        changedText.removeLast(commonSuffix.count)
-
-        let previousChangeTextStartIndex = self.previousText.index(self.previousText.startIndex, offsetBy: commonPrefix.count)
-        var previousChangeTextEndIndex = self.previousText.index(self.previousText.endIndex, offsetBy: -commonSuffix.count)
-
-        let previousChangedTextRange = Range(uncheckedBounds: (previousChangeTextStartIndex,
-                                                               previousChangeTextEndIndex))
-        let nsRange = NSRange(previousChangedTextRange, in: self.previousText)
-        self.onTextViewChangeText(textView, currentText: self.previousText, in: nsRange, text: changedText)
-        //
-        self.textContentDidChanged()
+        content.text = textView.text
+        shouldAutoUpdateTextViewContent = true
     }
 
     open func textView(
@@ -1535,126 +1515,48 @@ open class ComposerViewController: _ViewController,
         shouldChangeTextIn range: NSRange,
         replacementText text: String
     ) -> Bool {
-        if preventHandleTextChanged {
+        guard !content.mentionedUsers.isEmpty else {
             return true
         }
-        textChangeRange = range
-        previousText = textView.text
-        return true
-    }
 
-    public func textViewDidChangeSelection(_ textView: UITextView) {
-    }
+        // Check if changed range contain mention
+        var removeTokenIndexs: [Int] = []
+        var updatedRange: NSRange = range
 
-    open func updateShrinkButtonVisibility() {
-        let textView = composerView.inputMessageView.textView
-        Animate {
-            let leadingViews = self.composerView.leadingContainer.subviews
-            let isNotShrinkInputButton: (UIView) -> Bool = { $0 !== self.composerView.shrinkInputButton }
-            let isLeadingActionsVisible = leadingViews
-                .filter { isNotShrinkInputButton($0) && self.composerView.shrinkInputButton.isHidden }
-                .filter(\.isHidden).isEmpty
-            self.composerView.shrinkInputButton.isHidden = textView.text.isEmpty || self.content
-                .hasCommand || !isLeadingActionsVisible
-        }
-    }
-
-    func onTextViewChangeText(_ textView: UITextView, currentText: String, in range: NSRange, text: String) {
-        guard var messageTextRange = Range(range, in: currentText) else {
-            return
-        }
-
-        mentionIndex = calculateMentionIndex(message: currentText)
-
-        guard let mentionIndex = mentionIndex else {
-            return
-        }
-
-        shouldAutoUpdateTextViewContent = false
-
-        var overlapMessageRanges: [Range<String.Index>] = []
-        var overlapMessageRangeIndexs: [Int] = []
-
-        for (index, messageRange) in mentionIndex.messageRanges.enumerated() {
-            let nsRange = NSRange(messageRange, in: currentText)
-            guard let range = Range(nsRange, in: currentText) else {
+        for (index, token) in mentionTokens.enumerated() {
+            guard let mentionRange = Range(token.range, in: textView.text) else {
                 continue
             }
-            if range.overlaps(messageTextRange) {
-                overlapMessageRanges.append(range)
-                overlapMessageRangeIndexs.append(index)
+            if NSIntersectionRange(range, token.range).length > 0 {
+                removeTokenIndexs.append(index)
+                updatedRange = updatedRange.merge(with: token.range)
             }
-        }
-        var replaceText = text
-        var updatedText = currentText.replacingCharacters(in: messageTextRange, with: replaceText)
-
-        // Removed mention user if needed
-        if !overlapMessageRanges.isEmpty {
-            var removedUsers: Set<ChatUser> = []
-            let overlapContentRanges = overlapMessageRangeIndexs.map { mentionIndex.contentRanges[$0] }
-            for mentionedUser in content.mentionedUsers {
-                let mentionString = mentionedUser.mentionString
-                let ranges = content.text.ranges(of: mentionString)
-                if ranges.allSatisfy({ range in
-                    return overlapContentRanges.contains { overlapContentRange in
-                        overlapContentRange.contains(range.lowerBound) && overlapContentRange.contains(range.upperBound)
-                    }
-                }) {
-                    removedUsers.insert(mentionedUser)
-                }
-            }
-            content.mentionedUsers = content.mentionedUsers.subtracting(removedUsers)
         }
 
         //
-        var lowerIndexOffset: Int = 0
-        var upperIndexOffset: Int = 0
-        // Edit text contain mention users
-        if !overlapMessageRanges.isEmpty {
-            let firstMentionRange = overlapMessageRanges.first!
-            let lastMentionRange = overlapMessageRanges.last!
-            // Extent current message range if ovverlap mention range bound large than message range
-            if !messageTextRange.contains(firstMentionRange.lowerBound) {
-                messageTextRange = Range(uncheckedBounds: (firstMentionRange.lowerBound, messageTextRange.upperBound))
-            }
-
-            if !messageTextRange.contains(lastMentionRange.upperBound) {
-                messageTextRange = Range(uncheckedBounds: (messageTextRange.lowerBound, lastMentionRange.upperBound))
-            }
-
-            updatedText = currentText.replacingCharacters(in: messageTextRange, with: replaceText)
-
-            // calculate offset
-            let firstMentionRangeIndex = overlapMessageRangeIndexs.first!
-            let lastMentionRangeIndex = overlapMessageRangeIndexs.last!
-            upperIndexOffset = calculateMentionIndexOffset(at: lastMentionRangeIndex)
-            lowerIndexOffset = calculateMentionIndexOffset(at: firstMentionRangeIndex - 1)
-        } else {
-            let nearestLowerRangeIndex = mentionIndex.messageRanges.lastIndex(where: {
-                currentText.distance(from: $0.upperBound, to: messageTextRange.lowerBound) >= 0
-            }) ?? -1
-            lowerIndexOffset = calculateMentionIndexOffset(at: nearestLowerRangeIndex)
-            upperIndexOffset = lowerIndexOffset
+        guard !removeTokenIndexs.isEmpty else {
+            let newText = (textView.text as NSString).replacingCharacters(in: range, with: text)
+            updateAllMentionTokenRange(replaceTextRange: range , indexOffset: (newText as NSString).length - (textView.text as NSString).length)
+            return true
         }
-        let tempText = content.text.appending(currentText)
-        let contentRangeLowerBound = tempText.index(messageTextRange.lowerBound, offsetBy: lowerIndexOffset)
-        let contentRangeUpperBound = tempText.index(messageTextRange.upperBound, offsetBy: upperIndexOffset)
-        let contentRange = Range(uncheckedBounds: (contentRangeLowerBound, contentRangeUpperBound))
-        // Manual update textView.text
-        let changedRange = NSRange(messageTextRange, in: currentText)
-        let caretLocation = changedRange.location
-        // Fix bug auto captlize text
-        self.preventHandleTextChanged = true
-        if textView.text != updatedText {
-            textView.text = updatedText
-            let newCaretLocation = caretLocation + replaceText.count
-            textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
+
+        let currentText = textView.text as? NSString ?? ""
+
+        // Update caret location
+        let newCaretLocation = updatedRange.location + (text as NSString).length
+
+        // Remove overlap mention
+        for removeTokenIndex in removeTokenIndexs.sorted(by: >) {
+            mentionTokens.remove(at: removeTokenIndex)
         }
-        self.shouldAutoUpdateTextViewContent = false
-        self.content.text = self.content.text.replacingCharacters(in: contentRange, with: replaceText)
-        self.shouldAutoUpdateTextViewContent = true
-        self.preventHandleTextChanged = false
-        self.previousText = textView.text
+        let newText = currentText.replacingCharacters(in: updatedRange, with: text)
+        updateAllMentionTokenRange(replaceTextRange: updatedRange, indexOffset: (newText as NSString).length - (currentText as NSString).length)
+        textView.text = newText
+        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
+        return false
+    }
+
+    public func textViewDidChangeSelection(_ textView: UITextView) {
     }
 
     // MARK: - UIImagePickerControllerDelegate
@@ -1964,125 +1866,50 @@ open class ComposerViewController: _ViewController,
         present(alert, animated: true)
     }
 
-    func insertMentionObject(_ mentionObject: MentionSuggestionView.Content, at mentionRange: NSRange, typingMention: String) {
+    func insertMentionObject(_ mentionObject: MentionSuggestionView.Content,
+                             at mentionRange: NSRange,
+                             typingMention: String) {
         let textView = self.composerView.inputMessageView.textView
         let text = textView.text as NSString
         let mentionString = mentionObject.mentionString + " "
         let mentionDisplayString = mentionObject.mentionsDisplayString + " "
+        let currentText = textView.text ?? ""
 
         guard mentionRange.length <= mentionDisplayString.count else {
             return self.dismissSuggestions()
         }
 
-        let currentText = textView.text ?? ""
-
-        let newRange = NSRange(location: mentionRange.location - 1,
+        let messageTextRange = NSRange(location: mentionRange.location - 1,
                                length: mentionRange.length + 1)
-        guard var messageTextRange = Range(newRange, in: currentText) else {
-            return
-        }
 
-        mentionIndex = calculateMentionIndex(message: currentText)
-
-        guard let mentionIndex = mentionIndex else {
-            return
-        }
-
-        var containOtherMention: Bool = false
-
+        let newText = text.replacingCharacters(in: messageTextRange, with: mentionDisplayString)
         shouldAutoUpdateTextViewContent = false
-
-        var overlapMessageRanges: [Range<String.Index>] = []
-        var overlapMessageRangeIndexs: [Int] = []
-
-        for (index, messageRange) in mentionIndex.messageRanges.enumerated() {
-            let nsRange = NSRange(messageRange, in: currentText)
-            guard let range = Range(nsRange, in: currentText) else {
-                continue
-            }
-            if range.overlaps(messageTextRange) {
-                overlapMessageRanges.append(range)
-                overlapMessageRangeIndexs.append(index)
-            }
-        }
-
-        var replaceText = mentionDisplayString
-        var updatedText = text.replacingCharacters(in: newRange, with: mentionDisplayString)
-        var lowerIndexOffset: Int = 0
-        var upperIndexOffset: Int = 0
-        // Removed mention user if needed
-        if !overlapMessageRanges.isEmpty {
-            var removedUsers: Set<ChatUser> = []
-            let overlapContentRanges = overlapMessageRangeIndexs.map { mentionIndex.contentRanges[$0] }
-            for mentionedUser in content.mentionedUsers {
-                let mentionString = mentionedUser.mentionString
-                let ranges = content.text.ranges(of: mentionString)
-                if ranges.allSatisfy({ range in
-                    return overlapContentRanges.contains { overlapContentRange in
-                        overlapContentRange.contains(range.lowerBound) && overlapContentRange.contains(range.upperBound)
-                    }
-                }) {
-
-                    removedUsers.insert(mentionedUser)
-                }
-            }
-            content.mentionedUsers = content.mentionedUsers.subtracting(removedUsers)
-        }
-        if !overlapMessageRanges.isEmpty {
-            let firstMentionRange = overlapMessageRanges.first!
-            let lastMentionRange = overlapMessageRanges.last!
-            // Extent current message range if ovverlap mention range bound large than message range
-            if !messageTextRange.contains(firstMentionRange.lowerBound) {
-                messageTextRange = Range(uncheckedBounds: (firstMentionRange.lowerBound, messageTextRange.upperBound))
-            }
-
-            if !messageTextRange.contains(lastMentionRange.upperBound) {
-                messageTextRange = Range(uncheckedBounds: (messageTextRange.lowerBound, lastMentionRange.upperBound))
-            }
-            updatedText = currentText.replacingCharacters(in: messageTextRange, with: mentionDisplayString)
-            // Calculate offset
-            let firstMentionRangeIndex = overlapMessageRangeIndexs.first!
-            let lastMentionRangeIndex = overlapMessageRangeIndexs.last!
-            upperIndexOffset = calculateMentionIndexOffset(at: lastMentionRangeIndex)
-            lowerIndexOffset = calculateMentionIndexOffset(at: firstMentionRangeIndex - 1)
-        } else {
-            let nearestLowerRangeIndex = mentionIndex.messageRanges.lastIndex(where: {
-                currentText.distance(from: $0.upperBound, to: messageTextRange.lowerBound) >= 0
-            }) ?? -1
-            lowerIndexOffset = calculateMentionIndexOffset(at: nearestLowerRangeIndex)
-            upperIndexOffset = lowerIndexOffset
-        }
-
-        let tempText = content.text.appending(currentText)
-        let contentRangeLowerBound = tempText.index(messageTextRange.lowerBound, offsetBy: lowerIndexOffset)
-        let contentRangeUpperBound = tempText.index(messageTextRange.upperBound, offsetBy: upperIndexOffset)
-
-
-        let caretLocation = textView.selectedRange.location
-        let newCaretLocation = caretLocation + (mentionDisplayString.count - typingMention.count)
-        textView.selectedRange = NSRange(location: newCaretLocation, length: 0)
-
-        guard let messageRange = textView.text.range(from: mentionRange) else {
-            return self.dismissSuggestions()
-        }
-
-        let contentRange = Range(uncheckedBounds: (lower: contentRangeLowerBound, upper: contentRangeUpperBound))
-
+        self.content.text = newText
+        textView.text = newText
+        // Update current mention index if needed
+        updateAllMentionTokenRange(replaceTextRange: messageTextRange, indexOffset: newText.length - currentText.length)
+        // Add mention user.
         switch mentionObject {
         case .allUser:
             self.content.hasMentionedAll = true
         case .mention(let chatUser):
             self.content.mentionedUsers.insert(chatUser)
+            // Recalculate mention token
+            let newToken = MentionToken(mentionString: mentionObject.mentionString,
+                                        mentionDisplayString: mentionObject.mentionsDisplayString,
+                                        range: NSRange(location: messageTextRange.location,
+                                                       length: (mentionObject.mentionsDisplayString as NSString).length))
+            if let firstIndex = mentionTokens.firstIndex(where: { $0.range.location > newToken.range.location }) {
+                mentionTokens.insert(newToken, at: firstIndex)
+            } else {
+                mentionTokens.append(newToken)
+            }
         }
-        self.preventHandleTextChanged = true
-        self.shouldAutoUpdateTextViewContent = false
 
-        self.content.text = content.text.replacingCharacters(in: contentRange, with: mentionString)
-        textView.text = updatedText
-
-        self.preventHandleTextChanged = false
-        self.shouldAutoUpdateTextViewContent = true
-        self.updateMentionSuggestions()
+        let caretLocation = messageTextRange.location + mentionDisplayString.count
+        textView.selectedRange = NSRange(location: caretLocation, length: 0)
+        shouldAutoUpdateTextViewContent = true
+        self.dismissSuggestions()
     }
 
     /// searchUsers does an autocomplete search on a list of ChatUser and returns users with `id` or `name` containing the search string
@@ -2134,104 +1961,105 @@ extension ComposerViewController: ChannelControllerDelegate {
 }
 // MARK: - Helper for mention users
 extension ComposerViewController {
-    func calculateMentionIndex(message: String) -> MentionsIndex {
-        let mentionsUserIds = content.mentionedUsers.map(\.userId)
+    /// Recalculate token range values
+    func updateAllMentionTokenRange(replaceTextRange: NSRange, indexOffset: Int) {
+        let updatedTokens = mentionTokens.map { token in
+            if token.range.location >= replaceTextRange.location {
+                return MentionToken(mentionString: token.mentionString,
+                                    mentionDisplayString: token.mentionDisplayString,
+                                    range: NSRange(location: token.range.location + indexOffset,
+                                                   length: token.range.length)
+                                    )
 
-        // Range of mention user id in text content.
-        var contentRanges: [Range<String.Index>] = []
-        contentRanges = content.mentionedUsers.reduce(into: contentRanges) { partialResult, mentionUser in
-            return partialResult.append(contentsOf: content.text.ranges(of: mentionUser.mentionString))
+            } else {
+                return token
+            }
+        }
+        self.mentionTokens = updatedTokens
+    }
+
+    /// Get display text from content text
+    /// This will parse all mention string  to mention display string and update mentiontokens with new content
+    /// Ex: @123 -> @Ermis....
+    /// - Parameters:
+    ///   - content:Current content text.
+    ///  - Returns: The string that parse all mention text to mention display text.
+    func getDisplayMentionContent(from content: Content) -> (String, [MentionToken]) {
+        let mentionTokens: [MentionToken] = content.mentionedUsers.reduce(into: []) { partialResult, mentionUser in
+            let ranges = content.text.ranges(of: mentionUser.mentionString)
+                .map({ range in
+                    let nsRange = NSRange(range, in: content.text)
+                    return MentionToken(mentionString: mentionUser.mentionString,
+                                        mentionDisplayString: mentionUser.mentionsDisplayString,
+                                        range: nsRange)
+                })
+            partialResult.append(contentsOf: ranges)
+        }.sorted(by: { $0.range.location < $1.range.location})
+
+        var mentionDisplayRangeLocations: [Int] = []
+
+        var lastMentionRangeLocation = 0
+
+        var displayMentionContent: String = ""
+        let contentTextLength = content.text.length
+        for mentionToken in mentionTokens {
+            let mentionRange = mentionToken.range
+            // Copy text befor mention.
+            let beforeRange = NSRange(location: lastMentionRangeLocation,
+                                      length: mentionRange.location - lastMentionRangeLocation)
+            let beforeString = content.text.subString(from: beforeRange)
+            displayMentionContent.append(beforeString)
+            // Add mention display range location
+            mentionDisplayRangeLocations.append(displayMentionContent.length)
+            // Add mention display text.
+            displayMentionContent.append(mentionToken.mentionDisplayString)
+            lastMentionRangeLocation = mentionToken.range.upperBound
+        }
+        // If have text after lastmention, add it.
+        if lastMentionRangeLocation < contentTextLength {
+            let lastRange = NSRange(location: lastMentionRangeLocation,
+                                    length: contentTextLength - lastMentionRangeLocation)
+            let afterString = content.text.subString(from: lastRange)
+            displayMentionContent.append(afterString)
         }
 
-        var messageRanges: [Range<String.Index>] = []
 
-        var indexOffsets: [Int] = []
-        var indexOffset = 0
-        for contentRange in contentRanges.sorted(by: { $0.lowerBound < $1.lowerBound}) {
-            let mentionString = String(content.text[contentRange])
-            guard let mentionUser = content.mentionedUsers.first(where: { mentionString.contains($0.userId)}) else {
+        let mentionDisplayTokens = zip(mentionDisplayRangeLocations, mentionTokens)
+            .map { mentionDisplayRangeLocation, mentionToken in
+                let mentionDisplayRange = NSRange(location: mentionDisplayRangeLocation,
+                                                  length: (mentionToken.mentionDisplayString as NSString).length)
+                return MentionToken(mentionString: mentionToken.mentionString,
+                                    mentionDisplayString: mentionToken.mentionDisplayString,
+                                    range: mentionDisplayRange)
+            }
+        return (displayMentionContent, mentionDisplayTokens)
+    }
+
+    /// Get content from display text and mention token
+    /// This will parse all mention diplay text to mention string
+    /// Ex: @Ermis -> @123....
+    /// - Parameters:
+    ///   - displayText:Current display text.
+    ///   - tokens: Array of mention token inside the given display text.
+    ///  - Returns: The string that parse all mention display text to mention text.
+    func getMentionContent(from displayText: String, tokens: [MentionToken]) -> String {
+        var mentionText = displayText
+
+        // Replace mention display string with mention string
+        for token in tokens.reversed() {
+            guard let range = Range(token.range, in: displayText) else {
                 continue
             }
-            let mentionsDisplayString = mentionUser.mentionsDisplayString
-            let testRange = message.ranges(of: mentionsDisplayString)
-            let mentionDisplayLength = mentionsDisplayString.distance(from: mentionsDisplayString.startIndex, to: mentionsDisplayString.endIndex)
-            let location = NSRange(contentRange, in: content.text).location
-            let messageRange = NSRange(location: location + indexOffset, length: mentionDisplayLength)
-
-            indexOffset += mentionDisplayLength - mentionString.count
-            messageRanges.append(
-                 message.range(from: messageRange)!
-            )
-            indexOffsets.append(indexOffset)
+            mentionText = mentionText.replacingCharacters(in: range, with: token.mentionString)
         }
-
-        return MentionsIndex(contentRanges: contentRanges,
-                             messageRanges: messageRanges,
-                             indexOffsets: indexOffsets)
-    }
-    // Must call calculate mention info before
-    func calculateMentionIndexOffset(at mentionIndex: Int? = nil) -> Int {
-        var indexOffset: Int = 0
-        guard let indexOffsets = self.mentionIndex?.indexOffsets else { return indexOffset }
-        for (index, offset) in indexOffsets.enumerated() {
-            if let mentionIndex = mentionIndex, index > mentionIndex {
-                break
-            }
-            indexOffset = -offset
-        }
-        return indexOffset
+        return mentionText.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    struct MentionsIndex {
-        var contentRanges: [Range<String.Index>]
-        var messageRanges: [Range<String.Index>]
-        var indexOffsets: [Int]
-    }
-
-    func removeOverlapMentionUserIfNeeded(changeTextRange: NSRange, currentText: String) {
-        guard var messageTextRange = Range(changeTextRange, in: currentText) else {
-            return
-        }
-
-        mentionIndex = calculateMentionIndex(message: currentText)
-
-        guard let mentionIndex = mentionIndex else {
-            return
-        }
-
-        shouldAutoUpdateTextViewContent = false
-
-        var overlapMessageRanges: [Range<String.Index>] = []
-        var overlapMessageRangeIndexs: [Int] = []
-
-        for (index, messageRange) in mentionIndex.messageRanges.enumerated() {
-            let nsRange = NSRange(messageRange, in: currentText)
-            guard let range = Range(nsRange, in: currentText) else {
-                continue
-            }
-            if range.overlaps(messageTextRange) {
-                overlapMessageRanges.append(range)
-                overlapMessageRangeIndexs.append(index)
-            }
-        }
-
-        // Removed mention user if needed
-        if !overlapMessageRanges.isEmpty {
-            var removedUsers: Set<ChatUser> = []
-            let overlapContentRanges = overlapMessageRangeIndexs.map { mentionIndex.contentRanges[$0] }
-            for mentionedUser in content.mentionedUsers {
-                let mentionString = mentionedUser.mentionString
-                let ranges = content.text.ranges(of: mentionString)
-                if ranges.allSatisfy({ range in
-                    return overlapContentRanges.contains { overlapContentRange in
-                        overlapContentRange.contains(range.lowerBound) && overlapContentRange.contains(range.upperBound)
-                    }
-                }) {
-                    removedUsers.insert(mentionedUser)
-                }
-            }
-            content.mentionedUsers = content.mentionedUsers.subtracting(removedUsers)
-        }
+    /// A struct that holds information about a mentioned user within the text view's text.
+    struct MentionToken {
+        let mentionString: String
+        var mentionDisplayString: String
+        var range: NSRange
     }
 }
 

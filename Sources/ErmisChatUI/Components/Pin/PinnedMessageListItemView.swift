@@ -7,6 +7,7 @@ import ErmisChat
 
 public protocol PinnedMessageListItemViewDelegate: AnyObject {
     func pinnedMessageListItemViewDidSelectUnpin(_ view: PinnedMessageListItemView)
+    func pinnedMessageListItemViewDidSelectShowInChat(_ view: PinnedMessageListItemView)
 }
 
 open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider {
@@ -14,11 +15,8 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
     public private(set) lazy var centerStackView = createCenterStackView()
     public private(set) lazy var trailingStackView = createTrailingStackView()
 
-    /// Shows message author avatar.
-    public private(set) lazy var authorAvatarView: AvatarView = components
-        .avatarView
-        .init(style: .circular)
-        .withoutAutoresizingMaskConstraints
+    /// The button to unpin message.
+    public private(set) lazy var unpinButton = createUnpinButton()
 
     /// Shows message text content.
     public private(set) lazy var textView = createTextView()
@@ -42,11 +40,7 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
         .init()
         .withoutAutoresizingMaskConstraints
 
-    public private(set) lazy var unpinButton = createUnpinButton()
-
-    /// Specifies the size of `authorAvatarView`. In case `.avatarSizePadding` option is set the leading offset
-    /// for the content will taken from the provided `width`.
-    open var authorAvatarSize: CGSize { .init(width: 32, height: 32) }
+    public private(set) lazy var showInChatButton = createShowInChatButton()
 
     public weak var delegate: PinnedMessageListItemViewDelegate?
 
@@ -70,55 +64,45 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
 
         leadingStackView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 0).isActive = true
         leadingStackView.pin(anchors: [.centerY], to: self)
-        leadingStackView.pin(anchors: [.leading], to: self, contant: 16)
-        leadingStackView.addArrangedSubview(authorAvatarView)
-        authorAvatarView.pin(anchors: [.width, .height], to: 32)
+        leadingStackView.pin(anchors: [.leading], to: self, contant: 14)
+        leadingStackView.addArrangedSubview(unpinButton)
+        unpinButton.pin(anchors: [.width, .height], to: 32)
 
         centerStackView.addArrangedSubviews([textView, authorNameLabel])
-        centerStackView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 16).isActive = true
+        centerStackView.topAnchor.pin(equalTo: self.topAnchor, constant: 12).isActive = true
         centerStackView.pin(anchors: [.centerY], to: self)
-        centerStackView.leadingAnchor.pin(equalTo: leadingStackView.trailingAnchor, constant: 8).isActive = true
+        centerStackView.leadingAnchor.pin(equalTo: leadingStackView.trailingAnchor, constant: 12).isActive = true
 
-        trailingStackView.addArrangedSubviews([imageView, gifImageView, videoPreview, unpinButton])
+        trailingStackView.addArrangedSubviews([imageView, gifImageView, videoPreview, showInChatButton])
         trailingStackView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 8).isActive = true
         trailingStackView.leadingAnchor.pin(equalTo: centerStackView.trailingAnchor, constant: 10).isActive = true
         trailingStackView.pin(anchors: [.trailing], to: self, contant: -16)
-        trailingStackView.pin(anchors: [.top, .centerY], to: self)
+        trailingStackView.pin(anchors: [.centerY], to: self)
 
         imageView.pin(anchors: [.width, .height], to: 40)
         gifImageView.pin(anchors: [.width, .height], to: 40)
         videoPreview.pin(anchors: [.width, .height], to: 40)
-        unpinButton.pin(anchors: [.width, .height], to: 30)
     }
 
     open override func setUpTheme() {
         backgroundColor = theme.colors.surface
         textView.textColor = theme.colors.text
-        textView.font = theme.fonts.body.bold
-
-        authorNameLabel.textColor = theme.colors.subtitleText
-        authorNameLabel.font = theme.fonts.body
+        textView.font = theme.fonts.callout.bold
 
         unpinButton.tintColor = theme.colors.text
         unpinButton.configuration?.image = theme.icons.messageActionUnpin
-        unpinButton.configuration?.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { [weak self] incoming in
-            var outgoing = incoming
-            outgoing.font = self?.theme.fonts.body.bold
-            return outgoing
-        }
+        unpinButton.configuration?.background.cornerRadius = 10
+        unpinButton.configuration?.background.backgroundColor = theme.colors.surfaceContainerLowest
+
+        showInChatButton.tintColor = theme.colors.text
+        showInChatButton.configuration?.image = theme.icons.messageActionShowInChat
+        updateAuthorLabel()
     }
 
     open override func contentDidChanged() {
         // Avatar
-        authorAvatarView.loadImage(from: content?.message.author.imageURL,
-                                   with: ImageLoaderOptions(
-                                    resize: .init(components.avatarThumbnailSize),
-                                    placeHolderString: content?.message.author.displayName ?? ""
-                                   )
-        )
-
         textView.text = generatePreviewMessage()
-        authorNameLabel.text = content?.message.author.displayName
+        updateAuthorLabel()
 
         imageView.isHidden = true
         gifImageView.isHidden = true
@@ -177,9 +161,31 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
         return nil
     }
 
+    open func updateAuthorLabel() {
+        if let senderName = content?.message.author.displayName {
+            let attributedString = NSMutableAttributedString(
+                attributedString: NSAttributedString(string: "\(L10n.from) \(senderName)",attributes: [
+                    .font: theme.fonts.footnote.bold,
+                    .foregroundColor: theme.colors.subtitleText
+                ]
+            ))
+            attributedString.addAttribute(.font,
+                                          value: theme.fonts.footnote,
+                                          range: NSRange(location: 0, length: L10n.from.count))
+            authorNameLabel.attributedText = attributedString
+        } else {
+            authorNameLabel.attributedText = nil
+        }
+    }
+
     @objc
     private func onUnpinButtonSelected() {
         delegate?.pinnedMessageListItemViewDidSelectUnpin(self)
+    }
+
+    @objc
+    private func onShowInChatButtonSelected() {
+        delegate?.pinnedMessageListItemViewDidSelectShowInChat(self)
     }
     // MARK: - Create UI
     open func createTextView() -> UITextView {
@@ -192,7 +198,6 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
         textView.adjustsFontForContentSizeCategory = true
         textView.textContainerInset = .init(top: 0, left: 0, bottom: 0, right: 0)
         textView.textContainer.lineFragmentPadding = 0
-        textView.font = theme.fonts.body
         textView.textContainer.maximumNumberOfLines = 2
         return textView
     }
@@ -205,9 +210,6 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
             .withBidirectionalLanguagesSupport
             .withoutAutoresizingMaskConstraints
             .withAccessibilityIdentifier(identifier: "authorNameLabel")
-
-        authorNameLabel.textColor = theme.colors.subtitleText
-        authorNameLabel.font = theme.fonts.footnote
         return authorNameLabel
     }
 
@@ -215,6 +217,13 @@ open class PinnedMessageListItemView: _View, UIProvider, PreviewMessageProvider 
         let button = UIButton()
         button.configuration = .plain()
         button.addTarget(self, action: #selector(onUnpinButtonSelected), for: .touchUpInside)
+        return button
+    }
+
+    open func createShowInChatButton() -> UIButton {
+        let button = UIButton()
+        button.configuration = .plain()
+        button.addTarget(self, action: #selector(onShowInChatButtonSelected), for: .touchUpInside)
         return button
     }
 }
@@ -236,7 +245,7 @@ extension PinnedMessageListItemView {
     private func createLeadingStack() -> ContainerStackView {
         let containerStackView = ContainerStackView()
         containerStackView.axis = .horizontal
-        containerStackView.spacing = 8
+        containerStackView.spacing = 4
         return containerStackView.withoutAutoresizingMaskConstraints
     }
 
@@ -244,14 +253,14 @@ extension PinnedMessageListItemView {
         let containerStackView = ContainerStackView()
         containerStackView.alignment = .leading
         containerStackView.axis = .vertical
-        containerStackView.spacing = 8
+        containerStackView.spacing = 4
         return containerStackView.withoutAutoresizingMaskConstraints
     }
 
     private func createTrailingStackView() -> ContainerStackView {
         let containerStackView = ContainerStackView()
         containerStackView.axis = .horizontal
-        containerStackView.spacing = 8
+        containerStackView.spacing = 4
         return containerStackView.withoutAutoresizingMaskConstraints
     }
 }

@@ -88,12 +88,12 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
     
     // MARK: - Setup
-    public override func viewWillAppear(_ animated: Bool) {
+    open override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         self.updateSpeakerMenu()
     }
 
-    public override func setUp() {
+    open override func setUp() {
         super.setUp()
         setupNavigation()
         setupWebRTC()
@@ -117,7 +117,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         updateViewByCallIOState()
     }
 
-    public override func setUpUI() {
+    open override func setUpUI() {
         super.setUpUI()
         self.view.addSubviews([
             remoteVideoView,
@@ -160,11 +160,11 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         controls.topAnchor.pin(equalTo: localVideoView.bottomAnchor, constant: 20).isActive = true
         controls.pin(anchors: [.centerX], to: view)
         controls.pin(anchors: [.height], to: 56)
-        controlsBottomConstraint = controls.bottomAnchor.pin(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20)
+        controlsBottomConstraint = controls.bottomAnchor.pin(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40)
         controlsBottomConstraint?.isActive = true
     }
 
-    public override func setUpTheme() {
+    open override func setUpTheme() {
         super.setUpTheme()
         view.backgroundColor = theme.colors.surface
         titleLabel.textColor = theme.colors.white
@@ -191,7 +191,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         }
     }
 
-    public override func contentDidChanged() {
+    open override func contentDidChanged() {
         super.contentDidChanged()
         navigationItem.title = callDetails.isVideo == true ? L10n.Call.Title.videoCall : L10n.Call.Title.voiceCall
 
@@ -474,6 +474,54 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
         onRemoteVideoDidTapped()
     }
+
+    // MARK: - Create UI
+    open func createBackBarButton() -> UIBarButtonItem {
+        let barButtonItem = UIBarButtonItem(image: UIImage(systemName: "chevron.left"), style: .plain, target: self, action: #selector(back))
+        barButtonItem.tintColor = theme.colors.white
+        return barButtonItem
+    }
+
+    open func createChatButton() -> UIBarButtonItem {
+        let barButtonItem = UIBarButtonItem(image: Theme.Icons.chat, style: .plain, target: self, action: #selector(back))
+        barButtonItem.tintColor = theme.colors.white
+        return barButtonItem
+    }
+
+    open func createBackgroundImageView() -> UIImageView {
+        let imageView = UIImageView().withoutAutoresizingMaskConstraints
+        return imageView
+    }
+
+    open func createControlView() -> CallControlView {
+        let controls = callComponents
+            .controlsView.init()
+            .withoutAutoresizingMaskConstraints
+        controls.delegate = self
+        return controls
+    }
+
+    open func createTitleLabel() -> UILabel {
+        let label = UILabel().withoutAutoresizingMaskConstraints
+        return label
+    }
+
+    open func createStateLabel() -> UILabel {
+        let label = UILabel().withoutAutoresizingMaskConstraints
+        return label
+    }
+
+    open func createDurationLabel() -> UILabel {
+        let label = UILabel().withoutAutoresizingMaskConstraints
+        return label
+    }
+
+    open func createLocalVideoView() -> VideoView {
+        let view = callComponents.videoView.init().withoutAutoresizingMaskConstraints
+        view.layer.cornerRadius = 10
+        view.clipsToBounds = true
+        return view
+    }
 }
 // MARK: - EventsControllerDelegate
 extension CallViewController: EventsControllerDelegate {
@@ -577,7 +625,7 @@ extension CallViewController {
     }
 
     private func setControlsViewHidden(_ isHidden: Bool) {
-        let constant = isHidden ? view.safeAreaInsets.bottom + controls.bounds.height : -20
+        let constant = isHidden ? view.safeAreaInsets.bottom + controls.bounds.height : -40
         self.controlsBottomConstraint?.constant = constant
     }
 
@@ -616,55 +664,6 @@ extension CallViewController: PiPable {
             self.updateControlsState()
             self.navigationController?.setNavigationBarHidden(self.controls.isHidden, animated: true)
         })
-    }
-}
-// MARK: - Create UI
-extension CallViewController {
-    private func createBackBarButton() -> UIBarButtonItem {
-        let barButtonItem = UIBarButtonItem(image: UIImage(systemName: "chevron.left"), style: .plain, target: self, action: #selector(back))
-        barButtonItem.tintColor = theme.colors.white
-        return barButtonItem
-    }
-
-    private func createChatButton() -> UIBarButtonItem {
-        let barButtonItem = UIBarButtonItem(image: Theme.Icons.chat, style: .plain, target: self, action: #selector(back))
-        barButtonItem.tintColor = theme.colors.white
-        return barButtonItem
-    }
-
-    private func createBackgroundImageView() -> UIImageView {
-        let imageView = UIImageView().withoutAutoresizingMaskConstraints
-        return imageView
-    }
-
-    private func createControlView() -> CallControlView {
-        let controls = callComponents
-            .controlsView.init()
-            .withoutAutoresizingMaskConstraints
-        controls.delegate = self
-        return controls
-    }
-
-    private func createTitleLabel() -> UILabel {
-        let label = UILabel().withoutAutoresizingMaskConstraints
-        return label
-    }
-
-    private func createStateLabel() -> UILabel {
-        let label = UILabel().withoutAutoresizingMaskConstraints
-        return label
-    }
-
-    private func createDurationLabel() -> UILabel {
-        let label = UILabel().withoutAutoresizingMaskConstraints
-        return label
-    }
-
-    private func createLocalVideoView() -> VideoView {
-        let view = callComponents.videoView.init().withoutAutoresizingMaskConstraints
-        view.layer.cornerRadius = 10
-        view.clipsToBounds = true
-        return view
     }
 }
 // MARK: - Computed properties

@@ -7,6 +7,7 @@ import UIKit
 
 public protocol PinnedMessageCellDelegate: AnyObject {
     func pinnedMessageCell(_ cell: PinnedMessageCell, didSelectedUnPin message: ChatMessage)
+    func pinnedMessageCell(_ cell: PinnedMessageCell, didSelectShowInChat message: ChatMessage)
 }
 
 open class PinnedMessageCell: _TableViewCell, UIProvider {
@@ -45,6 +46,13 @@ open class PinnedMessageCell: _TableViewCell, UIProvider {
 
 // MARK: - PinnedMessageListItemViewDelegate
 extension PinnedMessageCell: PinnedMessageListItemViewDelegate {
+    public func pinnedMessageListItemViewDidSelectShowInChat(_ view: PinnedMessageListItemView) {
+        guard let message = content?.message else {
+            return
+        }
+        delegate?.pinnedMessageCell(self, didSelectShowInChat: message)
+    }
+    
     public func pinnedMessageListItemViewDidSelectUnpin(_ view: PinnedMessageListItemView) {
         guard let message = content?.message else {
             return

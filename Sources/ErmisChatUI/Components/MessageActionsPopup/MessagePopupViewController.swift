@@ -27,7 +27,7 @@ open class MessagePopupViewController: _ViewController, ComponentsProvider {
 
     /// `UIView` with `UIBlurEffect` that is shown as a background.
     open private(set) lazy var blurView: UIView = {
-        let blur = UIBlurEffect(style: .systemUltraThinMaterial)
+        let blur = UIBlurEffect(style: .systemUltraThinMaterialLight)
 
         return UIVisualEffectView(effect: blur)
             .withoutAutoresizingMaskConstraints
@@ -92,6 +92,7 @@ open class MessagePopupViewController: _ViewController, ComponentsProvider {
         let tapRecognizer = UITapGestureRecognizer(target: self, action: #selector(didTapOnView))
         tapRecognizer.cancelsTouchesInView = false
         view.addGestureRecognizer(tapRecognizer)
+        scrollView.contentInsetAdjustmentBehavior = .always
     }
 
     override open func setUpTheme() {
@@ -329,7 +330,7 @@ open class MessagePopupViewController: _ViewController, ComponentsProvider {
         let popupHeight = reactionsPickerHeight + bottomViewHeight + messageViewHeight
 
         let isBelowSafeArea = messageViewFrame.minY - reactionsPickerHeight <= view.safeAreaInsets.top
-        let isScrollingRequired = popupHeight >= view.frame.height
+        let isScrollingRequired = popupHeight >= view.frame.height - view.safeAreaInsets.top - view.safeAreaInsets.bottom
         let shouldPinToTop = isBelowSafeArea || isScrollingRequired
 
         if shouldPinToTop {

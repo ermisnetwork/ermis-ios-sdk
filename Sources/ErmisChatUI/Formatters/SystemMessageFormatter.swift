@@ -29,6 +29,21 @@ class DefaultSystemMessageFormatter: SystemMessageFormatter {
         case .channelDescriptionUpdated(let userId):
             let userName = userName(of: userId, in: channel)
             return L10n.Message.System.channelDesciptionUpdated(userName)
+        case .memberJoined(userId: let userId):
+            let userName = userName(of: userId, in: channel)
+            if channel.isDirectMessageChannel {
+                if userId == channel.membership?.userId {
+                    return L10n.Message.System.youJoinedConversation
+                } else {
+                    return L10n.Message.System.memberJoinedConversation(userName)
+                }
+            } else {
+                if userId == channel.membership?.userId {
+                    return L10n.Message.System.youJoinedChannel
+                } else {
+                    return L10n.Message.System.memberJoinedChannel(userName)
+                }
+            }
         case .memberRemoved(let userId):
             let userName = userName(of: userId, in: channel)
             return L10n.Message.System.memberRemoved(userName)
@@ -123,14 +138,40 @@ class DefaultSystemMessageFormatter: SystemMessageFormatter {
         case .messageUnpinned(userId: let userId, messageId: let messageId):
             let userName = userName(of: userId, in: channel)
             return L10n.Message.System.messageUnpinned(userName)
+        case .truncateMessages(userId: let userId):
+            if userId == channel.membership?.userId {
+                return L10n.Message.System.youTruncatedMessages
+            } else {
+                let userName = userName(of: userId, in: channel)
+                return L10n.Message.System.otherTruncatedMessages(userName)
+            }
+        case .ownerPromoted(oldId: let oldId, newId: let newId):
+            let oldUserName = userName(of: oldId, in: channel)
+            let newUserName = userName(of: newId, in: channel)
+            if oldId == channel.membership?.userId {
+                return L10n.Message.System.youPromotedOtherToOwner(newUserName)
+            } else if newId == channel.membership?.userId {
+                return L10n.Message.System.otherPromotedYouToOwner(oldUserName)
+            } else {
+                return L10n.Message.System.promotedToOwner(oldUserName, newUserName)
+            }
+        case .inviteMessagingRejected(userId: let userId):
+            let userName = userName(of: userId, in: channel)
+            if userId == channel.membership?.userId {
+                return L10n.Message.System.youRejectAddFriendRequest(userName)
+            } else {
+                return L10n.Message.System.otherRejectAddFriendRequest(userName)
+            }
         @unknown default:
             return nil
         }
     }
 
     func userName(of userId: String, in channel: Channel) -> String {
-        let member = channel.lastActiveMembers.first(where:  { $0.userId == userId})
-        return member?.name ?? userId
+        if let member = channel.lastActiveMembers.first(where:  { $0.userId == userId}){
+            return member.displayName
+        }
+        return userId
     }
 }
 

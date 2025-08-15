@@ -71,11 +71,10 @@ open class MessageSearchViewController: ChannelListSearchViewController, Message
         messages.count
     }
 
-    override open func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+    open override func cellItem(for collectionView: UICollectionView, indexPath: IndexPath, channel: Channel) -> UICollectionViewCell? {
         let cell = collectionView.dequeueReusableCell(with: ChannelListCollectionViewCell.self, for: indexPath)
         guard let message = messages[safe: indexPath.item],
-              let cid = message.cid,
-              let channel = messageSearchController.dataStore.channel(cid: cid) else {
+              let cid = message.cid else {
             return cell
         }
 
@@ -86,6 +85,7 @@ open class MessageSearchViewController: ChannelListSearchViewController, Message
         )
 
         return cell
+
     }
 
     override open func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {

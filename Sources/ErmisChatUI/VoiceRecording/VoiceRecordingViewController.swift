@@ -316,7 +316,7 @@ open class VoiceRecordingViewController: _ViewController, ComponentsProvider, Th
 
         [stopRecordingButton, discardRecordingButton, sendButton, confirmButton].forEach { button in
             button.pin(anchors: [.width], to: 35)
-            button.pin(anchors: [.height], to: 40)
+            button.pin(anchors: [.height], to: 46)
         }
 
         audioRecorder.subscribe(self)

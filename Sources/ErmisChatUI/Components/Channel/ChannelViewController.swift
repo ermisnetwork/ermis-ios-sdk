@@ -26,6 +26,9 @@ open class ChannelViewController: _ViewController,
     /// A controller for observing web socket events.
     public lazy var eventsController: EventsController = client.eventsController()
 
+    /// A message controller for unpin message
+    var messageController: MessageController?
+
     open var invitingHeight: CGFloat {
         return invitingView.ideaHeight
     }
@@ -225,7 +228,11 @@ open class ChannelViewController: _ViewController,
         }
 
         messageListVC.swipeToReplyGestureHandler.onReply = { [weak self] message in
-            self?.messageComposerVC.content.quoteMessage(message)
+            guard let self else {
+                return
+            }
+            let newContent = self.messageComposerVC.content.quoteMessage(message)
+            self.messageComposerVC.setContent(newContent)
         }
 
         if let composerUnsentContent = channelController.channel?.composerUnsentContent {
@@ -474,6 +481,27 @@ open class ChannelViewController: _ViewController,
         vc.delegate = self
         navigationController?.pushViewController(vc, animated: true)
     }
+
+    // Unpin last pinned message
+    open func unpinLastPinnedMessage() {
+        self.alertRouter.showMessageUnpinConfirmationAlert { [weak self] confirmed in
+            guard let self, confirmed else { return }
+            guard let channel = channelController.channel,
+                  let lastPinnedMessage = channel.pinnedMessages.first  else { return }
+            messageController = client.messageController(cid: channel.cid,
+                                                                           messageId: lastPinnedMessage.id)
+
+            messageController?.unpin { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.alertRouter.showMessageUnpinResultAlert(false)
+                    return
+                }
+                self.alertRouter.showMessageUnpinResultAlert(true)
+
+            }
+        }
+    }
     // MARK: - Invitation
 
     /// Accept invitaion to join this channel
@@ -590,8 +618,12 @@ open class ChannelViewController: _ViewController,
         switch actionItem {
         case is EditActionItem:
             dismiss(animated: true) { [weak self] in
-                self?.messageComposerVC.content.editMessage(message)
-                self?.messageComposerVC.composerView.inputMessageView.textView.becomeFirstResponder()
+                guard let self else {
+                    return
+                }
+                let newContent = self.messageComposerVC.content.editMessage(message)
+                self.messageComposerVC.setContent(newContent)
+                self.messageComposerVC.composerView.inputMessageView.textView.becomeFirstResponder()
             }
 
         case is DownloadActionItem:
@@ -606,7 +638,11 @@ open class ChannelViewController: _ViewController,
             }
         case is InlineReplyActionItem:
             dismiss(animated: true) { [weak self] in
-                self?.messageComposerVC.content.quoteMessage(message)
+                guard let self else {
+                    return
+                }
+                let newContent = self.messageComposerVC.content.quoteMessage(message)
+                self.messageComposerVC.setContent(newContent)
             }
         case is ThreadReplyActionItem:
             dismiss(animated: true) { [weak self] in
@@ -735,8 +771,8 @@ open class ChannelViewController: _ViewController,
         if let channel = self.channelController.channel,
            let lastestPinnedMessage = channel.pinnedMessages.first {
             pinnedMessageView.content = .init(message: lastestPinnedMessage,
-                                           channel: channel,
-                                           isShowClearButton: false)
+                                              channel: channel,
+                                              pinnedMessageCount: channel.pinnedMessages.count)
             messageListVC.listView.defaultContentInsetTop = pinnedMessageView.bounds.height + 32
         } else {
             pinnedMessageView.content = nil
@@ -933,15 +969,27 @@ extension ChannelViewController: ChannelConditionRequiredAlertViewDelegate {
 // MARK: - PinnedMessageViewDelegate
 extension ChannelViewController: PinnedMessageViewDelegate {
     public func pinnedMessageViewDidSelected(_ pinnedMessageView: PinnedMessageView) {
+        guard let channel = channelController.channel,
+              let messageId = channel.pinnedMessages.last?.id else {
+            return
+        }
+        jumpToMessage(id: messageId, shouldHighlight: true)
+    }
+
+    public func pinnedMessageViewDidSelectedUnpinButton(_ pinnedMessageView: PinnedMessageView) {
+        unpinLastPinnedMessage()
+    }
+
+    public func pinnedMessageViewDidSelectedShowInChatButton(_ pinnedMessageView: PinnedMessageView) {
+        guard let channel = channelController.channel,
+              let messageId = channel.pinnedMessages.last?.id else {
+            return
+        }
+        jumpToMessage(id: messageId, shouldHighlight: true)
+    }
+
+    public func pinnedMessageViewDidSelectedExpandButton(_ pinnedMessageView: PinnedMessageView) {
         showPinnedMessageList()
-    }
-    
-    public func pinnedMessageViewDidSelectedTrailingButton(_ pinnedMessageView: PinnedMessageView) {
-
-    }
-    
-    public func pinnedMessageViewDidSelectClearButton(_ pinnedMessageView: PinnedMessageView) {
-
     }
 }
 // MARK: - PinnedMessageViewControllerDelegate

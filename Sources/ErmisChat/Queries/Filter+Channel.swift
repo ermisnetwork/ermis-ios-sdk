@@ -184,7 +184,7 @@ extension Filter where Scope == ChannelListFilterScope {
                 return nil
             }
             return NSPredicate(
-                format: "%K CONTAINS[c] %@".prepend(("ANY "), ifCondition: isCollectionFilter),
+                format: "%K CONTAINS[cd] %@".prepend(("ANY "), ifCondition: isCollectionFilter),
                 argumentArray: [keyPathString, prefix]
             )
         case .contains where mappedValue is String:
