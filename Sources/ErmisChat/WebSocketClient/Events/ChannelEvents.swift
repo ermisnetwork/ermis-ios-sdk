@@ -104,38 +104,31 @@ public struct ChannelTruncatedEvent: ChannelSpecificEvent {
     /// The user who truncated a channel.
     public let user: ChatUser?
 
-    /// The system message accompanied with the truncated event.
-    public let message: ChatMessage?
-
     /// The event timestamp.
     public let createdAt: Date
 }
 
 class ChannelTruncatedEventDTO: EventDTO {
-    let channel: ChannelDetailPayload
+    let cid: ChannelId
     let user: UserPayload?
     let createdAt: Date
     let payload: EventPayload
-    let message: MessagePayload?
 
     init(from response: EventPayload) throws {
-        channel = try response.value(at: \.channel)
+        cid = try response.value(at: \.cid)
         user = try? response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
-        message = try? response.value(at: \.message)
         payload = response
     }
 
     func toDomainEvent(session: DatabaseSession) -> Event? {
-        guard let channelDTO = session.channel(cid: channel.cid) else { return nil }
+        guard let channelDTO = session.channel(cid: cid) else { return nil }
 
-        let userDTO = user.flatMap { session.user(id: $0.id, projectId: channel.cid.projectId) }
-        let messageDTO = message.flatMap { session.message(id: $0.id) }
+        let userDTO = user.flatMap { session.user(id: $0.id, projectId: cid.projectId) }
 
         return try? ChannelTruncatedEvent(
             channel: channelDTO.asModel(),
             user: userDTO?.asModel(),
-            message: messageDTO?.asModel(),
             createdAt: createdAt
         )
     }
