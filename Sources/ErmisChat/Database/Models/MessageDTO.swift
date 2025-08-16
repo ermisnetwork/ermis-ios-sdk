@@ -435,8 +435,7 @@ class MessageDTO: NSManagedObject {
             cid: cid,
             includeShadowedMessages: context.shouldShowShadowedMessages ?? false
         )
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: false),
-                                   NSSortDescriptor(keyPath: \MessageDTO.textUpdatedAt, ascending: false)]
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.defaultSortingKey, ascending: false)]
         request.fetchOffset = 0
         request.fetchLimit = 1
 

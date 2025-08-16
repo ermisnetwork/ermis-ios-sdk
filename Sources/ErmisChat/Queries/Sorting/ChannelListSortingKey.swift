@@ -147,9 +147,3 @@ private extension Sorting where Key == ChannelListSortingKey {
         SortValue(keyPath: key.keyPath, isAscending: isAscending)
     }
 }
-
-extension Channel {
-    var defaultSortingAt: Date {
-        lastMessageAt ?? createdAt
-    }
-}

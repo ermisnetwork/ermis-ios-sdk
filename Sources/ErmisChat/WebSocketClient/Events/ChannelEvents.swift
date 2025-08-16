@@ -221,7 +221,7 @@ class ChannelPinnedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
-        parentCid = try response.value(at: \.parentCid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -249,7 +249,7 @@ class ChannelUnpinnedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
-        parentCid = try response.value(at: \.parentCid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response

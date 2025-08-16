@@ -85,17 +85,19 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "topContainer")
 
-    /// The `UILabel` instance showing the last message or typing users if any.
-    open private(set) lazy var subtitleImageView: UIImageView = UIImageView()
-        .withoutAutoresizingMaskConstraints
-        .withAccessibilityIdentifier(identifier: "subtitleIcon")
-
-    /// The `UILabel` instance showing the last message or typing users if any.
-    open private(set) lazy var subtitleLabel: UILabel = UILabel()
+    /// The `UILabel` instance showing the channel topics name.
+    open private(set) lazy var subTitleLabel: UILabel = UILabel()
         .withoutAutoresizingMaskConstraints
         .withAdjustingFontForContentSizeCategory
         .withBidirectionalLanguagesSupport
-        .withAccessibilityIdentifier(identifier: "subtitleLabel")
+        .withAccessibilityIdentifier(identifier: "subTitleLabel")
+
+    /// The `UILabel` instance showing the last message or typing users if any.
+    open private(set) lazy var detailLabel: UILabel = UILabel()
+        .withoutAutoresizingMaskConstraints
+        .withAdjustingFontForContentSizeCategory
+        .withBidirectionalLanguagesSupport
+        .withAccessibilityIdentifier(identifier: "detailLabel")
 
     /// The `UIImageView` instance showing the status of drirect channel.
     open private(set) lazy var channelStatusImageView: UIImageView = UIImageView()
@@ -142,8 +144,29 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         return nil
     }
 
-    /// Text of `subtitleLabel` which contains current typing user or the last message in the channel.
-    open var subtitleText: String? {
+    /// Text of `subTitleLabel` which default contains name of channel topics
+    open var subTitleText: String? {
+        guard let content = content,
+              content.channel.topicsEnabled,
+              let topics = content.channel.topics?.sorted(by: { ($0.lastMessageAt ?? $0.createdAt) > ($1.lastMessageAt ?? $1.createdAt) }),
+              !topics.isEmpty else {
+            return nil
+        }
+
+        let topicsCombinedName = topics.reduce(into: "") { partialResult, channel in
+            if let topicName = formatters.channelName.format(topic: channel, forCurrentUserId: channel.membership?.userId) {
+                if !partialResult.isEmpty {
+                    partialResult += "   "
+                }
+                partialResult += topicName
+            }
+        }
+
+        return topicsCombinedName
+    }
+
+    /// Text of `detailLabel` which default contains current typing user or the last message in the channel.
+    open var detailText: String? {
         guard let content = content else { return nil }
 
         if let searchedMessage = content.searchedMessage {
@@ -163,7 +186,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             return unsentContentText
         }
 
-        if let previewMessage = content.channel.previewMessage {
+        if let previewMessage = content.channel.topicsPreviewMessage {
             if isLastMessageVoiceRecording {
                 return previewMessageForAudioRecordingMessage(messageText: previewMessage.textContentAfterParseMention ?? previewMessage.text)
             }
@@ -200,10 +223,6 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         }
 
         return previewMessageTextForEmptyMessage()
-    }
-
-    open var subtitleIcon: UIImage? {
-        isLastMessageVoiceRecording ? theme.icons.mic : nil
     }
 
     /// Text of `timestampLabel` which contains the time of the last sent message.
@@ -266,11 +285,11 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
         channelStatusImageView.tintColor = theme.colors.error
 
-        subtitleLabel.textColor = theme.colors.subtitleText
-        subtitleLabel.font = theme.fonts.body
+        subTitleLabel.textColor = theme.colors.text
+        subTitleLabel.font = theme.fonts.footnote
 
-        subtitleImageView.tintColor = subtitleLabel.textColor
-        subtitleImageView.contentMode = .scaleAspectFit
+        detailLabel.textColor = theme.colors.subtitleText
+        detailLabel.font = theme.fonts.body
 
         timestampLabel.textColor = theme.colors.subtitleText
         timestampLabel.font = theme.fonts.footnote
@@ -293,10 +312,11 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
         channelStatusImageView.pin(anchors: [.width, .height], to: 20)
 
-        subtitleContainer.axis = .horizontal
+        subtitleContainer.axis = .vertical
         subtitleContainer.spacing = 4
-        subtitleContainer.alignment = .center
-        subtitleContainer.addArrangedSubview(subtitleLabel)
+        subtitleContainer.alignment = .leading
+        subtitleContainer.addArrangedSubview(subTitleLabel)
+        subtitleContainer.addArrangedSubview(detailLabel)
         subtitleContainer.addArrangedSubview(UIView().flexible(axis: .horizontal))
 
 
@@ -337,23 +357,17 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
     override open func contentDidChanged() {
         titleLabel.text = titleText
+        subTitleLabel.text = subTitleText
+        subTitleLabel.isHidden = subTitleText.isEmptyOrNil
         if isShowUnsentContent {
             let subtitleAttributedString = NSMutableAttributedString(string: "\(L10n.ChannelList.LastMessage.draft): ",
                                                                attributes: [.foregroundColor: theme.colors.draftMessageText])
-            subtitleAttributedString.append(.init(string: subtitleText ?? ""))
-            subtitleLabel.attributedText = subtitleAttributedString
+            subtitleAttributedString.append(.init(string: detailText ?? ""))
+            detailLabel.attributedText = subtitleAttributedString
         } else {
-            subtitleLabel.text = subtitleText
+            detailLabel.text = detailText
         }
         timestampLabel.text = timestampText
-        subtitleImageView.image = subtitleIcon
-        if subtitleImageView.image != nil {
-            subtitleImageView.heightAnchor.pin(equalToConstant: subtitleLabel.font.pointSize).isActive = true
-            subtitleImageView.widthAnchor.pin(equalTo: subtitleImageView.heightAnchor).isActive = true
-            subtitleContainer.insertArrangedSubview(subtitleImageView, at: 0)
-        } else if subtitleImageView.superview == subtitleContainer {
-            subtitleContainer.removeArrangedSubview(subtitleImageView)
-        }
 
         if let searchedMessage = content?.searchedMessage {
             userAvatarView.content = .init(with: searchedMessage.author)
@@ -361,7 +375,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             avatarView.content = .init(from: content?.channel)
         }
 
-        unreadCountView.content = .init(channelUnreadCount: content?.channel.unreadCount ?? .noUnread)
+        unreadCountView.content = .init(channelUnreadCount: content?.channel.topicsUnreadCount ?? .noUnread)
         unreadCountView.invalidateIntrinsicContentSize()
 
         if content?.searchedMessage != nil {

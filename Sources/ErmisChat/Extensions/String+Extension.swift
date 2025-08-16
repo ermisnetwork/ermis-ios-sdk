@@ -28,10 +28,4 @@ public extension String {
         string.removeAll(where: { $0 == "-"})
         return string
     }
-    
-    var punycodeDecoded: String {
-        let mutable = NSMutableString(string: self)
-        CFStringTransform(mutable, nil, "Any-Nameprep; Any-Punycode" as CFString, false)
-        return mutable as String
-    }
 }

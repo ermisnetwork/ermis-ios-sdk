@@ -54,18 +54,6 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         return channelObserver?.item
     }
     
-    /// The channel the controller represents.
-    ///
-    /// To observe changes of the channel, set your class as a delegate of this controller or use the provided
-    /// `Combine` publishers.
-    ///
-    public var parentChannel: Channel? {
-        if state == .initialized {
-            setLocalStateBasedOnError(startDatabaseObservers())
-        }
-        return parentChannelObserver?.item
-    }
-    
     /// The messages of the channel the controller represents.
     ///
     /// To observe changes of the messages, set your class as a delegate of this controller or use the provided
@@ -187,7 +175,6 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     /// Database observers.
     /// Will be `nil` when observing channel with backend generated `id` is not yet created.
     private var channelObserver: EntityDatabaseObserverWrapper<Channel, ChannelDTO>?
-    private var parentChannelObserver: EntityDatabaseObserverWrapper<Channel, ChannelDTO>?
     private var topicObserver: ListDatabaseObserverWrapper<Channel, ChannelDTO>?
     private var messagesObserver: ListDatabaseObserverWrapper<ChatMessage, MessageDTO>?
     
@@ -238,7 +225,6 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         super.init()
         
         setChannelObserver()
-        setParentChannelObserver()
         setTopicObserver()
         setMessagesObserver()
         
@@ -267,7 +253,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     public func updateChannel(
         name: String? = nil,
         description: String? = nil,
-        imageURL: URL? = nil,
+        imageURL: String? = nil,
         isPublic: Bool? = nil,
         members: Set<UserId> = [],
         coolDownDuration: Int? = nil,
@@ -1188,7 +1174,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
 extension ChannelController {
     
     public func createTopic(title: String,
-                            imageURL: URL? = nil,
+                            imageURL: String? = nil,
                             completion: ((Error?) -> Void)? = nil) {
         /// Perform action only if channel is already created on backend side and have a valid `cid`.
         guard let cid = cid, isChannelAlreadyCreated else {
@@ -1196,7 +1182,7 @@ extension ChannelController {
             return
         }
         
-        let data = ChannelEditDetailPayload(
+        let channelDetail = ChannelEditDetailPayload(
             cid:  parentCid == nil ? .init(type: .topic,
                                            projectId: channelQuery.projectId,
                                            id: String.randomId) : parentCid!,
@@ -1211,7 +1197,7 @@ extension ChannelController {
             filterWords: nil)
         
         updater.addTopic(isUpdate: parentCid != nil,
-                         ChannelQuery(channelPayload: data,
+                         ChannelQuery(channelPayload: channelDetail,
                                       projectId: channelQuery.projectId,
                                       parentCid: parentCid == nil ? cid : parentCid, topicCid: parentCid == nil ? nil : cid)) {
             completion?($0)
@@ -1224,7 +1210,7 @@ extension ChannelController {
             return
         }
         
-        updater.closeTopic(parentCid, data: CloseAndReopenTopic(projectId: client.projectId, topicId: topicId.rawValue))
+        updater.closeTopic(parentCid, data: CloseAndReopenTopic(projectId: client.projectId, topicId: topicId.rawValue), completion: completion)
     }
     
     public func reopenTopic(completion: ((Error?) -> Void)? = nil) {
@@ -1233,7 +1219,7 @@ extension ChannelController {
             return
         }
         
-        updater.reopenTopic(parentCid, data: CloseAndReopenTopic(projectId: client.projectId, topicId: topicId.rawValue))
+        updater.reopenTopic(parentCid, data: CloseAndReopenTopic(projectId: client.projectId, topicId: topicId.rawValue), completion: completion)
     }
 }
 
@@ -1339,7 +1325,6 @@ private extension ChannelController {
         if let e = startChannelObserver() { return e }
         if let e = startTopicsObserver()  { return e }
         if let e = startMessagesObserver() { return e }
-        if let e = startParentChannelObserver() { return e }
         return nil
     }
     
@@ -1348,18 +1333,6 @@ private extension ChannelController {
         
         do {
             try channelObserver?.startObserving()
-            return nil
-        } catch {
-            log.error("Failed to perform fetch request with error: \(error). This is an internal error.")
-            return ClientError.FetchFailed()
-        }
-    }
-    
-    private func startParentChannelObserver() -> Error? {
-        setParentChannelObserver()
-        
-        do {
-            try parentChannelObserver?.startObserving()
             return nil
         } catch {
             log.error("Failed to perform fetch request with error: \(error). This is an internal error.")
@@ -1407,37 +1380,6 @@ private extension ChannelController {
                 }
             }
         ]
-    }
-    
-    private func setParentChannelObserver() {
-        parentChannelObserver = { [weak self] in
-            guard let self = self else {
-                log.warning("Callback called while self is nil")
-                return nil
-            }
-            
-            guard let cid = self.parentCid else {
-                return nil
-            }
-            
-            let observer = EntityDatabaseObserverWrapper(
-                isBackground: ErmisRuntimeCheck._isBackgroundMappingEnabled,
-                database: self.client.databaseContainer,
-                fetchRequest: ChannelDTO.fetchRequest(for: cid),
-                itemCreator: { try $0.asModel() as Channel }
-            ).onChange { [weak self] change in
-                self?.delegateCallback { [weak self] in
-                    guard let self = self else {
-                        log.warning("Callback called while self is nil")
-                        return
-                    }
-                    $0.channelController(self, didUpdateParentChannel: change)
-                }
-            }
-            
-            
-            return observer
-        }()
     }
     
     private func setChannelObserver() {
