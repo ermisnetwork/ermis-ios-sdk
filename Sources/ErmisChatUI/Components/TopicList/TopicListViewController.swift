@@ -1,8 +1,5 @@
 //
-//  TopicListViewController.swift
-//  ErmisChat
-//
-//  Created by Tú Đinh on 4/8/25.
+// Copyright 2025 Ermis Inc.
 //
 
 import ErmisChat
@@ -26,6 +23,9 @@ open class TopicListViewController: _ViewController,
 
     /// The `ChannelListController` instance that provides channels data.
     public var controller: ChannelListController!
+
+    /// The `Channel controller` instance that provide channel data
+    public var channelController: ChannelController?
 
     /// A boolean value that determines if the chat channel list view states are shown and handled by the SDK.
     open var isChannelListStatesEnabled: Bool {
@@ -78,12 +78,10 @@ open class TopicListViewController: _ViewController,
         .topicListLoadingView
         .init()
         .withoutAutoresizingMaskConstraints
-    
-    /// The `CurrentUserAvatarView` instance used for displaying avatar of the current user.
-    open private(
-        set
-    ) lazy var userAvatarView: CurrentUserAvatarView = components
-        .currentUserAvatarView.init(avatarStyle: .circular)
+
+    /// Header View
+    open private(set) lazy var headerView: ChannelHeaderView = components
+        .channelHeaderView.init()
         .withoutAutoresizingMaskConstraints
     
     /// The `OngoingCallView` instance show when have ongoing call.
@@ -145,7 +143,11 @@ open class TopicListViewController: _ViewController,
 
         // Set the Controller on the ViewController
         channelListVC.controller = controller
-
+        if let parentCid = controller.parentCid {
+            channelListVC.channelController = controller.client.channelController(for: parentCid)
+        } else {
+            log.warning("[Topic List] Parent CID is nil")
+        }
         // Return the newly created ChannelListViewController
         return channelListVC
     }
@@ -169,14 +171,6 @@ open class TopicListViewController: _ViewController,
 
         collectionView.delegate = self
 
-        userAvatarView.controller = controller.client.currentUserController()
-        userAvatarView
-            .addTarget(
-                self,
-                action: #selector(didTapOnCurrentUserAvatar),
-                for: .touchUpInside
-            )
-
         topicListErrorView.refreshButtonAction = { [weak self] in
             self?.controller.synchronize()
             self?.topicListErrorView.hide()
@@ -184,9 +178,6 @@ open class TopicListViewController: _ViewController,
 
     
         navigationItem.backButtonTitle = ""
-        navigationItem.leftBarButtonItem = UIBarButtonItem(
-            customView: userAvatarView
-        )
 
         if let flowLayout = collectionViewLayout as? ListCollectionViewLayout {
             flowLayout.itemSize = UICollectionViewFlowLayout.automaticSize
@@ -269,6 +260,15 @@ open class TopicListViewController: _ViewController,
             collectionView.addSubview(loadingIndicator)
             loadingIndicator.pin(anchors: [.centerX, .centerY], to: view)
         }
+
+        if let parentCid = controller.parentCid {
+            headerView.channelController = channelController
+        } else {
+            log.warning("[TopicList] Parent CID not set")
+        }
+        navigationItem.leftItemsSupplementBackButton = true
+        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: headerView)
+        navigationItem.largeTitleDisplayMode = .never
     }
 
     override open func setUpTheme() {
@@ -341,10 +341,6 @@ open class TopicListViewController: _ViewController,
         // Implement on subclass.
     }
     
-    @objc open func didTapOnCurrentUserAvatar(_ sender: Any) {
-        router.showCurrentUserProfile()
-    }
-    
     public func setOngoingCallViewHidden(_ isHidden: Bool) {
         guard shouldShowOngoingCallView else {
             return
@@ -376,6 +372,11 @@ open class TopicListViewController: _ViewController,
         setupParentNavigation(parent: parent)
     }
     
+    open
+    func closed() {
+        navigationController?.popViewController(animated: true)
+    }
+    // MARK: - Collection View
     /// Setup UICollectionViewDiffableDataSource
     public func setupDiffableDataSource() {
         dataSource = UICollectionViewDiffableDataSource<String, Channel>(collectionView: collectionView, cellProvider: { [weak self] collectionView, indexPath, channel in
@@ -489,7 +490,7 @@ open class TopicListViewController: _ViewController,
     open func swipeableViewWillShowActionViews(for indexPath: IndexPath) {
         // Close other open cells
         collectionView.visibleCells.forEach {
-            let cell = ($0 as? ChannelListCollectionViewCell)
+            let cell = ($0 as? TopicListCollectionViewCell)
             cell?.swipeableView.close()
         }
 
@@ -541,7 +542,7 @@ open class TopicListViewController: _ViewController,
     }
 
     open func closeSwipeableView(at indexPath: IndexPath) {
-        if let cell = collectionView.cellForItem(at: indexPath) as? ChannelListCollectionViewCell {
+        if let cell = collectionView.cellForItem(at: indexPath) as? TopicListCollectionViewCell {
             cell.swipeableView.close()
         }
     }

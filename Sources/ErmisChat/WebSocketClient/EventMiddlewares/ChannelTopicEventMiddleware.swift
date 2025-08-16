@@ -1,8 +1,5 @@
 //
-//  ChannelTopicEvent.swift
-//  ErmisChat
-//
-//  Created by Tú Đinh on 1/8/25.
+// Copyright 2025 Ermis Inc.
 //
 
 import Foundation

@@ -171,9 +171,23 @@ extension FilterKey where Scope: AnyChannelListFilterScope {
     static var channelType: FilterKey<Scope, String> {
         .init(rawValue: "type", keyPathString: #keyPath(ChannelDTO.typeRawValue))
     }
-    
+
+    // When using parentCid, alway get the topics and it parent channel.
     static var parentCid: FilterKey<Scope, String> {
-        .init(rawValue: "parent_cid", keyPathString: #keyPath(ChannelDTO.parentcid))
+        .init(rawValue: "parent_cid",
+              keyPathString: #keyPath(ChannelDTO.parentcid),
+              predicateMapper: { op, parentCid in
+            let parentCidKeyPath = #keyPath(ChannelDTO.parentcid)
+            let cidKeyPath = #keyPath(ChannelDTO.cid)
+            switch op {
+            case .equal:
+                let parentCidPredicate = NSPredicate(format: "%K == %@", parentCidKeyPath, parentCid)
+                let cidPredicate = NSPredicate(format: "%K == %@", cidKeyPath, parentCid)
+                return NSCompoundPredicate(orPredicateWithSubpredicates: [parentCidPredicate, cidPredicate])
+            default:
+                return nil
+            }
+        })
     }
 
     static var isBlocked: FilterKey<Scope, Bool> {

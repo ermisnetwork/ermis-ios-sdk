@@ -377,6 +377,11 @@ public struct Components {
     /// The view that displays notice message when direct user is not joined channel yet.
     public var channelInvitingView: ChannelInvitingView.Type = ChannelInvitingView.self
 
+    /// A view show when topic is closed, that either:
+    /// - Displays a notice message if the user don't have permission to reopen it
+    /// - Shows a "Reopen Topic" button if the user has the required permission.
+    public var topicClosedView: TopicClosedView.Type = TopicClosedView.self
+
     /// The view that display invitation action to join or reject in invited room.
     public var channelAcceptInvitationView: ChannelAcceptInvitationView.Type = ChannelAcceptInvitationView.self
 
