@@ -377,6 +377,11 @@ public struct Components {
     /// The view that displays notice message when direct user is not joined channel yet.
     public var channelInvitingView: ChannelInvitingView.Type = ChannelInvitingView.self
 
+    /// A view show when topic is closed, that either:
+    /// - Displays a notice message if the user don't have permission to reopen it
+    /// - Shows a "Reopen Topic" button if the user has the required permission.
+    public var topicClosedView: TopicClosedView.Type = TopicClosedView.self
+
     /// The view that display invitation action to join or reject in invited room.
     public var channelAcceptInvitationView: ChannelAcceptInvitationView.Type = ChannelAcceptInvitationView.self
 
@@ -449,6 +454,45 @@ public struct Components {
     /// A boolean value that determines whether the Channel list default loading states (empty, error and loading views) are handled by the Ermis SDK. It is false by default.
     /// If it is false, it does not show empty or error views and just shows a spinner indicator for the loading state. If set to true, the empty, error and shimmer loading views are shown instead.
     public var isInvitedChannelListStatesEnabled = false
+    
+    // MARK: - Topic
+    public var topicListVC: TopicListViewController.Type = TopicListViewController.self
+    
+    /// The view in the channel cell that shows channel actions on swipe.
+    public var topicActionsView: SwipeableView.Type = SwipeableView.self
+    
+    /// The cell separator in the channel list.
+    public var topicCellSeparator: UICollectionReusableView.Type = CellSeparatorReusableView.self
+    
+    /// The cell of channel list that show channel informations.
+    public var topicListCell: TopicListCollectionViewCell.Type = TopicListCollectionViewCell.self
+    
+    /// The view that shows channel information.
+    public var topicListItemContentView: TopicListItemView.Type = TopicListItemView.self
+    
+    /// The cell display skeleton loading.
+    public var topicListLoadingViewCell: TopicListLoadingViewCell.Type = TopicListLoadingViewCell.self
+    
+    /// The content view inside the cell responsible to display a skeleton loading view.
+    public var topicListLoadingContentViewCell: TopicListLoadingViewCellContentView.Type = TopicListLoadingViewCellContentView.self
+    
+    /// The view that shows when loading the Channel list.
+    public var topicListLoadingView: TopicListLoadingView.Type = TopicListLoadingView.self
+    
+    /// The view that shows when some error occurred on TopicList.
+    public var topicListErrorView: TopicListErrorView.Type = TopicListErrorView.self
+    
+    /// The view that is displayed when topic list is empty.
+    public var topicListEmptyView: TopicListEmptyView.Type = TopicListEmptyView.self
+    
+    /// The collection view layout of the topic list.
+    public var topicListLayout: UICollectionViewLayout.Type = ListCollectionViewLayout.self
+    /// A boolean value that determines whether the Topic list default loading states (empty, error and loading views) are handled by the Ermis SDK. It is false by default.
+    /// If it is false, it does not show empty or error views and just shows a spinner indicator for the loading state. If set to true, the empty, error and shimmer loading views are shown instead.
+    public var isTopiclListStatesEnabled = false
+    /// A boolean value that determines whether the Topic list default loading states (empty, error and loading views) are handled by the Ermis SDK. It is false by default.
+    /// If it is false, it does not show empty or error views and just shows a spinner indicator for the loading state. If set to true, the empty, error and shimmer loading views are shown instead.
+    public var isInvitedTopicListStatesEnabled = false
 
     // MARK: - Channel Search
 
@@ -615,6 +659,10 @@ public struct Components {
     /// The router responsible for navigation on channel list screen.
     @available(iOSApplicationExtension, unavailable)
     public var channelListRouter: ChannelListRouter.Type = ChannelListRouter.self
+    
+    /// The router responsible for navigation on topic list screen.
+    @available(iOSApplicationExtension, unavailable)
+    public var topicListRouter: TopicListRouter.Type = TopicListRouter.self
 
     /// The router responsible for navigation on message list screen.
     public var messageListRouter: MessageListRouter.Type = MessageListRouter.self

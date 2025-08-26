@@ -10,7 +10,16 @@ extension ErmisClient {
     /// - Parameter query: The query specify the filter and sorting of the channels the controller should fetch.    ///
     /// - Returns: A new instance of `ChannelListController`.
     public func channelListController(query: ChannelListQuery) -> ChannelListController {
-        .init(query: query, client: self)
+        .init(query: query, client: self, parentCid: nil)
+    }
+
+    /// Creates a new `ChannelListController` with the provided channel query and parent cid.
+    /// - Parameters:
+    ///  - query: The query specify the filter and sorting of the channels the controller should fetch.    ///
+    ///  - parentCid: The parent channel id
+    /// - Returns: A new instance of `ChannelListController`.
+    public func topicListController(query: ChannelListQuery, parentCid: ChannelId) -> ChannelListController {
+        .init(query: query, client: self, parentCid: parentCid)
     }
 
     /// Creates a new `InvitedChannelListController` with the provided channel query.
@@ -30,10 +39,11 @@ extension ErmisClient {
     ///   - filter: A block that determines whether the channels belongs to this controller.
     /// - Returns: A new instance of `ChannelListController`
     public func channelListController(
+        parentCid: ChannelId? = nil,
         query: ChannelListQuery,
         filter: ((Channel) -> Bool)? = nil
     ) -> ChannelListController {
-        .init(query: query, client: self, filter: filter)
+        .init(query: query, client: self, parentCid: parentCid, filter: filter)
     }
 }
 
@@ -46,6 +56,8 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     public let client: ErmisClient
 
     let eventsController: EventsController
+    
+    public var parentCid: ChannelId?
 
     /// The channels matching the query of this controller.
     ///
@@ -79,7 +91,13 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     }
 
     private(set) lazy var channelListObserver: ListDatabaseObserverWrapper<Channel, ChannelDTO> = {
-        let request = ChannelDTO.channelListFetchRequest(query: self.query, clientConfig: client.config)
+        var request: NSFetchRequest<ChannelDTO>
+        if let parentCid = parentCid {
+            request = ChannelDTO.topicListFetchRequest(parentCid: parentCid, query: self.query)
+        } else {
+            request = ChannelDTO.channelListFetchRequest(query: self.query, clientConfig: client.config)
+        }
+
         let observer = self.environment.createChannelListDatabaseObserver(
             ErmisRuntimeCheck._isBackgroundMappingEnabled,
             client.databaseContainer,
@@ -137,11 +155,13 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     init(
         query: ChannelListQuery,
         client: ErmisClient,
+        parentCid: ChannelId? = nil,
         filter: ((Channel) -> Bool)? = nil,
         environment: Environment = .init()
     ) {
         self.client = client
         self.query = query
+        self.parentCid = parentCid
         self.filter = filter
         self.environment = environment
         eventsController = client.eventsController()
@@ -309,7 +329,12 @@ extension ChannelListController: EventsControllerDelegate {
             unlinkChannelIfNeeded(updatedChannelEvent.channel)
         } else if let channelVisibleEvent = event as? ChannelVisibleEvent, let channel = dataStore.channel(cid: channelVisibleEvent.cid) {
             linkChannelIfNeeded(channel)
+        } else if let channelHiddenEvent = event as? ChannelEnableTopicEvent, let channel = dataStore.channel(cid: channelHiddenEvent.cid) {
+            linkChannelIfNeeded(channel)
+        } else if let topicAddedEvent = event as? ChannelTopicCreatedEvent, let channel = dataStore.channel(cid: topicAddedEvent.cid) {
+            linkChannelIfNeeded(channel)
         }
+            
     }
 
     /// Handles if a channel should be linked to the current query or not.

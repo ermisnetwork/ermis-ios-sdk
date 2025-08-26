@@ -6,7 +6,10 @@ import ErmisChat
 import UIKit
 
 /// The channel item view that displays information in a channel list cell.
-open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, SwiftUIRepresentable {
+open class TopicListItemView: _View,
+                                UIProvider,
+                                PreviewMessageProvider,
+                                SwiftUIRepresentable {
     /// The content of this view.
     public struct Content {
         /// Channel for the current Item.
@@ -85,19 +88,17 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "topContainer")
 
-    /// The `UILabel` instance showing the channel topics name.
-    open private(set) lazy var subTitleLabel: UILabel = UILabel()
+    /// The `UILabel` instance showing the last message or typing users if any.
+    open private(set) lazy var subtitleImageView: UIImageView = UIImageView()
         .withoutAutoresizingMaskConstraints
-        .withAdjustingFontForContentSizeCategory
-        .withBidirectionalLanguagesSupport
-        .withAccessibilityIdentifier(identifier: "subTitleLabel")
+        .withAccessibilityIdentifier(identifier: "subtitleIcon")
 
     /// The `UILabel` instance showing the last message or typing users if any.
-    open private(set) lazy var detailLabel: UILabel = UILabel()
+    open private(set) lazy var subtitleLabel: UILabel = UILabel()
         .withoutAutoresizingMaskConstraints
         .withAdjustingFontForContentSizeCategory
         .withBidirectionalLanguagesSupport
-        .withAccessibilityIdentifier(identifier: "detailLabel")
+        .withAccessibilityIdentifier(identifier: "subtitleLabel")
 
     /// The `UIImageView` instance showing the status of drirect channel.
     open private(set) lazy var channelStatusImageView: UIImageView = UIImageView()
@@ -144,29 +145,8 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         return nil
     }
 
-    /// Text of `subTitleLabel` which default contains name of channel topics
-    open var subTitleText: String? {
-        guard let content = content,
-              content.channel.topicsEnabled,
-              let topics = content.channel.topics?.sorted(by: { ($0.lastMessageAt ?? $0.createdAt) > ($1.lastMessageAt ?? $1.createdAt) }),
-              !topics.isEmpty else {
-            return nil
-        }
-
-        let topicsCombinedName = topics.reduce(into: "") { partialResult, channel in
-            if let topicName = formatters.channelName.format(topic: channel, forCurrentUserId: channel.membership?.userId) {
-                if !partialResult.isEmpty {
-                    partialResult += "   "
-                }
-                partialResult += topicName
-            }
-        }
-
-        return topicsCombinedName
-    }
-
-    /// Text of `detailLabel` which default contains current typing user or the last message in the channel.
-    open var detailText: String? {
+    /// Text of `subtitleLabel` which contains current typing user or the last message in the channel.
+    open var subtitleText: String? {
         guard let content = content else { return nil }
 
         if let searchedMessage = content.searchedMessage {
@@ -186,7 +166,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             return unsentContentText
         }
 
-        if let previewMessage = content.channel.topicsPreviewMessage {
+        if let previewMessage = content.channel.previewMessage {
             if isLastMessageVoiceRecording {
                 return previewMessageForAudioRecordingMessage(messageText: previewMessage.textContentAfterParseMention ?? previewMessage.text)
             }
@@ -215,14 +195,14 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
                 return previewMessageTextForCurrentUser(messageText: text)
             }
 
-            if content.channel.memberCount == 2 {
-                return previewMessageTextFor1on1Channel(messageText: text)
-            }
-
             return previewMessageTextFromAnotherUser(previewMessage.author, messageText: text)
         }
 
         return previewMessageTextForEmptyMessage()
+    }
+
+    open var subtitleIcon: UIImage? {
+        isLastMessageVoiceRecording ? theme.icons.mic : nil
     }
 
     /// Text of `timestampLabel` which contains the time of the last sent message.
@@ -281,15 +261,15 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
         super.setUpTheme()
         backgroundColor = contentBackgroundColor
 
-        titleLabel.font = theme.fonts.body.semiBold
+        titleLabel.font = theme.fonts.body.bold
 
         channelStatusImageView.tintColor = theme.colors.error
 
-        subTitleLabel.textColor = theme.colors.text
-        subTitleLabel.font = theme.fonts.footnote
+        subtitleLabel.textColor = theme.colors.subtitleText
+        subtitleLabel.font = theme.fonts.body
 
-        detailLabel.textColor = theme.colors.subtitleText
-        detailLabel.font = theme.fonts.body
+        subtitleImageView.tintColor = subtitleLabel.textColor
+        subtitleImageView.contentMode = .scaleAspectFit
 
         timestampLabel.textColor = theme.colors.subtitleText
         timestampLabel.font = theme.fonts.footnote
@@ -312,11 +292,10 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
         channelStatusImageView.pin(anchors: [.width, .height], to: 20)
 
-        subtitleContainer.axis = .vertical
+        subtitleContainer.axis = .horizontal
         subtitleContainer.spacing = 4
-        subtitleContainer.alignment = .leading
-        subtitleContainer.addArrangedSubview(subTitleLabel)
-        subtitleContainer.addArrangedSubview(detailLabel)
+        subtitleContainer.alignment = .center
+        subtitleContainer.addArrangedSubview(subtitleLabel)
         subtitleContainer.addArrangedSubview(UIView().flexible(axis: .horizontal))
 
 
@@ -357,17 +336,23 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
     override open func contentDidChanged() {
         titleLabel.text = titleText
-        subTitleLabel.text = subTitleText
-        subTitleLabel.isHidden = subTitleText.isEmptyOrNil
         if isShowUnsentContent {
             let subtitleAttributedString = NSMutableAttributedString(string: "\(L10n.ChannelList.LastMessage.draft): ",
-                                                               attributes: [.foregroundColor: theme.colors.draftMessageText])
-            subtitleAttributedString.append(.init(string: detailText ?? ""))
-            detailLabel.attributedText = subtitleAttributedString
+                                                               attributes: [.foregroundColor: theme.colors.error])
+            subtitleAttributedString.append(.init(string: subtitleText ?? ""))
+            subtitleLabel.attributedText = subtitleAttributedString
         } else {
-            detailLabel.text = detailText
+            subtitleLabel.text = subtitleText
         }
         timestampLabel.text = timestampText
+        subtitleImageView.image = subtitleIcon
+        if subtitleImageView.image != nil {
+            subtitleImageView.heightAnchor.pin(equalToConstant: subtitleLabel.font.pointSize).isActive = true
+            subtitleImageView.widthAnchor.pin(equalTo: subtitleImageView.heightAnchor).isActive = true
+            subtitleContainer.insertArrangedSubview(subtitleImageView, at: 0)
+        } else if subtitleImageView.superview == subtitleContainer {
+            subtitleContainer.removeArrangedSubview(subtitleImageView)
+        }
 
         if let searchedMessage = content?.searchedMessage {
             userAvatarView.content = .init(with: searchedMessage.author)
@@ -375,7 +360,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             avatarView.content = .init(from: content?.channel)
         }
 
-        unreadCountView.content = .init(channelUnreadCount: content?.channel.topicsUnreadCount ?? .noUnread)
+        unreadCountView.content = .init(channelUnreadCount: content?.channel.unreadCount ?? .noUnread)
         unreadCountView.invalidateIntrinsicContentSize()
 
         if content?.searchedMessage != nil {
@@ -409,9 +394,9 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
     /// The default channel title text.
     open func channelTitleText(for channel: Channel) -> String? {
-        formatters
+        return formatters
             .channelName
-            .format(channel: channel, forCurrentUserId: channel.membership?.userId)
+            .format(topic: channel, forCurrentUserId: channel.membership?.userId)
     }
     // MARK: - Channel preview when user is typing
 
@@ -446,7 +431,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
     }
 }
 
-extension ChannelListItemView {
+extension TopicListItemView {
     var isShowUnsentContent: Bool {
         guard let unsentContent = content?.channel.composerUnsentContent else {
             return false

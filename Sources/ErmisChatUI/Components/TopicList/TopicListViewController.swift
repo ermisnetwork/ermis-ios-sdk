@@ -6,13 +6,13 @@ import ErmisChat
 import UIKit
 import Combine
 
-/// A `UIViewController` subclass  that shows list of channels.
 @available(iOSApplicationExtension, unavailable)
-open class ChannelListViewController: _ViewController,
-                                      UICollectionViewDelegate,
-                                      ChannelListControllerDelegate,
-                                      UIProvider,
-                                      SwipeableViewDelegate {
+open class TopicListViewController: _ViewController,
+                                    UICollectionViewDelegate,
+                                    ChannelListControllerDelegate,
+                                    UIProvider,
+                                    SwipeableViewDelegate {
+
     /// The data of the channel list.
     public var channels: [Channel] {
         return dataSource?.snapshot().itemIdentifiers ?? []
@@ -24,7 +24,8 @@ open class ChannelListViewController: _ViewController,
     /// The `ChannelListController` instance that provides channels data.
     public var controller: ChannelListController!
 
-    private var isPaginatingChannels: Bool = false
+    /// The `Channel controller` instance that provide channel data
+    public var channelController: ChannelController?
 
     /// A boolean value that determines if the chat channel list view states are shown and handled by the SDK.
     open var isChannelListStatesEnabled: Bool {
@@ -32,51 +33,57 @@ open class ChannelListViewController: _ViewController,
     }
 
     open private(set) lazy var loadingIndicator: UIActivityIndicatorView = {
-        return UIActivityIndicatorView(style: .large).withoutAutoresizingMaskConstraints
+        return UIActivityIndicatorView(
+            style: .large
+        ).withoutAutoresizingMaskConstraints
 
     }()
-
+    
     /// A router object responsible for handling navigation actions of this view controller.
-    open lazy var router: ChannelListRouter = components
-        .channelListRouter
+    open lazy var router: TopicListRouter = components
+        .topicListRouter
         .init(rootViewController: self)
 
     /// The `UICollectionViewLayout` that used by `ChannelListCollectionView`.
-    open private(set) lazy var collectionViewLayout: UICollectionViewLayout = components
-        .channelListLayout.init()
+    open private(
+        set
+    ) lazy var collectionViewLayout: UICollectionViewLayout = components
+        .topicListLayout.init()
 
-    /// The `UICollectionView` instance that displays channel list.
+    /// The `UICollectionView` instance that displays topic list.
     open private(set) lazy var collectionView: UICollectionView =
     UICollectionView(frame: .zero, collectionViewLayout: collectionViewLayout)
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "collectionView")
 
-    /// The view that is displayed when there are no channels on the list, i.e. when is on empty state.
-    open private(set) lazy var emptyView: ChannelListEmptyView = {
-        components.channelListEmptyView.init()
+    /// The view that is displayed when there are no topics on the list, i.e. when is on empty state.
+    open private(set) lazy var emptyView: TopicListEmptyView = {
+        components.topicListEmptyView.init()
             .withoutAutoresizingMaskConstraints
     }()
-
-    /// View which will be shown at the bottom when an error occurs when fetching either local or remote channels.
+    
+    /// View which will be shown at the bottom when an error occurs when fetching either local or remote topic.
     /// This view has an action to retry the channel loading.
-    open private(set) lazy var channelListErrorView: ChannelListErrorView = {
-        let view = components.channelListErrorView.init()
+    open private(set) lazy var topicListErrorView: TopicListErrorView = {
+        let view = components.topicListErrorView.init()
         view.translatesAutoresizingMaskIntoConstraints = false
         view.isHidden = true
         return view
     }()
 
-    /// View that shows when loading the Channel list.
-    open private(set) lazy var channelListLoadingView: ChannelListLoadingView = components
-        .channelListLoadingView
+    /// View that shows when loading the Topic list.
+    open private(
+        set
+    ) lazy var topicListLoadingView: TopicListLoadingView = components
+        .topicListLoadingView
         .init()
         .withoutAutoresizingMaskConstraints
 
-    /// The `CurrentUserAvatarView` instance used for displaying avatar of the current user.
-    open private(set) lazy var userAvatarView: CurrentUserAvatarView = components
-        .currentUserAvatarView.init(avatarStyle: .circular)
+    /// Header View
+    open private(set) lazy var headerView: ChannelHeaderView = components
+        .channelHeaderView.init()
         .withoutAutoresizingMaskConstraints
-
+    
     /// The `OngoingCallView` instance show when have ongoing call.
     open private(set) lazy var ongoingCallView = components
         .ongoingCallVIew
@@ -97,26 +104,22 @@ open class ChannelListViewController: _ViewController,
     private(set) var skipChannelUpdates = true
     /// Flag to check when channel list is reloading or not.
     private(set) var isReloadingChannelList = false
-    /// Has pending reload channel list or not, if has reloaded channel.
+    /// Has pending reload channel list or not, if has continue reload.
     private var hasPendingReloadChannels = false
+
     /// List of user has fetch info
     private var userIdsHasFetchedInfo: Set<String> = []
     ///
     private var isFetchingMissingUserInfo: Bool = false
 
     private lazy var cancelBags: Set<AnyCancellable> = []
-
-    /// A component responsible to handle when to load new channels.
-    private lazy var viewPaginationHandler: ViewPaginationHandling = {
-        ScrollViewPaginationHandler(scrollView: collectionView)
-    }()
-
-    /// Create a new `ChannelListViewController`
+    
+    /// Create a new `TopicListViewController`
     /// - Parameters:
-    ///   - controller: Your created `ChannelListController` with required query
+    ///   - controller: Your created `TopicListViewController` with required query
     ///   - storyboard: The storyboard to instantiate your `ViewController` from
     ///   - storyboardId: The `storyboardId` that is set in your `UIStoryboard` reference
-    /// - Returns: A newly created `ChannelListViewController`
+    /// - Returns: A newly created `TopicListViewController`
     public static func make(
         with controller: ChannelListController,
         storyboard: UIStoryboard? = nil,
@@ -129,7 +132,9 @@ open class ChannelListViewController: _ViewController,
             // Safely unwrap the ViewController from the Storyboard
             guard let localViewControllerFromStoryboard = storyboard
                 .instantiateViewController(withIdentifier: storyboardId) as? Self else {
-                fatalError("Failed to load from UIStoryboard, please check your storyboardId and/or UIStoryboard reference.")
+                fatalError(
+                    "Failed to load from UIStoryboard, please check your storyboardId and/or UIStoryboard reference."
+                )
             }
             channelListVC = localViewControllerFromStoryboard
         } else {
@@ -138,51 +143,41 @@ open class ChannelListViewController: _ViewController,
 
         // Set the Controller on the ViewController
         channelListVC.controller = controller
-
+        if let parentCid = controller.parentCid {
+            channelListVC.channelController = controller.client.channelController(for: parentCid)
+        } else {
+            log.warning("[Topic List] Parent CID is nil")
+        }
         // Return the newly created ChannelListViewController
         return channelListVC
     }
-
+    
     override open func setUp() {
         super.setUp()
         setupDiffableDataSource()
         controller.delegate = self
         controller.synchronize()
-
+        
         collectionView.register(
-            components.channelListCell.self,
-            forCellWithReuseIdentifier: components.channelListCell.reuseIdentifier
+            components.topicListCell.self,
+            forCellWithReuseIdentifier: components.topicListCell.reuseIdentifier
         )
 
         collectionView.register(
-            components.channelCellSeparator,
+            components.topicCellSeparator,
             forSupplementaryViewOfKind: ListCollectionViewLayout.separatorKind,
             withReuseIdentifier: separatorReuseIdentifier
         )
 
-//        collectionView.dataSource = self
         collectionView.delegate = self
 
-        userAvatarView.controller = controller.client.currentUserController()
-        userAvatarView.addTarget(self, action: #selector(didTapOnCurrentUserAvatar), for: .touchUpInside)
-
-        channelListErrorView.refreshButtonAction = { [weak self] in
+        topicListErrorView.refreshButtonAction = { [weak self] in
             self?.controller.synchronize()
-            self?.channelListErrorView.hide()
+            self?.topicListErrorView.hide()
         }
 
-        viewPaginationHandler.bottomThreshold = 800
-        viewPaginationHandler.onNewBottomPage = { [weak self] in
-            self?.loadMoreChannels()
-        }
-
-        let searchType = components.channelListSearchType
-        let searchController = searchType?.makeSearchController(with: self)
-        navigationItem.searchController = searchController
-        navigationItem.searchController?.searchBar.placeholder = L10n.ChannelList.search
-
+    
         navigationItem.backButtonTitle = ""
-        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: userAvatarView)
 
         if let flowLayout = collectionViewLayout as? ListCollectionViewLayout {
             flowLayout.itemSize = UICollectionViewFlowLayout.automaticSize
@@ -191,7 +186,7 @@ open class ChannelListViewController: _ViewController,
                 height: 64
             )
         }
-
+        
         reloadChannels()
 
         NotificationCenter.default.publisher(for: .callVCDidHidden)
@@ -220,7 +215,7 @@ open class ChannelListViewController: _ViewController,
             }
             .store(in: &cancelBags)
     }
-
+    
     override open func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         skipChannelUpdates = false
@@ -239,7 +234,7 @@ open class ChannelListViewController: _ViewController,
     }
 
     open override func viewDidLayoutSubviews() {
-        channelListLoadingView.contentDidChanged()
+        topicListLoadingView.contentDidChanged()
     }
 
     open func collectionView(
@@ -249,22 +244,31 @@ open class ChannelListViewController: _ViewController,
     ) {
         // no-op
     }
-
+    
     override open func setUpUI() {
         super.setUpUI()
         view.embed(collectionView)
 
         if isChannelListStatesEnabled {
-            view.embed(channelListLoadingView)
+            view.embed(topicListLoadingView)
             view.embed(emptyView)
             emptyView.isHidden = true
-            view.addSubview(channelListErrorView)
-            channelListErrorView.pin(anchors: [.leading, .trailing, .bottom], to: view)
-            channelListErrorView.hide()
+            view.addSubview(topicListErrorView)
+            topicListErrorView.pin(anchors: [.leading, .trailing, .bottom], to: view)
+            topicListErrorView.hide()
         } else {
             collectionView.addSubview(loadingIndicator)
             loadingIndicator.pin(anchors: [.centerX, .centerY], to: view)
         }
+
+        if let parentCid = controller.parentCid {
+            headerView.channelController = channelController
+        } else {
+            log.warning("[TopicList] Parent CID not set")
+        }
+        navigationItem.leftItemsSupplementBackButton = true
+        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: headerView)
+        navigationItem.largeTitleDisplayMode = .never
     }
 
     override open func setUpTheme() {
@@ -272,7 +276,7 @@ open class ChannelListViewController: _ViewController,
 
         collectionView.backgroundColor = theme.colors.surface
     }
-
+    
     /// Replaces the channel list query and loads the new data.
     ///
     /// In case your `ChannelListController` uses a filter block, you should
@@ -294,9 +298,7 @@ open class ChannelListViewController: _ViewController,
         self.controller.synchronize()
         reloadChannels()
     }
-
-    /// Build data source snapshot for collection view.
-    /// By default, all channels are displaying in "all" section.
+    
     open func buildSnapshot(from channels: [Channel]) -> NSDiffableDataSourceSnapshot<String , Channel> {
         var snapshot = NSDiffableDataSourceSnapshot<String, Channel>()
         snapshot.appendSections(["all"])
@@ -304,6 +306,7 @@ open class ChannelListViewController: _ViewController,
         return snapshot
     }
 
+    
     /// Updates the list view with the most updated channels.
     open func reloadChannels(completion: (() -> Void)? = nil) {
         guard !isReloadingChannelList else {
@@ -333,27 +336,24 @@ open class ChannelListViewController: _ViewController,
         }
     }
 
-    /// Loads the next page of channels.
-    open func loadMoreChannels() {
-        guard !isPaginatingChannels else {
-            return
-        }
-        isPaginatingChannels = true
-        // TODO: - Enable when loadmore
-        //        controller.loadNextChannels { [weak self] _ in
-        //            self?.isPaginatingChannels = false
-        //        }
-    }
-
-    /// Called when channel reloaded.
+    
     open func onChannelReloaded() {
         // Implement on subclass.
     }
+    
+    public func setOngoingCallViewHidden(_ isHidden: Bool) {
+        guard shouldShowOngoingCallView else {
+            return
+        }
 
-    @objc open func didTapOnCurrentUserAvatar(_ sender: Any) {
-        router.showCurrentUserProfile()
+        if ongoingCallView.superview == nil {
+            self.view.addSubview(ongoingCallView)
+            ongoingCallView.pin(anchors: [.top, .leading, .trailing], to: view.safeAreaLayoutGuide)
+        }
+
+        ongoingCallView.isHidden = isHidden
+        collectionView.contentInset.top = isHidden ? 0 : 32
     }
-
     /// Condition to show emptyView or not
     open func shouldShowEmptyView() -> Bool {
         return controller.channels.isEmpty
@@ -371,57 +371,17 @@ open class ChannelListViewController: _ViewController,
         else { return }
         setupParentNavigation(parent: parent)
     }
-
-    public func setOngoingCallViewHidden(_ isHidden: Bool) {
-        guard shouldShowOngoingCallView else {
-            return
-        }
-
-        if ongoingCallView.superview == nil {
-            self.view.addSubview(ongoingCallView)
-            ongoingCallView.pin(anchors: [.top, .leading, .trailing], to: view.safeAreaLayoutGuide)
-        }
-
-        ongoingCallView.isHidden = isHidden
-        collectionView.contentInset.top = isHidden ? 0 : 32
+    
+    open
+    func closed() {
+        navigationController?.popViewController(animated: true)
     }
-    // MARK: - User info
-    private func getMissingUserIds(of channels: [Channel]) -> [String] {
-        var userIds: Set<String> = []
-        for channel in channels {
-            userIds = userIds.union(channel.lastActiveMembers.map({ $0.userId }))
-        }
-        userIds = userIds.subtracting(userIdsHasFetchedInfo)
-        return Array(userIds)
-    }
-
-    private func updateUserMissingInfo(of channels: [Channel]) {
-        let ids = getMissingUserIds(of: channels)
-        guard !ids.isEmpty, !isFetchingMissingUserInfo else {
-            return
-        }
-        isFetchingMissingUserInfo = true
-        controller.fetchUsers(with: ids) { [weak self] result in
-            switch result {
-            case .success:
-                self?.userIdsHasFetchedInfo.formUnion(ids)
-                DispatchQueue.main.async {
-                    self?.reloadChannels()
-                }
-            case .failure(let error):
-                break
-            }
-            self?.isFetchingMissingUserInfo = false
-        }
-    }
-
     // MARK: - Collection View
-
     /// Setup UICollectionViewDiffableDataSource
     public func setupDiffableDataSource() {
         dataSource = UICollectionViewDiffableDataSource<String, Channel>(collectionView: collectionView, cellProvider: { [weak self] collectionView, indexPath, channel in
             guard let self else {
-                return nil
+                return UICollectionViewCell()
             }
 
             return self.cellItem(for: collectionView, indexPath: indexPath, channel: channel)
@@ -441,7 +401,7 @@ open class ChannelListViewController: _ViewController,
     open func cellItem(for collectionView: UICollectionView,
                        indexPath: IndexPath,
                        channel: Channel) -> UICollectionViewCell? {
-        let cell = collectionView.dequeueReusableCell(with: components.channelListCell, for: indexPath)
+        let cell = collectionView.dequeueReusableCell(with: components.topicListCell, for: indexPath)
 
         cell.itemView.content = .init(
             channel: channel,
@@ -489,26 +449,48 @@ open class ChannelListViewController: _ViewController,
             for: indexPath
         )
     }
-
-    open func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
-        defer {
-            collectionView.deselectItem(at: indexPath, animated: true)
+    
+    // MARK: - User info
+    private func getMissingUserIds(of channels: [Channel]) -> [String] {
+        var userIds: Set<String> = []
+        for channel in channels {
+            userIds = userIds.union(channel.lastActiveMembers.map({ $0.userId }))
         }
-
-        guard let channel = getChannel(at: indexPath) else { return }
-        if channel.topicsEnabled {
-            router.showTopicList(of: channel.cid)
-        } else {
-            router.showChannel(for: channel.cid)
-        }
+        userIds = userIds.subtracting(userIdsHasFetchedInfo)
+        return Array(userIds)
     }
 
-    // MARK: - Swipeable View
-
+    private func updateUserMissingInfo(of channels: [Channel]) {
+        let ids = getMissingUserIds(of: channels)
+        guard !ids.isEmpty, !isFetchingMissingUserInfo else {
+            return
+        }
+        isFetchingMissingUserInfo = true
+        controller.client.fetchUsers(with: ids) { [weak self] result in
+            switch result {
+            case .success:
+                self?.userIdsHasFetchedInfo.formUnion(ids)
+                DispatchQueue.main.async {
+                    self?.reloadChannels()
+                }
+            case .failure(let error):
+                break
+            }
+            self?.isFetchingMissingUserInfo = false
+        }
+    }
+    
+    open func getChannel(at indexPath: IndexPath) -> Channel? {
+        let index = indexPath.row
+        channels.assertIndexIsPresent(index)
+        return channels[safe: index]
+    }
+    
+    // MARK: - SwipeableViewDelegate
     open func swipeableViewWillShowActionViews(for indexPath: IndexPath) {
         // Close other open cells
         collectionView.visibleCells.forEach {
-            let cell = ($0 as? ChannelListCollectionViewCell)
+            let cell = ($0 as? TopicListCollectionViewCell)
             cell?.swipeableView.close()
         }
 
@@ -547,7 +529,7 @@ open class ChannelListViewController: _ViewController,
     /// - Parameter indexPath: IndexPath of given cell to fetch the content of it.
     open func deleteButtonPressedForCell(at indexPath: IndexPath) {
         guard let channel = getChannel(at: indexPath) else { return }
-        router.didTapDeleteButton(for: channel.cid)
+        router.didTapDeleteButton(for: channel.cid, parentCid: channel.parentCid)
         closeSwipeableView(at: indexPath)
     }
 
@@ -555,40 +537,19 @@ open class ChannelListViewController: _ViewController,
     /// - Parameter indexPath: IndexPath of given cell to fetch the content of it.
     open func moreButtonPressedForCell(at indexPath: IndexPath) {
         guard let channel = getChannel(at: indexPath) else { return }
-        router.didTapMoreButton(for: channel.cid)
+        router.didTapMoreButton(for: channel.cid, parentCid: channel.parentCid)
         closeSwipeableView(at: indexPath)
     }
 
     open func closeSwipeableView(at indexPath: IndexPath) {
-        if let cell = collectionView.cellForItem(at: indexPath) as? ChannelListCollectionViewCell {
+        if let cell = collectionView.cellForItem(at: indexPath) as? TopicListCollectionViewCell {
             cell.swipeableView.close()
         }
     }
-
-    // MARK: - ChannelListControllerDelegate
-
+    
     open func controllerWillChangeChannels(_ controller: ChannelListController) {
         collectionView.layoutIfNeeded()
     }
-
-    open func controller(
-        _ controller: ChannelListController,
-        didChangeChannels changes: [ListChange<Channel>]
-    ) {
-        if skipChannelUpdates {
-            skippedRendering = true
-            reloadChannels()
-            switch controller.state {
-            case .remoteDataFetched:
-                emptyView.isVisible = shouldShowEmptyView()
-            default:
-                break
-            }
-            return
-        }
-        handleStateChanges(controller.state)
-    }
-
     // MARK: - DataControllerStateDelegate
 
     open func controller(_ controller: DataController, didChangeState state: DataController.State) {
@@ -605,7 +566,7 @@ open class ChannelListViewController: _ViewController,
 
             switch newState {
             case .initialized:
-                isLoading = controller.channels.isEmpty
+                isLoading = controller.channels.isEmpty ?? true
             case .localDataFetched:
                 reloadChannels()
             case .remoteDataFetched:
@@ -617,24 +578,24 @@ open class ChannelListViewController: _ViewController,
                 shouldHideEmptyView = !shouldShowEmptyView()
                 isLoading = false
                 shouldHideErrorView = isChannelListStatesEnabled ? false : true
-                channelListErrorView.show()
+                topicListErrorView.show()
             }
 
             emptyView.isHidden = shouldHideEmptyView
-            if isLoading, channelListLoadingView.isHidden {
-                channelListLoadingView.isHidden = false
-            } else if !isLoading, !channelListLoadingView.isHidden {
-                channelListLoadingView.isHidden = true
+            if isLoading, topicListLoadingView.isHidden {
+                topicListLoadingView.isHidden = false
+            } else if !isLoading, !topicListLoadingView.isHidden {
+                topicListLoadingView.isHidden = true
             }
             if shouldHideErrorView {
-                channelListErrorView.hide()
+                topicListErrorView.hide()
             } else {
-                channelListErrorView.show()
+                topicListErrorView.show()
             }
         } else {
             switch newState {
             case .initialized:
-                if controller.channels.isEmpty {
+                if controller.channels.isEmpty ?? true {
                     loadingIndicator.startAnimating()
                 } else {
                     loadingIndicator.stopAnimating()
@@ -651,51 +612,55 @@ open class ChannelListViewController: _ViewController,
         }
     }
 
-    open func getChannel(at indexPath: IndexPath) -> Channel? {
-        let index = indexPath.row
-        channels.assertIndexIsPresent(index)
-        return channels[safe: index]
-    }
-}
 
-extension Channel: Differentiable, Hashable, Equatable {
-    public func isContentEqual(to source: Channel) -> Bool {
-        cid == source.cid &&
-        name == source.name &&
-        imageURL == source.imageURL &&
-        lastMessageAt == source.lastMessageAt &&
-        createdAt == source.createdAt &&
-        updatedAt == source.updatedAt &&
-        deletedAt == source.deletedAt &&
-        truncatedAt == source.truncatedAt &&
-        isHidden == source.isHidden &&
-        isPinned == source.isPinned &&
-        isMuted == source.isMuted &&
-        isBlocked == source.isBlocked &&
-        createdBy == source.createdBy &&
-        ownCapabilities == source.ownCapabilities &&
-        memberCapabilities == source.memberCapabilities &&
-        memberCount == source.memberCount &&
-        membership == source.membership &&
-        membership == source.membership &&
-        watcherCount == source.watcherCount &&
-        team == source.team &&
-        reads == source.reads &&
-        cooldownDuration == source.cooldownDuration &&
-        previewMessage == source.previewMessage &&
-        composerUnsentContent == source.composerUnsentContent &&
-        topics == source.topics
+    @objc(collectionView:cellForItemAtIndexPath:) open func collectionView(
+        _ collectionView: UICollectionView,
+        cellForItemAt indexPath: IndexPath
+    ) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(with: components.topicListCell, for: indexPath)
+        guard let channel = getChannel(at: indexPath) else { return cell }
+
+        cell.itemView.content = .init(
+            channel: channel,
+            currentUserId: controller.client.currentUserId,
+            searchResult: nil
+        )
+        cell.swipeableView.delegate = self
+        cell.swipeableView.indexPath = { [weak cell, weak self] in
+            guard let cell = cell else { return nil }
+            return self?.collectionView.indexPath(for: cell)
+        }
+
+        return cell
     }
 
-    public var differenceIdentifier: Int {
-        return hashValue
-    }
 
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(cid.rawValue)
+    open func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        defer {
+            collectionView.deselectItem(at: indexPath, animated: true)
+        }
+        guard let channel = getChannel(at: indexPath) else { return }
+            
+        router.showTopic(for: channel.cid, parentCid: channel.parentCid ?? channel.cid)
     }
-
-    static func == (lhs: Channel, rhs: Channel) -> Bool {
-        return lhs.isContentEqual(to: rhs)
+    
+    
+    // MARK: - ChannelControllerDelegate
+    open func controller(
+        _ controller: ChannelListController,
+        didChangeChannels changes: [ListChange<Channel>]
+    ) {
+        if skipChannelUpdates {
+            skippedRendering = true
+            reloadChannels()
+            switch controller.state {
+            case .remoteDataFetched:
+                emptyView.isVisible = shouldShowEmptyView()
+            default:
+                break
+            }
+            return
+        }
+        handleStateChanges(controller.state)
     }
 }

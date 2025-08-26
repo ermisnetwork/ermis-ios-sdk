@@ -34,6 +34,21 @@
 "channe.invitation.not-enough-tokens" = "Not enough tokens!";
 /// Show in channel condition required alert when user don't have enough conditions to join channel
 "channel.invitation.re-check" = "Re-check";
+
+/// Show as parent channel display name when view as topic
+"topic.parent-channel-display-name" = "General";
+/// Show in channel vc when topic is closed, and user can't reopen this topic.
+"topic.closed" = "THIS TOPIC IS CLOSED";
+/// Show in channel vc when topic is closed, and user can reopen this topic.
+"topic.re-open" = "Reopen Topic";
+/// Show as title of alert show when re open topic.
+"topic.re-open-alert.title" = "Reopen Topic";
+/// Show as message of alert show when re open topic.
+"topic.re-open-alert.message" = "Are you sure you want to reopen this topic?";
+/// Show as title of alert show when re close topic.
+"topic.close-alert.title" = "Close Topic";
+/// Show as message of alert show when re open topic.
+"topic.close-alert.message" = "Are you sure you want to close this topic?";
 /// Shown when the channel list is empty as a title text.
 "channelList.empty.title" = "Start chat";
 /// Shown when the channel list is empty as a subtitle text.

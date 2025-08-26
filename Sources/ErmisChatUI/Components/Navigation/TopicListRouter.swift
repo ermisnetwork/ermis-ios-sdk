@@ -5,9 +5,10 @@
 import ErmisChat
 import UIKit
 
-/// A `NavigationRouter` subclass that handles navigation actions of `ChannelListViewController`.
+/// A `NavigationRouter` subclass that handles navigation actions of `TopicListViewController`.
 @available(iOSApplicationExtension, unavailable)
-open class ChannelListRouter: NavigationRouter<ChannelListViewController>, ComponentsProvider {
+open class TopicListRouter: NavigationRouter<TopicListViewController>,
+                                ComponentsProvider {
     public
     let modalTransitioningDelegate = ModalTransitioningDelegate()
 
@@ -24,69 +25,16 @@ open class ChannelListRouter: NavigationRouter<ChannelListViewController>, Compo
     /// Shows the view controller with messages for the provided cid.
     ///
     /// - Parameter cid: The `ChannelId` of the channel the should be presented.
-    open func showChannel(for cid: ChannelId) {
-        showChannel(for: cid, at: nil)
+    open func showTopic(for cid: ChannelId, parentCid: ChannelId) {
+        showTopic(for: cid, parentCid: parentCid, at: nil)
     }
 
     /// Shows the view controller with messages for the provided cid and jumps to the given message id.
     /// - Parameters:
     ///   - cid: The `ChannelId` of the channel the should be presented.
     ///   - messageId: The `MessageId` to where the channel should jump to when opening the channel.
-    open func showChannel(for cid: ChannelId, at messageId: MessageId?) {
-        let vc = components.channelVC.init()
-
-        if let messageId = messageId {
-            vc.channelController = rootViewController.controller.client.channelController(
-                for: ChannelQuery(
-                    cid: cid,
-                    pageSize: .messagesPageSize,
-                    paginationParameter: .around(messageId)
-                ),
-                channelListQuery: rootViewController.controller.query
-            )
-        } else {
-            vc.channelController = rootViewController.controller.client.channelController(
-                for: cid,
-                channelListQuery: rootViewController.controller.query
-            )
-        }
-
-        if let splitVC = rootViewController.splitViewController {
-            splitVC.showDetailViewController(UINavigationController(rootViewController: vc), sender: self)
-        } else if let navigationVC = rootViewController.navigationController {
-            navigationVC.show(vc, sender: self)
-        } else {
-            let navigationVC = UINavigationController(rootViewController: vc)
-            navigationVC.transitioningDelegate = modalTransitioningDelegate
-            navigationVC.modalPresentationStyle = .custom
-            rootViewController.show(navigationVC, sender: self)
-        }
-    }
-    
-    
-    open func showTopicList(of cid: ChannelId) {
-        let topicListQuery: ChannelListQuery = .init(
-            filter: .topics(parentcID: cid, projectId: cid.projectId),
-            sort: [
-                .init(key: .parentcid, isAscending: true),
-                .init(key: .isPinned),
-                .init(key: .default)
-            ]
-        )
-
-        let channelListController = rootViewController.controller.client.topicListController(query: topicListQuery, parentCid: cid)
-        let vc = TopicListViewController.make(with: channelListController)
-
-        if let splitVC = rootViewController.splitViewController {
-            splitVC.showDetailViewController(UINavigationController(rootViewController: vc), sender: self)
-        } else if let navigationVC = rootViewController.navigationController {
-            navigationVC.show(vc, sender: self)
-        } else {
-            let navigationVC = UINavigationController(rootViewController: vc)
-            navigationVC.transitioningDelegate = modalTransitioningDelegate
-            navigationVC.modalPresentationStyle = .custom
-            rootViewController.show(navigationVC, sender: self)
-        }
+    open func showTopic(for cid: ChannelId, parentCid: ChannelId, at messageId: MessageId?) {
+        
     }
 
     /// Reset current detailVC if not in collapse mode
@@ -97,7 +45,7 @@ open class ChannelListRouter: NavigationRouter<ChannelListViewController>, Compo
     /// Called when a user tapped `More` swipe action on a channel
     ///
     /// - Parameter cid: `ChannelId` of a channel swipe acton was used on
-    open func didTapMoreButton(for cid: ChannelId) {
+    open func didTapMoreButton(for cid: ChannelId, parentCid: ChannelId?) {
         log.info(
             """
             Tapping `more` swipe action for channel is not handled. Subclass `ChannelListRouter` and provide your \
@@ -109,7 +57,7 @@ open class ChannelListRouter: NavigationRouter<ChannelListViewController>, Compo
     /// Called when a user tapped `Delete` swipe action on a channel
     ///
     /// - Parameter cid: `ChannelId` of a channel swipe acton was used on
-    open func didTapDeleteButton(for cid: ChannelId) {
+    open func didTapDeleteButton(for cid: ChannelId, parentCid: ChannelId?) {
         log.info(
             """
             Tapping `delete` swipe action for channel is not handled. Subclass `ChannelListRouter` and provide your \

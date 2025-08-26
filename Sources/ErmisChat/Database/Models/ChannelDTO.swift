@@ -8,6 +8,7 @@ import Foundation
 @objc(ChannelDTO)
 class ChannelDTO: NSManagedObject {
     @NSManaged var cid: String
+    @NSManaged var parentcid: String?
     @NSManaged var name: String?
     @NSManaged var cDescription: String?
     @NSManaged var imageURL: URL?
@@ -64,6 +65,10 @@ class ChannelDTO: NSManagedObject {
     @NSManaged var memberListQueries: Set<ChannelMemberListQueryDTO>
     @NSManaged var previewMessage: MessageDTO?
     @NSManaged var composerUnsentContent: ComposerContentDTO?
+    @NSManaged var isClosedTopic: Bool
+    @NSManaged var topicsEnabled: Bool
+    @NSManaged var parent: ChannelDTO?
+    @NSManaged var topics: Set<ChannelDTO>?
 
     var projectId: String? {
         guard let channelId = try? ChannelId(cid: cid) else {
@@ -97,15 +102,18 @@ class ChannelDTO: NSManagedObject {
             }
         }
 
-        // Update the date for sorting every time new message in this channel arrive.
-        // This will ensure that the channel list is updated/sorted when new message arrives.
-        // Note: If a channel is truncated, the server will update the lastMessageAt to a minimum value, and not remove it.
-        // So, if lastMessageAt is nil or is equal to distantPast, we need to fallback to createdAt.
         var lastDate = lastMessageAt ?? createdAt
-        if lastDate.bridgeDate <= .distantPast {
-            lastDate = createdAt
+
+        if let topics = topics {
+             topics.reduce(into: lastDate) { partialResult, topic in
+                let lastTopicMessageAt = topic.lastMessageAt ?? topic.createdAt
+                if lastTopicMessageAt.compare(partialResult.bridgeDate) == .orderedDescending {
+                    partialResult = lastTopicMessageAt
+                }
+            }
         }
-        if lastDate != defaultSortingAt {
+
+        if lastDate != defaultSortingAt, lastDate.compare(defaultSortingAt.bridgeDate) == .orderedDescending {
             defaultSortingAt = lastDate
         }
     }
@@ -121,6 +129,25 @@ class ChannelDTO: NSManagedObject {
         let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \ChannelDTO.updatedAt, ascending: false)]
         request.predicate = NSPredicate(format: "cid == %@", cid.rawValue)
+        return request
+    }
+    
+    static func fetchTopicRequest(for parentCid: ChannelId) -> NSFetchRequest<ChannelDTO> {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+        request.sortDescriptors = [
+            NSSortDescriptor(keyPath: \ChannelDTO.parentcid, ascending: true),
+            NSSortDescriptor(keyPath: \ChannelDTO.isPinned, ascending: false),
+            NSSortDescriptor(keyPath: \ChannelDTO.updatedAt, ascending: false),
+            NSSortDescriptor(keyPath: \ChannelDTO.lastMessageAt, ascending: false),
+        ]
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid.rawValue, parentCid.rawValue)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
         return request
     }
 
@@ -215,6 +242,16 @@ extension NSManagedObjectContext {
             dto.memberCapabilities = memberCapabilities
         }
 
+        if let parentCid = payload.parentcid {
+            dto.parentcid = parentCid.rawValue
+            if let parentChannelDTO = ChannelDTO.load(cid: parentCid, context: self) {
+                dto.parent = parentChannelDTO
+            }
+        }
+        
+        dto.isClosedTopic = payload.isClosedTopic ?? false
+        dto.topicsEnabled = payload.topicsEnabled ?? false
+
         dto.filterWords = payload.filterWords
 
         dto.saveMessage = payload.saveMessage ?? true
@@ -222,11 +259,19 @@ extension NSManagedObjectContext {
         dto.createdAt = payload.createdAt.bridgeDate
         dto.deletedAt = payload.deletedAt?.bridgeDate
         dto.updatedAt = payload.updatedAt.bridgeDate
-        dto.defaultSortingAt = (payload.lastMessageAt ?? payload.createdAt).bridgeDate
-        
+
+        if dto.defaultSortingAt == nil {
+            dto.defaultSortingAt = dto.createdAt
+        }
+
         if let lastMessageAt = payload.lastMessageAt {
             dto.lastMessageAt = payload.lastMessageAt?.bridgeDate
+
+            if dto.defaultSortingAt.compare(lastMessageAt) == .orderedAscending {
+                dto.defaultSortingAt = lastMessageAt.bridgeDate
+            }
         }
+
         dto.memberCount = Int64(clamping: payload.memberCount)
 
         // Because `truncatedAt` is used, client side, for both truncation and channel hiding cases, we need to avoid using the
@@ -265,6 +310,7 @@ extension NSManagedObjectContext {
             let member = try saveMember(payload: memberPayload, channelId: payload.cid, query: nil, cache: cache)
             dto.members.insert(member)
         }
+        
 
         if let query = query {
             let queryDTO = saveQuery(query: query)
@@ -318,6 +364,21 @@ extension NSManagedObjectContext {
             dto.membership = membership
         } else if let member = payload.channel.members?.first(where: { $0.userId == dto.membership?.user.userId }) {
             dto.membership = try saveMember(payload: member, channelId: payload.channel.cid, query: nil, cache: cache)
+        }
+        
+        if let topics = payload.topics {
+            try topics.forEach {
+                let topics = try saveChannel(payload: $0, query: nil, cache: cache)
+                dto.topics?.insert(topics)
+            }
+        }
+
+        let defaultSortingAt = dto.topics?.reduce(dto.defaultSortingAt) { partialResult, topic in
+            return partialResult.laterDate(topic.defaultSortingAt.bridgeDate).bridgeDate
+        }
+
+        if let defaultSortingAt {
+            dto.defaultSortingAt = defaultSortingAt
         }
 
         dto.watcherCount = Int64(clamping: payload.watcherCount ?? 0)
@@ -423,6 +484,51 @@ extension ChannelDTO {
         request.fetchBatchSize = query.pagination.pageSize
         return request
     }
+    
+    static func topicListFetchRequest(
+        parentCid: ChannelId,
+        query: ChannelListQuery
+    ) -> NSFetchRequest<ChannelDTO> {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+
+        // Fetch results controller requires at least one sorting descriptor.
+        let sortDescriptors = query.sort.compactMap { $0.key.sortDescriptor(isAscending: $0.isAscending) }
+        request.sortDescriptors = sortDescriptors.isEmpty ? [ChannelListSortingKey.defaultSortDescriptor] : sortDescriptors
+
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid.rawValue, parentCid.rawValue)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+        
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
+        request.fetchLimit = query.pagination.pageSize
+        request.fetchBatchSize = query.pagination.pageSize
+        return request
+    }
+    
+    static func loadTopics(
+        parentCid: String,
+        sort: [Sorting<ChannelListSortingKey>],
+        context: NSManagedObjectContext,
+    ) -> [ChannelDTO] {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+
+        // Fetch results controller requires at least one sorting descriptor.
+        let sortDescriptors = sort.compactMap { $0.key.sortDescriptor(isAscending: $0.isAscending) }
+        request.sortDescriptors = sortDescriptors.isEmpty ? [ChannelListSortingKey.defaultSortDescriptor] : sortDescriptors
+        let matchParentId = NSPredicate(format: "parentcid == %@ OR cid == %@", parentCid, parentCid)
+        let notDeleted = NSPredicate(format: "deletedAt == nil")
+
+        var subpredicates: [NSPredicate] = [
+            matchParentId, notDeleted
+        ]
+
+        request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
+        return load(by: request, context: context)
+
+    }
 }
 
 extension ChannelDTO {
@@ -450,7 +556,12 @@ extension Channel {
         guard let cid = try? ChannelId(cid: dto.cid), let context = dto.managedObjectContext else {
             throw InvalidModel(dto)
         }
-
+        
+        var parentCid: ChannelId? = nil
+        if dto.parentcid != nil, let parentCidValidated = try? ChannelId(cid: dto.parentcid!) {
+            parentCid = parentCidValidated
+        }
+        
         let reads: [ChannelRead] = try dto.reads.map { try $0.asModel() }
 
         let unreadCount: () -> ChannelUnreadCount = {
@@ -467,25 +578,9 @@ extension Channel {
 
             let allUnreadMessages = currentUserRead?.unreadMessagesCount ?? 0
 
-            // Fetch count of all mentioned messages after last read
-            // (this is not 100% accurate but it's the best we have)
-            let unreadMentionsRequest = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
-            unreadMentionsRequest.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-                MessageDTO.channelMessagesPredicate(
-                    for: dto.cid,
-                    deletedMessagesVisibility: context.deletedMessagesVisibility ?? .visibleForCurrentUser,
-                    shouldShowShadowedMessages: context.shouldShowShadowedMessages ?? false
-                ),
-                NSPredicate(format: "createdAt > %@", currentUserRead?.lastReadAt.bridgeDate ?? DBDate(timeIntervalSince1970: 0)),
-                NSPredicate(format: "%@ IN mentionedUsers", user)
-            ])
-
-            guard dto.isValid, user.isValid else { return .noUnread }
-
             do {
                 return ChannelUnreadCount(
-                    messages: allUnreadMessages,
-                    mentions: try context.count(for: unreadMentionsRequest)
+                    messages: allUnreadMessages
                 )
             } catch {
                 log.error("Failed to fetch unread counts for channel `\(cid)`. Error: \(error)")
@@ -503,6 +598,17 @@ extension Channel {
                     shouldShowShadowedMessages: dto.managedObjectContext?.shouldShowShadowedMessages ?? false,
                     context: context
                 )
+                .compactMap { try? $0.relationshipAsModel(depth: depth) }
+        }
+
+        let fetchTopic: () -> [Channel] = {
+            guard dto.isValid else { return [] }
+            return ChannelDTO
+                .loadTopics(parentCid: dto.cid, sort: [
+                    Sorting<ChannelListSortingKey>(key: .parentcid, isAscending: true),
+                    Sorting<ChannelListSortingKey>(key: .isPinned, isAscending: false),
+                    Sorting<ChannelListSortingKey>(key: .default, isAscending: false)
+                ], context: context)
                 .compactMap { try? $0.relationshipAsModel(depth: depth) }
         }
 
@@ -530,7 +636,7 @@ extension Channel {
                 .loadLastActiveMembers(cid: cid, context: context)
                 .compactMap { try? $0.asModel() }
         }
-
+        
         let config = try? dto.config?.asModel()
         let  ownCapabilities = dto.ownCapabilities ?? []
         let memberCapabilities = dto.memberCapabilities ?? []
@@ -538,11 +644,13 @@ extension Channel {
 
         return try Channel(
             cid: cid,
+            parentCid: parentCid,
             name: dto.name,
             description: dto.cDescription,
             imageURL: dto.imageURL,
             saveMessage: dto.saveMessage,
             lastMessageAt: dto.lastMessageAt?.bridgeDate,
+            defaultSortingAt: dto.defaultSortingAt.bridgeDate,
             createdAt: dto.createdAt.bridgeDate,
             updatedAt: dto.updatedAt.bridgeDate,
             deletedAt: dto.deletedAt?.bridgeDate,
@@ -550,6 +658,8 @@ extension Channel {
             isHidden: dto.isHidden,
             isPublic: dto.isPublic,
             isPinned: dto.isPinned,
+            topicEnabled: dto.topicsEnabled,
+            isClosedTopic: dto.isClosedTopic,
             createdBy: dto.createdBy?.asModel(),
             config: dto.config?.asModel(),
             ownCapabilities: Set((dto.ownCapabilities ?? []).compactMap(ChannelCapability.init(rawValue:))),
@@ -567,6 +677,8 @@ extension Channel {
             cooldownDuration: Int(dto.cooldownDuration),
             //            invitedMembers: [],
             latestMessages: { fetchMessages() },
+            parent: { try? dto.parent?.relationshipAsModel(depth: depth)},
+            topics: { fetchTopic() },
             lastMessageFromCurrentUser: { fetchLatestMessageFromUser() },
             pinnedMessages: {
                 dto.pinnedMessages.compactMap {
@@ -579,6 +691,11 @@ extension Channel {
             composerUnsentContent: dto.composerUnsentContent?.asModel()
         )
     }
+}
+
+// MARK: - Topic
+extension ChannelDTO {
+    
 }
 
 // MARK: - Helpers
@@ -612,7 +729,6 @@ extension ChannelDTO {
             return false
         }
 
-        return newestMessage.createdAt > preview.createdAt.bridgeDate ||
-        (newestMessage.messageTextUpdatedAt ?? newestMessage.createdAt ?? Date() > previewMessage?.textUpdatedAt?.bridgeDate ?? previewMessage?.createdAt.bridgeDate ?? Date())
+        return preview.createdAt.compare(newestMessage.createdAt) == .orderedAscending
     }
 }

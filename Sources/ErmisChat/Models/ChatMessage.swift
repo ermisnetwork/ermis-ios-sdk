@@ -299,6 +299,7 @@ public extension ChatMessage {
         }
         return text
     }
+
     /// The total number of reactions.
     var totalReactionsCount: Int {
         reactionCounts.values.reduce(0, +)

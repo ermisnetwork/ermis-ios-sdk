@@ -530,6 +530,8 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         mainContainer.alignment = .bottom
         mainContainer.isLayoutMarginsRelativeArrangement = true
         mainContainer.layoutMargins.top = 0
+        mainContainer.layoutMargins.left = 16
+        mainContainer.layoutMargins.right = 16
         insertSubview(mainContainer, at: 0)
 
         let mainContainerSubviews = [

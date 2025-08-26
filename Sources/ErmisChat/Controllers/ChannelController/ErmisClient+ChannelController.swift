@@ -18,11 +18,12 @@ public extension ErmisClient {
     ///
     func channelController(
         for cid: ChannelId,
+        parentId: ChannelId? = nil,
         channelListQuery: ChannelListQuery? = nil,
         messageOrdering: MessageOrdering = .topToBottom
     ) -> ChannelController {
         .init(
-            channelQuery: .init(cid: cid),
+            channelQuery: .init(cid: cid, parentCid: parentId),
             channelListQuery: channelListQuery,
             client: self,
             messageOrdering: messageOrdering
@@ -71,7 +72,7 @@ public extension ErmisClient {
         createChannelWithId cid: ChannelId,
         name: String? = nil,
         description: String? = nil,
-        imageURL: URL? = nil,
+        imageURL: String? = nil,
         saveMessage: Bool = true,
         isPublic: Bool = false,
         members: Set<UserId> = [],
@@ -133,7 +134,7 @@ public extension ErmisClient {
         isCurrentUserMember: Bool = true,
         messageOrdering: MessageOrdering = .topToBottom,
         name: String? = nil,
-        imageURL: URL? = nil,
+        imageURL:String? = nil,
         isPublic: Bool = false,
         channelListQuery: ChannelListQuery? = nil
     ) throws -> ChannelController {

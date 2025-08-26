@@ -1,8 +1,5 @@
 //
-//  ComponentsProvider+Extension.swift
-//  ErmisChat
-//
-//  Created by Tú Đinh on 21/7/25.
+// Copyright 2025 Ermis Inc.
 //
 
 import UIKit
