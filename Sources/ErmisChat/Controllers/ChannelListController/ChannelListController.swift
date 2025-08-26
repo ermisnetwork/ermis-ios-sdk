@@ -9,7 +9,16 @@ extension ErmisClient {
     /// Creates a new `ChannelListController` with the provided channel query.
     /// - Parameter query: The query specify the filter and sorting of the channels the controller should fetch.    ///
     /// - Returns: A new instance of `ChannelListController`.
-    public func channelListController(parentCid: ChannelId? = nil, query: ChannelListQuery) -> ChannelListController {
+    public func channelListController(query: ChannelListQuery) -> ChannelListController {
+        .init(query: query, client: self, parentCid: nil)
+    }
+
+    /// Creates a new `ChannelListController` with the provided channel query and parent cid.
+    /// - Parameters:
+    ///  - query: The query specify the filter and sorting of the channels the controller should fetch.    ///
+    ///  - parentCid: The parent channel id
+    /// - Returns: A new instance of `ChannelListController`.
+    public func topicListController(query: ChannelListQuery, parentCid: ChannelId) -> ChannelListController {
         .init(query: query, client: self, parentCid: parentCid)
     }
 
@@ -48,7 +57,7 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
 
     let eventsController: EventsController
     
-    private var parentCid: ChannelId?
+    public var parentCid: ChannelId?
 
     /// The channels matching the query of this controller.
     ///
@@ -82,11 +91,13 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     }
 
     private(set) lazy var channelListObserver: ListDatabaseObserverWrapper<Channel, ChannelDTO> = {
-        var request = ChannelDTO.channelListFetchRequest(query: self.query, clientConfig: client.config)
+        var request: NSFetchRequest<ChannelDTO>
         if let parentCid = parentCid {
             request = ChannelDTO.topicListFetchRequest(parentCid: parentCid, query: self.query)
+        } else {
+            request = ChannelDTO.channelListFetchRequest(query: self.query, clientConfig: client.config)
         }
-        
+
         let observer = self.environment.createChannelListDatabaseObserver(
             ErmisRuntimeCheck._isBackgroundMappingEnabled,
             client.databaseContainer,

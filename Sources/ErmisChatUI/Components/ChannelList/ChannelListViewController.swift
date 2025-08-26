@@ -496,7 +496,11 @@ open class ChannelListViewController: _ViewController,
         }
 
         guard let channel = getChannel(at: indexPath) else { return }
-        router.showChannel(for: channel.cid)
+        if channel.topicsEnabled {
+            router.showTopicList(of: channel.cid)
+        } else {
+            router.showChannel(for: channel.cid)
+        }
     }
 
     // MARK: - Swipeable View

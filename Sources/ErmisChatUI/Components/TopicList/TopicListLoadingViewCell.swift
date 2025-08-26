@@ -1,12 +1,4 @@
 //
-//  ChannelListLoadingViewCell.swift
-//  ErmisChat
-//
-//  Created by Tú Đinh on 4/8/25.
-//
-
-
-//
 // Copyright 2025 Ermis Inc.
 //
 

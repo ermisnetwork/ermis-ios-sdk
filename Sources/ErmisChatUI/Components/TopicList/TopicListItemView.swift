@@ -393,10 +393,10 @@ open class TopicListItemView: _View,
     }
 
     /// The default channel title text.
-    open func channelTitleText(for channel: Channel) -> String? {    
+    open func channelTitleText(for channel: Channel) -> String? {
         return formatters
             .channelName
-            .format(channel: channel, forCurrentUserId: channel.membership?.userId)
+            .format(topic: channel, forCurrentUserId: channel.membership?.userId)
     }
     // MARK: - Channel preview when user is typing
 

@@ -9,7 +9,7 @@ struct ChannelEditDetailPayload: Encodable {
     let cid: ChannelId?
     let name: String?
     let description: String?
-    let imageURL: URL?
+    let imageURL: String?
     let isPublic: Bool?
     let saveMessage: Bool?
     let type: ChannelType
@@ -22,7 +22,7 @@ struct ChannelEditDetailPayload: Encodable {
         cid: ChannelId,
         name: String?,
         description: String?,
-        imageURL: URL?,
+        imageURL: String?,
         isPublic: Bool?,
         saveMessage: Bool?,
         members: Set<UserId>,
@@ -48,7 +48,7 @@ struct ChannelEditDetailPayload: Encodable {
         type: ChannelType,
         name: String? = nil,
         description: String? = nil,
-        imageURL: URL? = nil,
+        imageURL: String? = nil,
         isPublic: Bool? = nil,
         saveMessage: Bool? = nil,
         members: Set<UserId> = [],

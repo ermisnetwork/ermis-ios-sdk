@@ -68,7 +68,7 @@ public extension Theme {
         public var composerMenuLocation: UIImage = loadSafely(systemName: "location.circle.fill")
         public var composerMenuFile: UIImage = loadSafely(systemName: "document.circle")
         public var composerMenuPoll: UIImage = loadSafely(systemName: "chart.bar.xaxis.ascending")
-
+        public var topicOpen: UIImage = loadImageSafely(with: "ic_topic_open")
         // MARK: - Recording
 
         public var mic: UIImage = loadSafely(systemName: "mic", assetsFallback: "mic")

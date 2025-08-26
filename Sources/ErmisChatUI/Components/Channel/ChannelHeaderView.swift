@@ -22,6 +22,8 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
         channelController?.client.currentUserId
     }
 
+    open var showAsTopic: Bool = false
+
     open var isCenterAlignment: Bool = false
 
     /// Timer used to update the online status of member in the channel.
@@ -83,7 +85,7 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
 
         titleContainerView.content = .init(title: titleText, subtitle: subtitleText)
         
-        if let parentChannel = channelController?.parentChannel {
+        if let parentChannel = channelController?.channel?.parent {
             channelAvatarView.content = .init(from: parentChannel)
         } else {
             channelAvatarView.content = .init(from: channelController?.channel)
@@ -93,6 +95,12 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
     /// The title text used to render the title label. By default it is the channel name.
     open var titleText: String? {
         guard let channel = channelController?.channel else { return nil }
+        if showAsTopic, (channel.topicsEnabled || channel.parentCid != nil) {
+            return formatters.channelName.format(
+                topic: channel,
+                forCurrentUserId: currentUserId
+            )
+        }
         return formatters.channelName.format(
             channel: channel,
             forCurrentUserId: currentUserId
@@ -101,13 +109,13 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
 
     /// The subtitle text used in the subtitle label. By default it shows member online status.
     open var subtitleText: String? {
-        if let parentChannel = channelController?.parentChannel {
-            return formatters.channelName.format(
-                channel: parentChannel,
-                forCurrentUserId: currentUserId
-            )
+        guard let channel = channelController?.channel else { return nil }
+        if showAsTopic, channel.topicsEnabled || channel.parentCid != nil {
+            return formatters
+                .channelName
+                .format(channel: channel.parent ?? channel,
+                        forCurrentUserId: channel.membership?.userId)
         }
-        
         guard let channel = channelController?.channel else { return nil }
         guard let currentUserId = self.currentUserId else { return nil }
 

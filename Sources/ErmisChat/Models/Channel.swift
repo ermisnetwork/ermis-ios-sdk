@@ -28,6 +28,9 @@ public struct Channel {
     /// The date of the last message in the channel.
     public let lastMessageAt: Date?
 
+    /// The default sorting at date.
+    public let defaultSortingAt: Date?
+
     /// The date when the channel was created.
     public let createdAt: Date
 
@@ -169,9 +172,13 @@ public struct Channel {
     public var previewMessage: ChatMessage? { _previewMessage }
     // "Move to async?"
     @CoreDataLazy private var _previewMessage: ChatMessage?
-    
-    public var topics: [Channel]? { _topics }
 
+    /// The parent channel of topic.
+    public var parent: Channel? { _parent }
+    @CoreDataLazy private var _parent: Channel?
+
+    /// The topic channels of current channel.
+    public var topics: [Channel]? { _topics }
     // "Move to async?"
     @CoreDataLazy private var _topics: [Channel]?
 
@@ -187,7 +194,7 @@ public struct Channel {
     // MARK: - Internal
 
     var hasUnread: Bool {
-        unreadCount.messages > 0
+        topicsUnreadCount.messages > 0
     }
 
     /// A helper variable to cache the result of the filter for only banned members.
@@ -204,6 +211,7 @@ public struct Channel {
         imageURL: URL?,
         saveMessage: Bool?,
         lastMessageAt: Date? = nil,
+        defaultSortingAt: Date? = nil,
         createdAt: Date = .init(),
         updatedAt: Date = .init(),
         deletedAt: Date? = nil,
@@ -229,6 +237,7 @@ public struct Channel {
         reads: [ChannelRead] = [],
         cooldownDuration: Int = 0,
         latestMessages: @escaping (() -> [ChatMessage]) = { [] },
+        parent: @escaping(() -> Channel?) = { nil },
         topics: @escaping (() -> [Channel]?) = { nil },
         lastMessageFromCurrentUser: @escaping (() -> ChatMessage?) = { nil },
         pinnedMessages: @escaping (() -> [ChatMessage]) = { [] },
@@ -243,6 +252,7 @@ public struct Channel {
         self.imageURL = imageURL
         self.saveMessage = saveMessage
         self.lastMessageAt = lastMessageAt
+        self.defaultSortingAt = defaultSortingAt
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
@@ -277,6 +287,7 @@ public struct Channel {
         $_lastActiveWatchers = (lastActiveWatchers, underlyingContext)
         $_pinnedMessages = (pinnedMessages, underlyingContext)
         $_previewMessage = (previewMessage, underlyingContext)
+        $_parent = (parent, underlyingContext)
         $_topics = (topics, underlyingContext)
     }
 }
@@ -308,7 +319,37 @@ extension Channel {
     }
 
     /// Returns `true` if the channel has one or more unread messages for the current user.
-    public var isUnread: Bool { unreadCount != .noUnread }
+    public var isUnread: Bool { topicsUnreadCount != .noUnread }
+
+    /// The combined unread count of all topics (also contain parent channel unread)
+    public var topicsUnreadCount: ChannelUnreadCount {
+        guard let topics else {
+            return unreadCount
+        }
+
+        let topicUnreadMessages = topics.reduce(0) { partialResult, channel in
+            return partialResult + channel.unreadCount.messages
+        }
+        return ChannelUnreadCount(messages: topicUnreadMessages)
+    }
+
+    /// Return lastest preview message in parent channel and topic.
+    public var topicsPreviewMessage: ChatMessage? {
+        guard let topics = topics, !topics.isEmpty else {
+            return self.previewMessage
+        }
+        var lastestPreviewMessage = self.previewMessage
+        for topic in topics.filter({ $0.previewMessage != nil }) {
+            guard lastestPreviewMessage != nil else {
+                lastestPreviewMessage = topic.previewMessage
+                continue
+            }
+            if topic.previewMessage!.createdAt > lastestPreviewMessage!.createdAt {
+                lastestPreviewMessage = topic.previewMessage
+            }
+        }
+        return lastestPreviewMessage
+    }
 
     /// Returns `true` if the channel is blocked
     public var isBlocked: Bool {
@@ -337,13 +378,10 @@ extension Channel: Hashable {
 /// A struct describing unread counts for a channel.
 public struct ChannelUnreadCount: Decodable, Equatable {
     /// The default value representing no unread messages.
-    public static let noUnread = ChannelUnreadCount(messages: 0, mentions: 0)
+    public static let noUnread = ChannelUnreadCount(messages: 0)
 
     /// The total number of unread messages in the channel.
     public let messages: Int
-
-    /// The number of unread messages that mention the current user.
-    public let mentions: Int
 }
 
 /// An action that can be performed in a channel.

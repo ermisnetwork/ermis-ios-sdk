@@ -49,7 +49,7 @@ public extension EventType {
     /// When a channel is visible.
     static let channelVisible: Self = "channel.visible"
     /// When a channel was truncated.
-    static let channelTruncated: Self = "channel.truncated"
+    static let channelTruncated: Self = "channel.truncate"
     /// When a channel was pinned
     static let channelPinned: Self = "channel.pinned"
     /// When a channel was unpinned

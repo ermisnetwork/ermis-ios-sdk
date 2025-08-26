@@ -100,6 +100,7 @@ extension NSManagedObjectContext {
                 for: read,
                 previousReadAt: previousLastReadAt ?? DBDate()
             )
+            notifyChannelReadUpdated(for: read.channel.parent)
         } else if let channel = channel(cid: cid), let member = channel.members.first(where: { $0.user.id == userId }) {
             // We don't have a read object, but the user is a member.
             // We can safely create a read object for the user
@@ -115,6 +116,7 @@ extension NSManagedObjectContext {
                 for: read,
                 previousReadAt: Date.distantPast.bridgeDate
             )
+            notifyChannelReadUpdated(for: read.channel.parent)
         } else {
             // If we don't have a read object saved for the user,
             // and the user is not a member,
@@ -153,7 +155,7 @@ extension NSManagedObjectContext {
 
     func markChannelAsUnread(cid: ChannelId, by userId: UserId) {
         guard let read = loadChannelRead(cid: cid, userId: userId) else { return }
-
+        let parent = read.channel.parent
         delete(read)
     }
 
@@ -188,6 +190,12 @@ extension NSManagedObjectContext {
         for message in messages {
             message.reads.insert(read)
         }
+    }
+
+    private func notifyChannelReadUpdated(for parentChannelDTO: ChannelDTO?) {
+        // Manual notify change to parent channel.
+        parentChannelDTO?.willChangeValue(forKey: "reads")
+        parentChannelDTO?.didChangeValue(forKey: "reads")
     }
 }
 
