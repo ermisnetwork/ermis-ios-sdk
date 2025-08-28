@@ -110,11 +110,7 @@ open class ChannelViewController: _ViewController,
     }
     /// The message list top constaint.
     public
-    var messageListTopConstraint: NSLayoutConstraint? {
-        didSet {
-            log.debug("TTTTTTT")
-        }
-    }
+    var messageListTopConstraint: NSLayoutConstraint?
 
     /// The message composer bottom constraint used for keyboard animation handling.
     public 

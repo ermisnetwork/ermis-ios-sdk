@@ -9,6 +9,9 @@ public struct ChannelUpdatedEvent: ChannelSpecificEvent {
     /// The identifier of updated channel.
     public var cid: ChannelId { channel.cid }
 
+    /// The identifier of updated parrent channel
+    public var parentCid: ChannelId? { channel.parentCid }
+
     /// The updated channel.
     public let channel: Channel
 
@@ -57,6 +60,9 @@ public struct ChannelDeletedEvent: ChannelSpecificEvent {
     /// The identifier of deleted channel.
     public var cid: ChannelId { channel.cid }
 
+    /// The identifier of parent channel of deleted topic.
+    public var parentCid: ChannelId? { channel.parentCid }
+
     /// The deleted channel.
     public let channel: Channel
 
@@ -95,8 +101,11 @@ class ChannelDeletedEventDTO: EventDTO {
 
 /// Triggered when a channel is truncated.
 public struct ChannelTruncatedEvent: ChannelSpecificEvent {
-    /// The identifier of deleted channel.
+    /// The identifier of truncated channel.
     public var cid: ChannelId { channel.cid }
+
+    /// The identifier of parent channel of truncated topic.
+    public var parentCid: ChannelId? { channel.parentCid }
 
     /// The truncated channel.
     public let channel: Channel
@@ -139,6 +148,9 @@ public struct ChannelVisibleEvent: ChannelSpecificEvent {
     /// The channel identifier.
     public let cid: ChannelId
 
+    /// The parent channel idetifier if this event belong to a topic.
+    public let parentCid: ChannelId?
+
     /// The user who made the channel visible.
     public let user: ChatUser
 
@@ -148,12 +160,14 @@ public struct ChannelVisibleEvent: ChannelSpecificEvent {
 
 class ChannelVisibleEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let user: UserPayload
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         user = try response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -164,6 +178,7 @@ class ChannelVisibleEventDTO: EventDTO {
 
         return try? ChannelVisibleEvent(
             cid: cid,
+            parentCid: parentCid,
             user: userDTO.asModel(),
             createdAt: createdAt
         )
@@ -174,6 +189,9 @@ class ChannelVisibleEventDTO: EventDTO {
 public struct ChannelHiddenEvent: ChannelSpecificEvent {
     /// The hidden channel identifier.
     public let cid: ChannelId
+
+    /// The parent channel idetifier if this event belong to a topic.
+    public let parentCid: ChannelId?
 
     /// The user who hide the channel.
     public let user: ChatUser
@@ -187,6 +205,7 @@ public struct ChannelHiddenEvent: ChannelSpecificEvent {
 
 class ChannelHiddenEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let user: UserPayload
     let isHistoryCleared: Bool
     let createdAt: Date
@@ -194,6 +213,7 @@ class ChannelHiddenEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.cid)
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         isHistoryCleared = (try? response.value(at: \.isChannelHistoryCleared)) ?? false
@@ -205,6 +225,7 @@ class ChannelHiddenEventDTO: EventDTO {
 
         return try? ChannelHiddenEvent(
             cid: cid,
+            parentCid: parentCid,
             user: userDTO.asModel(),
             isHistoryCleared: isHistoryCleared,
             createdAt: createdAt
@@ -288,12 +309,14 @@ public struct ChannelPinnedEvent: ChannelSpecificEvent {
 
 class ChannelTopicEnableEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -304,6 +327,7 @@ class ChannelTopicEnableEventDTO: EventDTO {
 
         return try? ChannelEnableTopicEvent(
             cid: cid,
+            parentCid: parentCid,
             user: userDTO.asModel(),
             isEnableTopic: true,
             createdAt: createdAt
@@ -314,12 +338,14 @@ class ChannelTopicEnableEventDTO: EventDTO {
 
 class ChannelTopicDisableEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.cid)
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -330,6 +356,7 @@ class ChannelTopicDisableEventDTO: EventDTO {
 
         return try? ChannelEnableTopicEvent(
             cid: cid,
+            parentCid: parentCid,
             user: userDTO.asModel(),
             isEnableTopic: false,
             createdAt: createdAt
@@ -341,6 +368,9 @@ class ChannelTopicDisableEventDTO: EventDTO {
 public struct ChannelEnableTopicEvent: ChannelSpecificEvent {
     /// The hidden channel identifier.
     public let cid: ChannelId
+
+    /// The parent channel idetifier if this event belong to a topic.
+    public let parentCid: ChannelId?
 
     /// The user who enabled topic of  the channel.
     public let user: ChatUser
@@ -388,13 +418,13 @@ class ChannelTopicCreatedEventDTO: EventDTO {
     }
 }
 
-public struct ChannelTopicCreatedEvent: ChannelSpecificEvent {
+public struct ChannelTopicCreatedEvent: TopicSpecificEvent {
     /// The channel identifier.
     /// The hidden channel identifier.
     public let cid: ChannelId
     
     public let parentCid: ChannelId
-    
+
     /// The user who enabled topic of  the channel.
     public let user: ChatUser
     
@@ -409,7 +439,7 @@ public struct ChannelTopicCreatedEvent: ChannelSpecificEvent {
 }
 
 
-class ChannelTopicClosedEventDTO: EventDTO {
+class ChannelTopicClosedEventDTO: TopicSpecificEvent {
     let cid: ChannelId
     let parentCid: ChannelId
     let channelId: String
@@ -442,7 +472,7 @@ class ChannelTopicClosedEventDTO: EventDTO {
     }
 }
 
-public struct ChannelTopicClosedEvent: ChannelSpecificEvent {
+public struct ChannelTopicClosedEvent: TopicSpecificEvent {
     /// The channel identifier.
     /// The hidden channel identifier.
     public let cid: ChannelId
@@ -461,7 +491,7 @@ public struct ChannelTopicClosedEvent: ChannelSpecificEvent {
 }
 
 
-class ChannelTopicReopenedEventDTO: EventDTO {
+class ChannelTopicReopenedEventDTO: TopicSpecificEvent {
     let cid: ChannelId
     let parentCid: ChannelId
     let channelId: String
@@ -494,7 +524,7 @@ class ChannelTopicReopenedEventDTO: EventDTO {
     }
 }
 
-public struct ChannelTopicReopenedEvent: ChannelSpecificEvent {
+public struct ChannelTopicReopenedEvent: TopicSpecificEvent {
     /// The channel identifier.
     /// The hidden channel identifier.
     public let cid: ChannelId

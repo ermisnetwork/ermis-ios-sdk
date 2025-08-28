@@ -13,6 +13,9 @@ public struct MemberAddedEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier a member was added to.
     public let cid: ChannelId
 
+    /// The parent channel identifier a member was added to.
+    public let parentCid: ChannelId?
+
     /// The memeber that was added to a channel.
     public let member: ChannelMember?
 
@@ -23,6 +26,7 @@ public struct MemberAddedEvent: MemberEvent, ChannelSpecificEvent {
 class MemberAddedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let member: MemberPayload
     let createdAt: Date
     let payload: EventPayload
@@ -30,6 +34,7 @@ class MemberAddedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -45,6 +50,7 @@ class MemberAddedEventDTO: EventDTO {
             memberId: member.userId,
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             member: memberDTO?.asModel(),
             createdAt: createdAt
         )
@@ -59,6 +65,9 @@ public struct MemberJoinnedEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier a member was added to.
     public let cid: ChannelId
 
+    /// The parent channel identifier a member was added to.
+    public let parentCid: ChannelId?
+
     /// The memeber that was joinned to a channel.
     public let member: ChannelMember
 
@@ -69,6 +78,7 @@ public struct MemberJoinnedEvent: MemberEvent, ChannelSpecificEvent {
 class MemberJoinnedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let member: MemberPayload
     let createdAt: Date
     let payload: EventPayload
@@ -76,6 +86,7 @@ class MemberJoinnedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.cid)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -90,6 +101,7 @@ class MemberJoinnedEventDTO: EventDTO {
         return try? MemberJoinnedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -104,6 +116,9 @@ public struct MemberUpdatedEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier a member was updated in.
     public let cid: ChannelId
 
+    /// The parent channel identifier a member was updated in.
+    public let parentCid: ChannelId?
+
     /// The updated member.
     public let member: ChannelMember
 
@@ -115,6 +130,7 @@ public struct MemberUpdatedEvent: MemberEvent, ChannelSpecificEvent {
 class MemberUpdatedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let member: MemberPayload
     let createdAt: Date
     let payload: EventPayload
@@ -122,6 +138,7 @@ class MemberUpdatedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -136,6 +153,7 @@ class MemberUpdatedEventDTO: EventDTO {
         return try? MemberUpdatedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -146,6 +164,7 @@ class MemberUpdatedEventDTO: EventDTO {
 class MemberBannedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let member: MemberPayload
     let createdAt: Date
     let payload: EventPayload
@@ -153,6 +172,7 @@ class MemberBannedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -167,6 +187,7 @@ class MemberBannedEventDTO: EventDTO {
         return try? MemberUpdatedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -177,6 +198,7 @@ class MemberBannedEventDTO: EventDTO {
 class MemberUnbannedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let member: MemberPayload
     let createdAt: Date
     let payload: EventPayload
@@ -184,6 +206,7 @@ class MemberUnbannedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -198,6 +221,7 @@ class MemberUnbannedEventDTO: EventDTO {
         return try? MemberUpdatedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -212,6 +236,9 @@ public struct MemberRemovedEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier a member was removed from.
     public let cid: ChannelId
 
+    /// The parent channel identifier a member was removed from.
+    public let parentCid: ChannelId?
+
     /// The event timestamp.
     public let createdAt: Date
 }
@@ -219,12 +246,14 @@ public struct MemberRemovedEvent: MemberEvent, ChannelSpecificEvent {
 class MemberRemovedEventDTO: EventDTO {
     let member: MemberPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         member = try response.value(at: \.memberContainer?.member)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         payload = response
     }
@@ -235,6 +264,7 @@ class MemberRemovedEventDTO: EventDTO {
         return try? MemberRemovedEvent(
             member: memberDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             createdAt: createdAt
         )
     }
@@ -252,6 +282,9 @@ public struct MemberPromotedEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier a member was removed from.
     public let cid: ChannelId
 
+    /// The parent channel identifier a member was removed from.
+    public let parentCid: ChannelId?
+
     /// The event timestamp.
     public let createdAt: Date
 }
@@ -259,12 +292,14 @@ public struct MemberPromotedEvent: MemberEvent, ChannelSpecificEvent {
 class MemberPromotedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         payload = response
     }
@@ -275,6 +310,7 @@ class MemberPromotedEventDTO: EventDTO {
         return try? MemberPromotedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             createdAt: createdAt
         )
     }
@@ -292,6 +328,9 @@ public struct MemberDemotedEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier a member was removed from.
     public let cid: ChannelId
 
+    /// The parent channel identifier a member was removed from.
+    public let parentCid: ChannelId?
+
     /// The event timestamp.
     public let createdAt: Date
 }
@@ -299,12 +338,14 @@ public struct MemberDemotedEvent: MemberEvent, ChannelSpecificEvent {
 class MemberDemotedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         payload = response
     }
@@ -315,6 +356,7 @@ class MemberDemotedEventDTO: EventDTO {
         return try? MemberDemotedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             createdAt: createdAt
         )
     }
