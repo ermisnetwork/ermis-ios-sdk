@@ -15,6 +15,9 @@ public struct MessageNewEvent: ChannelSpecificEvent, HasUnreadCount {
     /// The channel identifier the message was sent to.
     public var cid: ChannelId { channel.cid }
 
+    /// The parent channel identifier of the channel that the message was sent to.
+    public var parentCid: ChannelId? { channel.parentCid }
+
     /// The channel a message was sent to.
     public let channel: Channel
 
@@ -31,6 +34,7 @@ public struct MessageNewEvent: ChannelSpecificEvent, HasUnreadCount {
 class MessageNewEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let message: MessagePayload
     let createdAt: Date
     let watcherCount: Int?
@@ -40,6 +44,7 @@ class MessageNewEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         watcherCount = try? response.value(at: \.watcherCount)
@@ -73,6 +78,9 @@ public struct MessageUpdatedEvent: ChannelSpecificEvent {
     /// The channel identifier the message is sent to.
     public var cid: ChannelId { channel.cid }
 
+    /// The parent channel identifier of the channel that the message is sent to.
+    public var parentCid: ChannelId? { channel.parentCid }
+
     /// The channel a message is sent to.
     public let channel: Channel
 
@@ -86,6 +94,7 @@ public struct MessageUpdatedEvent: ChannelSpecificEvent {
 class MessageUpdatedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let message: MessagePayload
     let createdAt: Date
     let payload: EventPayload
@@ -93,6 +102,9 @@ class MessageUpdatedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid
+
+        )
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -122,6 +134,9 @@ public struct MessagePinnedEvent: ChannelSpecificEvent {
     /// The channel identifier the message is sent to.
     public var cid: ChannelId { channel.cid }
 
+    /// The parent channel identifier of channel that the message is sent to.
+    public var parentCid: ChannelId? { channel.cid }
+
     /// The channel a message is sent to.
     public let channel: Channel
 
@@ -138,6 +153,7 @@ public struct MessagePinnedEvent: ChannelSpecificEvent {
 class MessagePinnedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let message: MessagePayload
     let createdAt: Date
     let payload: EventPayload
@@ -146,6 +162,7 @@ class MessagePinnedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -177,6 +194,9 @@ public struct MessageDeletedEvent: ChannelSpecificEvent {
     /// The channel identifier a message was deleted from.
     public var cid: ChannelId { channel.cid }
 
+    /// The parent channel identifer of channel that a message was deleted from.
+    public var parentCid: ChannelId? { channel.parentCid }
+
     /// The channel a message was deleted from.
     public let channel: Channel
 
@@ -193,6 +213,7 @@ public struct MessageDeletedEvent: ChannelSpecificEvent {
 class MessageDeletedEventDTO: EventDTO {
     let user: UserPayload?
     let cid: ChannelId
+    let parentCid: ChannelId?
     let message: MessagePayload
     let createdAt: Date
     let payload: EventPayload
@@ -201,6 +222,7 @@ class MessageDeletedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try? response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -235,6 +257,9 @@ public struct MessageReadEvent: ChannelSpecificEvent {
     /// The identifier of the read channel.
     public var cid: ChannelId { channel.cid }
 
+    /// The parent channel identifier of  the read channel.
+    public var parentCid: ChannelId? { channel.parentCid }
+
     /// The read channel.
     public let channel: Channel
 
@@ -248,6 +273,7 @@ public struct MessageReadEvent: ChannelSpecificEvent {
 class MessageReadEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let unreadCount: UnreadCount?
     let payload: EventPayload
@@ -255,6 +281,7 @@ class MessageReadEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         unreadCount = try? response.value(at: \.unreadCount)
         payload = response

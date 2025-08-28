@@ -9,6 +9,9 @@ public struct NotificationMessageNewEvent: ChannelSpecificEvent, HasUnreadCount 
     /// The identifier of a channel a message is sent to.
     public var cid: ChannelId { channel.cid }
 
+    /// The parent channel identifier of the channel that the message is sent to.
+    public var parentCid: ChannelId? { channel.parentCid }
+
     /// The channel a message was sent to.
     public let channel: Channel
 
@@ -96,6 +99,9 @@ public struct NotificationMarkReadEvent: ChannelSpecificEvent, HasUnreadCount {
     /// The read channel identifier.
     public let cid: ChannelId
 
+    /// The parent channel identifier of the read channel.
+    public let parentCid: ChannelId?
+
     /// The unread counts of the current user.
     public let unreadCount: UnreadCount?
 
@@ -113,6 +119,9 @@ public struct NotificationMarkUnreadEvent: ChannelSpecificEvent {
 
     /// The read channel identifier.
     public let cid: ChannelId
+
+    /// The parent channel identifier of the unread channel.
+    public let parentCid: ChannelId?
 
     /// The event timestamp.
     public let createdAt: Date
@@ -133,6 +142,7 @@ public struct NotificationMarkUnreadEvent: ChannelSpecificEvent {
 class NotificationMarkReadEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let unreadCount: UnreadCount
     let createdAt: Date
     let lastReadMessageId: MessageId?
@@ -141,6 +151,7 @@ class NotificationMarkReadEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         unreadCount = try response.value(at: \.unreadCount)
         lastReadMessageId = try? response.value(at: \.lastReadMessageId)
@@ -153,6 +164,7 @@ class NotificationMarkReadEventDTO: EventDTO {
         return try? NotificationMarkReadEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             unreadCount: unreadCount,
             lastReadMessageId: lastReadMessageId,
             createdAt: createdAt
@@ -163,6 +175,7 @@ class NotificationMarkReadEventDTO: EventDTO {
 class NotificationMarkUnreadEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let createdAt: Date
     let firstUnreadMessageId: MessageId
     let lastReadMessageId: MessageId?
@@ -173,6 +186,7 @@ class NotificationMarkUnreadEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         createdAt = try response.value(at: \.createdAt)
         firstUnreadMessageId = try response.value(at: \.firstUnreadMessageId)
         lastReadMessageId = try response.value(at: \.lastReadMessageId)
@@ -187,6 +201,7 @@ class NotificationMarkUnreadEventDTO: EventDTO {
         return try? NotificationMarkUnreadEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             createdAt: createdAt,
             firstUnreadMessageId: firstUnreadMessageId,
             lastReadMessageId: lastReadMessageId,
@@ -230,6 +245,9 @@ class NotificationMutesUpdatedEventDTO: EventDTO {
 public struct NotificationAddedToChannelEvent: ChannelSpecificEvent, HasUnreadCount {
     /// The identifier of a channel a message is sent to.
     public var cid: ChannelId { channel.cid }
+
+    /// The parent channel identifier of the channel that a message was sent to.
+    public var parentCid: ChannelId? { channel.cid }
 
     /// The channel the current user was added to.
     public let channel: Channel
@@ -283,6 +301,9 @@ public struct NotificationRemovedFromChannelEvent: ChannelSpecificEvent {
     /// The channel identifier the current user was removed from.
     public let cid: ChannelId
 
+    /// The parent channel identifier of the channel that the current user was removed from.
+    public let parentCid: ChannelId?
+
     /// The current user.
     public let member: ChannelMember
 
@@ -292,6 +313,7 @@ public struct NotificationRemovedFromChannelEvent: ChannelSpecificEvent {
 
 class NotificationRemovedFromChannelEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let user: UserPayload
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
@@ -300,6 +322,7 @@ class NotificationRemovedFromChannelEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         user = try response.value(at: \.user)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
@@ -315,6 +338,7 @@ class NotificationRemovedFromChannelEventDTO: EventDTO {
         return try? NotificationRemovedFromChannelEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -359,6 +383,9 @@ public struct NotificationInvitedEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier the current user was invited to.
     public let cid: ChannelId
 
+    /// The parent channel identifier of the channel that the current user was invited to.
+    public let parentCid: ChannelId?
+
     /// The membership information of the current user.
     public let member: ChannelMember
 
@@ -369,6 +396,7 @@ public struct NotificationInvitedEvent: MemberEvent, ChannelSpecificEvent {
 class NotificationInvitedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -377,6 +405,7 @@ class NotificationInvitedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -391,6 +420,7 @@ class NotificationInvitedEventDTO: EventDTO {
         return try? NotificationInvitedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -408,6 +438,9 @@ public enum InvitationRespondBackType {
 public struct NotificationInviteRespondBackEvent: MemberEvent, ChannelSpecificEvent {
     /// The channel identifier the current user has become a member of.
     public var cid: ChannelId { channel.cid }
+
+    /// The parent channel identifier of the channel that current user has becom a member of.
+    public var parentCid: ChannelId? { channel.parentCid }
 
     /// The channel the current user has become a member of.
     public let channel: Channel
@@ -484,11 +517,13 @@ class NotificationInviteRejectedEventDTO: EventDTO {
     let cid: ChannelId
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
+    let topicCids: [ChannelId]?
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        topicCids = try? response.value(at: \.topicCids)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -544,6 +579,9 @@ public struct NotificationChannelDeletedEvent: ChannelSpecificEvent {
     /// The cid of the deleted channel
     public let cid: ChannelId
 
+    /// The parent cid of the channel that was deleted.
+    public let parentCid: ChannelId?
+
     /// The channel that was deleted
     public let channel: Channel
 
@@ -553,12 +591,14 @@ public struct NotificationChannelDeletedEvent: ChannelSpecificEvent {
 
 class NotificationChannelDeletedEventDTO: EventDTO {
     let cid: ChannelId
+    let parentCid: ChannelId?
     let channel: ChannelDetailPayload
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         channel = try response.value(at: \.channel)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -568,6 +608,7 @@ class NotificationChannelDeletedEventDTO: EventDTO {
         guard let channelDTO = session.channel(cid: channel.cid) else { return nil }
         return try? NotificationChannelDeletedEvent(
             cid: cid,
+            parentCid: parentCid,
             channel: channelDTO.asModel(),
             createdAt: createdAt
         )
