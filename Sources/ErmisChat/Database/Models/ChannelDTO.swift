@@ -248,13 +248,22 @@ extension NSManagedObjectContext {
                 dto.parent = parentChannelDTO
             }
         }
-        
-        dto.isClosedTopic = payload.isClosedTopic ?? false
-        dto.topicsEnabled = payload.topicsEnabled ?? false
 
-        dto.filterWords = payload.filterWords
+        if let isCloseTopic = payload.isClosedTopic {
+            dto.isClosedTopic = isCloseTopic
+        }
 
-        dto.saveMessage = payload.saveMessage ?? true
+        if let isTopicEnable = payload.topicsEnabled {
+            dto.topicsEnabled = isTopicEnable
+        }
+
+        if let filterWords = payload.filterWords {
+            dto.filterWords = filterWords
+        }
+
+        if let saveMessage = payload.saveMessage {
+            dto.saveMessage = saveMessage
+        }
 
         dto.createdAt = payload.createdAt.bridgeDate
         dto.deletedAt = payload.deletedAt?.bridgeDate
@@ -296,7 +305,9 @@ extension NSManagedObjectContext {
             dto.isHidden = isHidden
         }
 
-        dto.isPublic = payload.isPublic ?? false
+        if let isPublic = payload.isPublic {
+            dto.isPublic = isPublic
+        }
 
         dto.cooldownDuration = payload.cooldownDuration
         dto.team = payload.team

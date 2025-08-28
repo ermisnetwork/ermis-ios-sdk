@@ -34,6 +34,13 @@ extension EventDTO {
 /// A protocol for any `ChannelEvent` where it has a  `channel` payload.
 protocol ChannelSpecificEvent: Event {
     var cid: ChannelId { get }
+    var parentCid: ChannelId? { get }
+}
+
+/// A protocol for any ChannelTopicEvent where it has a  `channel` payload.
+protocol TopicSpecificEvent: Event {
+    var cid: ChannelId { get }
+    var parentCid: ChannelId { get }
 }
 
 /// A bounding protocol for all events that have unread counts.

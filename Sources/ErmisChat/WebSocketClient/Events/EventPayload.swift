@@ -13,6 +13,7 @@ class EventPayload: Decodable {
         case connectionId = "connection_id"
         case cid
         case parentCid = "parent_cid"
+        case topicCids = "topic_cids"
         case channelType = "channel_type"
         case channelId = "channel_id"
         case currentUser = "me"
@@ -64,6 +65,7 @@ class EventPayload: Decodable {
     let banReason: String?
     let banExpiredAt: Date?
     let parentId: MessageId?
+    let topicCids: [ChannelId]?
     let hardDelete: Bool
     let shadow: Bool?
     // Mark as unread properties
@@ -82,6 +84,7 @@ class EventPayload: Decodable {
         connectionId: String? = nil,
         cid: ChannelId? = nil,
         parentCid: ChannelId? = nil,
+        topicCids: [ChannelId] = [],
         channelType: ChannelType? = nil,
         channelId: String? = nil,
         projectId: String = "",
@@ -116,6 +119,7 @@ class EventPayload: Decodable {
         self.connectionId = connectionId
         self.cid = cid
         self.parentCid = parentCid
+        self.topicCids = topicCids
         self.projectId = projectId
         self.currentUser = currentUser
         self.user = user
@@ -182,6 +186,7 @@ class EventPayload: Decodable {
         signal = try container.decodeIfPresent(CallSignal.self, forKey: .signal)
         callAction = try container.decodeIfPresent(CallAction.self, forKey: .callAction)
         parentCid = try container.decodeIfPresent(ChannelId.self, forKey: .parentCid)
+        topicCids = try container.decodeIfPresent([ChannelId].self, forKey: .topicCids)
         channelType = try container.decodeIfPresent(ChannelType.self, forKey: .channelType)
         channelId = try container.decodeIfPresent(String.self, forKey: .channelId)
     }
@@ -202,6 +207,7 @@ private extension PartialKeyPath where Root == EventPayload {
         case \EventPayload.connectionId: return "connectionId"
         case \EventPayload.cid: return "cid"
         case \EventPayload.parentCid: return "parentCid"
+        case \EventPayload.topicCids: return "topicCids"
         case \EventPayload.currentUser: return "currentUser"
         case \EventPayload.user: return "user"
         case \EventPayload.createdBy: return "createdBy"

@@ -617,6 +617,7 @@ open class ChannelListViewController: _ViewController,
                 shouldHideEmptyView = !shouldShowEmptyView()
                 isLoading = false
                 shouldHideErrorView = isChannelListStatesEnabled ? false : true
+                channelListErrorView.titleLabel.text = newState == .remoteDataFetched ? "Load remote data failed" : "Load local data failed"
                 channelListErrorView.show()
             }
 
