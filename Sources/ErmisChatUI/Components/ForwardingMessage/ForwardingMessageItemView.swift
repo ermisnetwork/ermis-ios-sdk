@@ -29,7 +29,7 @@ open class ForwardingMessageItemView: _View, UIProvider {
 
     public private(set) var avatarViewLeadingConstraint: NSLayoutConstraint?
 
-    public var content: ForwardingMessageCell.Content? {
+    public var content: Content? {
         didSet {
             updateContentIfNeeded()
         }
@@ -159,4 +159,11 @@ open class ForwardingMessageItemView: _View, UIProvider {
             .withAccessibilityIdentifier(identifier: "sendButton")
     }
 
+}
+
+public extension ForwardingMessageItemView {
+    struct Content {
+        let channel: Channel
+        let forwardingState: ForwardingMessageViewController.ForwardingState
+    }
 }

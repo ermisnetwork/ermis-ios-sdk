@@ -21,6 +21,7 @@ extension URLRequest {
         if let bodyData = self.httpBody, let bodyString = String(data: bodyData, encoding: .utf8),  !bodyString.isEmpty {
             data = "--data '\(bodyString)'"
         }
+
         cURL += method + url + header + data
         return cURL
     }

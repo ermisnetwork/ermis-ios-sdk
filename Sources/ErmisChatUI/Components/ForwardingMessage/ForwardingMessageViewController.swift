@@ -104,16 +104,6 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
             break
         }
     }
-
-
-    private func channel(at indexPath: IndexPath) -> Channel? {
-        let channel = displayChannels[indexPath.section]
-        if channel.topicsEnabled {
-            return channel.topics?[safe: indexPath.row]
-        }
-        
-        return channel
-    }
     // MARK: - TableView
     open func numberOfSections(in tableView: UITableView) -> Int {
         return displayChannels.count
@@ -130,9 +120,9 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
 
     open func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(with: components.forwardingMessageCell.self, for: indexPath)
-        cell.itemviewDelegate = self
+        cell.itemView.delegate = self
         if let channel = channel(at: indexPath) {
-            cell.content = .init(channel: channel, forwardingState: forwardingState(of: channel))
+            cell.itemView.content = .init(channel: channel, forwardingState: forwardingState(of: channel))
         }
         cell.itemView.indexPath = indexPath
         return cell
@@ -155,7 +145,7 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
             DispatchQueue.main.async {
                 if let index = self.displayChannels.firstIndex(where: { $0.cid == channel.cid }),
                    let cell = self.tableView.cellForRow(at: IndexPath(row: index, section: 0)) as? ForwardingMessageCell {
-                    cell.content = .init(channel: channel, forwardingState: state)
+                    cell.itemView.content = .init(channel: channel, forwardingState: state)
                 }
             }
         }
@@ -172,6 +162,15 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
         displayChannels = channels.filter {
             predicate.evaluate(with: $0.name) && $0.cid != message?.cid
         }
+    }
+
+    private func channel(at indexPath: IndexPath) -> Channel? {
+        let channel = displayChannels[indexPath.section]
+        if channel.topicsEnabled {
+            return channel.topics?[safe: indexPath.row]
+        }
+
+        return channel
     }
 }
 // MARK: - UISearchControllerDelegate

@@ -4,7 +4,7 @@
 
 import Foundation
 
-struct MultipartFormData {
+class MultipartInputStream: InputStream {
     private static let crlf = "\r\n"
     static let boundary: String = String(
         format: "chat-%08x%08x",
@@ -12,29 +12,122 @@ struct MultipartFormData {
         UInt32.random(in: 0...UInt32.max)
     )
 
-    let data: Data
+    let fileURL: URL
+    let fieldName: String
     let fileName: String
     let mimeType: String?
 
-    init(_ data: Data, fileName: String, mimeType: String? = nil) {
-        self.data = data
-        self.fileName = fileName
-        self.mimeType = mimeType
+    let headerData: Data
+    let footerData: Data
+    private var headerOffset = 0
+    private var footerOffset = 0
+    private var fileStream: InputStream?
+    private var phase: Phase = .header
+
+    private var _streamStatus: Stream.Status = .notOpen
+    private var _streamError: Error?
+    private var _delegate: StreamDelegate?
+
+    override var streamStatus: Stream.Status { _streamStatus }
+    override var streamError: Error? { _streamError }
+    override var delegate: (any StreamDelegate)? {
+        get { _delegate }
+        set { _delegate = newValue }
     }
 
-    func getMultipartFormData() -> Data {
-        var data = "--\(Self.boundary)\(MultipartFormData.crlf)".data(using: .utf8, allowLossyConversion: false)!
-        data.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(fileName)\"\(MultipartFormData.crlf)")
-
-        if let mimeType = mimeType {
-            data.append("Content-Type: \(mimeType)\(MultipartFormData.crlf)")
+    override var hasBytesAvailable: Bool {
+        switch phase {
+        case .header: return true
+        case .file: return true
+        case .footer: return true
+        case .done: return false
         }
+    }
 
-        data.append(MultipartFormData.crlf)
-        data.append(self.data)
-        data.append("\(MultipartFormData.crlf)--\(Self.boundary)--\(MultipartFormData.crlf)")
+    init(fileURL: URL, fieldName: String, fileName: String, mimeType: String?) {
+        self.fileURL = fileURL
+        self.fieldName = fieldName
+        self.fileName = fileName
+        self.mimeType = mimeType
 
-        return data
+        var header = "--\(Self.boundary)\(Self.crlf)".data(using: .utf8, allowLossyConversion: false)!
+        header.append("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(fileName)\"\(Self.crlf)")
+        if let mimeType = mimeType {
+            header.append("Content-Type: \(mimeType)\(Self.crlf)")
+        }
+        header.append(Self.crlf)
+        self.headerData = header
+
+        self.footerData = "\(Self.crlf)--\(Self.boundary)--\(Self.crlf)".data(using: .utf8, allowLossyConversion: false )!
+
+        super.init(data: Data())
+    }
+
+    override func open() {
+        guard _streamStatus == .notOpen else { return }
+        _streamStatus = .opening
+        fileStream = InputStream(url: fileURL)
+        fileStream?.open()
+        _streamStatus = .open
+    }
+
+    override func read(_ buffer: UnsafeMutablePointer<UInt8>, maxLength len: Int) -> Int {
+        _streamStatus = .reading
+        switch phase {
+        case .header:
+            let remainingByteCount = headerData.count - headerOffset
+            if remainingByteCount > 0 {
+                let chunkSize = min(len, remainingByteCount)
+                headerData.copyBytes(to: buffer, from: headerOffset..<(headerOffset + chunkSize))
+                headerOffset += chunkSize
+                return chunkSize
+            } else {
+                phase = .file
+                return self.read(buffer, maxLength: len)
+            }
+        case .file:
+            guard let fileStream = fileStream else {
+                phase = .footer
+                return read(buffer, maxLength: len)
+            }
+            let chunkSize = fileStream.read(buffer, maxLength: len)
+            if chunkSize > 0 {
+                return chunkSize
+            } else {
+                phase = .footer
+                fileStream.close()
+                return read(buffer, maxLength: len)
+            }
+        case .footer:
+            let remainingByteCount = footerData.count - footerOffset
+            if remainingByteCount > 0 {
+                let chunkSize = min(remainingByteCount, len)
+                footerData.copyBytes(to: buffer, count: chunkSize)
+                footerOffset += chunkSize
+                return chunkSize
+            } else {
+                phase = .done
+                return read(buffer, maxLength: len)
+            }
+        case .done:
+            _streamStatus = .atEnd
+            return 0
+        }
+    }
+
+    override func close() {
+        fileStream?.close()
+        _streamStatus = .closed
+    }
+
+    override func schedule(in aRunLoop: RunLoop, forMode mode: RunLoop.Mode) {}
+    override func remove(from aRunLoop: RunLoop, forMode mode: RunLoop.Mode) {}
+
+    enum Phase {
+        case header
+        case file
+        case footer
+        case done
     }
 }
 
