@@ -76,15 +76,26 @@ public extension PreviewMessageProvider where Self: FormattersProvider {
     }
 
     /// The message preview text in case the message's type is system.
-    /// - Parameter messageText: The current text of the message.
+    /// - Parameters:
+    ///  - messageText: The current text of the message.
+    ///  - channel: The current channel of this message.
     /// - Returns:  A string representing the message preview text.
     func previewMessageTextForSystemMessage(messageText: String, in channel: Channel) -> String {
         let systemMessage = SystemMessage(systemMessage: messageText)
         return self.formatters.systemMessage.format(systemMessage: systemMessage, in: channel) ?? messageText
     }
 
+    /// The message preview text in case the message's type is sticker.
+    /// - Parameter channel: The current channel of this message.
+    /// - Returns:  A string representing the message preview text.
+    func previewMessageTextForStickerMessage(in channel: Channel) -> String {
+        return L10n.ChannelList.Preview.sticker
+    }
+
     /// The message preview text in case the message's type is signal.
-    /// - Parameter messageText: The current text of the message.
+    /// - Parameters:
+    ///  - messageText: The current text of the message.
+    ///  - channel: The current channel of this message.
     /// - Returns:  A string representing the message preview text.
     func previewMessageTextForCallMessage(messageText: String, in channel: Channel) -> String {
         let callMessage = SignalMessage(signalMessage: messageText)

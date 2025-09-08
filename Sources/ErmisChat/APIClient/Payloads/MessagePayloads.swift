@@ -18,6 +18,7 @@ enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
     case command
     case args
     case attachments
+    case stickerUrl = "sticker_url"
     case parentId = "parent_id"
     case quotedMessageId = "quoted_message_id"
     case quotedMessage = "quoted_message"
@@ -88,6 +89,7 @@ class MessagePayload: Decodable {
     let reactionScores: [MessageReactionType: Int]
     let reactionCounts: [MessageReactionType: Int]
     let attachments: [MessageAttachmentPayload]
+    let stickerUrl: URL?
     let isSilent: Bool
     let isShadowed: Bool
     let translations: [TranslationLanguage: String]?
@@ -135,7 +137,7 @@ class MessagePayload: Decodable {
         // and if decoding of those fail, it assignes `nil` instead of throwing whole MessagePayload away.
         attachments = try container.decodeIfPresent([OptionalDecodable].self, forKey: .attachments)?
             .compactMap(\.base) ?? []
-
+        stickerUrl = try container.decodeIfPresent(String.self, forKey: .stickerUrl).flatMap(URL.init(string:))
         // Some endpoints return also channel payload data for convenience
         channel = try container.decodeIfPresent(ChannelDetailPayload.self, forKey: .channel)
         quotedMessageId = try container.decodeIfPresent(MessageId.self, forKey: .quotedMessageId)
@@ -173,6 +175,7 @@ class MessagePayload: Decodable {
         isSilent: Bool,
         isShadowed: Bool,
         attachments: [MessageAttachmentPayload],
+        stickerUrl: URL,
         channel: ChannelDetailPayload? = nil,
         pinned: Bool = false,
         pinnedBy: UserPayload? = nil,
@@ -208,6 +211,7 @@ class MessagePayload: Decodable {
         self.isSilent = isSilent
         self.isShadowed = isShadowed
         self.attachments = attachments
+        self.stickerUrl = stickerUrl
         self.channel = channel
         self.quotedMessageId = quotedMessageId
         self.translations = translations
@@ -235,6 +239,7 @@ struct MessageRequestBody: Encodable {
     let isSilent: Bool
     let quotedMessageId: String?
     let attachments: [MessageAttachmentPayload]
+    let stickerUrl: URL?
     let mentionedUserIds: [UserId]
     let mentionedAll: Bool
     let createdAt: Date?
@@ -253,6 +258,7 @@ struct MessageRequestBody: Encodable {
         isSilent: Bool = false,
         quotedMessageId: String? = nil,
         attachments: [MessageAttachmentPayload] = [],
+        stickerUrl: URL? = nil,
         mentionedUserIds: [UserId] = [],
         mentionedAll: Bool = false,
         createdAt: Date? = nil,
@@ -271,6 +277,7 @@ struct MessageRequestBody: Encodable {
         self.quotedMessageId = quotedMessageId
         self.mentionedAll = mentionedAll
         self.attachments = attachments
+        self.stickerUrl = stickerUrl
         self.mentionedUserIds = mentionedUserIds
         self.createdAt = createdAt
         self.forwardCid = forwardCid
@@ -298,6 +305,7 @@ struct MessageRequestBody: Encodable {
             }
             return nil
         })
+        self.stickerUrl = message.stickerUrl
         self.mentionedUserIds = message.mentionedUsers.map(\.userId)
         self.createdAt = message.createdAt
         self.forwardCid = nil
@@ -318,6 +326,7 @@ struct MessageRequestBody: Encodable {
         try container.encode(isSilent, forKey: .isSilent)
         try container.encodeIfPresent(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(forwardCid, forKey: .forwardCid)
+        try container.encodeIfPresent(stickerUrl, forKey: .stickerUrl)
 
         if !attachments.isEmpty {
             try container.encode(attachments, forKey: .attachments)

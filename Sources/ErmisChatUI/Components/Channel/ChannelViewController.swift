@@ -41,7 +41,8 @@ open class ChannelViewController: _ViewController,
     open lazy var keyboardHandler: KeyboardHandler = ComposerKeyboardHandler(
         composerParentVC: self,
         composerBottomConstraint: messageComposerBottomConstraint,
-        messageListVC: messageListVC
+        messageListVC: messageListVC,
+        composerVC: messageComposerVC
     )
 
     /// The message list component responsible to render the messages.
@@ -333,7 +334,6 @@ open class ChannelViewController: _ViewController,
         acceptInvitationView.pin(anchors: [.top, .bottom, .leading, .trailing], to: view)
         updateInvitationView()
         topicClosedView.isHidden = true
-
         updateMessageComposerAndConstraints()
     }
 
@@ -431,11 +431,21 @@ open class ChannelViewController: _ViewController,
         if isTopicClosed {
             messageComposerBottomConstraint?.isActive = false
             bottomContainerBottomConstraint = view.safeAreaLayoutGuide.bottomAnchor.pin(equalTo: bottomContainerView.bottomAnchor)
+            topicClosedView.isHidden = false
             messageComposerVC.view.isHidden = true
         } else {
             messageComposerBottomConstraint?.isActive = true
             bottomContainerBottomConstraint = messageComposerVC.view.topAnchor.pin(equalTo: bottomContainerView.bottomAnchor)
             messageComposerVC.view.isHidden = false
+            topicClosedView.isHidden = true
+        }
+        
+        if messageListTopConstraint == nil {
+            messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        }
+
+        if messageListTopConstraint == nil {
+            messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
         }
 
         NSLayoutConstraint.activate([
@@ -506,8 +516,7 @@ open class ChannelViewController: _ViewController,
             filter: .joinedChannels(memberId: membership.userId,
                                     projectId: channelController.client.projectId ?? ""),
             sort: [
-                .init(key: .lastMessageAt),
-                .init(key: .updatedAt)
+                .init(key: .default)
             ]
         )
         let channelListController = channelController.client.channelListController(query: channelListQuery)

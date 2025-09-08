@@ -16,4 +16,8 @@ class CallRepository {
         apiClient.request(endpoint: .signal(body: body),
                           completion: completion)
     }
+
+    func sendSignal(body: CallSignalRequestBody) async throws -> CallSignalRequestPayload {
+        try await apiClient.request(endpoint: .signal(body: body))
+    }
 }

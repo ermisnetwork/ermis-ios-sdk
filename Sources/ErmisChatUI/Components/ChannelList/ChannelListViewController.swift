@@ -319,8 +319,6 @@ open class ChannelListViewController: _ViewController,
             guard let self else {
                 return
             }
-            let snapshot = self.dataSource?.snapshot() ?? snapshot
-
             self.isReloadingChannelList = false
 
             if hasPendingReloadChannels {
@@ -608,6 +606,7 @@ open class ChannelListViewController: _ViewController,
                 isLoading = controller.channels.isEmpty
             case .localDataFetched:
                 reloadChannels()
+                isLoading = controller.channels.isEmpty
             case .remoteDataFetched:
                 isLoading = false
                 shouldHideEmptyView = !shouldShowEmptyView()

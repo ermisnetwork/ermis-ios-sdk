@@ -63,6 +63,19 @@ extension ChannelReadDTO: IdentifiableModel {
     static func id(for model: NSManagedObject) -> DatabaseId? { nil } // Does not have id
 }
 
+extension StickerPackDTO: IdentifiableModel {
+    static let className: DatabaseType = _className
+    static let idKeyPath: String? = #keyPath(StickerPackDTO.id)
+    static func id(for model: NSManagedObject) -> DatabaseId? { (model as? Self)?.id }
+}
+
+
+extension StickerDTO: IdentifiableModel {
+    static let className: DatabaseType = _className
+    static let idKeyPath: String? = #keyPath(StickerDTO.id)
+    static func id(for model: NSManagedObject) -> DatabaseId? { (model as? Self)?.id }
+}
+
 extension ChainDTO: IdentifiableModel {
     static let className: DatabaseType = _className
     static let idKeyPath: String? = #keyPath(ChainDTO.chainId)

@@ -615,6 +615,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     ///   - text: Text of the message.
     ///   - attachments: An array of the attachments for the message.
     ///     `Note`: can be built-in types, custom attachment types conforming to `AttachmentEnvelope` protocol.
+    ///   - stickerUrl: The url of the sticker.
     ///   - mentionedUserIds: An user id array of user which were mentioned in message.
     ///   - mentionedAll: A flag indicating whether the message contain mention all member.
     ///   - quotedMessageId: An id of the message new message quotes. (inline reply)
@@ -624,6 +625,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         messageId: MessageId? = nil,
         text: String,
         attachments: [AnyAttachmentPayload] = [],
+        stickerUrl: URL? = nil,
         mentionedUserIds: [UserId] = [],
         mentionedAll: Bool = false,
         quotedMessageId: MessageId? = nil,
@@ -648,6 +650,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
             command: nil,
             arguments: nil,
             attachments: attachments,
+            stickerUrl: stickerUrl,
             mentionedUserIds: mentionedUserIds,
             mentionedAll: mentionedAll,
             quotedMessageId: quotedMessageId
@@ -1030,7 +1033,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
             guard self?.hasLoadedAllPreviousMessages == true else {
                 return nil
             }
-            return self?.messages.last(where: { $0.type == .regular || $0.type == .reply || $0.type == .system })?.id
+            return self?.messages.last(where: { $0.type == .regular || $0.type == .reply || $0.type == .system || $0.type == .signal || $0.type == .sticker })?.id
         }
         
         guard let currentUserRead = channel.reads.first(where: {

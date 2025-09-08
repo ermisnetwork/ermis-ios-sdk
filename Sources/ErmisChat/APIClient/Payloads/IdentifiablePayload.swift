@@ -44,6 +44,8 @@ extension IdentifiablePayload {
                     return MemberDTO.self
                 case ChannelReadDTO.className:
                     return ChannelReadDTO.self
+                case StickerDTO.className:
+                    return StickerDTO.self
                 default:
                     return nil
                 }
@@ -209,6 +211,28 @@ extension ChannelReadPayload: IdentifiablePayload {
         addId(cache: &cache)
         user.fillIds(cache: &cache)
     }
+}
+
+extension StickerPayload: IdentifiablePayload {
+    var databaseId: DatabaseId? { id }
+    static let modelClass: (IdentifiableDatabaseObject).Type? = StickerDTO.self
+    
+    func fillIds(cache: inout [DatabaseType: Set<DatabaseId>]) {
+        addId(cache: &cache)
+    }
+}
+
+extension StickerPackPayload: IdentifiablePayloadProxy {
+    var databaseId: DatabaseId? { return id}
+
+    static var modelClass: (any IdentifiableDatabaseObject.Type)? = StickerPackDTO.self
+
+    func fillIds(cache: inout [DatabaseType : Set<DatabaseId>]) {
+        addId(cache: &cache)
+        stickers.fillIds(cache: &cache)
+    }
+    
+
 }
 
 private extension NSManagedObject {

@@ -245,6 +245,7 @@
         <attribute name="reactionScores" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromData"/>
         <attribute name="replyCount" attributeType="Integer 32" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="showInsideThread" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="stickerUrl" optional="YES" attributeType="URI"/>
         <attribute name="text" attributeType="String"/>
         <attribute name="textUpdatedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="translations" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer"/>
@@ -341,6 +342,19 @@
         <fetchIndex name="id">
             <fetchIndexElement property="id" type="Binary" order="ascending"/>
         </fetchIndex>
+    </entity>
+    <entity name="StickerDTO" representedClassName="StickerDTO" syncable="YES">
+        <attribute name="body" optional="YES" attributeType="String"/>
+        <attribute name="data" optional="YES" attributeType="Binary"/>
+        <attribute name="id" attributeType="String"/>
+        <attribute name="url" optional="YES" attributeType="String"/>
+        <relationship name="packs" optional="YES" toMany="YES" deletionRule="Nullify" destinationEntity="StickerPackDTO" inverseName="stickers" inverseEntity="StickerPackDTO"/>
+    </entity>
+    <entity name="StickerPackDTO" representedClassName="StickerPackDTO" syncable="YES">
+        <attribute name="id" attributeType="String"/>
+        <attribute name="orderIndex" optional="YES" attributeType="Integer 64" defaultValueString="0.0" usesScalarValueType="YES"/>
+        <attribute name="title" optional="YES" attributeType="String"/>
+        <relationship name="stickers" optional="YES" toMany="YES" deletionRule="Cascade" ordered="YES" destinationEntity="StickerDTO" inverseName="packs" inverseEntity="StickerDTO"/>
     </entity>
     <entity name="UserDTO" representedClassName="UserDTO" syncable="YES">
         <attribute name="email" optional="YES" attributeType="String"/>

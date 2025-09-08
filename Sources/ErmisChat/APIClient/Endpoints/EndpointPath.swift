@@ -80,6 +80,9 @@ enum EndpointPath: Codable {
     case deleteFile(String)
     case deleteImage(String)
 
+    case stickerPacks(packName: String?)
+    case sticker(path: String)
+
     case getOtp
     case register
     case loginWithOTP
@@ -231,8 +234,15 @@ enum EndpointPath: Codable {
             return "channels/\(channelId)/file"
         case .deleteImage(let channelId):
             return "channels/\(channelId)/image"
-
-        case .getOtp: 
+        case .stickerPacks(packName: let packName):
+            if let packName {
+                return "/packs/\(packName)"
+            } else {
+                return "/packs/index.json"
+            }
+        case .sticker(path: let path):
+            return path
+        case .getOtp:
             return "uss/v1/auth/get_otp_new"
         case .register:
             return "uss/v1/auth/register"

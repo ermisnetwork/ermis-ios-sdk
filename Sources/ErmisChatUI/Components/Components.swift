@@ -212,6 +212,9 @@ public struct Components {
     /// The injector used for injecting voice recording attachment views.
     public var voiceRecordingAttachmentInjector: CustomCellViewInjector.Type = VoiceRecordingAttachmentViewInjector.self
 
+    /// The injector used for injecting sticker views.
+    public var stickerInjector: CustomCellViewInjector.Type = StickerViewInjector.self
+
     /// The injector used for injecting call views.
     public var callViewInjector: CustomCellViewInjector.Type = CallViewInjector.self
 
@@ -258,6 +261,29 @@ public struct Components {
 
     /// The view that shows a video attachment preview inside a message.
     public var videoAttachmentGalleryPreview: VideoAttachmentGalleryPreview.Type = VideoAttachmentGalleryPreview.self
+
+    /// The view that shows a sticker message.
+    public var stickerView: MessageStickerView.Type = MessageStickerView.self
+
+    /// The view for displaying a sticker.
+    public var stickerPreview: StickerPreview.Type = StickerPreview.self
+
+    /// The view for displaying a sticker menu header.
+    public var stickerHeaderView: StickerHeaderView.Type = StickerHeaderView.self
+
+    /// The cell for displaying sticker header
+    public var stickerHeaderCell: StickerHeaderCell.Type = StickerHeaderCell.self
+
+    public var stickerHeaderItemView: StickerHeaderItemView.Type = StickerHeaderItemView.self
+
+    /// The item view inside sticker cell.
+    public var stickerItemView: StickerItemView.Type = StickerItemView.self
+
+    /// The sticker cell displaying sticker content.
+    public var stickerCell: StickerCollectionViewCell.Type = StickerCollectionViewCell.self
+
+    /// The view displaying title of sticker pack.
+    public var stickerPackTitleHeader: StickerPackTitleHeaderView.Type = StickerPackTitleHeaderView.self
 
     /// The view that displays the voice recording attachment preview in composer.
     public var voiceRecordingAttachmentComposerPreview: VoiceRecordingAttachmentComposerPreview
@@ -578,6 +604,9 @@ public struct Components {
 
     /// The view that displays the document attachment.
     public var messageComposerFileAttachmentView: FileAttachmentView.Type = FileAttachmentView.self
+
+    /// The view controller that display sticker for user to select.
+    public var stickerList: StickerListViewController.Type = StickerListViewController.self
 
     /// The view that displays image attachment preview in composer.
     public var imageAttachmentComposerPreview: ImageAttachmentComposerPreview
