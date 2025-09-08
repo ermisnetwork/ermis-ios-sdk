@@ -148,6 +148,8 @@ public enum L10n {
       public static var tapToReturnCall: String { L10n.tr("Localizable", "channelList.ongoing-call.tap-to-return-call") }
     }
     public enum Preview {
+      /// Sticker
+      public static var sticker: String { L10n.tr("Localizable", "channelList.preview.sticker") }
       public enum Voice {
         /// Voice message
         public static var recording: String { L10n.tr("Localizable", "channelList.preview.voice.recording") }
@@ -326,15 +328,15 @@ public enum L10n {
     /// Unsupported Attachment
     public static var unsupportedAttachment: String { L10n.tr("Localizable", "message.unsupported-attachment") }
     public enum Actions {
-      /// Copy Message
+      /// Copy
       public static var copy: String { L10n.tr("Localizable", "message.actions.copy") }
-      /// Delete Message
+      /// Delete
       public static var delete: String { L10n.tr("Localizable", "message.actions.delete") }
       /// Download
       public static var download: String { L10n.tr("Localizable", "message.actions.download") }
-      /// Edit Message
+      /// Edit
       public static var edit: String { L10n.tr("Localizable", "message.actions.edit") }
-      /// Flag Message
+      /// Flag
       public static var flag: String { L10n.tr("Localizable", "message.actions.flag") }
       /// Forward
       public static var forward: String { L10n.tr("Localizable", "message.actions.forward") }
@@ -377,7 +379,7 @@ public enum L10n {
       public enum Flag {
         /// Do you want to send a copy of this message to a moderator for further investigation?
         public static var confirmationMessage: String { L10n.tr("Localizable", "message.actions.flag.confirmation-message") }
-        /// Flag Message
+        /// Flag
         public static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.flag.confirmation-title") }
       }
       public enum Forward {

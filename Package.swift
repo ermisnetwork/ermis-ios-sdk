@@ -34,7 +34,8 @@ let package = Package(
         .package(url: "https://github.com/GetStream/stream-video-swift-webrtc.git", exact: "114.5735.08"),
         .package(url: "https://github.com/reown-com/reown-swift", from: "1.6.0"),
         .package(url: "https://github.com/Boilertalk/Web3.swift.git", from: "0.6.0"),
-        .package(url: "https://github.com/daltoniam/Starscream.git", from: "3.1.2")
+        .package(url: "https://github.com/daltoniam/Starscream.git", from: "3.1.2"),
+        .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2")
     ],
     targets: [
         .target(
@@ -54,7 +55,10 @@ let package = Package(
         ),
         .target(
             name: "ErmisChatUI",
-            dependencies: ["ErmisChat"],
+            dependencies: [
+                "ErmisChat",
+                .product(name: "Lottie", package: "lottie-spm")
+            ],
             exclude: ["Info.plist", "Generated/L10n_template.stencil"],
             resources: [.process("Resources")]
         ),

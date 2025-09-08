@@ -25,9 +25,15 @@ protocol RequestEncoder {
     /// Creates a new `RequestEncoder`.
     ///
     /// - Parameters:
-    ///   - baseURL: The base URL for all requests.
+    ///   - baseURL: The base URL for all normal requests.
+    ///   - authURL: The base URL for authentication requests.
+    ///   - stickerURL: The base URL for sticker requests.
     ///   - apiKey: The app specific API key.
-    init(baseURL: URL, authURL: URL?, apiKey: APIKey)
+    init(baseURL: URL, authURL: URL, stickerURL: URL, apiKey: APIKey)
+
+    var baseURL: URL { get }
+    var authURL: URL { get }
+    var stickerURL: URL { get }
 }
 
 extension RequestEncoder {
@@ -73,6 +79,7 @@ extension RequestEncoder {
 class DefaultRequestEncoder: RequestEncoder {
     let baseURL: URL
     let authURL: URL
+    let stickerURL: URL
     let apiKey: APIKey
 
     /// Timeout when waiting for token or connectionId
@@ -106,6 +113,9 @@ class DefaultRequestEncoder: RequestEncoder {
                 request.addValue("gzip", forHTTPHeaderField: "Accept-Encoding")
             }
             request.addValue("keep-alive", forHTTPHeaderField: "Connection")
+            if case .stickerPacks = endpoint.path {
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+            }
             // Encode endpoint-specific query items
             if let queryItems = endpoint.query {
                 try encodeRequestQuery(with: queryItems, to: &request)
@@ -131,9 +141,10 @@ class DefaultRequestEncoder: RequestEncoder {
         }
     }
 
-    required init(baseURL: URL, authURL: URL?, apiKey: APIKey) {
+    required init(baseURL: URL, authURL: URL, stickerURL: URL, apiKey: APIKey) {
         self.baseURL = baseURL
-        self.authURL = authURL ?? baseURL
+        self.authURL = authURL
+        self.stickerURL = stickerURL
         self.apiKey = apiKey
     }
 
@@ -220,10 +231,20 @@ class DefaultRequestEncoder: RequestEncoder {
     private func encodeRequestURL<T: Decodable>(for endpoint: Endpoint<T>) throws -> URL {
         var urlComponents = URLComponents()
 
-        urlComponents.scheme = endpoint.isAuth ? authURL.scheme : baseURL.scheme
-        urlComponents.host = endpoint.isAuth ? authURL.host : baseURL.host
-        urlComponents.path = endpoint.isAuth ? authURL.path : baseURL.path
-        urlComponents.port = endpoint.isAuth ? authURL.port : baseURL.port
+        switch endpoint.urlType {
+        case .auth:
+            urlComponents.scheme = authURL.scheme
+            urlComponents.host = authURL.host
+            urlComponents.port = authURL.port
+        case .normal:
+            urlComponents.scheme = baseURL.scheme
+            urlComponents.host = baseURL.host
+            urlComponents.port = baseURL.port
+        case .sticker:
+            urlComponents.scheme = stickerURL.scheme
+            urlComponents.host = stickerURL.host
+            urlComponents.port = stickerURL.port
+        }
 
         guard var url = urlComponents.url else {
             throw ClientError.InvalidURL("URL can't be created using components: \(urlComponents)")

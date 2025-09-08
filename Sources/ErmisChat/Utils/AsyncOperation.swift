@@ -58,9 +58,13 @@ class AsyncOperation: BaseOperation {
 }
 
 class BaseOperation: Operation {
+    var queueLabel: String {
+        return "network.ermis.base-operation"
+    }
+
     private var _finished = false
     private var _executing = false
-    private let stateQueue = DispatchQueue(label: "network.ermis.base-operation", attributes: .concurrent)
+    private lazy var stateQueue = DispatchQueue(label: queueLabel, attributes: .concurrent)
 
     override var isExecuting: Bool {
         get {

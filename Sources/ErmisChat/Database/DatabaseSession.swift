@@ -82,6 +82,7 @@ protocol MessageDatabaseSession {
         arguments: String?,
         parentMessageId: MessageId?,
         attachments: [AnyAttachmentPayload],
+        stickerUrl: URL?,
         mentionedUserIds: [UserId],
         mentionedAll: Bool,
         isSilent: Bool,
@@ -188,6 +189,7 @@ extension MessageDatabaseSession {
         quotedMessageId: MessageId?,
         isSilent: Bool = false,
         attachments: [AnyAttachmentPayload] = [],
+        stickerUrl: URL? = nil,
         mentionedUserIds: [UserId] = [],
         mentionedAll: Bool = false
     ) throws -> MessageDTO {
@@ -199,6 +201,7 @@ extension MessageDatabaseSession {
             arguments: nil,
             parentMessageId: nil,
             attachments: attachments,
+            stickerUrl: stickerUrl,
             mentionedUserIds: mentionedUserIds,
             mentionedAll: mentionedAll,
             isSilent: isSilent,
@@ -374,6 +377,14 @@ protocol QueuedRequestDatabaseSession {
     func deleteQueuedRequest(id: String)
 }
 
+protocol StickerDataBaseSession {
+    func getStickerPacks() throws -> [StickerPackDTO]
+    func getStickerPack(id: String) throws -> StickerPackDTO?
+    func deleteStickerPack(_ pack: StickerPackDTO)
+    func saveStickerPacks(payload: StickerPackPayload, at orderIndex: Int) -> StickerPackDTO
+    func getSticker(id: String) throws -> StickerDTO?
+}
+
 protocol DatabaseSession: UserDatabaseSession,
     CurrentUserDatabaseSession,
     MessageDatabaseSession,
@@ -383,7 +394,8 @@ protocol DatabaseSession: UserDatabaseSession,
     MemberDatabaseSession,
     MemberListQueryDatabaseSession,
     AttachmentDatabaseSession,
-    QueuedRequestDatabaseSession {}
+    QueuedRequestDatabaseSession,
+    StickerDataBaseSession {}
 
 extension DatabaseSession {
     

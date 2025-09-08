@@ -16,7 +16,7 @@ extension Endpoint {
             path: .usersSearch,
             method: .post,
             query: query,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -33,7 +33,7 @@ extension Endpoint {
                      method: .post,
                      query: queryParameters,
                      body: bodyParam,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -51,7 +51,7 @@ extension Endpoint {
             path: .updateUsers,
             method: .patch,
             body: payload,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -66,7 +66,7 @@ extension Endpoint {
                      method: .get,
                      query: ["project_id": projectId],
                      needConnectionId: false,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -82,7 +82,7 @@ extension Endpoint {
                      query: ["project_id": projectId],
                      needConnectionId: false,
                      needToken: false,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -95,7 +95,7 @@ extension Endpoint {
                      query: nil,
                      needConnectionId: false,
                      needToken: true,
-                     isAuth: true
+                     urlType: .auth
 )
     }
 
@@ -106,7 +106,7 @@ extension Endpoint {
         return .init(path: .getDeleteUserChallange,
                      method: .get,
                      needToken: true,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -121,7 +121,7 @@ extension Endpoint {
                      body: [
                         "signature": signature
                      ],
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -132,7 +132,7 @@ extension Endpoint {
         return .init(path: .getDeleteUserOtp,
                      method: .get,
                      needToken: true,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -145,7 +145,7 @@ extension Endpoint {
         return .init(path: .deleteUser,
                      method: .delete,
                      body: body,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 }
