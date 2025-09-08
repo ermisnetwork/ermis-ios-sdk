@@ -10,17 +10,10 @@ open class ShareTableViewCell: _TableViewCell, UIProvider {
         .shareItemView.init()
         .withoutAutoresizingMaskConstraints
 
-    public var content: Content? {
-        didSet {
-            contentDidChanged()
-        }
-    }
-
-    public weak var itemviewDelegate: ShareItemViewDelegate?
-
     // MARK: - Setup
     open override func setUp() {
         selectionStyle = .none
+
     }
 
     open override func setUpUI() {
@@ -32,11 +25,6 @@ open class ShareTableViewCell: _TableViewCell, UIProvider {
         contentView.backgroundColor = theme.colors.surface
     }
 
-    open override func contentDidChanged() {
-        itemView.content = content
-        itemView.delegate = itemviewDelegate
-    }
-
     open func createForwardingButton() -> UIButton {
         let button = UIButton()
         return button
@@ -46,13 +34,5 @@ open class ShareTableViewCell: _TableViewCell, UIProvider {
         super.prepareForReuse()
         itemView.content = nil
         itemView.delegate = nil
-    }
-}
-
-public extension ShareTableViewCell {
-    struct Content {
-        let cid: ChannelId
-        let avatarContent: ChannelAvatarView.Content?
-        let channelDisplayName: String?
     }
 }
