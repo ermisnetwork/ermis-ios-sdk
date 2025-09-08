@@ -199,6 +199,7 @@ class MessageUpdater: Worker {
                 arguments: arguments,
                 parentMessageId: parentMessageId,
                 attachments: attachments,
+                stickerUrl: nil,
                 mentionedUserIds: mentionedUserIds,
                 mentionedAll: mentionedAll,
                 isSilent: isSilent,

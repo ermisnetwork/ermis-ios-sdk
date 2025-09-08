@@ -19,7 +19,7 @@ extension Endpoint {
             query: nil,
             body: LoginRequestBody(email: email, password: password, apiKey: apiKey),
             needToken: false,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -37,7 +37,7 @@ extension Endpoint {
             query: nil,
             body: LoginRequestBody(email: email, password: password, apiKey: apiKey),
             needToken: false,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -55,7 +55,7 @@ extension Endpoint {
             query: nil,
             body: RegisterRequestBody(email: email, password: password, apiKey: apiKey),
             needToken: false,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -71,7 +71,7 @@ extension Endpoint {
             query: nil,
             body: body,
             needToken: false,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -89,7 +89,7 @@ extension Endpoint {
             query: nil,
             body: body,
             needToken: false,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -109,7 +109,7 @@ extension Endpoint {
                 "apikey": apiKey
             ],
             needToken: false,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -129,7 +129,7 @@ extension Endpoint {
                 "apikey": apiKey
             ],
             needToken: false,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -147,7 +147,7 @@ extension Endpoint {
                      method: .post,
                      body: param,
                      needToken: false,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 }

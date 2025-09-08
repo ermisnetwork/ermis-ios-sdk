@@ -167,7 +167,7 @@ extension Endpoint {
                 "action": "accept"
             ],
             needConnectionId: true,
-            isAuth: true
+            urlType: .auth
         )
     }
 
@@ -211,7 +211,7 @@ extension Endpoint {
                 "action": "join"
             ],
             needConnectionId: true,
-            isAuth: true
+            urlType: .auth
         )
     }
 

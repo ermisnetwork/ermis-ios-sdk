@@ -26,12 +26,14 @@ class ErmisClientFactory {
     func makeApiClientRequestEncoder() -> RequestEncoder {
         environment.requestEncoderBuilder(config.endpointEnviroment.baseURL,
                                           config.endpointEnviroment.authURL,
+                                          config.endpointEnviroment.stickerURL,
                                           config.apiKey)
     }
 
     func makeWebSocketRequestEncoder() -> RequestEncoder {
         environment.requestEncoderBuilder(config.endpointEnviroment.webSocketURL,
-                                          nil,
+                                          config.endpointEnviroment.authURL,
+                                          config.endpointEnviroment.stickerURL,
                                           config.apiKey)
     }
 

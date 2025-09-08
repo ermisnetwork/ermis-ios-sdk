@@ -73,6 +73,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var replies: Set<MessageDTO>
     @NSManaged var flaggedBy: CurrentUserDTO?
     @NSManaged var attachments: Set<AttachmentDTO>
+    @NSManaged var stickerUrl: URL?
     @NSManaged var oldTexts: Set<MessageEditHistoryDTO>?
     @NSManaged var quotedMessage: MessageDTO?
     @NSManaged var quotedMessageId: MessageId?
@@ -258,6 +259,7 @@ class MessageDTO: NSManagedObject {
             MessageType.regular.rawValue,
             MessageType.reply.rawValue,
             MessageType.signal.rawValue,
+            MessageType.sticker.rawValue,
             MessageType.ephemeral.rawValue,
             MessageType.system.rawValue,
             MessageType.deleted.rawValue,
@@ -571,6 +573,7 @@ extension NSManagedObjectContext: MessageDatabaseSession {
         arguments: String?,
         parentMessageId: MessageId?,
         attachments: [AnyAttachmentPayload],
+        stickerUrl: URL?,
         mentionedUserIds: [UserId],
         mentionedAll: Bool,
         isSilent: Bool,
@@ -600,7 +603,11 @@ extension NSManagedObjectContext: MessageDatabaseSession {
         message.updatedAt = createdAt.bridgeDate
 
         message.cid = cid.rawValue
-        message.type = parentMessageId == nil ? MessageType.regular.rawValue : MessageType.reply.rawValue
+        if let stickerUrl {
+            message.type = MessageType.sticker.rawValue
+        } else {
+            message.type = parentMessageId == nil ? MessageType.regular.rawValue : MessageType.reply.rawValue
+        }
         message.text = text
         message.command = command
         message.args = arguments
@@ -615,7 +622,7 @@ extension NSManagedObjectContext: MessageDatabaseSession {
                 return try createNewAttachment(attachment: attachment, id: id)
             }
         )
-
+        message.stickerUrl = stickerUrl
         message.mentionedUserIds = mentionedUserIds
         message.mentionedAll = mentionedAll
         message.quotedMessage = quotedMessageId.flatMap { MessageDTO.load(id: $0, context: self) }
@@ -746,6 +753,10 @@ extension NSManagedObjectContext: MessageDatabaseSession {
             }
         )
         dto.attachments = attachments
+
+        if let stickerUrl = payload.stickerUrl {
+            dto.stickerUrl = stickerUrl
+        }
 
         // Only insert message into Parent's replies if not already present.
         // This in theory would not be needed since replies is a Set, but
@@ -1029,6 +1040,7 @@ extension MessageDTO {
             isSilent: isSilent,
             quotedMessageId: quotedMessage?.id,
             attachments: uploadedAttachments,
+            stickerUrl: stickerUrl,
             mentionedUserIds: mentionedUserIds,
             mentionedAll: mentionedAll
         )
@@ -1064,6 +1076,7 @@ private extension ChatMessage {
         text = dto.text
         type = MessageType(rawValue: dto.type) ?? .regular
         oldTexts = dto.oldTexts?.map { $0.asModel() }
+        stickerUrl = dto.stickerUrl
         command = dto.command
         createdAt = dto.createdAt.bridgeDate
         locallyCreatedAt = dto.locallyCreatedAt?.bridgeDate

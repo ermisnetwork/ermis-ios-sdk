@@ -425,7 +425,7 @@ public protocol ChannelListControllerDelegate: DataControllerStateDelegate {
     ///
     /// - Parameters:
     ///   - controller: The controller emitting the change callback.
-    ///   - changes: The change to the list of channels.\
+    ///   - changes: The change to the list of channels.
     ///
     func controller(
         _ controller: ChannelListController,

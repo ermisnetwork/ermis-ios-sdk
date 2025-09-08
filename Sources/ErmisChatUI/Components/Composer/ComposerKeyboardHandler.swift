@@ -18,6 +18,7 @@ open class ComposerKeyboardHandler: KeyboardHandler {
     public weak var composerParentVC: UIViewController?
     public weak var composerBottomConstraint: NSLayoutConstraint?
     public weak var messageListVC: MessageListViewController?
+    public weak var composerVC: ComposerViewController?
 
     public let originalBottomConstraintValue: CGFloat
 
@@ -29,11 +30,13 @@ open class ComposerKeyboardHandler: KeyboardHandler {
     public init(
         composerParentVC: UIViewController,
         composerBottomConstraint: NSLayoutConstraint?,
-        messageListVC: MessageListViewController? = nil
+        messageListVC: MessageListViewController? = nil,
+        composerVC: ComposerViewController?
     ) {
         self.messageListVC = messageListVC
         self.composerParentVC = composerParentVC
         self.composerBottomConstraint = composerBottomConstraint
+        self.composerVC = composerVC
         originalBottomConstraintValue = composerBottomConstraint?.constant ?? 0
     }
 
@@ -51,7 +54,13 @@ open class ComposerKeyboardHandler: KeyboardHandler {
             name: UIResponder.keyboardWillShowNotification,
             object: nil
         )
-    }
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardDidHide),
+            name: UIResponder.keyboardDidHideNotification,
+            object: nil
+        )    }
 
     // swiftlint:disable notification_center_detachment
 
@@ -102,5 +111,13 @@ open class ComposerKeyboardHandler: KeyboardHandler {
             composerParentView.layoutIfNeeded()
             self?.messageListVC?.listView.adjustContentInsetToPositionMessagesAtTheTop()
         }
+    }
+
+    @objc open func keyboardDidHide(_ notification: Notification) {
+        DispatchQueue.main.async(execute: {
+            self.composerVC?.textView.resignFirstResponder()
+            self.composerVC?.textView.inputView = nil
+            self.composerVC?.reloadInputViews()
+        })
     }
 }

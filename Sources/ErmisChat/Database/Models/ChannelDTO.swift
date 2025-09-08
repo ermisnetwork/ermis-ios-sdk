@@ -272,7 +272,7 @@ extension NSManagedObjectContext {
         if dto.defaultSortingAt == nil {
             dto.defaultSortingAt = dto.createdAt
         }
-
+        
         if let lastMessageAt = payload.lastMessageAt {
             dto.lastMessageAt = payload.lastMessageAt?.bridgeDate
 

@@ -848,7 +848,6 @@ open class MessageListViewController: _ViewController,
             result.append(contentsOf: message.imageAttachments.compactMap({ $0.imageURL }))
             result.append(contentsOf: message.videoAttachments.compactMap({ $0.thumbnailURL}))
         }
-        log.debug("TTTT CANCLE PREFETCH URLS: \(urls)")
 //        imagePrefetcher.stopPrefetching(with: urls)
     }
 

@@ -180,6 +180,7 @@ class ChannelUpdater: Worker {
     ///   - pinning: Pins the new message. Nil if should not be pinned.
     ///   - isSilent: A flag indicating whether the message is a silent message. Silent messages are special messages that don't increase the unread messages count nor mark a channel as unread.
     ///   - attachments: An array of the attachments for the message.
+    ///   - stickerUrl: The url of sticker.
     ///   - quotedMessageId: An id of the message new message quotes. (inline reply)
     ///   - completion: Called when saving the message to the local DB finishes.
     ///
@@ -191,6 +192,7 @@ class ChannelUpdater: Worker {
         command: String?,
         arguments: String?,
         attachments: [AnyAttachmentPayload] = [],
+        stickerUrl: URL? = nil,
         mentionedUserIds: [UserId],
         mentionedAll: Bool,
         quotedMessageId: MessageId?,
@@ -206,6 +208,7 @@ class ChannelUpdater: Worker {
                 arguments: arguments,
                 parentMessageId: nil,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUserIds: mentionedUserIds,
                 mentionedAll: mentionedAll,
                 isSilent: isSilent,

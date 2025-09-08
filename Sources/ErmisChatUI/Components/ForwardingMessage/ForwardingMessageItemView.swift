@@ -27,24 +27,31 @@ open class ForwardingMessageItemView: _View, UIProvider {
 
     open private(set) lazy var sendButton = createSendButton()
 
+    public private(set) var avatarViewLeadingConstraint: NSLayoutConstraint?
+
     public var content: ForwardingMessageCell.Content? {
         didSet {
             updateContentIfNeeded()
         }
     }
 
+    public var indexPath: IndexPath?
+
     public weak var delegate: ForwardingMessageItemViewDelegate?
 
     // MARK: - Setup
     open override func setUp() {
-
+        sendButton.setContentHuggingPriority(.ermisRequire, for: .horizontal)
+        sendButton.setContentCompressionResistancePriority(.ermisRequire, for: .horizontal)
     }
 
     open override func setUpUI() {
         addSubviews([avatarView, titleLabel, sendButton])
 
         avatarView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 8).isActive = true
-        avatarView.pin(anchors: [.leading], to: self, contant: 16)
+        avatarViewLeadingConstraint = avatarView.leadingAnchor.pin(equalTo: self.leadingAnchor, constant: 16)
+        avatarViewLeadingConstraint?.isActive = true
+
         avatarView.pin(anchors: [.centerY], to: self)
         avatarView.pin(anchors: [.width, .height], to: 40)
 
@@ -99,8 +106,13 @@ open class ForwardingMessageItemView: _View, UIProvider {
         avatarView.content = .init(from: content?.channel)
         titleLabel.text = channelTitleText(for: content?.channel)
         updateSendButton(with: content?.forwardingState)
+        updateAvatarViewLeadingConstraint()
     }
-
+    // MARK: - Action
+    @objc private func onSendButtonTapped() {
+        sendButton.isEnabled = false
+        delegate?.forwardingMessageItemViewDidTapSendButton(self, cid: content?.channel.cid)
+    }
     /// The default channel title text.
     open func channelTitleText(for channel: Channel?) -> String? {
         guard let channel else {
@@ -131,6 +143,11 @@ open class ForwardingMessageItemView: _View, UIProvider {
         }
     }
 
+    private func updateAvatarViewLeadingConstraint() {
+        let isTopic = content?.channel.parentCid != nil
+        avatarViewLeadingConstraint?.constant = isTopic ? 40: 16
+    }
+    // MARK: - Create UI
     open func createSendButton() -> UIButton {
         let button = UIButton()
         button.configuration = .filled()
@@ -142,8 +159,4 @@ open class ForwardingMessageItemView: _View, UIProvider {
             .withAccessibilityIdentifier(identifier: "sendButton")
     }
 
-    @objc private func onSendButtonTapped() {
-        sendButton.isEnabled = false
-        delegate?.forwardingMessageItemViewDidTapSendButton(self, cid: content?.channel.cid)
-    }
 }
