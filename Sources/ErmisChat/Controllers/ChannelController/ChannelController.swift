@@ -1033,7 +1033,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
             guard self?.hasLoadedAllPreviousMessages == true else {
                 return nil
             }
-            return self?.messages.last(where: { $0.type == .regular || $0.type == .reply || $0.type == .system || $0.type == .signal || $0.type == .sticker })?.id
+            return self?.messages.last(where: { $0.type == .regular || $0.type == .reply || $0.type == .system || $0.type == .signal || $0.isSticker })?.id
         }
         
         guard let currentUserRead = channel.reads.first(where: {
