@@ -84,6 +84,8 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         .withoutAutoresizingMaskConstraints
         .withAccessibilityIdentifier(identifier: "attachmentPreviewView")
 
+    open private(set) var stickerPreview: StickerPreview?
+
     open private(set) lazy var voiceRecordingAttachmentQuotedPreview: VoiceRecordingAttachmentQuotedPreview =
         components
             .voiceRecordingAttachmentQuotedPreview
@@ -91,7 +93,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
             .withoutAutoresizingMaskConstraints
 
     /// The size of the attachments preview.s
-    open var attachmentPreviewSize: CGSize { .init(width: 34, height: 34) }
+    open var attachmentPreviewSize: CGSize { .init(width: 44, height: 44) }
 
     /// The component responsible to detect links in the message text.
     public let linkDetector = TextLinkDetector()
@@ -184,6 +186,32 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         containerView.alignment = content?.isRepliedMessageSentByCurrentUser == true ? .trailing : .leading
         updateDescriptionLabel()
         updateQuoteMarkViewPosition()
+
+        if message?.type == .sticker, message?.isDeleted != true {
+            if stickerPreview == nil {
+                let stickerPreview = components.stickerPreview.init()
+                    .withoutAutoresizingMaskConstraints
+                bubbleContainerView.addArrangedSubviews([stickerPreview])
+                self.stickerPreview = stickerPreview
+            }
+
+            guard let stickerPreview, let stickerUrl = message?.stickerUrl else {
+                return
+            }
+            stickerPreview.content = .init(url: stickerUrl, sticker: nil)
+            textView.text = nil
+            NSLayoutConstraint.activate([
+                stickerPreview.widthAnchor.pin(equalToConstant: attachmentPreviewSize.width),
+                stickerPreview.heightAnchor.pin(equalToConstant: attachmentPreviewSize.height)
+            ])
+            bubbleContainerView.spacing = 0
+            return
+        } else {
+            if let stickerPreview {
+                bubbleContainerView.removeArrangedSubview(stickerPreview)
+                bubbleContainerView.spacing = .auto
+            }
+        }
 
         if message?.isDeleted == true || message == nil {
             setDeletedText()
