@@ -10,14 +10,6 @@ open class ForwardingMessageCell: _TableViewCell, UIProvider {
         .forwardingItemView.init()
         .withoutAutoresizingMaskConstraints
 
-    public var content: Content? {
-        didSet {
-            contentDidChanged()
-        }
-    }
-
-    public weak var itemviewDelegate: ForwardingMessageItemViewDelegate?
-
     // MARK: - Setup
     open override func setUp() {
         selectionStyle = .none
@@ -32,20 +24,8 @@ open class ForwardingMessageCell: _TableViewCell, UIProvider {
         contentView.backgroundColor = theme.colors.surface
     }
 
-    open override func contentDidChanged() {
-        itemView.content = content
-        itemView.delegate = itemviewDelegate
-    }
-
     open func createForwardingButton() -> UIButton {
         let button = UIButton()
         return button
-    }
-}
-
-public extension ForwardingMessageCell {
-    struct Content {
-        let channel: Channel
-        let forwardingState: ForwardingMessageViewController.ForwardingState
     }
 }

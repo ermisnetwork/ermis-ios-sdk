@@ -290,6 +290,7 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     ///   - attachments: An array of the attachments for the message.
     ///    `Note`: can be built-in types, custom attachment types conforming to `AttachmentEnvelope` protocol.
     ///   in the response thread.
+    ///   - stickerUrl: The url of sticker.
     ///   - quotedMessageId: An id of the message new message quotes. (inline reply)
     ///   - completion: Called when saving the message to the local DB finishes.
     ///
@@ -297,6 +298,7 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
         messageId: MessageId? = nil,
         text: String,
         attachments: [AnyAttachmentPayload] = [],
+        stickerUrl: URL? = nil,
         mentionedUserIds: [UserId] = [],
         mentionedAll: Bool,
         isSilent: Bool = false,
@@ -313,6 +315,7 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             arguments: nil,
             parentMessageId: parentMessageId,
             attachments: attachments,
+            stickerUrl: stickerUrl,
             mentionedUserIds: mentionedUserIds,
             mentionedAll: mentionedAll,
             isSilent: isSilent,

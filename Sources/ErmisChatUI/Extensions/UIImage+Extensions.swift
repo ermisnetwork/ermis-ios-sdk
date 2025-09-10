@@ -3,6 +3,7 @@
 //
 
 import UIKit
+import ErmisChat
 
 public
 extension UIImage {
@@ -28,8 +29,10 @@ extension UIImage {
 }
 
 extension UIImage {
-    public func temporaryLocalFileUrl(fileName: String? = nil) throws -> URL? {
-        guard let imageData = jpegData(compressionQuality: 1.0) else { return nil }
+    public func temporaryLocalFileUrl(fileName: String? = nil) throws -> URL {
+        guard let imageData = jpegData(compressionQuality: 1.0) else {
+            throw ClientError.Unknown("Failed to convert image to data")
+        }
         let imageName = fileName == nil ? "\(UUID().uuidString).jpg" : "\(fileName!).jpg"
         let documentDirectory = NSTemporaryDirectory()
         let localPath = documentDirectory.appending(imageName)

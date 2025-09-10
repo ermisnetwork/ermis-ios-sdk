@@ -73,6 +73,8 @@ open class ComposerViewController: _ViewController,
         public var threadMessage: ChatMessage?
         /// The attachments of the message.
         public var attachments: [AnyAttachmentPayload]
+        /// The url of the sticker content.
+        public var stickerUrl: URL?
         /// The mentioned users in the message.
         public var mentionedUsers: Set<ChatUser>
         /// A boolean that check is mention all in the message.
@@ -121,6 +123,7 @@ open class ComposerViewController: _ViewController,
             quotingMessage: ChatMessage?,
             threadMessage: ChatMessage?,
             attachments: [AnyAttachmentPayload],
+            stickerUrl: URL?,
             mentionedUsers: Set<ChatUser>,
             mentionedAll: Bool,
             command: Command?,
@@ -132,6 +135,7 @@ open class ComposerViewController: _ViewController,
             self.quotingMessage = quotingMessage
             self.threadMessage = threadMessage
             self.attachments = attachments
+            self.stickerUrl = stickerUrl
             self.mentionedUsers = mentionedUsers
             self.hasMentionedAll = mentionedAll
             self.command = command
@@ -160,6 +164,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: nil,
                 threadMessage: nil,
                 attachments: [],
+                stickerUrl: nil,
                 mentionedUsers: [],
                 mentionedAll: false,
                 command: nil,
@@ -176,6 +181,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: nil,
                 threadMessage: threadMessage,
                 attachments: [],
+                stickerUrl: nil,
                 mentionedUsers: [],
                 mentionedAll: false,
                 command: nil,
@@ -195,6 +201,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: nil,
                 threadMessage: threadMessage,
                 attachments: message.allAttachments.toAnyAttachmentPayload(),
+                stickerUrl: message.stickerUrl,
                 mentionedUsers: message.mentionedUsers,
                 mentionedAll: message.mentionedAll,
                 command: command,
@@ -214,6 +221,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: message,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -229,6 +237,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: [],
+                stickerUrl: nil,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -244,6 +253,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -259,6 +269,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -274,6 +285,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command
@@ -288,6 +300,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command
@@ -920,7 +933,7 @@ open class ComposerViewController: _ViewController,
         self.mentionTokens = mentionTokens
     }
 
-    @objc open func publishMessage(sender: UIButton) {
+    @objc open func publishMessage() {
         if !canSendLinks, inputContainsLinks {
             presentAlert(title: L10n.Composer.LinksDisabled.title,
                          message: L10n.Composer.LinksDisabled.subtitle)
@@ -946,7 +959,7 @@ open class ComposerViewController: _ViewController,
             mentionTokens = []
             channelController?.saveComposerUnsentContent(nil)
         } else {
-            createNewMessage(text: text, stickerUrl: nil)
+            createNewMessage(text: text)
 
             let channel = channelController?.channel
             if !content.hasCommand, let cooldownDuration = channel?.cooldownDuration {
@@ -1072,20 +1085,9 @@ open class ComposerViewController: _ViewController,
 
     /// Creates a new message and notifies the delegate that a new message was created.
     /// - Parameter text: The text content of the message.
-    open func createNewMessage(text: String, stickerUrl: URL?) {
+    open func createNewMessage(text: String) {
         guard let cid = channelController?.cid else { return }
 
-        if let stickerUrl = stickerUrl {
-            channelController?.createNewMessage(
-                text: "",
-                attachments: [],
-                stickerUrl: stickerUrl,
-                mentionedUserIds: [],
-                mentionedAll: false,
-                quotedMessageId: nil
-            )
-            return
-        }
         // If the user included some mentions via suggestions,
         // but then removed them from text, we should remove them from
         // the content we'll send
@@ -1108,6 +1110,7 @@ open class ComposerViewController: _ViewController,
             messageController?.createNewReply(
                 text: text,
                 attachments: content.attachments,
+                stickerUrl: content.stickerUrl,
                 mentionedUserIds: content.mentionedUsers.map(\.userId),
                 mentionedAll: content.hasMentionedAll,
                 quotedMessageId: content.quotingMessage?.id
@@ -1118,7 +1121,7 @@ open class ComposerViewController: _ViewController,
         channelController?.createNewMessage(
             text: text,
             attachments: content.attachments,
-            stickerUrl: nil,
+            stickerUrl: content.stickerUrl,
             mentionedUserIds: content.mentionedUsers.map(\.userId),
             mentionedAll: content.hasMentionedAll,
             quotedMessageId: content.quotingMessage?.id
@@ -1828,7 +1831,7 @@ open class ComposerViewController: _ViewController,
     }
 
     public func voiceRecordingPublishMessage(_ voiceRecordingVC: VoiceRecordingViewController) {
-        publishMessage(sender: composerView.sendButton)
+        publishMessage()
     }
 
     public func voiceRecordingWillBeginRecording(_ voiceRecordingVC: VoiceRecordingViewController) {
@@ -1851,6 +1854,7 @@ open class ComposerViewController: _ViewController,
             quotingMessage: content.quotingMessage,
             threadMessage: content.threadMessage,
             attachments: content.attachments,
+            stickerUrl: content.stickerUrl,
             mentionedUsers: content.mentionedUsers,
             mentionedAll: content.hasMentionedAll,
             command: content.command
@@ -1877,7 +1881,10 @@ open class ComposerViewController: _ViewController,
     public func stickerListViewController(_ viewController: StickerListViewController, didSelectStickerURL url: URL) {
         textView.resignFirstResponder()
         textView.inputView = nil
-        createNewMessage(text: "", stickerUrl: url)
+        content.text = ""
+        content.attachments = []
+        content.stickerUrl = url
+        publishMessage()
     }
     // MARK: - ComposerBlockedViewDelegate
     public func composerBlockedViewDidSelectUnblockUser(in view: ComposerBlockedView) {

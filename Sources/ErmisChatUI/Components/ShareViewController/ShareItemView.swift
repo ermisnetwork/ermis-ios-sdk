@@ -28,7 +28,9 @@ open class ShareItemView: _View, UIProvider {
 
     open private(set) lazy var sendButton = createSendButton()
 
-    public var content: ShareTableViewCell.Content? {
+    public private(set) var avatarViewLeadingConstraint: NSLayoutConstraint?
+
+    public var content: Channel? {
         didSet {
             updateContentIfNeeded()
         }
@@ -38,21 +40,22 @@ open class ShareItemView: _View, UIProvider {
 
     // MARK: - Setup
     open override func setUp() {
-        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        sendButton.setContentHuggingPriority(.ermisRequire, for: .horizontal)
+        sendButton.setContentCompressionResistancePriority(.ermisRequire, for: .horizontal)
     }
 
     open override func setUpUI() {
         addSubviews([avatarView, titleLabel, sendButton])
 
         avatarView.topAnchor.pin(equalTo: self.topAnchor, constant: 12).isActive = true
-        avatarView.pin(anchors: [.leading], to: self, contant: 24)
+        avatarViewLeadingConstraint = avatarView.leadingAnchor.pin(equalTo: self.leadingAnchor, constant: 24)
+        avatarViewLeadingConstraint?.isActive = true
         avatarView.pin(anchors: [.centerY], to: self)
         avatarView.pin(anchors: [.width, .height], to: 60)
 
         titleLabel.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 12).isActive = true
         titleLabel.leadingAnchor.pin(equalTo: avatarView.trailingAnchor, constant: 8).isActive = true
-//        titleLabel.pin(anchors: [.leading], to: self)
+        //        titleLabel.pin(anchors: [.leading], to: self)
         titleLabel.pin(anchors: [.centerY], to: self)
 
         sendButton.leadingAnchor.pin(equalTo: titleLabel.trailingAnchor, constant: 8).isActive = true
@@ -99,10 +102,31 @@ open class ShareItemView: _View, UIProvider {
     }
 
     open override func contentDidChanged() {
-        avatarView.content = content?.avatarContent
-        titleLabel.text = content?.channelDisplayName
+        avatarView.content = .init(from: content)
+        titleLabel.text = channelTitleText(for: content)
+        updateAvatarViewLeadingConstraint()
+    }
+    // MARK: - Action
+    @objc private func onSendButtonTapped() {
+        sendButton.isEnabled = false
+        delegate?.shareItemViewDidTapSendButton(self, cid: content?.cid)
     }
 
+    private func updateAvatarViewLeadingConstraint() {
+        let isTopic = content?.parentCid != nil
+        avatarViewLeadingConstraint?.constant = isTopic ? 54: 24
+    }
+
+    /// The default channel title text.
+    open func channelTitleText(for channel: Channel?) -> String? {
+        guard let channel else {
+            return nil
+        }
+        return formatters
+            .channelName
+            .format(channel: channel, forCurrentUserId: channel.membership?.userId)
+    }
+    // MARK: - Create UI
     open func createSendButton() -> UIButton {
         let button = UIButton()
         button.configuration = .filled()
@@ -113,9 +137,10 @@ open class ShareItemView: _View, UIProvider {
             .withoutAutoresizingMaskConstraints
             .withAccessibilityIdentifier(identifier: "sendButton")
     }
+}
 
-    @objc private func onSendButtonTapped() {
-        sendButton.isEnabled = false
-        delegate?.shareItemViewDidTapSendButton(self, cid: content?.cid)
+public extension ShareItemView {
+    struct Content {
+        let channel: Channel
     }
 }
