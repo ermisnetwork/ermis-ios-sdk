@@ -18,7 +18,7 @@ open class CustomCellViewCatalog {
         if message.type == .signal {
             return components.callViewInjector
         }
-        if message.stickerUrl != nil {
+        if message.isSticker {
             return components.stickerInjector
         }
         let attachmentCounts = message.attachmentCounts

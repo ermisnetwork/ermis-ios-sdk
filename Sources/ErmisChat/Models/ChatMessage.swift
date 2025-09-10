@@ -380,7 +380,12 @@ public extension ChatMessage {
         
         return SignalMessage(signalMessage: text)
     }
-    
+    /// The boolean true if this message contain sticker
+    /// We don't check message type because when reply, the message type will be reply, not sticker.
+    var isSticker: Bool {
+        return stickerUrl != nil || type == .sticker
+    }
+
     /// The message delivery status.
     /// Always returns `nil` when the message is authored by another user.
     /// Always returns `nil` when the message is `system/error/ephemeral/deleted`.

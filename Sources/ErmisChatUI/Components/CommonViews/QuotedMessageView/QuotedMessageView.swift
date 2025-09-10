@@ -187,7 +187,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         updateDescriptionLabel()
         updateQuoteMarkViewPosition()
 
-        if message?.type == .sticker, message?.isDeleted != true {
+        if message?.isSticker == true, message?.isDeleted != true {
             if stickerPreview == nil {
                 let stickerPreview = components.stickerPreview.init()
                     .withoutAutoresizingMaskConstraints
@@ -209,6 +209,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         } else {
             if let stickerPreview {
                 bubbleContainerView.removeArrangedSubview(stickerPreview)
+                self.stickerPreview = nil
                 bubbleContainerView.spacing = .auto
             }
         }

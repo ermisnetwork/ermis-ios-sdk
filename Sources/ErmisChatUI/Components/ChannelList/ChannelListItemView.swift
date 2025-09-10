@@ -197,7 +197,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             } else if previewMessage.type == .signal {
                 return previewMessageTextForCallMessage(messageText: previewMessage.textContent ?? previewMessage.text,
                                                         in: content.channel)
-            } else if previewMessage.type == .sticker {
+            } else if previewMessage.isSticker {
                 let stickerMessage = previewMessageTextForStickerMessage(in: content.channel)
                 if previewMessage.isSentByCurrentUser {
                     return previewMessageTextForCurrentUser(messageText: stickerMessage)
