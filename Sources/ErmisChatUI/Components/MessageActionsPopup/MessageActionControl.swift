@@ -71,9 +71,7 @@ open class MessageActionControl: _Control, ThemeProvider {
             imageTintСolor = theme.colors.error
             titleTextColor = imageTintСolor
         } else {
-            imageTintСolor = content?.isPrimary == true ? tintColor : theme.colors.disabledColorForColor(
-                theme.colors.text
-            )
+            imageTintСolor = content?.isPrimary == true ? tintColor : theme.colors.text
             titleTextColor = theme.colors.text
         }
 

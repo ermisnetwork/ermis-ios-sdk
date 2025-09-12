@@ -212,6 +212,9 @@ public struct Components {
     /// The injector used for injecting voice recording attachment views.
     public var voiceRecordingAttachmentInjector: CustomCellViewInjector.Type = VoiceRecordingAttachmentViewInjector.self
 
+    /// The injector used for injecting sticker views.
+    public var stickerInjector: CustomCellViewInjector.Type = StickerViewInjector.self
+
     /// The injector used for injecting call views.
     public var callViewInjector: CustomCellViewInjector.Type = CallViewInjector.self
 
@@ -258,6 +261,29 @@ public struct Components {
 
     /// The view that shows a video attachment preview inside a message.
     public var videoAttachmentGalleryPreview: VideoAttachmentGalleryPreview.Type = VideoAttachmentGalleryPreview.self
+
+    /// The view that shows a sticker message.
+    public var stickerView: MessageStickerView.Type = MessageStickerView.self
+
+    /// The view for displaying a sticker.
+    public var stickerPreview: StickerPreview.Type = StickerPreview.self
+
+    /// The view for displaying a sticker menu header.
+    public var stickerHeaderView: StickerHeaderView.Type = StickerHeaderView.self
+
+    /// The cell for displaying sticker header
+    public var stickerHeaderCell: StickerHeaderCell.Type = StickerHeaderCell.self
+
+    public var stickerHeaderItemView: StickerHeaderItemView.Type = StickerHeaderItemView.self
+
+    /// The item view inside sticker cell.
+    public var stickerItemView: StickerItemView.Type = StickerItemView.self
+
+    /// The sticker cell displaying sticker content.
+    public var stickerCell: StickerCollectionViewCell.Type = StickerCollectionViewCell.self
+
+    /// The view displaying title of sticker pack.
+    public var stickerPackTitleHeader: StickerPackTitleHeaderView.Type = StickerPackTitleHeaderView.self
 
     /// The view that displays the voice recording attachment preview in composer.
     public var voiceRecordingAttachmentComposerPreview: VoiceRecordingAttachmentComposerPreview
@@ -377,6 +403,11 @@ public struct Components {
     /// The view that displays notice message when direct user is not joined channel yet.
     public var channelInvitingView: ChannelInvitingView.Type = ChannelInvitingView.self
 
+    /// A view show when topic is closed, that either:
+    /// - Displays a notice message if the user don't have permission to reopen it
+    /// - Shows a "Reopen Topic" button if the user has the required permission.
+    public var topicClosedView: TopicClosedView.Type = TopicClosedView.self
+
     /// The view that display invitation action to join or reject in invited room.
     public var channelAcceptInvitationView: ChannelAcceptInvitationView.Type = ChannelAcceptInvitationView.self
 
@@ -449,6 +480,45 @@ public struct Components {
     /// A boolean value that determines whether the Channel list default loading states (empty, error and loading views) are handled by the Ermis SDK. It is false by default.
     /// If it is false, it does not show empty or error views and just shows a spinner indicator for the loading state. If set to true, the empty, error and shimmer loading views are shown instead.
     public var isInvitedChannelListStatesEnabled = false
+    
+    // MARK: - Topic
+    public var topicListVC: TopicListViewController.Type = TopicListViewController.self
+    
+    /// The view in the channel cell that shows channel actions on swipe.
+    public var topicActionsView: SwipeableView.Type = SwipeableView.self
+    
+    /// The cell separator in the channel list.
+    public var topicCellSeparator: UICollectionReusableView.Type = CellSeparatorReusableView.self
+    
+    /// The cell of channel list that show channel informations.
+    public var topicListCell: TopicListCollectionViewCell.Type = TopicListCollectionViewCell.self
+    
+    /// The view that shows channel information.
+    public var topicListItemContentView: TopicListItemView.Type = TopicListItemView.self
+    
+    /// The cell display skeleton loading.
+    public var topicListLoadingViewCell: TopicListLoadingViewCell.Type = TopicListLoadingViewCell.self
+    
+    /// The content view inside the cell responsible to display a skeleton loading view.
+    public var topicListLoadingContentViewCell: TopicListLoadingViewCellContentView.Type = TopicListLoadingViewCellContentView.self
+    
+    /// The view that shows when loading the Channel list.
+    public var topicListLoadingView: TopicListLoadingView.Type = TopicListLoadingView.self
+    
+    /// The view that shows when some error occurred on TopicList.
+    public var topicListErrorView: TopicListErrorView.Type = TopicListErrorView.self
+    
+    /// The view that is displayed when topic list is empty.
+    public var topicListEmptyView: TopicListEmptyView.Type = TopicListEmptyView.self
+    
+    /// The collection view layout of the topic list.
+    public var topicListLayout: UICollectionViewLayout.Type = ListCollectionViewLayout.self
+    /// A boolean value that determines whether the Topic list default loading states (empty, error and loading views) are handled by the Ermis SDK. It is false by default.
+    /// If it is false, it does not show empty or error views and just shows a spinner indicator for the loading state. If set to true, the empty, error and shimmer loading views are shown instead.
+    public var isTopiclListStatesEnabled = false
+    /// A boolean value that determines whether the Topic list default loading states (empty, error and loading views) are handled by the Ermis SDK. It is false by default.
+    /// If it is false, it does not show empty or error views and just shows a spinner indicator for the loading state. If set to true, the empty, error and shimmer loading views are shown instead.
+    public var isInvitedTopicListStatesEnabled = false
 
     // MARK: - Channel Search
 
@@ -535,6 +605,9 @@ public struct Components {
     /// The view that displays the document attachment.
     public var messageComposerFileAttachmentView: FileAttachmentView.Type = FileAttachmentView.self
 
+    /// The view controller that display sticker for user to select.
+    public var stickerList: StickerListViewController.Type = StickerListViewController.self
+
     /// The view that displays image attachment preview in composer.
     public var imageAttachmentComposerPreview: ImageAttachmentComposerPreview
         .Type = ImageAttachmentComposerPreview.self
@@ -615,6 +688,10 @@ public struct Components {
     /// The router responsible for navigation on channel list screen.
     @available(iOSApplicationExtension, unavailable)
     public var channelListRouter: ChannelListRouter.Type = ChannelListRouter.self
+    
+    /// The router responsible for navigation on topic list screen.
+    @available(iOSApplicationExtension, unavailable)
+    public var topicListRouter: TopicListRouter.Type = TopicListRouter.self
 
     /// The router responsible for navigation on message list screen.
     public var messageListRouter: MessageListRouter.Type = MessageListRouter.self

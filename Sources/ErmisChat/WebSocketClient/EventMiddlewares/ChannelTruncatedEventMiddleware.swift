@@ -14,17 +14,17 @@ struct ChannelTruncatedEventMiddleware: EventMiddleware {
         }
 
         do {
-            let cid = truncatedEvent.channel.cid
+            let cid = truncatedEvent.cid
             guard let channelDTO = session.channel(cid: cid) else {
                 throw ClientError.ChannelDoesNotExist(cid: cid)
             }
 
-            channelDTO.truncatedAt = truncatedEvent.channel.truncatedAt?.bridgeDate
+            channelDTO.truncatedAt = truncatedEvent.createdAt.bridgeDate
 
             // Until BE returns valid values for user's read after truncation, we are clearing them.
             if let userId = truncatedEvent.user?.id, let read = session.loadChannelRead(cid: cid, userId: userId) {
                 read.lastReadMessageId = nil
-                read.lastReadAt = truncatedEvent.channel.truncatedAt?.bridgeDate ?? DBDate()
+                read.lastReadAt = truncatedEvent.createdAt.bridgeDate ?? DBDate()
                 read.unreadMessageCount = 0
             }
         } catch {

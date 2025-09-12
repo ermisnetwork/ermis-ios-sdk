@@ -111,4 +111,22 @@ class ChannelRepository {
             completion?(result)
         }
     }
+    
+    /// Enable/Disable topic for the specific channel.
+    /// - Parameters:
+    ///  - cid: The channel identifier.
+    ///  - isEnable: The boolean value, `true` if we want to enable topic for the channel with given `cid`.
+    ///  - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    func setTopic(cid: ChannelId, projectId: String, isEnable: Bool, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
+        apiClient.request(endpoint: .enableTopic(cid: cid,
+                                                 projectId: projectId,
+                                                 isEnable: isEnable)) { [weak self] result in
+            if let error = result.error {
+                completion?(.failure(error))
+                return
+            }
+            completion?(result)
+        }
+    }
+        
 }

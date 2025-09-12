@@ -91,34 +91,40 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
         _ controller: ChannelListController,
         didChangeChannels changes: [ListChange<Channel>]
     ) {
-        tableView.reloadData()
+        reloadChannels()
     }
 
     public func controller(_ controller: DataController, didChangeState state: DataController.State) {
         switch state {
         case .localDataFetched:
-            tableView.reloadData()
+            reloadChannels()
         case .remoteDataFetched:
-            tableView.reloadData()
+            reloadChannels()
         default:
             break
         }
     }
-
     // MARK: - TableView
     open func numberOfSections(in tableView: UITableView) -> Int {
-        return 1
+        return displayChannels.count
     }
 
     open func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return displayChannels.count
+        let channel = displayChannels[section]
+        if channel.topicsEnabled {
+            return channel.topics?.count ?? 1
+        }
+
+        return 1
     }
 
     open func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(with: components.forwardingMessageCell.self, for: indexPath)
-        cell.itemviewDelegate = self
-        let channel = displayChannels[indexPath.row]
-        cell.content = .init(channel: channel, forwardingState: forwardingState(of: channel))
+        cell.itemView.delegate = self
+        if let channel = channel(at: indexPath) {
+            cell.itemView.content = .init(channel: channel, forwardingState: forwardingState(of: channel))
+        }
+        cell.itemView.indexPath = indexPath
         return cell
     }
 
@@ -139,7 +145,7 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
             DispatchQueue.main.async {
                 if let index = self.displayChannels.firstIndex(where: { $0.cid == channel.cid }),
                    let cell = self.tableView.cellForRow(at: IndexPath(row: index, section: 0)) as? ForwardingMessageCell {
-                    cell.content = .init(channel: channel, forwardingState: state)
+                    cell.itemView.content = .init(channel: channel, forwardingState: state)
                 }
             }
         }
@@ -157,6 +163,15 @@ open class ForwardingMessageViewController: _ViewController, UIProvider, Channel
             predicate.evaluate(with: $0.name) && $0.cid != message?.cid
         }
     }
+
+    private func channel(at indexPath: IndexPath) -> Channel? {
+        let channel = displayChannels[indexPath.section]
+        if channel.topicsEnabled {
+            return channel.topics?[safe: indexPath.row]
+        }
+
+        return channel
+    }
 }
 // MARK: - UISearchControllerDelegate
 extension ForwardingMessageViewController: UISearchControllerDelegate, UISearchResultsUpdating {
@@ -173,7 +188,9 @@ extension ForwardingMessageViewController: UISearchControllerDelegate, UISearchR
 // MARK: - ForwardinMessageItemViewDelegate
 extension ForwardingMessageViewController: ForwardingMessageItemViewDelegate {
     public func forwardingMessageItemViewDidTapSendButton(_ view: ForwardingMessageItemView, cid: ChannelId?) {
-        guard let message, let channel = channels.first(where: { $0.cid == cid }) else {
+        guard let message,
+              let indexPath = view.indexPath,
+              let channel = channel(at: indexPath) else {
             return
         }
         setForwardingState(.forwarding, for: channel)

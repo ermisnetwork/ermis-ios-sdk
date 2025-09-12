@@ -34,6 +34,21 @@
 "channe.invitation.not-enough-tokens" = "Not enough tokens!";
 /// Show in channel condition required alert when user don't have enough conditions to join channel
 "channel.invitation.re-check" = "Re-check";
+
+/// Show as parent channel display name when view as topic
+"topic.parent-channel-display-name" = "General";
+/// Show in channel vc when topic is closed, and user can't reopen this topic.
+"topic.closed" = "THIS TOPIC IS CLOSED";
+/// Show in channel vc when topic is closed, and user can reopen this topic.
+"topic.re-open" = "Reopen Topic";
+/// Show as title of alert show when re open topic.
+"topic.re-open-alert.title" = "Reopen Topic";
+/// Show as message of alert show when re open topic.
+"topic.re-open-alert.message" = "Are you sure you want to reopen this topic?";
+/// Show as title of alert show when re close topic.
+"topic.close-alert.title" = "Close Topic";
+/// Show as message of alert show when re open topic.
+"topic.close-alert.message" = "Are you sure you want to close this topic?";
 /// Shown when the channel list is empty as a title text.
 "channelList.empty.title" = "Start chat";
 /// Shown when the channel list is empty as a subtitle text.
@@ -58,6 +73,9 @@
 /// Shown in the channel list preview when the last message is a voice recording.
 "channelList.preview.voice.recording" = "Voice message";
 
+/// Shown in the channel list preview when the last message is a sticker.
+"channelList.preview.sticker" = "Sticker";
+
 /// Show as last message when cancel audio/video call.
 "channelList.lastMessage.cancel-audio-call" = "Cancel audio call";
 "channelList.lastMessage.cancel-video-call" = "Cancel video call";
@@ -81,7 +99,7 @@
 /// Shown in the message actions popup for the thread reply action.
 "message.actions.thread-reply" = "Thread Reply";
 /// Shown in the message actions popup for the edit message action.
-"message.actions.edit" = "Edit Message";
+"message.actions.edit" = "Edit";
 /// Shown in the message actions popup for the download message action.
 "message.actions.download" = "Download";
 /// Shown as a text in the popup when downloading message success.
@@ -89,7 +107,7 @@
 /// Shown as a text in the popup when downloading message failure.
 "message.actions.download.failure-title" = "Download failed. Please try again later.";
 /// Shown in the message actions popup for the copy message action.
-"message.actions.copy" = "Copy Message";
+"message.actions.copy" = "Copy";
 /// Shown as a text in the popup when copying message success.
 "message.actions.copy.success-title" = "Message copied to clipboard.";
 /// Shown in the message actions popup for the forward message action.
@@ -99,7 +117,7 @@
 /// Shown as a text in the popup when forwarding message failure.
 "message.actions.forward.failure-title" = "Unable to forward the message. Please try again.";
 /// Shown in the message actions popup for the delete message action.
-"message.actions.delete" = "Delete Message";
+"message.actions.delete" = "Delete";
 /// Shown as a title in the confirmation popup when deleting a message.
 "message.actions.delete.confirmation-title" = "Delete Message";
 /// Shown as a text in the confirmation popup when deleting a message.
@@ -116,9 +134,9 @@
 /// Displayed only when the message was not sent successfully.
 "message.actions.resend" = "Resend";
 /// Shown in the message actions popup for the flag message action.
-"message.actions.flag" = "Flag Message";
+"message.actions.flag" = "Flag";
 /// Shown as a text in the confirmation popup when flagging a message.
-"message.actions.flag.confirmation-title" = "Flag Message";
+"message.actions.flag.confirmation-title" = "Flag";
 /// Shown as a text in the confirmation popup when flagging a message.
 "message.actions.flag.confirmation-message" = "Do you want to send a copy of this message to a moderator for further investigation?";
 /// Shown in the message actions popup for marking message as unread.

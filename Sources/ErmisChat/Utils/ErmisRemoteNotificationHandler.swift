@@ -66,6 +66,7 @@ enum PushNotificationError: Error {
 
 public class PushNotificationInfo {
     public let cid: ChannelId?
+    public let parentCid: ChannelId?
     public let messageId: MessageId?
     public let eventType: EventType?
     public let custom: [String: String]?
@@ -87,6 +88,12 @@ public class PushNotificationInfo {
             self.cid = try? ChannelId(cid: cid)
         } else {
             cid = nil
+        }
+
+        if let parentCid = payload["parent_cid"] as? String {
+            self.parentCid = try? ChannelId(cid: parentCid)
+        } else {
+            parentCid = nil
         }
 
         if EventType.messageNew.rawValue == type,

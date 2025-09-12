@@ -172,6 +172,7 @@ class MessageUpdater: Worker {
     ///   - parentMessageId: The `MessageId` of the message this message replies to.
     ///   - attachments: An array of the attachments for the message.
     ///   in the response thread.
+    ///   - stickerUrl: The url of sticker.
     ///   - quotedMessageId: An id of the message new message quotes. (inline reply)
     ///   - completion: Called when saving the message to the local DB finishes.
     ///
@@ -183,6 +184,7 @@ class MessageUpdater: Worker {
         arguments: String?,
         parentMessageId: MessageId,
         attachments: [AnyAttachmentPayload],
+        stickerUrl: URL?,
         mentionedUserIds: [UserId],
         mentionedAll: Bool,
         isSilent: Bool,
@@ -199,6 +201,7 @@ class MessageUpdater: Worker {
                 arguments: arguments,
                 parentMessageId: parentMessageId,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUserIds: mentionedUserIds,
                 mentionedAll: mentionedAll,
                 isSilent: isSilent,

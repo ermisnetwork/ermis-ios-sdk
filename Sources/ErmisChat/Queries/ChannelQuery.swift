@@ -12,6 +12,8 @@ public struct ChannelQuery: Encodable {
         case members
         case watchers
         case projectId = "project_id"
+        case parentCid = "parent_cid"
+        case topicCid = "topic_cid"
     }
 
     /// Channel id this query handles.
@@ -27,7 +29,14 @@ public struct ChannelQuery: Encodable {
     /// ChannelCreatePayload that is needed only when creating channel
     let channelPayload: ChannelEditDetailPayload?
 
+    /// The project id this query handles.
     let projectId: String
+    
+    /// The parent channel id this query handles, if any.
+    let parentCid: ChannelId?
+    
+    /// The topic channel id this query handles, if any.
+    let topicCid: ChannelId?
 
     /// `ChannelId` this query handles.
     /// If `id` part is missing then it's impossible to create valid `ChannelId`.
@@ -44,6 +53,8 @@ public struct ChannelQuery: Encodable {
     ///   - watchersLimit: a number of watchers for the channel to be retrieved.
     public init(
         cid: ChannelId,
+        parentCid: ChannelId? = nil,
+        topicCid: ChannelId? = nil,
         pageSize: Int? = .messagesPageSize,
         paginationParameter: PaginationParameter? = nil,
         membersLimit: Int? = nil,
@@ -54,22 +65,29 @@ public struct ChannelQuery: Encodable {
         channelPayload = nil
 
         pagination = MessagesPagination(pageSize: pageSize ?? .messagesPageSize, parameter: paginationParameter)
+        self.parentCid = parentCid
         self.membersLimit = membersLimit
         self.watchersLimit = watchersLimit
         self.projectId = cid.projectId
+        self.topicCid = topicCid
     }
 
     /// Init a channel query.
     /// - Parameters:
     ///   - channelPayload: a payload that has data needed for channel creation.
-    init(channelPayload: ChannelEditDetailPayload, projectId: String) {
+    init(channelPayload: ChannelEditDetailPayload,
+         projectId: String,
+         parentCid: ChannelId? = nil,
+         topicCid: ChannelId? = nil) {
         id = channelPayload.id
         type = channelPayload.type
         self.channelPayload = channelPayload
         pagination = nil
         membersLimit = nil
         watchersLimit = nil
+        self.parentCid = parentCid
         self.projectId = projectId
+        self.topicCid = topicCid
     }
 
     /// Init a channel query.
@@ -95,6 +113,13 @@ public struct ChannelQuery: Encodable {
         try membersLimit.map { try container.encode(Pagination(pageSize: $0), forKey: .members) }
         try watchersLimit.map { try container.encode(Pagination(pageSize: $0), forKey: .watchers) }
         try container.encodeIfPresent(projectId, forKey: .projectId)
+        if let parentCid = parentCid {
+            try container.encode(parentCid.rawValue, forKey: .parentCid)
+        }
+        
+        if let topicCid = topicCid {
+            try container.encode(topicCid.rawValue, forKey: .topicCid)
+        }
     }
 }
 

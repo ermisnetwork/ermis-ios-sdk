@@ -5,667 +5,690 @@ import Foundation
 
 // MARK: - Strings
 
-internal enum L10n {
+public enum L10n {
   /// %d of %d
-  internal static func currentSelection(_ p1: Int, _ p2: Int) -> String {
+  public static func currentSelection(_ p1: Int, _ p2: Int) -> String {
     return L10n.tr("Localizable", "current-selection", p1, p2)
   }
   /// From
-  internal static var from: String { L10n.tr("Localizable", "from") }
+  public static var from: String { L10n.tr("Localizable", "from") }
   /// No preview available
-  internal static var noPreviewAvailable: String { L10n.tr("Localizable", "no_preview_available") }
+  public static var noPreviewAvailable: String { L10n.tr("Localizable", "no_preview_available") }
   /// You
-  internal static var you: String { L10n.tr("Localizable", "you") }
+  public static var you: String { L10n.tr("Localizable", "you") }
 
-  internal enum Alert {
-    internal enum Actions {
+  public enum Alert {
+    public enum Actions {
       /// Cancel
-      internal static var cancel: String { L10n.tr("Localizable", "alert.actions.cancel") }
+      public static var cancel: String { L10n.tr("Localizable", "alert.actions.cancel") }
       /// Delete
-      internal static var delete: String { L10n.tr("Localizable", "alert.actions.delete") }
+      public static var delete: String { L10n.tr("Localizable", "alert.actions.delete") }
       /// Flag
-      internal static var flag: String { L10n.tr("Localizable", "alert.actions.flag") }
+      public static var flag: String { L10n.tr("Localizable", "alert.actions.flag") }
       /// Ok
-      internal static var ok: String { L10n.tr("Localizable", "alert.actions.ok") }
+      public static var ok: String { L10n.tr("Localizable", "alert.actions.ok") }
       /// Unpin
-      internal static var unpin: String { L10n.tr("Localizable", "alert.actions.unpin") }
+      public static var unpin: String { L10n.tr("Localizable", "alert.actions.unpin") }
     }
-    internal enum Title {
+    public enum Title {
       /// Error
-      internal static var error: String { L10n.tr("Localizable", "alert.title.error") }
+      public static var error: String { L10n.tr("Localizable", "alert.title.error") }
       /// Info
-      internal static var info: String { L10n.tr("Localizable", "alert.title.info") }
+      public static var info: String { L10n.tr("Localizable", "alert.title.info") }
       /// Success
-      internal static var success: String { L10n.tr("Localizable", "alert.title.success") }
+      public static var success: String { L10n.tr("Localizable", "alert.title.success") }
     }
   }
 
-  internal enum Attachment {
+  public enum Attachment {
     /// File size exceeds the limit. Maximum allowed: 100MB.
-    internal static var maxSizeExceeded: String { L10n.tr("Localizable", "attachment.max-size-exceeded") }
+    public static var maxSizeExceeded: String { L10n.tr("Localizable", "attachment.max-size-exceeded") }
   }
 
-  internal enum Audio {
-    internal enum Player {
+  public enum Audio {
+    public enum Player {
       /// x%@
-      internal static func rate(_ p1: Any) -> String {
+      public static func rate(_ p1: Any) -> String {
         return L10n.tr("Localizable", "audio.player.rate", String(describing: p1))
       }
     }
   }
 
-  internal enum Channe {
-    internal enum Invitation {
+  public enum Channe {
+    public enum Invitation {
       /// Not enough tokens!
-      internal static var notEnoughTokens: String { L10n.tr("Localizable", "channe.invitation.not-enough-tokens") }
+      public static var notEnoughTokens: String { L10n.tr("Localizable", "channe.invitation.not-enough-tokens") }
     }
   }
 
-  internal enum Channel {
-    internal enum Invitation {
+  public enum Channel {
+    public enum Invitation {
       /// Accept the invite to see all messages of this group
-      internal static var accceptRequireMessage: String { L10n.tr("Localizable", "channel.invitation.accceptRequireMessage") }
+      public static var accceptRequireMessage: String { L10n.tr("Localizable", "channel.invitation.accceptRequireMessage") }
       /// Accept the invite to see all messages of this conversation
-      internal static var directAccceptRequireMessage: String { L10n.tr("Localizable", "channel.invitation.directAccceptRequireMessage") }
+      public static var directAccceptRequireMessage: String { L10n.tr("Localizable", "channel.invitation.directAccceptRequireMessage") }
       /// Get tokens
-      internal static var getTokens: String { L10n.tr("Localizable", "channel.invitation.get-tokens") }
+      public static var getTokens: String { L10n.tr("Localizable", "channel.invitation.get-tokens") }
       /// Join group %@
-      internal static func joinChannel(_ p1: Any) -> String {
+      public static func joinChannel(_ p1: Any) -> String {
         return L10n.tr("Localizable", "channel.invitation.join-channel", String(describing: p1))
       }
       /// %@ needs to accept your invitation to see the messages you've sent.
-      internal static func pendingUserNeedAccept(_ p1: Any) -> String {
+      public static func pendingUserNeedAccept(_ p1: Any) -> String {
         return L10n.tr("Localizable", "channel.invitation.pendingUserNeedAccept", String(describing: p1))
       }
       /// Re-check
-      internal static var reCheck: String { L10n.tr("Localizable", "channel.invitation.re-check") }
+      public static var reCheck: String { L10n.tr("Localizable", "channel.invitation.re-check") }
       /// You need to hold any of tokens:
-      internal static var requiredTokenMessage: String { L10n.tr("Localizable", "channel.invitation.required-token-message") }
+      public static var requiredTokenMessage: String { L10n.tr("Localizable", "channel.invitation.required-token-message") }
     }
-    internal enum Item {
+    public enum Item {
       /// Audio
-      internal static var audio: String { L10n.tr("Localizable", "channel.item.audio") }
+      public static var audio: String { L10n.tr("Localizable", "channel.item.audio") }
       /// No messages
-      internal static var emptyMessages: String { L10n.tr("Localizable", "channel.item.empty-messages") }
+      public static var emptyMessages: String { L10n.tr("Localizable", "channel.item.empty-messages") }
       /// Photo
-      internal static var photo: String { L10n.tr("Localizable", "channel.item.photo") }
+      public static var photo: String { L10n.tr("Localizable", "channel.item.photo") }
       /// Video
-      internal static var video: String { L10n.tr("Localizable", "channel.item.video") }
-      internal enum Search {
+      public static var video: String { L10n.tr("Localizable", "channel.item.video") }
+      public enum Search {
         ///  in %@
-        internal static func `in`(_ p1: Any) -> String {
+        public static func `in`(_ p1: Any) -> String {
           return L10n.tr("Localizable", "channel.item.search.in", String(describing: p1))
         }
       }
     }
-    internal enum Name {
+    public enum Name {
       /// + %@ more
-      internal static func andXMore(_ p1: Any) -> String {
+      public static func andXMore(_ p1: Any) -> String {
         return L10n.tr("Localizable", "channel.name.andXMore", String(describing: p1))
       }
       /// No Group
-      internal static var missing: String { L10n.tr("Localizable", "channel.name.missing") }
+      public static var missing: String { L10n.tr("Localizable", "channel.name.missing") }
     }
   }
 
-  internal enum ChannelList {
+  public enum ChannelList {
     /// Search
-    internal static var search: String { L10n.tr("Localizable", "channelList.search") }
-    internal enum Empty {
+    public static var search: String { L10n.tr("Localizable", "channelList.search") }
+    public enum Empty {
       /// START CHAT
-      internal static var button: String { L10n.tr("Localizable", "channelList.empty.button") }
+      public static var button: String { L10n.tr("Localizable", "channelList.empty.button") }
       /// Start conversations or bring your friends onboard.
-      internal static var subtitle: String { L10n.tr("Localizable", "channelList.empty.subtitle") }
+      public static var subtitle: String { L10n.tr("Localizable", "channelList.empty.subtitle") }
       /// Start chat
-      internal static var title: String { L10n.tr("Localizable", "channelList.empty.title") }
+      public static var title: String { L10n.tr("Localizable", "channelList.empty.title") }
     }
-    internal enum Error {
+    public enum Error {
       /// Error loading groups
-      internal static var message: String { L10n.tr("Localizable", "channelList.error.message") }
+      public static var message: String { L10n.tr("Localizable", "channelList.error.message") }
     }
-    internal enum LastMessage {
+    public enum LastMessage {
       /// Cancel audio call
-      internal static var cancelAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.cancel-audio-call") }
+      public static var cancelAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.cancel-audio-call") }
       /// Cancel video call
-      internal static var cancelVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.cancel-video-call") }
+      public static var cancelVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.cancel-video-call") }
       /// Draft
-      internal static var draft: String { L10n.tr("Localizable", "channelList.lastMessage.draft") }
+      public static var draft: String { L10n.tr("Localizable", "channelList.lastMessage.draft") }
       /// Incoming audio call
-      internal static var incomingAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.incoming-audio-call") }
+      public static var incomingAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.incoming-audio-call") }
       /// Incoming video call
-      internal static var incomingVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.incoming-video-call") }
+      public static var incomingVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.incoming-video-call") }
       /// Missed audio call
-      internal static var missedAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.missed-audio-call") }
+      public static var missedAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.missed-audio-call") }
       /// Missed video call
-      internal static var missedVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.missed-video-call") }
+      public static var missedVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.missed-video-call") }
       /// Outgoing audio call
-      internal static var outgoingAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.outgoing-audio-call") }
+      public static var outgoingAudioCall: String { L10n.tr("Localizable", "channelList.lastMessage.outgoing-audio-call") }
       /// Outgoing video call
-      internal static var outgoingVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.outgoing-video-call") }
+      public static var outgoingVideoCall: String { L10n.tr("Localizable", "channelList.lastMessage.outgoing-video-call") }
     }
-    internal enum OngoingCall {
+    public enum OngoingCall {
       /// Tap to return call
-      internal static var tapToReturnCall: String { L10n.tr("Localizable", "channelList.ongoing-call.tap-to-return-call") }
+      public static var tapToReturnCall: String { L10n.tr("Localizable", "channelList.ongoing-call.tap-to-return-call") }
     }
-    internal enum Preview {
-      internal enum Voice {
+    public enum Preview {
+      /// Sticker
+      public static var sticker: String { L10n.tr("Localizable", "channelList.preview.sticker") }
+      public enum Voice {
         /// Voice message
-        internal static var recording: String { L10n.tr("Localizable", "channelList.preview.voice.recording") }
+        public static var recording: String { L10n.tr("Localizable", "channelList.preview.voice.recording") }
       }
     }
-    internal enum Search {
-      internal enum Empty {
+    public enum Search {
+      public enum Empty {
         /// No results for %@
-        internal static func subtitle(_ p1: Any) -> String {
+        public static func subtitle(_ p1: Any) -> String {
           return L10n.tr("Localizable", "channelList.search.empty.subtitle", String(describing: p1))
         }
       }
     }
   }
 
-  internal enum Composer {
+  public enum Composer {
     /// Join
-    internal static var joinButton: String { L10n.tr("Localizable", "composer.join-button") }
+    public static var joinButton: String { L10n.tr("Localizable", "composer.join-button") }
     /// Join group to send message.
-    internal static var joinChannelTitle: String { L10n.tr("Localizable", "composer.join-channel-title") }
-    internal enum Checkmark {
+    public static var joinChannelTitle: String { L10n.tr("Localizable", "composer.join-channel-title") }
+    public enum Checkmark {
       /// Also send as direct message
-      internal static var directMessageReply: String { L10n.tr("Localizable", "composer.checkmark.direct-message-reply") }
+      public static var directMessageReply: String { L10n.tr("Localizable", "composer.checkmark.direct-message-reply") }
     }
-    internal enum Filterwords {
+    public enum Filterwords {
       /// The content you entered contains blocked keywords
-      internal static var contentContainBlockedKeywords: String { L10n.tr("Localizable", "composer.filterwords.content-contain-blocked-keywords") }
+      public static var contentContainBlockedKeywords: String { L10n.tr("Localizable", "composer.filterwords.content-contain-blocked-keywords") }
     }
-    internal enum LinksDisabled {
+    public enum LinksDisabled {
       /// Members in this group are not allowed to send links.
-      internal static var subtitle: String { L10n.tr("Localizable", "composer.links-disabled.subtitle") }
+      public static var subtitle: String { L10n.tr("Localizable", "composer.links-disabled.subtitle") }
       /// Links are disabled
-      internal static var title: String { L10n.tr("Localizable", "composer.links-disabled.title") }
+      public static var title: String { L10n.tr("Localizable", "composer.links-disabled.title") }
     }
-    internal enum Menu {
+    public enum Menu {
       /// Create Poll
-      internal static var createPoll: String { L10n.tr("Localizable", "composer.menu.create-poll") }
+      public static var createPoll: String { L10n.tr("Localizable", "composer.menu.create-poll") }
       /// Location
-      internal static var location: String { L10n.tr("Localizable", "composer.menu.location") }
+      public static var location: String { L10n.tr("Localizable", "composer.menu.location") }
       /// Share File
-      internal static var shareFile: String { L10n.tr("Localizable", "composer.menu.share-file") }
+      public static var shareFile: String { L10n.tr("Localizable", "composer.menu.share-file") }
     }
-    internal enum Picker {
+    public enum Picker {
       /// Camera
-      internal static var camera: String { L10n.tr("Localizable", "composer.picker.camera") }
+      public static var camera: String { L10n.tr("Localizable", "composer.picker.camera") }
       /// Cancel
-      internal static var cancel: String { L10n.tr("Localizable", "composer.picker.cancel") }
+      public static var cancel: String { L10n.tr("Localizable", "composer.picker.cancel") }
       /// File
-      internal static var file: String { L10n.tr("Localizable", "composer.picker.file") }
+      public static var file: String { L10n.tr("Localizable", "composer.picker.file") }
       /// Choose attachment type: 
-      internal static var fileTitle: String { L10n.tr("Localizable", "composer.picker.file-title") }
+      public static var fileTitle: String { L10n.tr("Localizable", "composer.picker.file-title") }
       /// Photo or Video
-      internal static var media: String { L10n.tr("Localizable", "composer.picker.media") }
+      public static var media: String { L10n.tr("Localizable", "composer.picker.media") }
       /// Choose images source: 
-      internal static var photoTitle: String { L10n.tr("Localizable", "composer.picker.photo-title") }
+      public static var photoTitle: String { L10n.tr("Localizable", "composer.picker.photo-title") }
     }
-    internal enum Placeholder {
+    public enum Placeholder {
       /// Write a message
-      internal static var message: String { L10n.tr("Localizable", "composer.placeholder.message") }
+      public static var message: String { L10n.tr("Localizable", "composer.placeholder.message") }
       /// You can't send messages in this group
-      internal static var messageDisabled: String { L10n.tr("Localizable", "composer.placeholder.messageDisabled") }
+      public static var messageDisabled: String { L10n.tr("Localizable", "composer.placeholder.messageDisabled") }
       /// Slow mode ON
-      internal static var slowMode: String { L10n.tr("Localizable", "composer.placeholder.slowMode") }
+      public static var slowMode: String { L10n.tr("Localizable", "composer.placeholder.slowMode") }
     }
-    internal enum QuotedMessage {
+    public enum QuotedMessage {
       /// Photo
-      internal static var photo: String { L10n.tr("Localizable", "composer.quoted-message.photo") }
+      public static var photo: String { L10n.tr("Localizable", "composer.quoted-message.photo") }
     }
-    internal enum Suggestions {
-      internal enum Commands {
+    public enum Suggestions {
+      public enum Commands {
         /// Instant Commands
-        internal static var header: String { L10n.tr("Localizable", "composer.suggestions.commands.header") }
+        public static var header: String { L10n.tr("Localizable", "composer.suggestions.commands.header") }
       }
     }
-    internal enum Title {
+    public enum Title {
       /// Edit Message
-      internal static var edit: String { L10n.tr("Localizable", "composer.title.edit") }
+      public static var edit: String { L10n.tr("Localizable", "composer.title.edit") }
       /// Reply to Message
-      internal static var reply: String { L10n.tr("Localizable", "composer.title.reply") }
+      public static var reply: String { L10n.tr("Localizable", "composer.title.reply") }
     }
-    internal enum UserBlocked {
+    public enum UserBlocked {
       /// You have blocked %@.
-      internal static func title(_ p1: Any) -> String {
+      public static func title(_ p1: Any) -> String {
         return L10n.tr("Localizable", "composer.user-blocked.title", String(describing: p1))
       }
       /// Unblock
-      internal static var unblock: String { L10n.tr("Localizable", "composer.user-blocked.unblock") }
+      public static var unblock: String { L10n.tr("Localizable", "composer.user-blocked.unblock") }
     }
   }
 
-  internal enum ContactList {
-    internal enum Empty {
+  public enum ContactList {
+    public enum Empty {
       /// No contacts
-      internal static var title: String { L10n.tr("Localizable", "contactList.empty.title") }
+      public static var title: String { L10n.tr("Localizable", "contactList.empty.title") }
     }
   }
 
-  internal enum Dates {
+  public enum Dates {
     /// last seen %d days ago
-    internal static func timeAgoDaysPlural(_ p1: Int) -> String {
+    public static func timeAgoDaysPlural(_ p1: Int) -> String {
       return L10n.tr("Localizable", "dates.time-ago-days-plural", p1)
     }
     /// last seen one day ago
-    internal static var timeAgoDaysSingular: String { L10n.tr("Localizable", "dates.time-ago-days-singular") }
+    public static var timeAgoDaysSingular: String { L10n.tr("Localizable", "dates.time-ago-days-singular") }
     /// last seen %d hours ago
-    internal static func timeAgoHoursPlural(_ p1: Int) -> String {
+    public static func timeAgoHoursPlural(_ p1: Int) -> String {
       return L10n.tr("Localizable", "dates.time-ago-hours-plural", p1)
     }
     /// last seen one hour ago
-    internal static var timeAgoHoursSingular: String { L10n.tr("Localizable", "dates.time-ago-hours-singular") }
+    public static var timeAgoHoursSingular: String { L10n.tr("Localizable", "dates.time-ago-hours-singular") }
     /// last seen %d minutes ago
-    internal static func timeAgoMinutesPlural(_ p1: Int) -> String {
+    public static func timeAgoMinutesPlural(_ p1: Int) -> String {
       return L10n.tr("Localizable", "dates.time-ago-minutes-plural", p1)
     }
     /// last seen one minute ago
-    internal static var timeAgoMinutesSingular: String { L10n.tr("Localizable", "dates.time-ago-minutes-singular") }
+    public static var timeAgoMinutesSingular: String { L10n.tr("Localizable", "dates.time-ago-minutes-singular") }
     /// last seen %d months ago
-    internal static func timeAgoMonthsPlural(_ p1: Int) -> String {
+    public static func timeAgoMonthsPlural(_ p1: Int) -> String {
       return L10n.tr("Localizable", "dates.time-ago-months-plural", p1)
     }
     /// last seen one month ago
-    internal static var timeAgoMonthsSingular: String { L10n.tr("Localizable", "dates.time-ago-months-singular") }
+    public static var timeAgoMonthsSingular: String { L10n.tr("Localizable", "dates.time-ago-months-singular") }
     /// last seen %d seconds ago
-    internal static func timeAgoSecondsPlural(_ p1: Int) -> String {
+    public static func timeAgoSecondsPlural(_ p1: Int) -> String {
       return L10n.tr("Localizable", "dates.time-ago-seconds-plural", p1)
     }
     /// last seen just one second ago
-    internal static var timeAgoSecondsSingular: String { L10n.tr("Localizable", "dates.time-ago-seconds-singular") }
+    public static var timeAgoSecondsSingular: String { L10n.tr("Localizable", "dates.time-ago-seconds-singular") }
     /// last seen %d weeks ago
-    internal static func timeAgoWeeksPlural(_ p1: Int) -> String {
+    public static func timeAgoWeeksPlural(_ p1: Int) -> String {
       return L10n.tr("Localizable", "dates.time-ago-weeks-plural", p1)
     }
     /// last seen one week ago
-    internal static var timeAgoWeeksSingular: String { L10n.tr("Localizable", "dates.time-ago-weeks-singular") }
+    public static var timeAgoWeeksSingular: String { L10n.tr("Localizable", "dates.time-ago-weeks-singular") }
   }
 
-  internal enum Forward {
+  public enum Forward {
     /// Forwarding to
-    internal static var title: String { L10n.tr("Localizable", "forward.title") }
-    internal enum State {
+    public static var title: String { L10n.tr("Localizable", "forward.title") }
+    public enum State {
       /// Resend
-      internal static var error: String { L10n.tr("Localizable", "forward.state.error") }
+      public static var error: String { L10n.tr("Localizable", "forward.state.error") }
       /// Sent
-      internal static var forwarded: String { L10n.tr("Localizable", "forward.state.forwarded") }
+      public static var forwarded: String { L10n.tr("Localizable", "forward.state.forwarded") }
       /// Sending
-      internal static var forwarding: String { L10n.tr("Localizable", "forward.state.forwarding") }
+      public static var forwarding: String { L10n.tr("Localizable", "forward.state.forwarding") }
       /// Send
-      internal static var `none`: String { L10n.tr("Localizable", "forward.state.none") }
+      public static var `none`: String { L10n.tr("Localizable", "forward.state.none") }
     }
   }
 
-  internal enum InvitedChannelList {
-    internal enum Empty {
+  public enum InvitedChannelList {
+    public enum Empty {
       /// No invited.
-      internal static var title: String { L10n.tr("Localizable", "invitedChannelList.empty.title") }
+      public static var title: String { L10n.tr("Localizable", "invitedChannelList.empty.title") }
     }
   }
 
-  internal enum Message {
+  public enum Message {
     /// Message deleted
-    internal static var deletedMessagePlaceholder: String { L10n.tr("Localizable", "message.deleted-message-placeholder") }
+    public static var deletedMessagePlaceholder: String { L10n.tr("Localizable", "message.deleted-message-placeholder") }
     /// Edited
-    internal static var edited: String { L10n.tr("Localizable", "message.edited") }
+    public static var edited: String { L10n.tr("Localizable", "message.edited") }
     /// Forwarded from %@
-    internal static func forwardedFromOther(_ p1: Any) -> String {
+    public static func forwardedFromOther(_ p1: Any) -> String {
       return L10n.tr("Localizable", "message.forwarded-from-other", String(describing: p1))
     }
     /// Forwarded from you
-    internal static var forwardedFromYou: String { L10n.tr("Localizable", "message.forwarded-from-you") }
+    public static var forwardedFromYou: String { L10n.tr("Localizable", "message.forwarded-from-you") }
     /// Only visible to you
-    internal static var onlyVisibleToYou: String { L10n.tr("Localizable", "message.only-visible-to-you") }
+    public static var onlyVisibleToYou: String { L10n.tr("Localizable", "message.only-visible-to-you") }
     /// Translated to %@
-    internal static func translatedTo(_ p1: Any) -> String {
+    public static func translatedTo(_ p1: Any) -> String {
       return L10n.tr("Localizable", "message.translatedTo", String(describing: p1))
     }
     /// Unsupported Attachment
-    internal static var unsupportedAttachment: String { L10n.tr("Localizable", "message.unsupported-attachment") }
-    internal enum Actions {
-      /// Copy Message
-      internal static var copy: String { L10n.tr("Localizable", "message.actions.copy") }
-      /// Delete Message
-      internal static var delete: String { L10n.tr("Localizable", "message.actions.delete") }
+    public static var unsupportedAttachment: String { L10n.tr("Localizable", "message.unsupported-attachment") }
+    public enum Actions {
+      /// Copy
+      public static var copy: String { L10n.tr("Localizable", "message.actions.copy") }
+      /// Delete
+      public static var delete: String { L10n.tr("Localizable", "message.actions.delete") }
       /// Download
-      internal static var download: String { L10n.tr("Localizable", "message.actions.download") }
-      /// Edit Message
-      internal static var edit: String { L10n.tr("Localizable", "message.actions.edit") }
-      /// Flag Message
-      internal static var flag: String { L10n.tr("Localizable", "message.actions.flag") }
+      public static var download: String { L10n.tr("Localizable", "message.actions.download") }
+      /// Edit
+      public static var edit: String { L10n.tr("Localizable", "message.actions.edit") }
+      /// Flag
+      public static var flag: String { L10n.tr("Localizable", "message.actions.flag") }
       /// Forward
-      internal static var forward: String { L10n.tr("Localizable", "message.actions.forward") }
+      public static var forward: String { L10n.tr("Localizable", "message.actions.forward") }
       /// Reply
-      internal static var inlineReply: String { L10n.tr("Localizable", "message.actions.inline-reply") }
+      public static var inlineReply: String { L10n.tr("Localizable", "message.actions.inline-reply") }
       /// Mark as unread
-      internal static var markUnread: String { L10n.tr("Localizable", "message.actions.mark-unread") }
+      public static var markUnread: String { L10n.tr("Localizable", "message.actions.mark-unread") }
       /// Pin
-      internal static var pin: String { L10n.tr("Localizable", "message.actions.pin") }
+      public static var pin: String { L10n.tr("Localizable", "message.actions.pin") }
       /// Resend
-      internal static var resend: String { L10n.tr("Localizable", "message.actions.resend") }
+      public static var resend: String { L10n.tr("Localizable", "message.actions.resend") }
       /// Thread Reply
-      internal static var threadReply: String { L10n.tr("Localizable", "message.actions.thread-reply") }
+      public static var threadReply: String { L10n.tr("Localizable", "message.actions.thread-reply") }
       /// Unpin
-      internal static var unpin: String { L10n.tr("Localizable", "message.actions.unpin") }
+      public static var unpin: String { L10n.tr("Localizable", "message.actions.unpin") }
       /// Block User
-      internal static var userBlock: String { L10n.tr("Localizable", "message.actions.user-block") }
+      public static var userBlock: String { L10n.tr("Localizable", "message.actions.user-block") }
       /// Mute User
-      internal static var userMute: String { L10n.tr("Localizable", "message.actions.user-mute") }
+      public static var userMute: String { L10n.tr("Localizable", "message.actions.user-mute") }
       /// Unblock User
-      internal static var userUnblock: String { L10n.tr("Localizable", "message.actions.user-unblock") }
+      public static var userUnblock: String { L10n.tr("Localizable", "message.actions.user-unblock") }
       /// Unmute User
-      internal static var userUnmute: String { L10n.tr("Localizable", "message.actions.user-unmute") }
-      internal enum Copy {
+      public static var userUnmute: String { L10n.tr("Localizable", "message.actions.user-unmute") }
+      public enum Copy {
         /// Message copied to clipboard.
-        internal static var successTitle: String { L10n.tr("Localizable", "message.actions.copy.success-title") }
+        public static var successTitle: String { L10n.tr("Localizable", "message.actions.copy.success-title") }
       }
-      internal enum Delete {
+      public enum Delete {
         /// Are you sure you want to permanently delete this message?
-        internal static var confirmationMessage: String { L10n.tr("Localizable", "message.actions.delete.confirmation-message") }
+        public static var confirmationMessage: String { L10n.tr("Localizable", "message.actions.delete.confirmation-message") }
         /// Delete Message
-        internal static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.delete.confirmation-title") }
+        public static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.delete.confirmation-title") }
       }
-      internal enum Download {
+      public enum Download {
         /// Download failed. Please try again later.
-        internal static var failureTitle: String { L10n.tr("Localizable", "message.actions.download.failure-title") }
+        public static var failureTitle: String { L10n.tr("Localizable", "message.actions.download.failure-title") }
         /// Download successful.
-        internal static var successTitle: String { L10n.tr("Localizable", "message.actions.download.success-title") }
+        public static var successTitle: String { L10n.tr("Localizable", "message.actions.download.success-title") }
       }
-      internal enum Flag {
+      public enum Flag {
         /// Do you want to send a copy of this message to a moderator for further investigation?
-        internal static var confirmationMessage: String { L10n.tr("Localizable", "message.actions.flag.confirmation-message") }
-        /// Flag Message
-        internal static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.flag.confirmation-title") }
+        public static var confirmationMessage: String { L10n.tr("Localizable", "message.actions.flag.confirmation-message") }
+        /// Flag
+        public static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.flag.confirmation-title") }
       }
-      internal enum Forward {
+      public enum Forward {
         /// Unable to forward the message. Please try again.
-        internal static var failureTitle: String { L10n.tr("Localizable", "message.actions.forward.failure-title") }
+        public static var failureTitle: String { L10n.tr("Localizable", "message.actions.forward.failure-title") }
         /// Message forwarded successfully.
-        internal static var successTitle: String { L10n.tr("Localizable", "message.actions.forward.success-title") }
+        public static var successTitle: String { L10n.tr("Localizable", "message.actions.forward.success-title") }
       }
-      internal enum Pin {
+      public enum Pin {
         /// Message pinned.
-        internal static var successMessage: String { L10n.tr("Localizable", "message.actions.pin.success-message") }
+        public static var successMessage: String { L10n.tr("Localizable", "message.actions.pin.success-message") }
         /// Unable to pin the message. Please try again.
-        internal static var unsuccessMessage: String { L10n.tr("Localizable", "message.actions.pin.unsuccess-message") }
+        public static var unsuccessMessage: String { L10n.tr("Localizable", "message.actions.pin.unsuccess-message") }
       }
-      internal enum Unpin {
+      public enum Unpin {
         /// Are you sure you want to unpin this message? It will no longer appear at the top of the conversation.
-        internal static var confirmationMessage: String { L10n.tr("Localizable", "message.actions.unpin.confirmation-message") }
+        public static var confirmationMessage: String { L10n.tr("Localizable", "message.actions.unpin.confirmation-message") }
         /// Unpin this message?
-        internal static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.unpin.confirmation-title") }
+        public static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.unpin.confirmation-title") }
         /// Message unpinned.
-        internal static var successMessage: String { L10n.tr("Localizable", "message.actions.unpin.success-message") }
+        public static var successMessage: String { L10n.tr("Localizable", "message.actions.unpin.success-message") }
         /// Unable to unpin the message. Please try again.
-        internal static var unsuccessMessage: String { L10n.tr("Localizable", "message.actions.unpin.unsuccess-message") }
+        public static var unsuccessMessage: String { L10n.tr("Localizable", "message.actions.unpin.unsuccess-message") }
       }
     }
-    internal enum Call {
+    public enum Call {
       /// You cancel audio call
-      internal static var audioCanceledByMe: String { L10n.tr("Localizable", "message.call.audio-canceled-by-me") }
+      public static var audioCanceledByMe: String { L10n.tr("Localizable", "message.call.audio-canceled-by-me") }
       /// You rejected audio call
-      internal static var audioRejectedByMe: String { L10n.tr("Localizable", "message.call.audio-rejected-by-me") }
+      public static var audioRejectedByMe: String { L10n.tr("Localizable", "message.call.audio-rejected-by-me") }
       /// Receiver rejected audio call
-      internal static var audioRejectedByReceiver: String { L10n.tr("Localizable", "message.call.audio-rejected-by-receiver") }
+      public static var audioRejectedByReceiver: String { L10n.tr("Localizable", "message.call.audio-rejected-by-receiver") }
       /// Incoming audio call
-      internal static var incomingAudioCall: String { L10n.tr("Localizable", "message.call.incoming-audio-call") }
+      public static var incomingAudioCall: String { L10n.tr("Localizable", "message.call.incoming-audio-call") }
       /// Incoming video call
-      internal static var incomingVideoCall: String { L10n.tr("Localizable", "message.call.incoming-video-call") }
+      public static var incomingVideoCall: String { L10n.tr("Localizable", "message.call.incoming-video-call") }
       /// You missed audio call
-      internal static var missedAudioCall: String { L10n.tr("Localizable", "message.call.missed-audio-call") }
+      public static var missedAudioCall: String { L10n.tr("Localizable", "message.call.missed-audio-call") }
       /// You missed video call
-      internal static var missedVideoCall: String { L10n.tr("Localizable", "message.call.missed-video-call") }
+      public static var missedVideoCall: String { L10n.tr("Localizable", "message.call.missed-video-call") }
       /// Outgoing audio call
-      internal static var outgoingAudioCall: String { L10n.tr("Localizable", "message.call.outgoing-audio-call") }
+      public static var outgoingAudioCall: String { L10n.tr("Localizable", "message.call.outgoing-audio-call") }
       /// Outgoing video call
-      internal static var outgoingVideoCall: String { L10n.tr("Localizable", "message.call.outgoing-video-call") }
+      public static var outgoingVideoCall: String { L10n.tr("Localizable", "message.call.outgoing-video-call") }
       /// Receiver was busy
-      internal static var receiverBusy: String { L10n.tr("Localizable", "message.call.receiver-busy") }
+      public static var receiverBusy: String { L10n.tr("Localizable", "message.call.receiver-busy") }
       /// You cancel video call
-      internal static var videoCanceledByMe: String { L10n.tr("Localizable", "message.call.video-canceled-by-me") }
+      public static var videoCanceledByMe: String { L10n.tr("Localizable", "message.call.video-canceled-by-me") }
       /// You rejected video call
-      internal static var videoRejectedByMe: String { L10n.tr("Localizable", "message.call.video-rejected-by-me") }
+      public static var videoRejectedByMe: String { L10n.tr("Localizable", "message.call.video-rejected-by-me") }
       /// Receiver rejected video call
-      internal static var videoRejectedByReceiver: String { L10n.tr("Localizable", "message.call.video-rejected-by-receiver") }
+      public static var videoRejectedByReceiver: String { L10n.tr("Localizable", "message.call.video-rejected-by-receiver") }
     }
-    internal enum Moderation {
+    public enum Moderation {
       /// Delete Message
-      internal static var delete: String { L10n.tr("Localizable", "message.moderation.delete") }
+      public static var delete: String { L10n.tr("Localizable", "message.moderation.delete") }
       /// Edit Message
-      internal static var edit: String { L10n.tr("Localizable", "message.moderation.edit") }
+      public static var edit: String { L10n.tr("Localizable", "message.moderation.edit") }
       /// Consider how your comment might make others feel and be sure to follow our Community Guidelines.
-      internal static var message: String { L10n.tr("Localizable", "message.moderation.message") }
+      public static var message: String { L10n.tr("Localizable", "message.moderation.message") }
       /// Send Anyway
-      internal static var resend: String { L10n.tr("Localizable", "message.moderation.resend") }
+      public static var resend: String { L10n.tr("Localizable", "message.moderation.resend") }
       /// Are you sure?
-      internal static var title: String { L10n.tr("Localizable", "message.moderation.title") }
+      public static var title: String { L10n.tr("Localizable", "message.moderation.title") }
     }
-    internal enum Sending {
+    public enum Sending {
       /// UPLOADING FAILED
-      internal static var attachmentUploadingFailed: String { L10n.tr("Localizable", "message.sending.attachment-uploading-failed") }
+      public static var attachmentUploadingFailed: String { L10n.tr("Localizable", "message.sending.attachment-uploading-failed") }
     }
-    internal enum System {
+    public enum System {
       /// Cooldown feature enabled by Group Admin. Cooldown duration set to %@
-      internal static func adjustCooldown(_ p1: Any) -> String {
+      public static func adjustCooldown(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.adjust-cooldown", String(describing: p1))
       }
       /// %@ changed the group description
-      internal static func channelDesciptionUpdated(_ p1: Any) -> String {
+      public static func channelDesciptionUpdated(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.channel-desciption-updated", String(describing: p1))
       }
       /// %@ changed the group avatar
-      internal static func channelImageUpdated(_ p1: Any) -> String {
+      public static func channelImageUpdated(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.channel-image-updated", String(describing: p1))
       }
       /// %@ changed the group name to "%@"
-      internal static func channelNameUpdated(_ p1: Any, _ p2: Any) -> String {
+      public static func channelNameUpdated(_ p1: Any, _ p2: Any) -> String {
         return L10n.tr("Localizable", "message.system.channel-name-updated", String(describing: p1), String(describing: p2))
       }
       /// %@ update group filter words
-      internal static func filterWordsChanged(_ p1: Any) -> String {
+      public static func filterWordsChanged(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.filter-words-changed", String(describing: p1))
       }
       /// %@ banned from interacting in this group by Group Admin
-      internal static func memberBanned(_ p1: Any) -> String {
+      public static func memberBanned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-banned", String(describing: p1))
       }
       /// %@ removed as the moderator from this group
-      internal static func memberDemoted(_ p1: Any) -> String {
+      public static func memberDemoted(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-demoted", String(describing: p1))
       }
       /// %@ joined this group
-      internal static func memberJoinedChannel(_ p1: Any) -> String {
+      public static func memberJoinedChannel(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-joined-channel", String(describing: p1))
       }
       /// %@ joined this conversation
-      internal static func memberJoinedConversation(_ p1: Any) -> String {
+      public static func memberJoinedConversation(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-joined-conversation", String(describing: p1))
       }
       /// %@ left this group
-      internal static func memberLeave(_ p1: Any) -> String {
+      public static func memberLeave(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-leave", String(describing: p1))
       }
       /// %@ assigned as the moderator for this group
-      internal static func memberPromoted(_ p1: Any) -> String {
+      public static func memberPromoted(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-promoted", String(describing: p1))
       }
       /// %@ removed from this group
-      internal static func memberRemoved(_ p1: Any) -> String {
+      public static func memberRemoved(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-removed", String(describing: p1))
       }
       /// %@ unbanned and now can interact in this group
-      internal static func memberUnbanned(_ p1: Any) -> String {
+      public static func memberUnbanned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.member-unbanned", String(describing: p1))
       }
       /// A message has been forwarded
-      internal static var messageForwarded: String { L10n.tr("Localizable", "message.system.message-forwarded") }
+      public static var messageForwarded: String { L10n.tr("Localizable", "message.system.message-forwarded") }
       /// %@ pinned a message
-      internal static func messagePinned(_ p1: Any) -> String {
+      public static func messagePinned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.message-pinned", String(describing: p1))
       }
       /// %@ unpinned a message
-      internal static func messageUnpinned(_ p1: Any) -> String {
+      public static func messageUnpinned(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.message-unpinned", String(describing: p1))
       }
       /// %@ has promoted you to Owner
-      internal static func otherPromotedYouToOwner(_ p1: Any) -> String {
+      public static func otherPromotedYouToOwner(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-promoted-you-to-owner", String(describing: p1))
       }
-      /// %@ rejected your friend request.
-      internal static func otherRejectAddFriendRequest(_ p1: Any) -> String {
+      /// %@ rejected to join this channel.
+      public static func otherRejectAddFriendRequest(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-reject-add-friend-request", String(describing: p1))
       }
       /// %@ truncated all messages of this channel
-      internal static func otherTruncatedMessages(_ p1: Any) -> String {
+      public static func otherTruncatedMessages(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-truncated-messages", String(describing: p1))
       }
       /// %@ updated member permission of group
-      internal static func otherUpdatedMemberPermission(_ p1: Any) -> String {
+      public static func otherUpdatedMemberPermission(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.other-updated-member-permission", String(describing: p1))
       }
       /// %@ has promoted member %@ to Owner
-      internal static func promotedToOwner(_ p1: Any, _ p2: Any) -> String {
+      public static func promotedToOwner(_ p1: Any, _ p2: Any) -> String {
         return L10n.tr("Localizable", "message.system.promoted-to-owner", String(describing: p1), String(describing: p2))
       }
       /// Member %@ made this group private
-      internal static func setChannelPrivate(_ p1: Any) -> String {
+      public static func setChannelPrivate(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.set-channel-private", String(describing: p1))
       }
       /// Member %@ made this group public
-      internal static func setChannelPublic(_ p1: Any) -> String {
+      public static func setChannelPublic(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.set-channel-public", String(describing: p1))
       }
       /// Cooldown has been disabled
-      internal static var turnOffCooldown: String { L10n.tr("Localizable", "message.system.turn-off-cooldown") }
+      public static var turnOffCooldown: String { L10n.tr("Localizable", "message.system.turn-off-cooldown") }
       /// Cooldown feature enabled by Group Admin. Cooldown duration set to %@
-      internal static func turnOnCooldown(_ p1: Any) -> String {
+      public static func turnOnCooldown(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.turn-on-cooldown", String(describing: p1))
       }
       /// %@ declined to join this group
-      internal static func userRejectedInvitation(_ p1: Any) -> String {
+      public static func userRejectedInvitation(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.user-rejected-invitation", String(describing: p1))
       }
       /// You banned from interacting in this group by Group Admin
-      internal static var youBanned: String { L10n.tr("Localizable", "message.system.you-banned") }
+      public static var youBanned: String { L10n.tr("Localizable", "message.system.you-banned") }
       /// You removed as the moderator from this group
-      internal static var youDemoted: String { L10n.tr("Localizable", "message.system.you-demoted") }
+      public static var youDemoted: String { L10n.tr("Localizable", "message.system.you-demoted") }
       /// You joined this group
-      internal static var youJoinedChannel: String { L10n.tr("Localizable", "message.system.you-joined-channel") }
+      public static var youJoinedChannel: String { L10n.tr("Localizable", "message.system.you-joined-channel") }
       /// You joined this conversation
-      internal static var youJoinedConversation: String { L10n.tr("Localizable", "message.system.you-joined-conversation") }
+      public static var youJoinedConversation: String { L10n.tr("Localizable", "message.system.you-joined-conversation") }
       /// You left this group
-      internal static var youLeave: String { L10n.tr("Localizable", "message.system.you-leave") }
+      public static var youLeave: String { L10n.tr("Localizable", "message.system.you-leave") }
       /// You assigned as the moderator for this group
-      internal static var youPromoted: String { L10n.tr("Localizable", "message.system.you-promoted") }
+      public static var youPromoted: String { L10n.tr("Localizable", "message.system.you-promoted") }
       /// You have promoted member %@ to Owner
-      internal static func youPromotedOtherToOwner(_ p1: Any) -> String {
+      public static func youPromotedOtherToOwner(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.you-promoted-other-to-owner", String(describing: p1))
       }
       /// You rejected friend request from %@
-      internal static func youRejectAddFriendRequest(_ p1: Any) -> String {
+      public static func youRejectAddFriendRequest(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.system.you-reject-add-friend-request", String(describing: p1))
       }
       /// You made this group private
-      internal static var youSetChannelPrivate: String { L10n.tr("Localizable", "message.system.you-set-channel-private") }
+      public static var youSetChannelPrivate: String { L10n.tr("Localizable", "message.system.you-set-channel-private") }
       /// You made this group public
-      internal static var youSetChannelPublic: String { L10n.tr("Localizable", "message.system.you-set-channel-public") }
+      public static var youSetChannelPublic: String { L10n.tr("Localizable", "message.system.you-set-channel-public") }
       /// You truncated all messages of this channel
-      internal static var youTruncatedMessages: String { L10n.tr("Localizable", "message.system.you-truncated-messages") }
+      public static var youTruncatedMessages: String { L10n.tr("Localizable", "message.system.you-truncated-messages") }
       /// You unbanned and now can interact in this group
-      internal static var youUnbanned: String { L10n.tr("Localizable", "message.system.you-unbanned") }
+      public static var youUnbanned: String { L10n.tr("Localizable", "message.system.you-unbanned") }
       /// You updated member permission of group
-      internal static var youUpdatedMemberPermission: String { L10n.tr("Localizable", "message.system.you-updated-member-permission") }
+      public static var youUpdatedMemberPermission: String { L10n.tr("Localizable", "message.system.you-updated-member-permission") }
       /// You have forwarded a message
-      internal static var yourMessageForwarded: String { L10n.tr("Localizable", "message.system.your-message-forwarded") }
+      public static var yourMessageForwarded: String { L10n.tr("Localizable", "message.system.your-message-forwarded") }
     }
-    internal enum Thread {
-      internal enum Replies {
+    public enum Thread {
+      public enum Replies {
         /// Plural format key: "%#@replies@"
-        internal static func count(_ p1: Int) -> String {
+        public static func count(_ p1: Int) -> String {
           return L10n.tr("Localizable", "message.thread.replies.count", p1)
         }
       }
     }
-    internal enum Threads {
+    public enum Threads {
       /// Plural format key: "%#@replies@"
-      internal static func count(_ p1: Int) -> String {
+      public static func count(_ p1: Int) -> String {
         return L10n.tr("Localizable", "message.threads.count", p1)
       }
       /// Thread Reply
-      internal static var reply: String { L10n.tr("Localizable", "message.threads.reply") }
+      public static var reply: String { L10n.tr("Localizable", "message.threads.reply") }
       /// with %@
-      internal static func replyWith(_ p1: Any) -> String {
+      public static func replyWith(_ p1: Any) -> String {
         return L10n.tr("Localizable", "message.threads.replyWith", String(describing: p1))
       }
     }
-    internal enum Title {
+    public enum Title {
       /// %d members
-      internal static func group(_ p1: Int) -> String {
+      public static func group(_ p1: Int) -> String {
         return L10n.tr("Localizable", "message.title.group", p1)
       }
       /// Offline
-      internal static var offline: String { L10n.tr("Localizable", "message.title.offline") }
+      public static var offline: String { L10n.tr("Localizable", "message.title.offline") }
       /// Online
-      internal static var online: String { L10n.tr("Localizable", "message.title.online") }
+      public static var online: String { L10n.tr("Localizable", "message.title.online") }
     }
-    internal enum Unread {
+    public enum Unread {
       /// Plural format key: "%#@unread@"
-      internal static func count(_ p1: Int) -> String {
+      public static func count(_ p1: Int) -> String {
         return L10n.tr("Localizable", "message.unread.count", p1)
       }
     }
   }
 
-  internal enum MessageList {
+  public enum MessageList {
     /// Plural format key: "%#@unreads@"
-    internal static func jumpToUnreadButton(_ p1: Int) -> String {
+    public static func jumpToUnreadButton(_ p1: Int) -> String {
       return L10n.tr("Localizable", "messageList.jump-to-unread-button", p1)
     }
-    internal enum TypingIndicator {
+    public enum TypingIndicator {
       /// Someone is typing
-      internal static var typingUnknown: String { L10n.tr("Localizable", "messageList.typingIndicator.typing-unknown") }
+      public static var typingUnknown: String { L10n.tr("Localizable", "messageList.typingIndicator.typing-unknown") }
       /// Plural format key: "%1$@%2$#@typing@"
-      internal static func users(_ p1: Any, _ p2: Int) -> String {
+      public static func users(_ p1: Any, _ p2: Int) -> String {
         return L10n.tr("Localizable", "messageList.typingIndicator.users", String(describing: p1), p2)
       }
     }
   }
 
-  internal enum Pin {
-    internal enum Collapsed {
+  public enum Pin {
+    public enum Collapsed {
       /// Pinned messages
-      internal static var title: String { L10n.tr("Localizable", "pin.collapsed.title") }
+      public static var title: String { L10n.tr("Localizable", "pin.collapsed.title") }
     }
   }
 
-  internal enum Reaction {
-    internal enum Authors {
+  public enum Reaction {
+    public enum Authors {
       /// Plural format key: "%#@reactions@"
-      internal static func numberOfReactions(_ p1: Int) -> String {
+      public static func numberOfReactions(_ p1: Int) -> String {
         return L10n.tr("Localizable", "reaction.authors.number-of-reactions", p1)
       }
     }
   }
 
-  internal enum Recording {
+  public enum Recording {
     /// Slide to cancel
-    internal static var slideToCancel: String { L10n.tr("Localizable", "recording.slideToCancel") }
+    public static var slideToCancel: String { L10n.tr("Localizable", "recording.slideToCancel") }
     /// Hold to record, release to send
-    internal static var tip: String { L10n.tr("Localizable", "recording.tip") }
-    internal enum Presentation {
+    public static var tip: String { L10n.tr("Localizable", "recording.tip") }
+    public enum Presentation {
       /// Plural format key: "%#@recording@"
-      internal static func name(_ p1: Int) -> String {
+      public static func name(_ p1: Int) -> String {
         return L10n.tr("Localizable", "recording.presentation.name", p1)
       }
     }
   }
 
-  internal enum Share {
+  public enum Share {
     /// Send to
-    internal static var sendTo: String { L10n.tr("Localizable", "share.send-to") }
+    public static var sendTo: String { L10n.tr("Localizable", "share.send-to") }
+  }
+
+  public enum Topic {
+    /// THIS TOPIC IS CLOSED
+    public static var closed: String { L10n.tr("Localizable", "topic.closed") }
+    /// General
+    public static var parentChannelDisplayName: String { L10n.tr("Localizable", "topic.parent-channel-display-name") }
+    /// Reopen Topic
+    public static var reOpen: String { L10n.tr("Localizable", "topic.re-open") }
+    public enum CloseAlert {
+      /// Are you sure you want to close this topic?
+      public static var message: String { L10n.tr("Localizable", "topic.close-alert.message") }
+      /// Close Topic
+      public static var title: String { L10n.tr("Localizable", "topic.close-alert.title") }
+    }
+    public enum ReOpenAlert {
+      /// Are you sure you want to reopen this topic?
+      public static var message: String { L10n.tr("Localizable", "topic.re-open-alert.message") }
+      /// Reopen Topic
+      public static var title: String { L10n.tr("Localizable", "topic.re-open-alert.title") }
+    }
   }
 }
 

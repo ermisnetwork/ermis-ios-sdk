@@ -70,11 +70,22 @@ public extension UploadClient {
 }
 
 /// Default implementation of UploadClient.
-class ErmisUploadClient: UploadClient {
-
+class ErmisUploadClient: NSObject, UploadClient, URLSessionDataDelegate {
+    typealias UploadedFileCompletionHandler = (Result<UploadedFile, Error>) -> Void
     private let decoder: RequestDecoder
     private let encoder: RequestEncoder
-    private let session: URLSession
+    private let sessionConfiguration: URLSessionConfiguration
+
+    private lazy var session: URLSession = URLSession(configuration: sessionConfiguration,
+                                                      delegate: self,
+                                                      delegateQueue: nil)
+    // A dictionary that stores the inputstream for each task, keyed by taskIdentifier
+    @Atomic private var streams: [Int: MultipartInputStream] = [:]
+    // A dictionary that stores the uploading completion handler for each task, keyed by taskIdentifier
+    @Atomic private var uploadCompletionHandlers: [Int: UploadedFileCompletionHandler] = [:]
+    // A dictionary that stores the uploading data for each task, keyed by taskIdentifier
+    @Atomic private var uploadingBufferDatas: [Int: Data] = [:]
+
     /// Keeps track of uploading tasks progress
     @Atomic private var taskProgressObservers: [Int: NSKeyValueObservation] = [:]
 
@@ -84,8 +95,8 @@ class ErmisUploadClient: UploadClient {
         sessionConfiguration: URLSessionConfiguration
     ) {
         self.encoder = encoder
-        session = URLSession(configuration: sessionConfiguration)
         self.decoder = decoder
+        self.sessionConfiguration = sessionConfiguration
     }
 
     func uploadAttachment(
@@ -109,16 +120,19 @@ class ErmisUploadClient: UploadClient {
         completion: @escaping (Result<UploadedFile, Error>) -> Void
     ) {
         guard
-            let uploadingState = attachment.uploadingState,
-            let fileData = try? Data(contentsOf: uploadingState.localFileURL) else {
+            let uploadingState = attachment.uploadingState else {
             return completion(.failure(ClientError.AttachmentUploading(id: attachment.id)))
         }
-        // Encode locally stored attachment into multipart form data
-        let multipartFormData = MultipartFormData(
-            fileData,
-            fileName: uploadingState.localFileURL.lastPathComponent,
-            mimeType: uploadingState.file.type.mimeType
-        )
+
+        let stream = MultipartInputStream(fileURL: uploadingState.localFileURL,
+                                          fieldName: "file",
+                                          fileName: uploadingState.localFileURL.lastPathComponent,
+                                          mimeType: uploadingState.file.type.mimeType)
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: uploadingState.localFileURL.path)[.size] as! Int) ?? 0
+        let headerSize = stream.headerData.count
+        let footerSize = stream.footerData.count
+        let totalSize = headerSize + fileSize + footerSize
+
         let endpoint = Endpoint<FileUploadPayload>.uploadAttachment(with: attachment.id.cid, type: attachment.type)
 
         encoder.encodeRequest(for: endpoint) { [weak self] (requestResult) in
@@ -130,30 +144,24 @@ class ErmisUploadClient: UploadClient {
                 completion(.failure(error))
                 return
             }
-
-            let data = multipartFormData.getMultipartFormData()
-    urlRequest.setHTTPHeaders(HTTPHeader(key: .contentType, value: "multipart/form-data; boundary=\(MultipartFormData.boundary)"))
-            urlRequest.httpBody = data
+            urlRequest.setHTTPHeaders(HTTPHeader(key: .contentType, value: "multipart/form-data; boundary=\(MultipartInputStream.boundary)"))
+            urlRequest.httpBody = nil
+            urlRequest.setHTTPHeaders(HTTPHeader(key: .contentLength, value: String(totalSize)))
 
             guard let self = self else {
                 log.warning("Callback called while self is nil", subsystems: .httpRequests)
                 return
             }
-
-            let task = self.session.dataTask(with: urlRequest) { [decoder = self.decoder] (data, response, error) in
-                do {
-                    let response: FileUploadPayload = try decoder.decodeRequestResponse(
-                        data: data,
-                        response: response,
-                        error: error
-                    )
-                    let file = UploadedFile(fileURL: response.fileURL, thumbnailURL: response.thumbURL)
-
-                    completion(.success(file))
-                } catch {
-                    completion(.failure(error))
-                }
-            }
+            let task = self.session.uploadTask(withStreamedRequest: urlRequest)
+            self._streams.mutate({ value in
+                value[task.taskIdentifier] = stream
+            })
+            self._uploadCompletionHandlers.mutate({ value in
+                value[task.taskIdentifier] = completion
+            })
+            self._uploadingBufferDatas.mutate({ value in
+                value[task.taskIdentifier] = Data()
+            })
 
             if let progressListener = progress {
                 let taskID = task.taskIdentifier
@@ -192,10 +200,10 @@ class ErmisUploadClient: UploadClient {
                 return
             }
 
-        let multilpartFormData = avatarMultipartFormData.getMultipartFormData()
-        urlRequest.setHTTPHeaders(HTTPHeader(key: .contentType, value: "multipart/form-data; boundary=\(AvatarMultipartFormData.boundary)"))
-        urlRequest.httpBody = multilpartFormData
-        urlRequest.setHTTPHeaders(HTTPHeader(key: .contentLength, value: String(data.count)))
+            let multilpartFormData = avatarMultipartFormData.getMultipartFormData()
+            urlRequest.setHTTPHeaders(HTTPHeader(key: .contentType, value: "multipart/form-data; boundary=\(AvatarMultipartFormData.boundary)"))
+            urlRequest.httpBody = multilpartFormData
+            urlRequest.setHTTPHeaders(HTTPHeader(key: .contentLength, value: String(data.count)))
             guard let self = self else {
                 log.warning("Callback called while self is nil", subsystems: .httpRequests)
                 return
@@ -231,5 +239,51 @@ class ErmisUploadClient: UploadClient {
 
             task.resume()
         }
+    }
+    // MARK: - URLSessionDelegate
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    needNewBodyStreamFrom offset: Int64,
+                    completionHandler: @escaping (InputStream?) -> Void) {
+        completionHandler(streams[task.taskIdentifier])
+    }
+
+    func urlSession(_ session: URLSession,
+                    dataTask: URLSessionDataTask,
+                    didReceive data: Data) {
+        uploadingBufferDatas[dataTask.taskIdentifier, default: Data()].append(data)
+    }
+
+    func urlSession(_ session: URLSession,
+                    task: URLSessionTask,
+                    didCompleteWithError error: Error?) {
+        let taskId = task.taskIdentifier
+        let response = task.response as? HTTPURLResponse
+        let data = uploadingBufferDatas[taskId]
+        do {
+            let response: FileUploadPayload = try decoder.decodeRequestResponse(
+                data: data,
+                response: response,
+                error: error
+            )
+            let file = UploadedFile(fileURL: response.fileURL, thumbnailURL: response.thumbURL)
+
+            uploadCompletionHandlers[taskId]?(.success(file))
+        } catch {
+            uploadCompletionHandlers[taskId]?(.failure(error))
+        }
+
+        // cleanup
+        _streams.mutate({ value in
+            value[taskId] = nil
+        })
+
+        _uploadCompletionHandlers.mutate({ value in
+            value[taskId] = nil
+        })
+
+        _uploadingBufferDatas.mutate({ value in
+            value[taskId] = nil
+        })
     }
 }

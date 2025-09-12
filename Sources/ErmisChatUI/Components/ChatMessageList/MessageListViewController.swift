@@ -144,6 +144,8 @@ open class MessageListViewController: _ViewController,
     open var isDateOverlayEnabled: Bool {
         components.messageListDateOverlayEnabled
     }
+    
+    open var isInteractionMessage: Bool = true
 
     /// A message pending to be scrolled after a message list update.
     private(set) var messagePendingScrolling: (id: MessageId, animated: Bool)?
@@ -425,6 +427,9 @@ open class MessageListViewController: _ViewController,
     @objc open func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         let location = gesture.location(in: listView)
 
+        guard isInteractionMessage == true else {
+            return
+        }
         guard
             gesture.state == .began,
             let indexPath = listView.indexPathForRow(at: location)
@@ -437,6 +442,10 @@ open class MessageListViewController: _ViewController,
     ///
     /// By default, this will trigger the swipe to reply gesture recognition.
     @objc open func handlePan(_ gesture: UIPanGestureRecognizer) {
+        guard isInteractionMessage == true else {
+            return
+        }
+        
         let canReply = dataSource?.channel(for: self)?.canSendReply ?? false
         let isSwipeToReplyEnabled = components.messageSwipeToReplyEnabled
         if canReply && isSwipeToReplyEnabled {
@@ -839,7 +848,6 @@ open class MessageListViewController: _ViewController,
             result.append(contentsOf: message.imageAttachments.compactMap({ $0.imageURL }))
             result.append(contentsOf: message.videoAttachments.compactMap({ $0.thumbnailURL}))
         }
-        log.debug("TTTT CANCLE PREFETCH URLS: \(urls)")
 //        imagePrefetcher.stopPrefetching(with: urls)
     }
 

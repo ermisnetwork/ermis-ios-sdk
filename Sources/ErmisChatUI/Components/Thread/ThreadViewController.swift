@@ -37,7 +37,8 @@ open class ThreadViewController: _ViewController,
     open lazy var keyboardHandler: KeyboardHandler = ComposerKeyboardHandler(
         composerParentVC: self,
         composerBottomConstraint: messageComposerBottomConstraint,
-        messageListVC: messageListVC
+        messageListVC: messageListVC,
+        composerVC: messageComposerVC
     )
 
     /// A component responsible to handle when to load new or old messages.

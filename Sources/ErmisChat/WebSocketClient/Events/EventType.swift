@@ -49,11 +49,21 @@ public extension EventType {
     /// When a channel is visible.
     static let channelVisible: Self = "channel.visible"
     /// When a channel was truncated.
-    static let channelTruncated: Self = "channel.truncated"
+    static let channelTruncated: Self = "channel.truncate"
     /// When a channel was pinned
     static let channelPinned: Self = "channel.pinned"
     /// When a channel was unpinned
     static let channelUnpinned: Self = "channel.unpinned"
+    /// When a channel topic was enable.
+    static let channelTopicEnable: Self = "channel.topic.enabled"
+    /// When a channel topic was disable.
+    static let channelTopicDisable: Self = "channel.topic.disabled"
+    /// When a channel topic was created.
+    static let channelTopicCreated: Self = "channel.topic.created"
+    /// When a channel topic was closed.
+    static let channelTopicClosed: Self = "channel.topic.closed"
+    /// When a channel topic was reopened.
+    static let channelTopicReopen: Self = "channel.topic.reopen"
 
     // MARK: Message Events
 
@@ -163,6 +173,11 @@ extension EventType {
         case .channelVisible: return try ChannelVisibleEventDTO(from: response)
         case .channelPinned: return try ChannelPinnedEventDTO(from: response)
         case .channelUnpinned: return try ChannelUnpinnedEventDTO(from: response)
+        case .channelTopicEnable: return try ChannelTopicEnableEventDTO(from: response)
+        case .channelTopicDisable: return try ChannelTopicDisableEventDTO(from: response)
+        case .channelTopicCreated: return try ChannelTopicCreatedEventDTO(from: response)
+        case .channelTopicClosed: return try ChannelTopicClosedEventDTO(from: response)
+        case .channelTopicReopen: return try ChannelTopicReopenedEventDTO(from: response)
 
         case .messageNew: return try MessageNewEventDTO(from: response)
         case .messageUpdated: return try MessageUpdatedEventDTO(from: response)

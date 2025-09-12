@@ -130,7 +130,7 @@ open class MessageActionsViewController: _ViewController, UIProvider {
                 actions.append(forwardActionItem())
             }
 
-            if canUpdateOwnMessage && message.isSentByCurrentUser {
+            if canUpdateOwnMessage && message.isSentByCurrentUser && !message.isSticker {
                 actions.append(editActionItem())
             }
 

@@ -58,6 +58,7 @@ public extension Theme {
         public var emptySearch: UIImage = loadImageSafely(with: "empty_search")
         public var download: UIImage = loadSafely(systemName: "download", assetsFallback: "download")
         public var sticker: UIImage = loadSafely(systemName: "face.smiling")
+        public var recents: UIImage = loadImageSafely(with: "recents")
         public var photo: UIImage = loadImageSafely(with: "photo")
         public var check: UIImage = loadImageSafely(with: "ic_check")
         public var info: UIImage = loadImageSafely(with: "ic_info")
@@ -68,7 +69,7 @@ public extension Theme {
         public var composerMenuLocation: UIImage = loadSafely(systemName: "location.circle.fill")
         public var composerMenuFile: UIImage = loadSafely(systemName: "document.circle")
         public var composerMenuPoll: UIImage = loadSafely(systemName: "chart.bar.xaxis.ascending")
-
+        public var topicOpen: UIImage = loadImageSafely(with: "ic_topic_open")
         // MARK: - Recording
 
         public var mic: UIImage = loadSafely(systemName: "mic", assetsFallback: "mic")

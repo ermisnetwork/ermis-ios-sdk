@@ -19,7 +19,7 @@ extension Endpoint {
                      method: .post,
                      body: params,
                      needToken: false,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -43,7 +43,7 @@ extension Endpoint {
                      method: .post,
                      body: body,
                      needToken: false,
-                     isAuth: true
+                     urlType: .auth
         )
     }
 
@@ -54,7 +54,7 @@ extension Endpoint {
         .init(path: .getChains,
               method: .get,
               needConnectionId: false,
-              isAuth: true
+              urlType: .auth
         )
     }
 
@@ -69,7 +69,7 @@ extension Endpoint {
               body: [
                 "chain_id": chain
               ],
-              isAuth: true)
+              urlType: .auth)
     }
 
     /// Create the endpoint to get list project on a client.
@@ -85,7 +85,8 @@ extension Endpoint {
                 "chain_id": chain,
                 "client_id": client
               ],
-              isAuth: true)
+              urlType: .auth
+        )
     }
 
     /// Create the endpoint to join a project.
@@ -99,7 +100,8 @@ extension Endpoint {
               body: [
                 "project_id": projectId
               ],
-              isAuth: true)
+              urlType: .auth
+        )
     }
 }
 

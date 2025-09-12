@@ -41,7 +41,8 @@ open class ChannelViewController: _ViewController,
     open lazy var keyboardHandler: KeyboardHandler = ComposerKeyboardHandler(
         composerParentVC: self,
         composerBottomConstraint: messageComposerBottomConstraint,
-        messageListVC: messageListVC
+        messageListVC: messageListVC,
+        composerVC: messageComposerVC
     )
 
     /// The message list component responsible to render the messages.
@@ -76,9 +77,19 @@ open class ChannelViewController: _ViewController,
         .init()
         .withoutAutoresizingMaskConstraints
 
+    open private(set) lazy var bottomContainerView: ContainerStackView = ContainerStackView()
+        .withoutAutoresizingMaskConstraints
+
     /// View show when user in direct channel, and directUser not accept invitation yet.
     open private(set) lazy var invitingView = components
         .channelInvitingView.init()
+        .withoutAutoresizingMaskConstraints
+
+    /// A view show when topic is closed, that either:
+    /// - Displays a notice message if the user don't have permission to reopen it
+    /// - Shows a "Reopen Topic" button if the user has the required permission.
+    open private(set) lazy var topicClosedView = components
+        .topicClosedView.init()
         .withoutAutoresizingMaskConstraints
 
     /// View show when user role pending
@@ -102,13 +113,13 @@ open class ChannelViewController: _ViewController,
     public
     var messageListTopConstraint: NSLayoutConstraint?
 
-    /// The inviting view height constraint.
-    public
-    var invitingViewHeightConstraint: NSLayoutConstraint?
-
     /// The message composer bottom constraint used for keyboard animation handling.
     public 
     var messageComposerBottomConstraint: NSLayoutConstraint?
+
+    /// The bottom container bottom constraint.
+    public
+    var bottomContainerBottomConstraint: NSLayoutConstraint?
 
     /// A boolean value indicating whether the last message is fully visible or not.
     open 
@@ -179,7 +190,7 @@ open class ChannelViewController: _ViewController,
         super.setUp()
 
         eventsController.delegate = self
-
+        let topicListQuery: ChannelListQuery?
         messageListVC.delegate = self
         messageListVC.dataSource = self
         messageListVC.client = client
@@ -239,8 +250,10 @@ open class ChannelViewController: _ViewController,
             self.messageComposerVC.resumeUnsentContent(composerUnsentContent)
         }
 
+        headerView.showAsTopic = true
         acceptInvitationView.delegate = self
         pinnedMessageView.delegate = self
+        topicClosedView.delegate = self
 
         NotificationCenter.default
             .publisher(for: UIApplication.didBecomeActiveNotification)
@@ -283,30 +296,33 @@ open class ChannelViewController: _ViewController,
 
         view.backgroundColor = theme.colors.surface
 
-        addChildViewController(messageListVC, targetView: view)
+        if let cid = channelController.cid {
+            headerView.channelController = client.channelController(for: cid, parentId: channelController.parentCid)
+        }
 
+        navigationItem.leftItemsSupplementBackButton = true
+        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: headerView)
+        navigationItem.largeTitleDisplayMode = .never
+
+
+        addChildViewController(messageListVC, targetView: view)
         messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        messageListTopConstraint?.isActive = true
         messageListVC.view.pin(anchors: [.leading, .trailing], to: view.safeAreaLayoutGuide)
 
-        view.addSubview(invitingView)
-        invitingViewHeightConstraint = invitingView.heightAnchor.constraint(equalToConstant: invitingHeight)
-        invitingView.pin(anchors: [.leading, .trailing], to: view)
+        view.addSubview(bottomContainerView)
+        bottomContainerView.makeConstraint(attribute: .top, toItem: messageListVC.view, attribute: .bottom).isActive = true
+        bottomContainerView.pin(anchors: [.leading, .trailing], to: view)
+        bottomContainerView.addArrangedSubviews([invitingView, topicClosedView])
 
         addChildViewController(messageComposerVC, targetView: view)
         messageComposerVC.view.pin(anchors: [.leading, .trailing], to: view)
-        messageComposerVC.view.topAnchor.pin(equalTo: invitingView.bottomAnchor).isActive = true
+        bottomContainerBottomConstraint = messageComposerVC.view.topAnchor.pin(equalTo: bottomContainerView.bottomAnchor)
+        bottomContainerBottomConstraint?.isActive = true
         messageComposerBottomConstraint = messageComposerVC.view.bottomAnchor.pin(equalTo: view.bottomAnchor)
-        NSLayoutConstraint.activate([
-            messageListTopConstraint!,
-            invitingViewHeightConstraint!,
-            invitingView.makeConstraint(attribute: .top, toItem: messageListVC.view, attribute: .bottom),
-            messageComposerBottomConstraint!
+        messageComposerBottomConstraint?.isActive = true
+        messageListVC.view.bottomAnchor.pin(equalTo: messageComposerVC.view.topAnchor)
 
-        ])
-
-        if let cid = channelController.cid {
-            headerView.channelController = client.channelController(for: cid)
-        }
 
         view.addSubview(pinnedMessageView)
         pinnedMessageView.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 16).isActive = true
@@ -314,13 +330,11 @@ open class ChannelViewController: _ViewController,
         pinnedMessageView.pin(anchors: [.centerX], to: view)
         pinnedMessageView.heightAnchor.pin(greaterThanOrEqualToConstant: 72).isActive = true
 
-        // Accept Invitation View
         view.addSubview(acceptInvitationView)
         acceptInvitationView.pin(anchors: [.top, .bottom, .leading, .trailing], to: view)
         updateInvitationView()
-        navigationItem.leftItemsSupplementBackButton = true
-        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: headerView)
-        navigationItem.largeTitleDisplayMode = .never
+        topicClosedView.isHidden = true
+        updateMessageComposerAndConstraints()
     }
 
     open override func viewWillAppear(_ animated: Bool) {
@@ -332,7 +346,6 @@ open class ChannelViewController: _ViewController,
 
     override open func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-//        channelController.delegate = self
         keyboardHandler.start()
 
         if shouldMarkChannelRead {
@@ -349,6 +362,11 @@ open class ChannelViewController: _ViewController,
         resignFirstResponder()
     }
 
+    open override func contentDidChanged() {
+        super.contentDidChanged()
+        topicClosedView.canReopenTopic = channelController.channel?.membership?.isModerator == true
+    }
+
     /// Called when the syncing of the `channelController` is finished.
     /// - Parameter error: An `error` if the syncing failed; `nil` if it was successful.
     open func didFinishSynchronizing(with error: Error?) {
@@ -356,9 +374,8 @@ open class ChannelViewController: _ViewController,
             log.error("Error when synchronizing ChannelController: \(error)")
             if let error = error as? ClientError, let ermisApiError = error.ermisApiError {
                 if ermisApiError.type == .notAMemberOfChannel {
-                        closed()
-                        shouldClosedWhenLoad = true
-//                    }
+                    closed()
+                    shouldClosedWhenLoad = true
                 }
             }
         }
@@ -394,6 +411,47 @@ open class ChannelViewController: _ViewController,
     private func setChannelControllerToComposerIfNeeded(cid: ChannelId?) {
         guard messageComposerVC.channelController == nil, let cid = cid else { return }
         messageComposerVC.channelController = client.channelController(for: cid)
+    }
+
+    private func updateMessageComposerAndConstraints() {
+        // Ensure view is loaded.
+        guard messageListTopConstraint != nil else {
+            return
+        }
+        bottomContainerBottomConstraint?.isActive = false
+
+        let channel = channelController.channel
+        let isShowInvitationViewVisible = channel?.isDirectMessageChannel == true && (channel?.directUserMembership?.memberRole == .pending || channel?.directUserMembership?.memberRole == .skipped)
+        let isTopicClosed = channel?.isClosedTopic == true
+
+        topicClosedView.isHidden = !isTopicClosed
+        invitingView.isHidden = !isShowInvitationViewVisible
+
+
+        if isTopicClosed {
+            messageComposerBottomConstraint?.isActive = false
+            bottomContainerBottomConstraint = view.safeAreaLayoutGuide.bottomAnchor.pin(equalTo: bottomContainerView.bottomAnchor)
+            topicClosedView.isHidden = false
+            messageComposerVC.view.isHidden = true
+        } else {
+            messageComposerBottomConstraint?.isActive = true
+            bottomContainerBottomConstraint = messageComposerVC.view.topAnchor.pin(equalTo: bottomContainerView.bottomAnchor)
+            messageComposerVC.view.isHidden = false
+            topicClosedView.isHidden = true
+        }
+        
+        if messageListTopConstraint == nil {
+            messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        }
+
+        if messageListTopConstraint == nil {
+            messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
+        }
+
+        NSLayoutConstraint.activate([
+            messageListTopConstraint!,
+            bottomContainerBottomConstraint!
+        ])
     }
 
     // MARK: - Actions
@@ -458,8 +516,7 @@ open class ChannelViewController: _ViewController,
             filter: .joinedChannels(memberId: membership.userId,
                                     projectId: channelController.client.projectId ?? ""),
             sort: [
-                .init(key: .lastMessageAt),
-                .init(key: .updatedAt)
+                .init(key: .default)
             ]
         )
         let channelListController = channelController.client.channelListController(query: channelListQuery)
@@ -531,6 +588,38 @@ open class ChannelViewController: _ViewController,
                               channelConditions: conditions)
         alert.modalPresentationStyle = .overCurrentContext
         present(alert, animated: false)
+    }
+    // MARK: - Close Topic
+    open func showToggleTopicOpenStatusAlert() {
+        guard let cid = channelController.cid else {
+            return
+        }
+
+        var titleAlert = channelController.channel?.isClosedTopic == true ? L10n.Topic.ReOpenAlert.title : L10n.Topic.CloseAlert.title
+        var contetenAlert = channelController.channel?.isClosedTopic == true ? L10n.Topic.ReOpenAlert.message :  L10n.Topic.CloseAlert.message
+
+        let alertController = UIAlertController(title: titleAlert,
+                                                message: contetenAlert,
+                                                preferredStyle: .alert)
+
+        alertController.addAction(UIAlertAction(title: L10n.Alert.Actions.ok, style: .destructive, handler: { [weak self] _ in
+            self?.toggleTopicOpenStatus()
+        }))
+        alertController.addAction(UIAlertAction(title: L10n.Alert.Actions.cancel, style: .cancel, handler: nil))
+        present(alertController, animated: true)
+    }
+
+    open func toggleTopicOpenStatus() {
+        topicClosedView.isEnable = false
+        if channelController.channel?.isClosedTopic == true {
+            channelController.reopenTopic { [weak self] error in
+                self?.topicClosedView.isEnable = true
+            }
+        } else {
+            channelController.closeTopic { [weak self] error in
+                self?.topicClosedView.isEnable = true
+            }
+        }
     }
 
     // MARK: - MessageListViewControllerDataSource
@@ -760,14 +849,31 @@ open class ChannelViewController: _ViewController,
             closed()
             shouldClosedWhenLoad = true
         }
+        
+        if channel.item.deletedAt != nil {
+            closed()
+            shouldClosedWhenLoad = true
+        }
+        
+        if headerView.channelController == nil, let cid = channelController.cid {
+            headerView.channelController = client.channelController(for: cid,
+                                                                    parentId: channelController.parentCid)
+        }
+        
+        if let parent = channelController.channel?.parent, parent.topicsEnabled == false {
+            closed()
+            shouldClosedWhenLoad = true     
+        }
+
+        updateMessageComposerAndConstraints()
+
+        contentDidChanged()
+        
+        updateInvitationView()
         updateScrollToBottomButtonCount()
         updateJumpToUnreadRelatedComponents()
 
-        if headerView.channelController == nil, let cid = channelController.cid {
-            headerView.channelController = client.channelController(for: cid)
-        }
-        updateInvitationView()
-
+        messageListVC.isInteractionMessage = !(channelController.channel?.isClosedTopic ?? false)
         if let channel = self.channelController.channel,
            let lastestPinnedMessage = channel.pinnedMessages.first {
             pinnedMessageView.content = .init(message: lastestPinnedMessage,
@@ -795,6 +901,9 @@ open class ChannelViewController: _ViewController,
         } else {
             messageListVC.showTypingIndicator(typingUsers: typingUsersWithoutCurrentUser)
         }
+    }
+    
+    public func channelController(_ channelController: ChannelController, didUpdateTopic topics: [ListChange<Channel>]) {
     }
 
     // MARK: - EventsControllerDelegate
@@ -895,9 +1004,11 @@ private extension ChannelViewController {
             acceptInvitationView.content = (channelController.channel, client.currentUserId)
         }
         let constant: CGFloat = isShowInvitationViewVisible ? invitingHeight : 0
-        invitingViewHeightConstraint?.constant = constant
+//        invitingViewHeightConstraint?.constant = constant
         invitingView.directUserName = channelController.channel?.directUserMembership?.name
-        invitingViewHeightConstraint?.constant = isShowInvitationViewVisible ? invitingHeight : 0
+//        invitingViewHeightConstraint?.constant = isShowInvitationViewVisible ? invitingHeight : 0
+
+        invitingView.isHidden = !isShowInvitationViewVisible
     }
 }
 // MARK: - ChannelAcceptInvitationView
@@ -996,5 +1107,11 @@ extension ChannelViewController: PinnedMessageViewDelegate {
 extension ChannelViewController: PinnedMessageViewControllerDelegate {
     public func pinnedMessageViewController(_ pinnedMessageViewController: PinnedMessagesViewController, didSelected pinnedMessage: ChatMessage) {
         jumpToMessage(id: pinnedMessage.id, shouldHighlight: true)
+    }
+}
+// MARK: - TopicClosedViewDelegate
+extension ChannelViewController: TopicClosedViewDelegate {
+    public func topicClosedViewDidTapReOpenTopicButton(_ view: TopicClosedView) {
+        showToggleTopicOpenStatusAlert()
     }
 }

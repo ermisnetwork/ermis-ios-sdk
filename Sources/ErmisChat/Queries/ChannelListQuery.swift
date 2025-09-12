@@ -101,6 +101,17 @@ public extension Filter where Scope: AnyChannelListFilterScope {
         .and([
             .in(.members, values: [.init(userId: memberId, projectId: projectId)]),
             .in(.channelRoles, values: ["owner", "member", "pending", "moder"]),
+            .in(.channelType, values: [ChannelType.general.rawValue, ChannelType.messaging.rawValue, ChannelType.team.rawValue]),
+            .equal(.projectId, to: projectId)
+        ])
+    }
+    
+    static func topics(parentcID: ChannelId, projectId: String) -> Filter<Scope> {
+        .and([
+            .in(.channelRoles, values: ["owner", "member", "pending", "moder"]),
+            .in(.channelType, values: [ChannelType.topic.rawValue, ChannelType.team.rawValue]),
+            .equal(.init(rawValue: "include_parent"), to: true),
+            .equal(.parentCid, to: parentcID.rawValue),
             .equal(.projectId, to: projectId)
         ])
     }
@@ -159,6 +170,24 @@ extension FilterKey where Scope: AnyChannelListFilterScope {
 
     static var channelType: FilterKey<Scope, String> {
         .init(rawValue: "type", keyPathString: #keyPath(ChannelDTO.typeRawValue))
+    }
+
+    // When using parentCid, alway get the topics and it parent channel.
+    static var parentCid: FilterKey<Scope, String> {
+        .init(rawValue: "parent_cid",
+              keyPathString: #keyPath(ChannelDTO.parentcid),
+              predicateMapper: { op, parentCid in
+            let parentCidKeyPath = #keyPath(ChannelDTO.parentcid)
+            let cidKeyPath = #keyPath(ChannelDTO.cid)
+            switch op {
+            case .equal:
+                let parentCidPredicate = NSPredicate(format: "%K == %@", parentCidKeyPath, parentCid)
+                let cidPredicate = NSPredicate(format: "%K == %@", cidKeyPath, parentCid)
+                return NSCompoundPredicate(orPredicateWithSubpredicates: [parentCidPredicate, cidPredicate])
+            default:
+                return nil
+            }
+        })
     }
 
     static var isBlocked: FilterKey<Scope, Bool> {

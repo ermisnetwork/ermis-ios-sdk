@@ -19,6 +19,13 @@ public struct ChannelListSortingKey: SortingKey, Equatable {
         localKey: #keyPath(ChannelDTO.createdAt),
         remoteKey: ChannelCodingKeys.createdAt.rawValue
     )
+    
+    /// Sort channels by date they were created.
+    public static let parentcid = Self(
+        keyPath: \.parentCid,
+        localKey: #keyPath(ChannelDTO.parentcid),
+        remoteKey: ChannelCodingKeys.parentcid.rawValue
+    )
 
     /// Sort channels by date they were updated.
     public static let updatedAt = Self(
@@ -138,11 +145,5 @@ extension Array where Element == Sorting<ChannelListSortingKey> {
 private extension Sorting where Key == ChannelListSortingKey {
     var sortValue: SortValue<Channel>? {
         SortValue(keyPath: key.keyPath, isAscending: isAscending)
-    }
-}
-
-extension Channel {
-    var defaultSortingAt: Date {
-        lastMessageAt ?? createdAt
     }
 }

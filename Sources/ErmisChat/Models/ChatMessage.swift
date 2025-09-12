@@ -122,6 +122,9 @@ public struct ChatMessage {
         }
     }
 
+    /// The url of sticker.
+    public var stickerUrl: URL?
+
     /// A list of latest 25 replies to this message.
     ///
     /// - Important: The `latestReplies` property is loaded and evaluated lazily to maintain high performance.
@@ -299,16 +302,17 @@ public extension ChatMessage {
         }
         return text
     }
+    
     /// The total number of reactions.
     var totalReactionsCount: Int {
         reactionCounts.values.reduce(0, +)
     }
-
+    
     /// Returns all the attachments with the payload type-erased.
     var allAttachments: [AnyMessageAttachment] {
         _attachments
     }
-
+    
     /// Returns all the attachments with the payload of the provided type.
     ///
     /// - Important: Attachments are loaded lazily and cached to maintain high performance.
@@ -319,62 +323,67 @@ public extension ChatMessage {
             $0.attachment(payloadType: payloadType)
         }
     }
-
+    
     /// Returns the attachments of `.image` type.
     ///
     /// - Important: The `imageAttachments` are loaded lazily and cached to maintain high performance.
     var imageAttachments: [MessageImageAttachment] {
         attachments(payloadType: ImageAttachmentPayload.self)
     }
-
+    
     /// Returns the attachments of `.file` type.
     ///
     /// - Important: The `fileAttachments` are loaded lazily and cached to maintain high performance.
     var fileAttachments: [MessageFileAttachment] {
         attachments(payloadType: FileAttachmentPayload.self)
     }
-
+    
     /// Returns the attachments of `.video` type.
     ///
     /// - Important: The `videoAttachments` are loaded lazily and cached to maintain high performance.
     var videoAttachments: [MessageVideoAttachment] {
         attachments(payloadType: VideoAttachmentPayload.self)
     }
-
+    
     /// Returns the attachments of `.linkPreview` type.
     ///
     /// - Important: The `linkAttachments` are loaded lazily and cached to maintain high performance.
     var linkAttachments: [MessageLinkAttachment] {
         attachments(payloadType: LinkAttachmentPayload.self)
     }
-
+    
     /// Returns the attachments of `.audio` type.
     ///
     /// - Important: The `audioAttachments` are loaded lazily and cached to maintain high performance.
     var audioAttachments: [MessageAudioAttachment] {
         attachments(payloadType: AudioAttachmentPayload.self)
     }
-
+    
     /// Returns the attachments of `.voiceRecording` type.
     ///
     /// - Important: The `voiceRecordingAttachments` are loaded lazily and cached to maintain high performance.
     var voiceRecordingAttachments: [MessageVoiceRecordingAttachment] {
         attachments(payloadType: VoiceRecordingAttachmentPayload.self)
     }
-
+    
     /// Returns attachment for the given identifier.
     /// - Parameter id: Attachment identifier.
     /// - Returns: A type-erased attachment.
     func attachment(with id: AttachmentId) -> AnyMessageAttachment? {
         _attachments.first { $0.id == id }
     }
-
+    
     var signalMessage: SignalMessage? {
         guard type == .signal else {
             return nil
         }
-
+        
         return SignalMessage(signalMessage: text)
+    }
+    /// The boolean true if this message contain sticker
+    /// We don't check message type because when reply, the message type will be reply, not sticker.
+    var isSticker: Bool {
+        return stickerUrl != nil || type == .sticker
     }
 
     /// The message delivery status.
@@ -385,8 +394,8 @@ public extension ChatMessage {
             // Delivery status exists only for messages sent by the current user.
             return nil
         }
-
-        guard type == .regular || type == .reply else {
+        
+        guard type == .regular || type == .reply || type == .signal || type == .sticker else {
             // Delivery status only makes sense for regular messages and thread replies.
             return nil
         }

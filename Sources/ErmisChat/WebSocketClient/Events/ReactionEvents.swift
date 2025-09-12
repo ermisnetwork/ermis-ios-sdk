@@ -12,6 +12,9 @@ public struct ReactionNewEvent: ChannelSpecificEvent {
     /// The channel identifier the message lives in.
     public let cid: ChannelId
 
+    /// The parent channel identifier the message lives in.
+    public let parentCid: ChannelId?
+
     /// The message a reaction is added to.
     public let message: ChatMessage
 
@@ -25,6 +28,7 @@ public struct ReactionNewEvent: ChannelSpecificEvent {
 class ReactionNewEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let message: MessagePayload
     let reaction: MessageReactionPayload
     let createdAt: Date
@@ -33,6 +37,7 @@ class ReactionNewEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         message = try response.value(at: \.message)
         reaction = try response.value(at: \.reaction)
         createdAt = try response.value(at: \.createdAt)
@@ -53,6 +58,7 @@ class ReactionNewEventDTO: EventDTO {
         return try? ReactionNewEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             message: messageDTO.asModel(),
             reaction: reactionDTO.asModel(),
             createdAt: createdAt
@@ -68,6 +74,9 @@ public struct ReactionUpdatedEvent: ChannelSpecificEvent {
     /// The channel identifier the message lives in.
     public let cid: ChannelId
 
+    /// The parent channel identifier the message lives in.
+    public let parentCid: ChannelId?
+
     /// The message a reaction is added to.
     public let message: ChatMessage
 
@@ -81,6 +90,7 @@ public struct ReactionUpdatedEvent: ChannelSpecificEvent {
 class ReactionUpdatedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let message: MessagePayload
     let reaction: MessageReactionPayload
     let createdAt: Date
@@ -89,6 +99,7 @@ class ReactionUpdatedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         message = try response.value(at: \.message)
         reaction = try response.value(at: \.reaction)
         createdAt = try response.value(at: \.createdAt)
@@ -109,6 +120,7 @@ class ReactionUpdatedEventDTO: EventDTO {
         return try? ReactionUpdatedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             message: messageDTO.asModel(),
             reaction: reactionDTO.asModel(),
             createdAt: createdAt
@@ -124,6 +136,9 @@ public struct ReactionDeletedEvent: ChannelSpecificEvent {
     /// The channel identifier the message lives in.
     public let cid: ChannelId
 
+    /// The parent channel identifier the message lives in.
+    public let parentCid: ChannelId?
+
     /// The message a reaction is deleted from.
     public let message: ChatMessage
 
@@ -137,6 +152,7 @@ public struct ReactionDeletedEvent: ChannelSpecificEvent {
 class ReactionDeletedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
+    let parentCid: ChannelId?
     let message: MessagePayload
     let reaction: MessageReactionPayload
     let createdAt: Date
@@ -145,6 +161,7 @@ class ReactionDeletedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
         message = try response.value(at: \.message)
         reaction = try response.value(at: \.reaction)
         createdAt = try response.value(at: \.createdAt)
@@ -165,6 +182,7 @@ class ReactionDeletedEventDTO: EventDTO {
         return try? ReactionDeletedEvent(
             user: userDTO.asModel(),
             cid: cid,
+            parentCid: parentCid,
             message: messageDTO.asModel(),
             reaction: reactionDTO.asModel(),
             createdAt: createdAt

@@ -496,7 +496,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             // Add extral space for reaction
             if footnoteSubviews.isEmpty {
                 bubbleThreadFootnoteContainer.isLayoutMarginsRelativeArrangement = true
-                bubbleThreadFootnoteContainer.layoutMargins.bottom = 18
+                bubbleThreadFootnoteContainer.layoutMargins = .init(top: 0, left: 0, bottom: 18, right: 0)
             } else {
                 bubbleThreadFootnoteContainer.setCustomSpacing(18, after: bubble)
             }
@@ -530,8 +530,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         mainContainer.alignment = .bottom
         mainContainer.isLayoutMarginsRelativeArrangement = true
         mainContainer.layoutMargins.top = 0
+        mainContainer.layoutMargins.left = 16
+        mainContainer.layoutMargins.right = 16
         insertSubview(mainContainer, at: 0)
-
         let mainContainerSubviews = [
             authorAvatarView ?? authorAvatarSpacer,
             errorIndicatorContainer,

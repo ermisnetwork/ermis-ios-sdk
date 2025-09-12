@@ -319,8 +319,6 @@ open class ChannelListViewController: _ViewController,
             guard let self else {
                 return
             }
-            let snapshot = self.dataSource?.snapshot() ?? snapshot
-
             self.isReloadingChannelList = false
 
             if hasPendingReloadChannels {
@@ -496,7 +494,11 @@ open class ChannelListViewController: _ViewController,
         }
 
         guard let channel = getChannel(at: indexPath) else { return }
-        router.showChannel(for: channel.cid)
+        if channel.topicsEnabled {
+            router.showTopicList(of: channel.cid)
+        } else {
+            router.showChannel(for: channel.cid)
+        }
     }
 
     // MARK: - Swipeable View
@@ -604,6 +606,7 @@ open class ChannelListViewController: _ViewController,
                 isLoading = controller.channels.isEmpty
             case .localDataFetched:
                 reloadChannels()
+                isLoading = controller.channels.isEmpty
             case .remoteDataFetched:
                 isLoading = false
                 shouldHideEmptyView = !shouldShowEmptyView()
@@ -613,6 +616,7 @@ open class ChannelListViewController: _ViewController,
                 shouldHideEmptyView = !shouldShowEmptyView()
                 isLoading = false
                 shouldHideErrorView = isChannelListStatesEnabled ? false : true
+                channelListErrorView.titleLabel.text = newState == .remoteDataFetched ? "Load remote data failed" : "Load local data failed"
                 channelListErrorView.show()
             }
 
@@ -679,7 +683,8 @@ extension Channel: Differentiable, Hashable, Equatable {
         reads == source.reads &&
         cooldownDuration == source.cooldownDuration &&
         previewMessage == source.previewMessage &&
-        composerUnsentContent == source.composerUnsentContent
+        composerUnsentContent == source.composerUnsentContent &&
+        topics == source.topics
     }
 
     public var differenceIdentifier: Int {

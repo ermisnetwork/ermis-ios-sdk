@@ -52,8 +52,10 @@ open class ComposerViewController: _ViewController,
                                    UIImagePickerControllerDelegate,
                                    UIDocumentPickerDelegate,
                                    UINavigationControllerDelegate,
+                                   UIGestureRecognizerDelegate,
                                    InputTextViewClipboardAttachmentDelegate,
                                    VoiceRecordingDelegate,
+                                   StickerListViewControllerDelegate,
                                    ComposerBlockedViewDelegate,
                                    ComposerGuestViewDelegate {
     
@@ -71,6 +73,8 @@ open class ComposerViewController: _ViewController,
         public var threadMessage: ChatMessage?
         /// The attachments of the message.
         public var attachments: [AnyAttachmentPayload]
+        /// The url of the sticker content.
+        public var stickerUrl: URL?
         /// The mentioned users in the message.
         public var mentionedUsers: Set<ChatUser>
         /// A boolean that check is mention all in the message.
@@ -119,6 +123,7 @@ open class ComposerViewController: _ViewController,
             quotingMessage: ChatMessage?,
             threadMessage: ChatMessage?,
             attachments: [AnyAttachmentPayload],
+            stickerUrl: URL?,
             mentionedUsers: Set<ChatUser>,
             mentionedAll: Bool,
             command: Command?,
@@ -130,6 +135,7 @@ open class ComposerViewController: _ViewController,
             self.quotingMessage = quotingMessage
             self.threadMessage = threadMessage
             self.attachments = attachments
+            self.stickerUrl = stickerUrl
             self.mentionedUsers = mentionedUsers
             self.hasMentionedAll = mentionedAll
             self.command = command
@@ -158,6 +164,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: nil,
                 threadMessage: nil,
                 attachments: [],
+                stickerUrl: nil,
                 mentionedUsers: [],
                 mentionedAll: false,
                 command: nil,
@@ -174,6 +181,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: nil,
                 threadMessage: threadMessage,
                 attachments: [],
+                stickerUrl: nil,
                 mentionedUsers: [],
                 mentionedAll: false,
                 command: nil,
@@ -193,6 +201,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: nil,
                 threadMessage: threadMessage,
                 attachments: message.allAttachments.toAnyAttachmentPayload(),
+                stickerUrl: message.stickerUrl,
                 mentionedUsers: message.mentionedUsers,
                 mentionedAll: message.mentionedAll,
                 command: command,
@@ -212,6 +221,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: message,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -227,6 +237,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: [],
+                stickerUrl: nil,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -242,6 +253,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -257,6 +269,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command,
@@ -272,6 +285,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command
@@ -286,6 +300,7 @@ open class ComposerViewController: _ViewController,
                 quotingMessage: quotingMessage,
                 threadMessage: threadMessage,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUsers: mentionedUsers,
                 mentionedAll: hasMentionedAll,
                 command: command
@@ -480,13 +495,17 @@ open class ComposerViewController: _ViewController,
         return picker
     }()
 
+    public var textView: InputTextView {
+        return composerView.inputMessageView.textView
+    }
+
     override open func setUp() {
         super.setUp()
 
-        composerView.inputMessageView.textView.delegate = self
+        textView.delegate = self
 
         // Set the delegate for handling the pasting of UIImages in the text view
-        composerView.inputMessageView.textView.clipboardAttachmentDelegate = self
+        textView.clipboardAttachmentDelegate = self
 
         composerView.sendButton.addTarget(self, action: #selector(publishMessage), for: .touchUpInside)
         composerView.confirmButton.addTarget(self, action: #selector(publishMessage), for: .touchUpInside)
@@ -503,6 +522,11 @@ open class ComposerViewController: _ViewController,
             for: .touchUpInside
         )
 
+        let inputMessageViewTapGesture = UITapGestureRecognizer(target: self, action: #selector(inputMessageTextViewDidSelected(sender:)))
+        inputMessageViewTapGesture.cancelsTouchesInView = false
+        inputMessageViewTapGesture.delegate = self
+        composerView.inputMessageView.textView.addGestureRecognizer(inputMessageViewTapGesture)
+
         channelController?.delegate = self
 
         setupAttachmentsView()
@@ -517,7 +541,7 @@ open class ComposerViewController: _ViewController,
             self?.content.slowMode(cooldown: currentTime)
         }
 
-        composerView.inputMessageView.textView.onLinksChanged = { [weak self] links in
+        textView.onLinksChanged = { [weak self] links in
             self?.didChangeLinks(links)
         }
         composerView.linkPreviewView.onClose = { [weak self] in
@@ -561,6 +585,17 @@ open class ComposerViewController: _ViewController,
         dismissSuggestions()
     }
 
+    open override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        guard textView.isFirstResponder, textView.inputView != nil else { return }
+
+        coordinator.animate(alongsideTransition: { [weak self] _ in
+            self?.textView.resignFirstResponder()
+        }) { [weak self] _ in
+            self?.showStickerPicker()
+        }
+    }
+
     // MARK: Update Content
 
     override open func contentDidChanged() {
@@ -601,16 +636,16 @@ open class ComposerViewController: _ViewController,
         var displayText = content.text
 
         guard !content.mentionedUsers.isEmpty else {
-            if composerView.inputMessageView.textView.text != displayText {
+            if textView.text != displayText {
                 // Updating the text unnecessarily makes the caret jump to the end of input
-                composerView.inputMessageView.textView.text = displayText
+                textView.text = displayText
             }
             return
         }
 
-        if composerView.inputMessageView.textView.text != displayText {
+        if textView.text != displayText {
             // Updating the text unnecessarily makes the caret jump to the end of input
-            composerView.inputMessageView.textView.text = displayText
+            textView.text = displayText
         }
     }
 
@@ -785,7 +820,7 @@ open class ComposerViewController: _ViewController,
     }
 
     open func updateCommandSuggestions() {
-        if isCommandsEnabled, let typingCommand = typingCommand(in: composerView.inputMessageView.textView) {
+        if isCommandsEnabled, let typingCommand = typingCommand(in: textView) {
             showCommandSuggestions(for: typingCommand)
             return
         }
@@ -794,7 +829,7 @@ open class ComposerViewController: _ViewController,
     open func updateMentionSuggestions() {
         if isMentionsEnabled,
            channelController?.channel?.isDirectMessageChannel == false,
-           let (typingMention, mentionRange) = typingMention(in: composerView.inputMessageView.textView) {
+           let (typingMention, mentionRange) = typingMention(in: textView) {
             userMentionsDebouncer.execute { [weak self] in
                 self?.showMentionSuggestions(for: typingMention, mentionRange: mentionRange)
             }
@@ -808,11 +843,11 @@ open class ComposerViewController: _ViewController,
 
     open func updatePlaceholderLabel() {
         guard isSendMessageEnabled else {
-            composerView.inputMessageView.textView.placeholderLabel.text = L10n.Composer.Placeholder.messageDisabled
+            textView.placeholderLabel.text = L10n.Composer.Placeholder.messageDisabled
             return
         }
 
-        composerView.inputMessageView.textView.placeholderLabel.text = isSlowModeOn
+        textView.placeholderLabel.text = isSlowModeOn
         ? L10n.Composer.Placeholder.slowMode
         : L10n.Composer.Placeholder.message
     }
@@ -898,7 +933,7 @@ open class ComposerViewController: _ViewController,
         self.mentionTokens = mentionTokens
     }
 
-    @objc open func publishMessage(sender: UIButton) {
+    @objc open func publishMessage() {
         if !canSendLinks, inputContainsLinks {
             presentAlert(title: L10n.Composer.LinksDisabled.title,
                          message: L10n.Composer.LinksDisabled.subtitle)
@@ -1014,13 +1049,38 @@ open class ComposerViewController: _ViewController,
         }
     }
 
-    @objc open func showStickerPicker(sender: UIButton) {
-        presentAlert(message: "Feature under develop")
+    @objc open func showStickerPicker() {
+        // Close input view if needed.
+        if textView.inputView != nil {
+            textView.inputView = nil
+            textView.reloadInputViews()
+            return
+        }
+        guard let client = channelController?.client else {
+            return
+        }
+        let stickerController = client.stickerController()
+        let stickerPickerVC = components.stickerList.init()
+        stickerPickerVC.controller = stickerController
+        stickerPickerVC.delegate = self
+        stickerPickerVC.modalPresentationStyle = .pageSheet
+        textView.inputView = stickerPickerVC.view
+        textView.reloadInputViews()
+        if !textView.isFirstResponder {
+            textView.becomeFirstResponder()
+        }
     }
 
     @objc open func clearContent(sender: UIButton) {
         content.clear()
         mentionTokens = []
+    }
+
+    @objc open func inputMessageTextViewDidSelected(sender: UITapGestureRecognizer) {
+        if textView.inputView != nil {
+            textView.inputView = nil
+            textView.reloadInputViews()
+        }
     }
 
     /// Creates a new message and notifies the delegate that a new message was created.
@@ -1050,6 +1110,7 @@ open class ComposerViewController: _ViewController,
             messageController?.createNewReply(
                 text: text,
                 attachments: content.attachments,
+                stickerUrl: content.stickerUrl,
                 mentionedUserIds: content.mentionedUsers.map(\.userId),
                 mentionedAll: content.hasMentionedAll,
                 quotedMessageId: content.quotingMessage?.id
@@ -1060,6 +1121,7 @@ open class ComposerViewController: _ViewController,
         channelController?.createNewMessage(
             text: text,
             attachments: content.attachments,
+            stickerUrl: content.stickerUrl,
             mentionedUserIds: content.mentionedUsers.map(\.userId),
             mentionedAll: content.hasMentionedAll,
             quotedMessageId: content.quotingMessage?.id
@@ -1556,9 +1618,6 @@ open class ComposerViewController: _ViewController,
         return false
     }
 
-    public func textViewDidChangeSelection(_ textView: UITextView) {
-    }
-
     // MARK: - UIImagePickerControllerDelegate
 
     open func imagePickerController(
@@ -1772,7 +1831,7 @@ open class ComposerViewController: _ViewController,
     }
 
     public func voiceRecordingPublishMessage(_ voiceRecordingVC: VoiceRecordingViewController) {
-        publishMessage(sender: composerView.sendButton)
+        publishMessage()
     }
 
     public func voiceRecordingWillBeginRecording(_ voiceRecordingVC: VoiceRecordingViewController) {
@@ -1795,6 +1854,7 @@ open class ComposerViewController: _ViewController,
             quotingMessage: content.quotingMessage,
             threadMessage: content.threadMessage,
             attachments: content.attachments,
+            stickerUrl: content.stickerUrl,
             mentionedUsers: content.mentionedUsers,
             mentionedAll: content.hasMentionedAll,
             command: content.command
@@ -1817,6 +1877,15 @@ open class ComposerViewController: _ViewController,
         }
     }
 
+    // MARK: - StickerListViewControllerDelegate
+    public func stickerListViewController(_ viewController: StickerListViewController, didSelectStickerURL url: URL) {
+        textView.resignFirstResponder()
+        textView.inputView = nil
+        content.text = ""
+        content.attachments = []
+        content.stickerUrl = url
+        publishMessage()
+    }
     // MARK: - ComposerBlockedViewDelegate
     public func composerBlockedViewDidSelectUnblockUser(in view: ComposerBlockedView) {
         view.unBlockedButton.isEnabled = false
@@ -1847,6 +1916,12 @@ open class ComposerViewController: _ViewController,
             }
             view.joinChannelButton.isEnabled = true
         })
+    }
+
+    // MARK: - Gesture reconizer delegate
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Alow to pass tap event to text view.
+        return true
     }
     // MARK: - Private
 

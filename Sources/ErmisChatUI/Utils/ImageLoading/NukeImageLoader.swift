@@ -51,6 +51,7 @@ open class NukeImageLoader: ImageLoading, ImagePipelineDelegate {
         completion: ((Result<UIImage, Error>) -> Void)?
     ) -> Cancellable? {
         guard let url = url, !url.absoluteString.isEmpty else {
+            imageView.currentImageLoadingTask?.cancel()
             let placeHolder = options.placeholder ?? PlaceholderImageGenerator.shared.getPlaceHolderImage(from: options.placeHolderString ?? " ")
             imageView.image = placeHolder
             completion?(.success(placeHolder))
@@ -72,7 +73,7 @@ open class NukeImageLoader: ImageLoading, ImagePipelineDelegate {
         )
 
         let nukeOptions = ImageLoadingOptions(placeholder: options.placeholder)
-        return ErmisChatUI.loadImage(
+        let loadingTask = ErmisChatUI.loadImage(
             with: request,
             options: nukeOptions,
             into: imageView
@@ -85,6 +86,9 @@ open class NukeImageLoader: ImageLoading, ImagePipelineDelegate {
                 completion?(.failure(error))
             }
         }
+
+        imageView.currentImageLoadingTask = loadingTask
+        return loadingTask
     }
 
     @discardableResult
@@ -166,11 +170,11 @@ private extension NSError {
     }
 }
 
-//extension UIImageView {
-//    static var nukeLoadingTaskKey: UInt8 = 0
-//
-//    var currentImageLoadingTask: ImageTask? {
-//        get { objc_getAssociatedObject(self, &Self.nukeLoadingTaskKey) as? ImageTask }
-//        set { objc_setAssociatedObject(self, &Self.nukeLoadingTaskKey, newValue, .OBJC_ASSOCIATION_RETAIN) }
-//    }
-//}
+extension UIImageView {
+    static var nukeLoadingTaskKey: UInt8 = 0
+
+    var currentImageLoadingTask: ImageTask? {
+        get { objc_getAssociatedObject(self, &Self.nukeLoadingTaskKey) as? ImageTask }
+        set { objc_setAssociatedObject(self, &Self.nukeLoadingTaskKey, newValue, .OBJC_ASSOCIATION_RETAIN) }
+    }
+}

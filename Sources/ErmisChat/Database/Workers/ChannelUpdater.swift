@@ -89,8 +89,14 @@ class ChannelUpdater: Worker {
             }
         }
 
-        let endpoint: Endpoint<ChannelPayload> = isChannelCreate ? .createChannel(query: channelQuery) :
-            .updateChannel(query: channelQuery)
+        let endpoint: Endpoint<ChannelPayload> = {
+            if channelQuery.parentCid != nil {
+                return .createTopic(isUpdate: isChannelCreate, query: channelQuery)
+            } else {
+                return isChannelCreate ? .createChannel(query: channelQuery) :
+                    .updateChannel(query: channelQuery)
+            }
+        }()
 
         if isInRecoveryMode {
             apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
@@ -174,6 +180,7 @@ class ChannelUpdater: Worker {
     ///   - pinning: Pins the new message. Nil if should not be pinned.
     ///   - isSilent: A flag indicating whether the message is a silent message. Silent messages are special messages that don't increase the unread messages count nor mark a channel as unread.
     ///   - attachments: An array of the attachments for the message.
+    ///   - stickerUrl: The url of sticker.
     ///   - quotedMessageId: An id of the message new message quotes. (inline reply)
     ///   - completion: Called when saving the message to the local DB finishes.
     ///
@@ -185,6 +192,7 @@ class ChannelUpdater: Worker {
         command: String?,
         arguments: String?,
         attachments: [AnyAttachmentPayload] = [],
+        stickerUrl: URL? = nil,
         mentionedUserIds: [UserId],
         mentionedAll: Bool,
         quotedMessageId: MessageId?,
@@ -200,6 +208,7 @@ class ChannelUpdater: Worker {
                 arguments: arguments,
                 parentMessageId: nil,
                 attachments: attachments,
+                stickerUrl: stickerUrl,
                 mentionedUserIds: mentionedUserIds,
                 mentionedAll: mentionedAll,
                 isSilent: isSilent,
@@ -377,6 +386,10 @@ class ChannelUpdater: Worker {
     ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
     func pinChannel(cid: ChannelId, isPinned: Bool, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
         channelRepository.setPinned(cid: cid, isPinned: isPinned, completion: completion)
+    }
+    
+    func topinChannel(cid: ChannelId, projectId: String, isPinned: Bool, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
+        channelRepository.setTopic(cid: cid, projectId: projectId, isEnable: isPinned, completion: completion)
     }
 
     ///
@@ -571,5 +584,32 @@ class ChannelUpdater: Worker {
             return messagePayload
         }
         return nil
+    }
+}
+
+// MARK: Topic
+extension ChannelUpdater {
+    
+    /// Adds a new topic to the channel.
+    /// - Parameters:
+    ///  - query: The channel query used in the request.
+    ///  - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    ///  **Note**: This method is used to create a topic in a parent channel. The parent channel must be specified in the query.
+    func addTopic(isUpdate: Bool, _ query: ChannelQuery, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .createTopic(isUpdate: isUpdate, query: query)) {
+            completion?($0.error)
+        }
+    }
+    
+    func closeTopic(_ cid: ChannelId, data: CloseAndReopenTopic, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .closeTopic(cid: cid, data: data)) {
+            completion?($0.error)
+        }
+    }
+    
+    func reopenTopic(_ cid: ChannelId, data: CloseAndReopenTopic, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .reopenTopic(cid: cid, data: data)) {
+            completion?($0.error)
+        }
     }
 }

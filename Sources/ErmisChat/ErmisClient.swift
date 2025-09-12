@@ -483,6 +483,10 @@ public class ErmisClient {
         syncRepository.subscribe()
     }
 
+    public func syncStickers() {
+        syncRepository.syncStickers()
+    }
+
     /// Fetch all users infomation
     ///  - Parameters completion: A block to be executed when the process is completed. Contains an error if something went wrong
 
@@ -719,21 +723,17 @@ public class ErmisClient {
                     isVideo: Bool,
                     signalType: SignalType? = nil,
                     sdp: String? = nil) async throws -> CallSignalRequestPayload {
-        try await withCheckedThrowingContinuation { continuation in
-            var signal: CallSignal?
-            if let signalType, let sdp {
-                signal = CallSignal(type: signalType, sdp: sdp)
-            }
-            let body = CallSignalRequestBody(sessionId: sessionId ?? "",
-                                             callId: callId,
-                                             cid: cid,
-                                             action: action,
-                                             isVideo: isVideo,
-                                             signal: signal)
-            self.callRepository.sendSignal(body: body) { result in
-                continuation.resume(with: result)
-            }
+        var signal: CallSignal?
+        if let signalType, let sdp {
+            signal = CallSignal(type: signalType, sdp: sdp)
         }
+        let body = CallSignalRequestBody(sessionId: sessionId ?? "",
+                                         callId: callId,
+                                         cid: cid,
+                                         action: action,
+                                         isVideo: isVideo,
+                                         signal: signal)
+        return  try await self.callRepository.sendSignal(body: body)
     }
 
     public func handelPushKitPayload(_ payload: [AnyHashable: Any],

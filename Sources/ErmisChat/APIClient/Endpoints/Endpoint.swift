@@ -4,13 +4,19 @@
 
 import Foundation
 
+enum URLType: String, Codable {
+    case auth
+    case normal
+    case sticker
+}
+
 struct Endpoint<ResponseType: Decodable>: Codable {
     let path: EndpointPath
     let method: EndpointMethod
     let query: Encodable?
     let needConnectionId: Bool
     let needToken: Bool
-    let isAuth: Bool
+    let urlType: URLType
     let body: Encodable?
 
     init(
@@ -20,7 +26,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         body: Encodable? = nil,
         needConnectionId: Bool = false,
         needToken: Bool = true,
-        isAuth: Bool = false
+        urlType: URLType = .normal
     ) {
         self.path = path
         self.method = method
@@ -28,7 +34,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         self.body = body
         self.needConnectionId = needConnectionId
         self.needToken = needToken
-        self.isAuth = isAuth
+        self.urlType = urlType
     }
 
     // MARK: - Codable
@@ -40,7 +46,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         case requiresConnectionId
         case requiresToken
         case body
-        case isAuth
+        case urlType
     }
 
     init(from decoder: Decoder) throws {
@@ -51,7 +57,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         needConnectionId = try container.decode(Bool.self, forKey: .requiresConnectionId)
         needToken = try container.decode(Bool.self, forKey: .requiresToken)
         body = try container.decodeIfPresent(Data.self, forKey: .body)
-        isAuth = try container.decode(Bool.self, forKey: .isAuth)
+        urlType = try container.decode(URLType.self, forKey: .urlType)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -66,7 +72,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         if let body = try body?.encodedAsData() {
             try container.encode(body, forKey: .body)
         }
-        try container.encode(isAuth, forKey: .isAuth)
+        try container.encode(urlType, forKey: .urlType)
     }
 }
 

@@ -18,6 +18,9 @@ open class CustomCellViewCatalog {
         if message.type == .signal {
             return components.callViewInjector
         }
+        if message.isSticker {
+            return components.stickerInjector
+        }
         let attachmentCounts = message.attachmentCounts
 
         if attachmentCounts.keys.contains(.image) || attachmentCounts.keys.contains(.video) {

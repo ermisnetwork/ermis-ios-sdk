@@ -62,6 +62,32 @@ open class ChannelListRouter: NavigationRouter<ChannelListViewController>, Compo
             rootViewController.show(navigationVC, sender: self)
         }
     }
+    
+    
+    open func showTopicList(of cid: ChannelId) {
+        let topicListQuery: ChannelListQuery = .init(
+            filter: .topics(parentcID: cid, projectId: cid.projectId),
+            sort: [
+                .init(key: .parentcid, isAscending: true),
+                .init(key: .isPinned),
+                .init(key: .default)
+            ]
+        )
+
+        let channelListController = rootViewController.controller.client.topicListController(query: topicListQuery, parentCid: cid)
+        let vc = TopicListViewController.make(with: channelListController)
+
+        if let splitVC = rootViewController.splitViewController {
+            splitVC.showDetailViewController(UINavigationController(rootViewController: vc), sender: self)
+        } else if let navigationVC = rootViewController.navigationController {
+            navigationVC.show(vc, sender: self)
+        } else {
+            let navigationVC = UINavigationController(rootViewController: vc)
+            navigationVC.transitioningDelegate = modalTransitioningDelegate
+            navigationVC.modalPresentationStyle = .custom
+            rootViewController.show(navigationVC, sender: self)
+        }
+    }
 
     /// Reset current detailVC if not in collapse mode
     open func unselectedChannel(_ channel: Channel?) {
