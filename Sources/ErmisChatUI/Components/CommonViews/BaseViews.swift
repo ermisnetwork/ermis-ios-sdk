@@ -104,7 +104,7 @@ open class _View: UIView, BaseViewProtocol, AccessibilityView {
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -146,7 +146,7 @@ open class _CollectionViewCell: UICollectionViewCell, BaseViewProtocol, Accessib
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -188,7 +188,7 @@ open class _CollectionReusableView: UICollectionReusableView, BaseViewProtocol, 
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -230,7 +230,7 @@ open class _Control: UIControl, BaseViewProtocol, AccessibilityView {
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -272,7 +272,7 @@ open class _ImageView: UIImageView, BaseViewProtocol, AccessibilityView {
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -314,7 +314,7 @@ open class _Button: UIButton, BaseViewProtocol, AccessibilityView {
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -356,7 +356,7 @@ open class _NavigationBar: UINavigationBar, BaseViewProtocol, AccessibilityView 
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -408,7 +408,7 @@ open class _ViewController: UIViewController, BaseViewProtocol {
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -466,7 +466,7 @@ open class _TableViewCell: UITableViewCell, BaseViewProtocol, AccessibilityView 
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -507,7 +507,7 @@ open class _TableViewHeaderAndFooterView: UITableViewHeaderFooterView, BaseViewP
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
@@ -559,7 +559,7 @@ open class _AlertViewController: UIAlertController, BaseViewProtocol {
         super.traitCollectionDidChange(previousTraitCollection)
 
         guard #available(iOS 12, *) else { return }
-        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle else { return }
+        guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
             self.setUpTheme()
