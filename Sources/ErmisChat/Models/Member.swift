@@ -216,4 +216,8 @@ extension ChannelMember {
     var isModerator: Bool {
         return memberRole == .admin || memberRole == .moderator || memberRole == .owner
     }
+
+    var isJoined: Bool {
+        return isModerator || memberRole == .member
+    }
 }
