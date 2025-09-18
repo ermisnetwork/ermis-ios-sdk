@@ -77,13 +77,17 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
             loadChannelAvatar(from: channelAvatarUrl)
             return
         }
-
         // Use the appropriate method to load avatar based on channel type
-        if content.lastActiveMembers.filter { $0.isJoined }.count == 2 {
+        if content.isDirectChannel {
             presenceAvatarView.isHidden = false
             combinedAvatarView.isHidden = true
             combinedAvatarView.cancelLoading()
             loadDirectMessageChannelAvatar()
+        } else if content.lastActiveMembers.filter { $0.isJoined }.count < 2 {
+            presenceAvatarView.isHidden = false
+            combinedAvatarView.isHidden = true
+            combinedAvatarView.cancelLoading()
+            loadIntoAvatarImageView(from: nil, placeHolderString: content.channelName)
         } else {
             presenceAvatarView.isHidden = true
             presenceAvatarView.avatarView.cancelLoading()
@@ -124,8 +128,8 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
         let lastActiveMembers = self.lastActiveMembers().filter { $0.isJoined }
 
         // If there are no members other than the current user in the channel, load a placeholder
-        guard !lastActiveMembers.isEmpty else {
-            loadIntoAvatarImageView(from: nil, placeHolderString: nil)
+        guard lastActiveMembers.count > 1 else {
+            loadIntoAvatarImageView(from: nil, placeHolderString: content?.channelName)
             return
         }
 

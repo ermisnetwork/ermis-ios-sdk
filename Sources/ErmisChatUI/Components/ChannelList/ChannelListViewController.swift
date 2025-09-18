@@ -148,7 +148,7 @@ open class ChannelListViewController: _ViewController,
         setupDiffableDataSource()
         controller.delegate = self
         controller.synchronize()
-
+        collectionView.contentInsetAdjustmentBehavior = .automatic
         collectionView.register(
             components.channelListCell.self,
             forCellWithReuseIdentifier: components.channelListCell.reuseIdentifier
@@ -239,7 +239,7 @@ open class ChannelListViewController: _ViewController,
     }
 
     open override func viewDidLayoutSubviews() {
-        channelListLoadingView.contentDidChanged()
+        super.viewDidLayoutSubviews()
     }
 
     open func collectionView(

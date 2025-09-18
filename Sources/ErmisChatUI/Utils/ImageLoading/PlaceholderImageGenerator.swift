@@ -26,7 +26,6 @@ open class PlaceholderImageGenerator {
         if let cachedImage = ImageCache.shared[ImageCacheKey(key: cachedKey)] {
             return cachedImage.image
         } else {
-
             let image = generatePlaceHolderImage(from: nameCharacter,
                                                  colors: getBackgroundColors(from: placeHolderString))
             ImageCache.shared[ImageCacheKey(key: cachedKey)] = ImageContainer(image: image)

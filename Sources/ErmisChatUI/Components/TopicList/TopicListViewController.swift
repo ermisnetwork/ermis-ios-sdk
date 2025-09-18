@@ -234,7 +234,7 @@ open class TopicListViewController: _ViewController,
     }
 
     open override func viewDidLayoutSubviews() {
-        topicListLoadingView.contentDidChanged()
+        super.viewDidLayoutSubviews()
     }
 
     open func collectionView(
