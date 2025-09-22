@@ -39,7 +39,7 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
 
     /// View for displaying the channel image in the navigation bar.
     open private(set) lazy var channelAvatarView = components
-        .channelAvatarView.init(avatarStyle: .cornerRadius(15))
+        .channelAvatarView.init(avatarStyle: .cornerRadius(12))
         .withoutAutoresizingMaskConstraints
 
     /// A view that displays a title label and subtitle in a container stack view.
@@ -60,21 +60,22 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
         addSubview(titleContainerView)
 
         if isCenterAlignment {
-            channelAvatarView.leadingAnchor.pin(greaterThanOrEqualTo: self.leadingAnchor).isActive = true
+            channelAvatarView.leadingAnchor.pin(greaterThanOrEqualTo: self.leadingAnchor, constant: 8).isActive = true
         } else {
-            channelAvatarView.pin(anchors: [.leading], to: self)
+            channelAvatarView.pin(anchors: [.leading], to: self, contant: 8)
         }
         channelAvatarView.pin(anchors: [.centerY], to: self)
-        channelAvatarView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor).isActive = true
-        channelAvatarView.pin(anchors: [.width, .height], to: 40)
+        channelAvatarView.topAnchor.pin(greaterThanOrEqualTo: self.topAnchor, constant: 0).isActive = true
+        channelAvatarView.pin(anchors: [.width, .height], to: 32)
 
         if isCenterAlignment {
-            titleContainerView.trailingAnchor.pin(lessThanOrEqualTo: self.trailingAnchor, constant: -16).isActive = true
+            titleContainerView.pin(anchors: [.centerX], to: self)
         } else {
-            titleContainerView.pin(anchors: [.trailing], to: self)
+            titleContainerView.pin(anchors: [.trailing], to: self, constant: -8)
         }
 
-        titleContainerView.pin(anchors: [.top, .bottom], to: self)
+        titleContainerView.pin(anchors: [.top], to: self, constant: 0)
+        titleContainerView.pin(anchors: [.centerY], to: self)
         titleContainerView.leadingAnchor.pin(equalTo: channelAvatarView.trailingAnchor, constant: 10).isActive = true
 
         titleContainerView.containerView.alignment = .leading

@@ -3,6 +3,7 @@
 //
 
 import UIKit
+import ErmisChat
 
 open class ChannelListLoadingViewCell: _TableViewCell, UIProvider {
     /// The `ChannelListLoadingViewCellContentView` instance used as content view.
@@ -18,13 +19,10 @@ open class ChannelListLoadingViewCell: _TableViewCell, UIProvider {
     override open func setUpUI() {
         super.setUpUI()
 
-        contentView.addSubview(channelListLoadingViewCellContentView)
-        channelListLoadingViewCellContentView.pin(to: contentView)
+        contentView.embed(channelListLoadingViewCellContentView)
     }
 
     override open func layoutSubviews() {
         super.layoutSubviews()
-
-        channelListLoadingViewCellContentView.layoutSubviews()
     }
 }
