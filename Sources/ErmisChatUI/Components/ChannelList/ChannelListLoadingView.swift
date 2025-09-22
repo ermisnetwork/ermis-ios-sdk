@@ -3,7 +3,7 @@
 //
 
 import UIKit
-
+import ErmisChat
 /// Default implementation for the loading state view, using a similar layout of the Channel list animating each UI element in the cells with a shimmer.
 open class ChannelListLoadingView: _View, UIProvider, UITableViewDataSource {
     open private(set) lazy var tableView = UITableView()
@@ -40,8 +40,7 @@ open class ChannelListLoadingView: _View, UIProvider, UITableViewDataSource {
 
     override open func contentDidChanged() {
         super.contentDidChanged()
-
-        tableView.visibleCells.forEach { $0.layoutSubviews() }
+        tableView.visibleCells.forEach { $0.layoutIfNeeded() }
     }
 
     open func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {

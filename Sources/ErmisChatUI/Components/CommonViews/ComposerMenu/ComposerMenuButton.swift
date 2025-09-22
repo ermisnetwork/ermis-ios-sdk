@@ -32,7 +32,7 @@ public enum ComposerMenuItemType: Equatable {
 /// Button for showing menu actions.
 open class ComposerMenuButton: _Button, ThemeProvider {
 
-    public private(set) var items: [ComposerMenuItemType] = [.poll, .file, .location]
+    public private(set) var items: [ComposerMenuItemType] = [.poll, .file]
     public var onMenuItemDidTapped: ((ComposerMenuItemType) -> Void)?
 
     public required init() {

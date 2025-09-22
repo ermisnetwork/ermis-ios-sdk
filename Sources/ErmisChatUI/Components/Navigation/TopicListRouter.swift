@@ -34,7 +34,15 @@ open class TopicListRouter: NavigationRouter<TopicListViewController>,
     ///   - cid: The `ChannelId` of the channel the should be presented.
     ///   - messageId: The `MessageId` to where the channel should jump to when opening the channel.
     open func showTopic(for cid: ChannelId, parentCid: ChannelId, at messageId: MessageId?) {
-        
+        let vc = components.channelVC.init()
+
+        vc.channelController = rootViewController.controller.client.channelController(
+            for: cid,
+            parentId: parentCid,
+            channelListQuery: rootViewController.controller.query
+        )
+
+        setDetailViewController(vc, animated: true)
     }
 
     /// Reset current detailVC if not in collapse mode

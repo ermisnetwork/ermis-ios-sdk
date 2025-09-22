@@ -76,17 +76,8 @@ open class ChannelListRouter: NavigationRouter<ChannelListViewController>, Compo
 
         let channelListController = rootViewController.controller.client.topicListController(query: topicListQuery, parentCid: cid)
         let vc = TopicListViewController.make(with: channelListController)
-
-        if let splitVC = rootViewController.splitViewController {
-            splitVC.showDetailViewController(UINavigationController(rootViewController: vc), sender: self)
-        } else if let navigationVC = rootViewController.navigationController {
-            navigationVC.show(vc, sender: self)
-        } else {
-            let navigationVC = UINavigationController(rootViewController: vc)
-            navigationVC.transitioningDelegate = modalTransitioningDelegate
-            navigationVC.modalPresentationStyle = .custom
-            rootViewController.show(navigationVC, sender: self)
-        }
+        vc.hidesBottomBarWhenPushed = true
+        rootViewController.navigationController?.pushViewController(vc, animated: true)
     }
 
     /// Reset current detailVC if not in collapse mode
