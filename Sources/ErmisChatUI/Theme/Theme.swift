@@ -42,5 +42,5 @@ public class Theme {
 // MARK: - Theme + Default
 
 public extension Theme {
-    static var `default`: Theme = .init()
+    nonisolated(unsafe) static var `default`: Theme = .init()
 }
