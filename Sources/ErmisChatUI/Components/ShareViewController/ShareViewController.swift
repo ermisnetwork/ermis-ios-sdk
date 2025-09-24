@@ -191,6 +191,9 @@ open class ShareViewController: _ViewController, UIProvider, ChannelListControll
     public func channelController(_ channelController: ChannelController, didUpdateMessages changes: [ListChange<ChatMessage>]) {
         for change in changes {
             if case .update(let item, let _) = change {
+                if messageId == item.id {
+                    log.debug("TTTTTTT ITEM LOCAL STATE: \(item.localState)")
+                }
                 if messageId == item.id, item.localState == nil {
                     DispatchQueue.main.async {
                         self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
@@ -369,14 +372,14 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
         self.provider = provider
         self.completion = completion
 
-        if provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
-            self.typeIdentifier = UTType.text.identifier
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            self.typeIdentifier = UTType.url.identifier
-        } else if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+        if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
             self.typeIdentifier = UTType.image.identifier
         } else if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
             self.typeIdentifier = UTType.movie.identifier
+        } else if provider.hasItemConformingToTypeIdentifier(UTType.text.identifier) {
+            self.typeIdentifier = UTType.text.identifier
+        } else if provider.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
+            self.typeIdentifier = UTType.url.identifier
         } else {
             self.typeIdentifier = UTType.content.identifier
         }
@@ -401,14 +404,6 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
                 self?.completion(.success(result))
             }
             self?.finish()
-        }
-        // Load text content if available
-        if provider.canLoadObject(ofClass: String.self) {
-            provider.loadObject(ofClass: String.self) { text, error in
-                result.text = text
-                completion(error)
-            }
-            return
         }
         // Load image content if available
         if provider.canLoadObject(ofClass: UIImage.self) {
@@ -445,7 +440,8 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
                 }
                 do {
                     let tempURL = try url.copyToTemporaryLocalFileUrl()
-                    let attachment = try self.getAttachment(from: tempURL, type: .video, info: [:])
+                    let type = AttachmentFileType(ext: url.pathExtension)
+                    let attachment = try self.getAttachment(from: tempURL, type: type.isVideo ? .video: .file, info: [:])
                     result.attachment = attachment
                 } catch {
                     completion(ClientError.AttachmentURLNotFound())
@@ -493,6 +489,7 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
                 }
                 completion(error)
             }
+            return
         }
         // Load URL content if available
         if provider.canLoadObject(ofClass: URL.self) {
@@ -500,7 +497,19 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
                 result.text = url?.absoluteString
                 completion(error)
             }
+            return
         }
+
+        // Load text content if available
+        if provider.canLoadObject(ofClass: String.self) {
+            provider.loadObject(ofClass: String.self) { text, error in
+                result.text = text
+                completion(error)
+            }
+            return
+        }
+
+        completion(ClientError("Unsupported type"))
 //        provider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { [weak self] (item, error) in
 //            guard let self = self else { return }
 //            defer { self.finish() }

@@ -47,7 +47,8 @@ public struct ChannelAttachmentPayload: Decodable {
 
     public var isVideo: Bool {
         switch fileType {
-        case .mov, .avi, .wmv, .webm:
+            // We can not open .avi, show view it as a file
+        case .mov, .wmv, .webm:
             return true
         default:
             return false
@@ -64,8 +65,9 @@ public struct ChannelAttachmentPayload: Decodable {
     }
 
     public var isFile: Bool {
+        // Can not play .avi, show view it as a file.
         switch fileType {
-        case .generic, .doc, .docx, .pdf, .ppt, .pptx, .tar, .xls, .zip, .x7z, .xz, .ods, .odt, .xlsx:
+        case .generic, .doc, .docx, .pdf, .ppt, .pptx, .tar, .xls, .zip, .x7z, .xz, .ods, .odt, .xlsx, .avi:
             return true
         default:
             return false
