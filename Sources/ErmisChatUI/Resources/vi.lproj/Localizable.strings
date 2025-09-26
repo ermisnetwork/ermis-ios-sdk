@@ -1,0 +1,448 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+/// Text used in the channel name after the last displayed participant.
+/// The text shows the remaining number of participants (the ones not displayed).
+/// E.g. John, Steve and 5 more.
+"channel.name.andXMore" = "+ %@ nữa";
+/// Shown when the channel name is missing.
+"channel.name.missing" = "Chưa có nhóm nào";
+/// Shown in the channel list preview, when the channel doesn't contain any messages.
+"channel.item.empty-messages" = "Chưa có tin nhắn";
+/// Shown when searching messages, the placeholder is filled with the channel name.
+"channel.item.search.in" = " trong %@";
+/// Shown in the channel list preview when the last message is an audio attachment.
+"channel.item.audio" = "Tin nhắn âm thanh";
+/// Shown in the channel list preview when the last message is an image attachment.
+"channel.item.photo" = "Ảnh";
+/// Shown in the channel list preview when the last message is a video attachment.
+"channel.item.video" = "Video";
+/// Show in direct channel when the invitation is send, but did not accepted.
+"channel.invitation.pendingUserNeedAccept" = "%@ cần chấp nhận lời mời để xem nội dung bạn đã gửi.";
+/// Show in direct channel for invited users.
+"channel.invitation.directAccceptRequireMessage" = "Chấp nhận lời mời để xem tất cả tin nhắn trong cuộc trò chuyện";
+/// Show in channel for invited users.
+"channel.invitation.accceptRequireMessage" = "Chấp nhận lời mời để xem tất cả tin nhắn trong nhóm này.";
+/// Show in channel condition required alert when user don't have enough conditions to join channel.
+"channel.invitation.join-channel" = "Tham gia nhóm %@";
+/// Show in channel condition required alert when user don't have enough conditions to join channel.
+"channel.invitation.required-token-message" = "Bạn cần sở hữu một trong các token sau:";
+/// Show in channel condition required alert when user don't have enough conditions to join channel
+"channel.invitation.get-tokens" = "Lấy token";
+/// Show in channel condition required alert when user don't have enough conditions to join channel
+"channe.invitation.not-enough-tokens" = "Không đủ token!";
+/// Show in channel condition required alert when user don't have enough conditions to join channel
+"channel.invitation.re-check" = "Kiểm tra lại";
+
+/// Show as parent channel display name when view as topic
+"topic.parent-channel-display-name" = "General";
+/// Show in channel vc when topic is closed, and user can't reopen this topic.
+"topic.closed" = "Chủ đề này đã đóng";
+/// Show in channel vc when topic is closed, and user can reopen this topic.
+"topic.re-open" = "Mở lại chủ đề";
+/// Show as title of alert show when re open topic.
+"topic.re-open-alert.title" = "Mở lại chủ đề";
+/// Show as message of alert show when re open topic.
+"topic.re-open-alert.message" = "Bạn có chắc chắn muốn mở lại chủ đề này không?";
+/// Show as title of alert show when re close topic.
+"topic.close-alert.title" = "Đóng chủ đề";
+/// Show as message of alert show when re open topic.
+"topic.close-alert.message" = "Bạn có chắc muốn đóng chủ đề này không?";
+/// Shown when the channel list is empty as a title text.
+"channelList.empty.title" = "Bắt đầu trò chuyện";
+/// Shown when the channel list is empty as a subtitle text.
+"channelList.empty.subtitle" = "Hãy bắt đầu cuộc trò chuyện hoặc mời bạn bè tham gia.";
+/// Shown when the channel list is empty as a an action button.
+"channelList.empty.button" = "Bắt đầu trò chuyện";
+/// Shown in the channel list search bar.
+"channelList.search" = "Tìm kiếm";
+/// Shown when there are no search results.
+"channelList.search.empty.subtitle" = "Không tìm thấy kết quả cho %@";
+/// Show as label of the OngoingCallView.
+"channelList.ongoing-call.tap-to-return-call" = "Chạm để quay lại cuộc gọi";
+
+/// Shown when the invited channel list is empty
+"invitedChannelList.empty.title" = "Chưa có lời mời nào.";
+
+/// Show when contact list is empty
+"contactList.empty.title" = "Chưa có liên hệ nào";
+
+/// Shown when there's an error when loading the channels.
+"channelList.error.message" = "Không thể tải nhóm";
+/// Shown in the channel list preview when the last message is a voice recording.
+"channelList.preview.voice.recording" = "Tin nhắn thoại";
+
+/// Shown in the channel list preview when the last message is a sticker.
+"channelList.preview.sticker" = "Nhãn dán";
+
+/// Show as last message when cancel audio/video call.
+"channelList.lastMessage.cancel-audio-call" = "Đã hủy cuộc gọi thoại";
+"channelList.lastMessage.cancel-video-call" = "Đã hủy cuộc gọi video";
+/// Show as last message when missed audio/video call.
+"channelList.lastMessage.missed-audio-call" = "Cuộc gọi thoại bị nhỡ";
+"channelList.lastMessage.missed-video-call" = "Cuộc gọi video bị nhỡ";
+/// Show as last message when make outgoing audio/video call.
+"channelList.lastMessage.outgoing-audio-call" = "Cuộc gọi thoại đi";
+"channelList.lastMessage.outgoing-video-call" = "Cuộc gọi video đi";
+/// Show as last message when make incoming audio/video call.
+"channelList.lastMessage.incoming-audio-call" = "Cuộc gọi thoại đến";
+"channelList.lastMessage.incoming-video-call" = "Cuộc gọi video đến";
+/// Show when there a unsent message.
+"channelList.lastMessage.draft" = "Nháp";
+
+/// Shown when the name of the person who is typing can't be determined.
+"messageList.typingIndicator.typing-unknown" = "Ai đó đang gõ…";
+
+/// Shown in the message actions popup for the reply (quote) action.
+"message.actions.inline-reply" = "Trả lời";
+/// Shown in the message actions popup for the thread reply action.
+"message.actions.thread-reply" = "Trả lời chủ đề";
+/// Shown in the message actions popup for the edit message action.
+"message.actions.edit" = "Chỉnh sửa";
+/// Shown in the message actions popup for the download message action.
+"message.actions.download" = "Tải về";
+/// Shown as a text in the popup when downloading message success.
+"message.actions.download.success-title" = "Tải về thành công.";
+/// Shown as a text in the popup when downloading message failure.
+"message.actions.download.failure-title" = "Không thể tải xuống";
+/// Shown in the message actions popup for the copy message action.
+"message.actions.copy" = "Sao chép";
+/// Shown as a text in the popup when copying message success.
+"message.actions.copy.success-title" = "Đã sao chép tin nhắn.";
+/// Shown in the message actions popup for the forward message action.
+"message.actions.forward" = "Chuyển tiếp";
+/// Shown as a text in the popup when forwarding message success.
+"message.actions.forward.success-title" = "Đã chuyển tiếp tin nhắn.";
+/// Shown as a text in the popup when forwarding message failure.
+"message.actions.forward.failure-title" = "Không thể chuyển tiếp";
+/// Shown in the message actions popup for the delete message action.
+"message.actions.delete" = "Xóa";
+/// Shown as a title in the confirmation popup when deleting a message.
+"message.actions.delete.confirmation-title" = "Xóa tin nhắn";
+/// Shown as a text in the confirmation popup when deleting a message.
+"message.actions.delete.confirmation-message" = "Bạn có chắc muốn xóa vĩnh viễn tin nhắn này không?";
+/// Shown in the message actions popup for the unblock user action.
+"message.actions.user-unblock" = "Bỏ chặn người dùng";
+/// Shown in the message actions popup for the block user action.
+"message.actions.user-block" = "Chặn người dùng";
+/// Shown in the message actions popup for the unmute user action.
+"message.actions.user-unmute" = "Bật thông báo";
+/// Shown in the message actions popup for the mute user action.
+"message.actions.user-mute" = "Tắt thông báo";
+/// Shown in the message actions popup for the resend message action.
+/// Displayed only when the message was not sent successfully.
+"message.actions.resend" = "Gửi lại";
+/// Shown in the message actions popup for the flag message action.
+"message.actions.flag" = "Báo cáo";
+/// Shown as a text in the confirmation popup when flagging a message.
+"message.actions.flag.confirmation-title" = "Báo cáo";
+/// Shown as a text in the confirmation popup when flagging a message.
+"message.actions.flag.confirmation-message" = "Bạn có muốn gửi bản sao của tin nhắn này đến quản trị viên để xem xét không?";
+/// Shown in the message actions popup for marking message as unread.
+"message.actions.mark-unread" = "Đánh dấu chưa đọc";
+/// Shown in the message actions when pinning a message.
+"message.actions.pin" = "Ghim";
+/// Shown as a text in the popup when pinning message success.
+"message.actions.pin.success-message" = "Đã ghim tin nhắn.";
+/// Shown as a text in the popup when pinning message not success.
+"message.actions.pin.unsuccess-message" = "Không thể ghim tin nhắn";
+
+/// Shown in the message actions when unpinning a message.
+"message.actions.unpin" = "Bỏ ghim";
+/// Show as a text in the confirmation popup when unpinning a message.
+"message.actions.unpin.confirmation-title" = "Bỏ ghim tin nhắn?";
+/// Show as a text in the confirmation popup when unpinning a message.
+"message.actions.unpin.confirmation-message" = "Bạn có chắc muốn bỏ ghim tin nhắn? Tin nhắn sẽ không hiển thị ở đầu cuộc trò chuyện nữa.";
+/// Shown as a text in the popup when unpinning message success.
+"message.actions.unpin.success-message" = "Đã bỏ ghim tin nhắn";
+/// Shown as a text in the popup when unpinning message not success.
+"message.actions.unpin.unsuccess-message" = "Không thể bỏ ghim";
+
+/// Show as a title in the call view when the audio/video call was canceled;
+"message.call.audio-canceled-by-me" = "Bạn đã hủy cuộc gọi thoại";
+"message.call.video-canceled-by-me" = "Bạn đã hủy cuộc gọi video";
+/// Show as a title in the call view when the audio/video call was missed;
+"message.call.missed-audio-call" = "Bạn bị nhỡ cuộc gọi thoại";
+"message.call.missed-video-call" = "Bạn bị nhỡ cuộc gọi video";
+/// Show as a title in the call view when the audio/video call was rejected by receiver;
+"message.call.audio-rejected-by-me" = "Bạn đã từ chối cuộc gọi thoại";
+"message.call.video-rejected-by-me" = "Bạn đã từ chối cuộc gọi video";
+/// Show as a title in the call view when the audio/video call is rejected by you;
+"message.call.audio-rejected-by-receiver" = "Người nhận từ chối cuộc gọi thoại";
+"message.call.video-rejected-by-receiver" = "Người nhận từ chối cuộc gọi video";
+/// Show as a title in the call view when the audio/video call when the receiver is busy;
+"message.call.receiver-busy" = "Người nhận bận";
+/// Show as a title in the call view when the outgoing audio/video call is end;
+"message.call.outgoing-audio-call" = "Cuộc gọi thoại đi";
+"message.call.outgoing-video-call" = "C uộc gọi video đi";
+/// Show as a title in the call view when the incoming audio/video call is end;
+"message.call.incoming-audio-call" = "Cuộc gọi thoại đến";
+"message.call.incoming-video-call" = "Cuộc gọi video đến";
+
+/// Shown as a title in the popup shown when a message was bounced due to moderation.
+"message.moderation.title" = "Bạn muốn gửi tin nhắn này?";
+/// Shown as a text in the popup shown when a message was bounced due to moderation.
+"message.moderation.message" = "Hãy cân nhắc cảm nhận của người khác và tuân thủ Quy tắc Cộng đồng.";
+/// Shown as a button text in the popup shown when a message was bounced due to moderation.
+"message.moderation.resend" = "Vẫn gửi";
+/// Shown as an edit message action in the popup shown when a message was bounced due to moderation.
+"message.moderation.edit" = "Chỉnh sửa";
+/// Shown as a delete message action in the popup shown when a message was bounced due to moderation.
+"message.moderation.delete" = "Xóa";
+/// Shown as a label below the message, to notify that a message has been edited.
+"message.edited" = "Đã sửa";
+
+/// Shown when a user is online.
+"message.title.online" = "Trực tuyến";
+/// Shown when a user is offline.
+"message.title.offline" = "Ngoại tuyến";
+/// Shown in a group chat title.
+/// The first placeholder is the number of members, while the second one shows how many are online.
+"message.title.group" = "%d thành viên";
+/// Shown in the message list, when a message contains thread replies.
+"message.threads.reply" = "Trả lời chủ đề";
+/// Shown as a subtitle in the navigation bar in the message thread screen.
+/// The placeholder contains the channel name.
+"message.threads.replyWith" = "với %@";
+/// Shown when a message was translated to another language.
+"message.translatedTo" = "Đã dịch sang %@";
+/// Shown when a message was forwarded from other;
+"message.forwarded-from-other" = "Được chuyển tiếp từ %@";
+/// Shown when a message was forwarded from you;
+"message.forwarded-from-you" = "Chuyển tiếp từ bạn";
+/// Shown when a message is visible only to the current user.
+/// Usually applies to deleted messages that can be visible to current users.
+"message.only-visible-to-you" = "Chỉ hiển thị với bạn";
+/// Shown when a message was deleted.
+"message.deleted-message-placeholder" = "Tin nhắn đã xóa";
+/// Shown when uploading of an attachment failed.
+"message.sending.attachment-uploading-failed" = "Tải lên thất bại";
+/// Shown when the message list contains an unknown attachment.
+/// Can appear if you haven't properly configured your custom attachments.
+"message.unsupported-attachment" = "Tệp tin không được hỗ trợ";
+
+// System message
+
+/// Show when channel name updated.
+"message.system.channel-name-updated" = "%@ đã đổi tên nhóm thành \"%@\"";
+/// Show when channel avatar updated.
+"message.system.channel-image-updated" = "%@ đã đổi ảnh đại diện nhóm";
+/// Show when channel desciption updated.
+"message.system.channel-desciption-updated" = "%@ đã đổi mô tả nhóm";
+/// Show when channel member removed.
+"message.system.member-removed" = "%@ đã bị xóa khỏi nhóm";
+/// Show when channel member banned.
+"message.system.member-banned" = "%@ đã bị Quản trị viên cấm tương tác";
+/// Show when you was banned.
+"message.system.you-banned" = "Bạn đã bị Quản trị viên cấm tương tác";
+/// Show when channel member unbanned.
+"message.system.member-unbanned" = "%@ đã được gỡ cấm";
+/// Show when you was unbanned.
+"message.system.you-unbanned" = "Bạn đã được gỡ cấm";
+/// Show when channel member promoted.
+"message.system.member-promoted" = "%@ được chỉ định làm Quản trị viên";
+/// Show when channel member demoted.
+"message.system.member-demoted" = "%@ bị gỡ quyền Quản trị viên";
+/// Show when you changed channel permission of channel's member.
+"message.system.you-updated-member-permission" = "Bạn đã cập nhật quyền cho thành viên nhóm";
+/// Show when admin changed channel permission of channel's member.
+"message.system.other-updated-member-permission" = "%@ đã cập nhật quyền cho thành viên nhóm";
+/// Show when you was promoted.
+"message.system.you-promoted" = "Bạn được chỉ định làm Quản trị viên nhóm";
+/// Show when you was demoted.
+"message.system.you-demoted" = "Bạn bị gỡ quyền Quản trị viên nhóm";
+/// Show when new member joined channel.
+"message.system.member-joined-channel" = "%@ đã tham gia nhóm";
+/// Show when you joined channel.
+"message.system.you-joined-channel" = "Bạn đã tham gia nhóm";
+/// Show when user reject invitation to join channel.
+"message.system.user-rejected-invitation" = "%@ từ chối tham gia nhóm";
+/// Show when new member joined conversation.
+"message.system.member-joined-conversation" = "%@ đã tham gia trò chuyện";
+/// Show when you joined conversation.
+"message.system.you-joined-conversation" = "Bạn đã tham gia trò chuyện";
+/// Show when member leave channel.
+"message.system.member-leave" = "%@ đã rời nhóm";
+/// Show when you leave channel.
+"message.system.you-leave" = "Bạn đã rời nhóm";
+/// Show when you truncated all messages.
+"message.system.you-truncated-messages" = "Bạn đã xóa toàn bộ tin nhắn trong nhóm";
+/// Show when other member truncated all messages.
+"message.system.other-truncated-messages" = "%@ đã xóa toàn bộ tin nhắn trong nhóm";
+/// Show when you promoted other to owner.
+"message.system.you-promoted-other-to-owner" = "You have promoted member %@ to Owner";
+/// Show when other promoted you to owner.
+"message.system.other-promoted-you-to-owner" = "%@ has promoted you to Owner";
+/// Show when Owner pomoted other to owner.
+"message.system.promoted-to-owner" = "%@ has promoted member %@ to Owner";
+// Show when channel public / private
+"message.system.set-channel-public" = "%@ đã chuyển nhóm này thành nhóm công khai";
+"message.system.you-set-channel-public" = "Bạn đã chuyển nhóm này thành nhóm công khai";
+"message.system.set-channel-private" = "%@ đã chuyển nhóm này thành nhóm kín";
+"message.system.you-set-channel-private" = "Bạn đã chuyển nhóm này thành nhóm kín";
+/// Show when set cooldown duration.
+"message.system.turn-on-cooldown" = "Quản trị viên đã bật chế độ gửi chậm. Thời gian chờ là %@";
+"message.system.adjust-cooldown" = "Quản trị viên đã thay đổi thời gian chờ là %@";
+"message.system.turn-off-cooldown" = "Đã tắt chế độ gửi chậm";
+/// Show when filter words of channel chagned.
+"message.system.filter-words-changed" = "%@ đã cập nhật danh sách từ khóa";
+/// Show when user pinned a message.
+"message.system.message-pinned" = "%@ đã ghim tin nhắn";
+/// Show when user unpinned a message.
+"message.system.message-unpinned" = "%@ đã bỏ ghim tin nhắn";
+/// Show when your message was forwarded.
+"message.system.your-message-forwarded" = "Bạn đã chuyển tiếp tin nhắn";
+/// Show when a message was forwarded.
+"message.system.message-forwarded" = "Tin nhắn đã được chuyển tiếp";
+/// Show when you reject a friend request from other.
+"message.system.you-reject-add-friend-request" = "Bạn đã từ chối lời mời kết bạn của %@";
+/// Show when user reject your friend request.
+"message.system.other-reject-add-friend-request" = "%@ đã từ chối tham gia nhóm.";
+/// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
+"attachment.max-size-exceeded" = "Kích thước tệp vượt qua giới hạn 100MB.";
+
+/// Shown as title of pinned messages view.
+"pin.collapsed.title" = "Tin nhắn đã ghim";
+
+/// Generic cancel text in the popups.
+"alert.actions.cancel" = "Hủy";
+/// Generic delete text in the popups.
+"alert.actions.delete" = "Xóa";
+/// Generic flag text in the popups.
+"alert.actions.flag" = "Báo cáo";
+/// Generic unpin text in the popups.
+"alert.actions.unpin" = "Bỏ ghim";
+/// Generic ok text in the popups.
+"alert.actions.ok" = "Ok";
+/// Generic title text in the popups.
+"alert.title.success" = "Thành công";
+/// Generic title text in the popups.
+"alert.title.error" = "Lỗi";
+/// Generic title text in the popups.
+"alert.title.info" = "Thông tin";
+
+
+/// Shown as title in the composer when editing a message.
+"composer.title.edit" = "Chỉnh sửa tin nhắn";
+/// Shown as title in the composer when replying to a message.
+"composer.title.reply" = "Trả lời";
+/// Shown as a placeholder in the composer input text view.
+"composer.placeholder.message" = "Nhập tin nhắn";
+/// Shown in the placeholder in the composer input text view, when sending messages is disabled for the channel.
+"composer.placeholder.messageDisabled" = "Bạn không thể gửi tin nhắn trong nhóm này";
+/// Shown in the placeholder in the composer input text view, when the channel is in slow mode.
+"composer.placeholder.slowMode" = "Chế độ gửi chậm đang bật";
+/// Shown after the checkbox that allows users to send a thread reply also as a direct message in a DM.
+"composer.checkmark.direct-message-reply" = "Gửi thêm dưới dạng tin nhắn riêng";
+/// Shown as a title in the composer file picker.
+"composer.picker.file-title" = "Chọn loại tệp đính kèm: ";
+/// Shown as a title in the composer photo picker.
+"composer.picker.photo-title" = "Chọn nguồn ảnh: ";
+/// Shown as an option to select a file attachment in the attachment picker.
+/// Invokes the native file picker on tap.
+"composer.picker.file" = "Tệp tin";
+/// Shown as an option to select a photo or video attachment in the attachment picker.
+/// Invokes the native gallery picker on tap.
+"composer.picker.media" = "Ảnh hoặc video";
+/// Shown as an option to select the camera in the attachment picker.
+/// Invokes the native camera picker on tap.
+"composer.picker.camera" = "Máy ảnh";
+/// Text for the cancel button in the attachment picker in the composer.
+"composer.picker.cancel" = "Hủy";
+/// Text for location item title in menu.
+"composer.menu.location" = "Vị trí";
+/// Text for share file item title in menu.
+"composer.menu.share-file" = "Tệp";
+/// Text for create poll item title in menu.
+"composer.menu.create-poll" = "Bình chọn";
+/// Shown as title in the popup shown when links are disabled in the chat.
+"composer.links-disabled.title" = "Không cho phép gửi link";
+/// Shown as message in the popup shown when links are disabled in the chat.
+"composer.links-disabled.subtitle" = "Thành viên trong nhóm không được gửi link.";
+/// Show as message in the popup shown when content contains blocked keywords.
+"composer.filterwords.content-contain-blocked-keywords" = "Nội dung bạn nhập có chứa từ khóa bị chặn";
+/// Shown while quoting a message that contains a photo attachment.
+"composer.quoted-message.photo" = "Ảnh";
+/// Shown as a title in the commands suggestions header.
+"composer.suggestions.commands.header" = "Thao tác nhanh";
+/// Show as title of unblock button.
+"composer.user-blocked.unblock" = "Bỏ chặn";
+/// Show as title of unblock label.
+"composer.user-blocked.title" = "Bạn đã chặn %@.";
+/// Show as title of join channel label.
+"composer.join-channel-title" = "Tham gia nhóm để gửi tin nhắn.";
+/// Show as title of join button label.
+"composer.join-button" = "Tham gia";
+
+/// Forward
+
+/// Show as title of the forward message screen.
+"forward.title" = "Chuyển tiếp đến";
+/// Show as title of send button in forward screen when forward state is none.
+"forward.state.none" = "Gửi";
+/// Show as title of send button in forward screen when forward state is forwarding.
+"forward.state.forwarding" = "Đang gửi";
+/// Show as title of send button in forward screen when forwarded state is none.
+"forward.state.forwarded" = "Đã gửi";
+/// Show as title of send button in forward screen when forward state is error.
+"forward.state.error" = "Thử lại";
+
+/// Share
+"share.send-to" = "Gửi đến";
+
+/// Shown in the gallery preview, indicating which image is currently presented.
+/// The first placeholder is the number of the selected image.
+/// The second placeholder is the total number of images in the attachment.
+"current-selection" = "%d / %d";
+
+/// Text shown when the user was last seen seconds ago.
+"dates.time-ago-seconds-plural" = "hoạt động %d giây trước";
+/// Text shown when the user was last seen a second ago.
+"dates.time-ago-seconds-singular" = "hoạt động 1 giây trước";
+/// Text shown when the user was last seen a minute ago.
+"dates.time-ago-minutes-singular" = "hoạt động 1 phút trước";
+/// Text shown when the user was last seen few minutes ago.
+/// The number of minutes is provided as a placeholder.
+"dates.time-ago-minutes-plural" = "hoạt động %d phút trước";
+/// Text shown when the user was last seen an hour ago.
+"dates.time-ago-hours-singular" = "hoạt động 1 giờ trước";
+/// Text shown when the user was last seen few hours ago.
+/// The number of hours is provided as a placeholder.
+"dates.time-ago-hours-plural" = "hoạt động %d giờ trước";
+/// Text shown when the user was last seen a day ago.
+"dates.time-ago-days-singular" = "hoạt động 1 ngày trước";
+/// Text shown when the user was last seen few days ago.
+/// The number of days is provided as a placeholder.
+"dates.time-ago-days-plural" = "hoạt động %d ngày trước";
+/// Text shown when the user was last seen a week ago.
+"dates.time-ago-weeks-singular" = "hoạt động 1 tuần trước";
+/// Text shown when the user was last seen few weeks ago.
+/// The number of weeks is provided as a placeholder.
+"dates.time-ago-weeks-plural" = "hoạt động %d tuần trước";
+/// Text shown when the user was last seen a month ago.
+"dates.time-ago-months-singular" = "hoạt động 1 tháng trước";
+/// Text shown when the user was last seen few months ago.
+/// The number of months is provided as a placeholder.
+"dates.time-ago-months-plural" = "hoạt động %d tháng trước";
+
+/// Text for the current user.
+/// For example, used in the channel preview when the last message was sent by the current user.
+"you" = "Bạn";
+
+/// Tip shown when pressing on the recording attachments button in the composer.
+"recording.tip" = "Giữ để ghi âm, thả ra để gửi";
+/// Text shown when the voice recording is started.
+/// Provides the ability to cancel the current recording.
+"recording.slideToCancel" = "Vuốt để hủy";
+
+/// The rate of the player, where the placeholder is the actual rate (e.g. x2).
+"audio.player.rate" = "x%@";
+
+/// The name or identifier of the user who sent the message.
+/// Example: "Từ người dùng A"
+"from" = "Từ";
+
+/// The default title of link preview when don't have any information.
+"no_preview_available" = "Không có bản xem trước";
+
