@@ -22,9 +22,15 @@ public struct LocalAttachmentInfoKey: Hashable, Equatable, RawRepresentable {
         self.rawValue = rawValue
     }
 
+    public static let assetId: Self = .init(rawValue: "assetId")
+    public static let name: Self = .init(rawValue: "name")
     public static let originalImage: Self = .init(rawValue: "originalImage")
+    public static let size: Self = .init(rawValue: "size")
+    public static let width: Self = .init(rawValue: "width")
+    public static let height: Self = .init(rawValue: "height")
     public static let duration: Self = .init(rawValue: "duration")
     public static let waveformData: Self = .init(rawValue: "waveformData")
+    public static let thumbnailImage: Self = .init(rawValue: "thumbnailImage")
 }
 
 /// The possible composer states. An Enum is not used so it does not cause
@@ -497,6 +503,34 @@ open class ComposerViewController: _ViewController,
 
     public var textView: InputTextView {
         return composerView.inputMessageView.textView
+    }
+
+    /// Returns actions for attachments picker.
+    open var photosPickerActions: [UIAlertAction] {
+        let showMediaPickerAction = UIAlertAction(
+            title: L10n.Composer.Picker.media,
+            style: .default,
+            handler: { [weak self] _ in self?.showMediaPicker() }
+        )
+
+        let showCameraAction = UIAlertAction(
+            title: L10n.Composer.Picker.camera,
+            style: .default,
+            handler: { [weak self] _ in self?.showCamera() }
+        )
+
+        let cancelAction = UIAlertAction(
+            title: L10n.Composer.Picker.cancel,
+            style: .cancel
+        )
+
+        let isCameraAvailable = UIImagePickerController.isSourceTypeAvailable(.camera)
+
+        if isCameraAvailable {
+            return [showCameraAction, showMediaPickerAction, cancelAction]
+        }
+
+        return [showMediaPickerAction, cancelAction]
     }
 
     override open func setUp() {
@@ -973,7 +1007,19 @@ open class ComposerViewController: _ViewController,
 
     /// Shows a photo/media picker.
     open func showMediaPicker() {
-        present(mediaPickerVC, animated: true)
+        PHPhotoLibrary.requestAuthorization { [weak self] status in
+            guard let self else {
+                return
+            }
+            DispatchQueue.main.async {
+                switch status {
+                case .authorized, .limited:
+                    self.present(self.mediaPickerVC, animated: true)
+                default:
+                    self.showPhotoPermissionDeniedAlert()
+                }
+            }
+        }
     }
 
     /// Shows a document picker.
@@ -985,32 +1031,17 @@ open class ComposerViewController: _ViewController,
         present(cameraVC, animated: true)
     }
 
-    /// Returns actions for attachments picker.
-    open var photosPickerActions: [UIAlertAction] {
-        let showMediaPickerAction = UIAlertAction(
-            title: L10n.Composer.Picker.media,
-            style: .default,
-            handler: { [weak self] _ in self?.showMediaPicker() }
-        )
-
-        let showCameraAction = UIAlertAction(
-            title: L10n.Composer.Picker.camera,
-            style: .default,
-            handler: { [weak self] _ in self?.showCamera() }
-        )
-
-        let cancelAction = UIAlertAction(
-            title: L10n.Composer.Picker.cancel,
-            style: .cancel
-        )
-
-        let isCameraAvailable = UIImagePickerController.isSourceTypeAvailable(.camera)
-
-        if isCameraAvailable {
-            return [showCameraAction, showMediaPickerAction, cancelAction]
+    private func showPhotoPermissionDeniedAlert() {
+        let appDisplayName = Bundle.main.infoDictionary?["CFBundleDisplayName"] as? String ?? ""
+        let openAppSettingsButton = UIAlertAction(title: L10n.Alert.Actions.ok, style: .default) { _ in
+            UIApplication.shared.open(URL(string: UIApplication.openSettingsURLString)!)
         }
-
-        return [showMediaPickerAction, cancelAction]
+        self.presentAlert(title: L10n.Alert.Title.permissionRequired,
+                          message: L10n.Alert.Message.photoLibraryAccessNotgrandted(appDisplayName),
+                          actions: [
+                            openAppSettingsButton,
+                            UIAlertAction(title: L10n.Alert.Actions.cancel, style: .cancel)
+                          ])
     }
 
     open func onMenuButtonDidSelected(item: ComposerMenuItemType) {
@@ -1458,7 +1489,10 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        let fileSize = try AttachmentFile(url: url).size
+        var fileSize: Int64! = info[.size] as? Int64
+        if fileSize == nil {
+            fileSize = try? AttachmentFile(url: url).size
+        }
 
         let maxAttachmentSize = maxAttachmentSize(for: type)
         guard fileSize <= maxAttachmentSize else {
@@ -1467,11 +1501,32 @@ open class ComposerViewController: _ViewController,
 
         var localMetadata = AnyAttachmentLocalMetadata()
         localMetadata.fileSize = Int(fileSize)
+
+        if let assetId = info[.assetId] as? String {
+            localMetadata.assetId = assetId
+        }
+
+        if let width = info[.width] as? Int, let height = info[.height] as? Int {
+            localMetadata.originalResolution = (
+                width: Double(width),
+                height: Double(height)
+            )
+        }
+
         if let image = info[.originalImage] as? UIImage {
             localMetadata.originalResolution = (
                 width: Double(image.size.width),
                 height: Double(image.size.height)
             )
+        }
+
+        if let thumbnailImage = info[.thumbnailImage] as? UIImage {
+            let thumbnailData = thumbnailImage.jpegData(compressionQuality: 1)
+            localMetadata.thumbnailData = thumbnailData
+        }
+
+        if let duration = info[.duration] as? TimeInterval {
+            localMetadata.duration = duration
         }
 
         switch type {
@@ -1670,89 +1725,168 @@ open class ComposerViewController: _ViewController,
             }
         }
 
-        picker.dismiss(animated: true) {
-            let loadAttachmentDispatchGroup = DispatchGroup()
-            var attachmentResults: [(Int, Result<AttachmentPickerResult, Error>)] = []
-            for (index, result) in results.enumerated() {
-                loadAttachmentDispatchGroup.enter()
-                self.handlePickerResult(result) { result in
-                    attachmentResults.append((index, result))
-                    loadAttachmentDispatchGroup.leave()
+        _Concurrency.Task {
+            do {
+                let attachmentResults = try await self.handlePickerResults(results)
+
+                await MainActor.run {
+                    let attachmentPickerResults = attachmentResults
+                        .sorted { $0.0 < $1.0 }
+                        .map(\.1)
+                    attachmentPickerResults.forEach({
+                        do {
+                            try self.addAttachmentToContent(
+                                from: $0.url,
+                                type: $0.attachmentType,
+                                info: $0.attachmentInfo
+                            )
+                        } catch {
+                            self.handleAddAttachmentError(
+                                attachmentURL: $0.url,
+                                attachmentType: $0.attachmentType,
+                                error: error
+                            )
+                            return
+                        }
+                    })
                 }
+            } catch(let error) {
+                self.presentAlert(title: "Error", message: "Failed to load attachment.")
+                log.error(error)
+            }
+        }
+
+        picker.dismiss(animated: true, completion: {
+
+        })
+    }
+
+    func handlePickerResults(_ results: [PHPickerResult]) async throws -> [(Int, AttachmentPickerResult)] {
+        try await withThrowingTaskGroup(of: (Int, AttachmentPickerResult).self, body: { group in
+            for (index, result) in results.enumerated() {
+                group.addTask { [weak self] in
+                    guard let self else {
+                        throw(ClientError.Unexpected())
+                    }
+                    let attachment = try await self.handlePickerResult(result)
+                    return (index, attachment)
+                }
+            }
+            var attachments: [(Int, AttachmentPickerResult)] = []
+            for try await attachment in group {
+                attachments.append(attachment)
             }
 
-            loadAttachmentDispatchGroup.notify(queue: .main) {
-                let attachmentPickerResults = attachmentResults
-                    .sorted { $0.0 < $1.0 }
-                    .map(\.1)
-                    .compactMap({
-                        if case let .success(value) = $0 {
-                            return value
-                        }
-                        return nil
-                    })
-                // Has error when pickup attachment
-                if attachmentPickerResults.count < attachmentResults.count {
-                    self.presentAlert(title: "Error", message: "Failed to load attachment.")
-                    return
-                }
-                attachmentPickerResults.forEach({
-                    do {
-                        try self.addAttachmentToContent(
-                            from: $0.url,
-                            type: $0.attachmentType,
-                            info: $0.attachmentInfo
-                        )
-                    } catch {
-                        self.handleAddAttachmentError(
-                            attachmentURL: $0.url,
-                            attachmentType: $0.attachmentType,
-                            error: error
-                        )
-                        return
-                    }
-                })
+            return attachments
+        })
+    }
+
+    func handlePickerResult(_ result:PHPickerResult) async throws -> AttachmentPickerResult {
+        let prov = result.itemProvider
+        // Load attachment's info
+        var localAttachmentInfo = try await getAttachmentInfos(of: result)
+
+        if prov.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+            let item = try await prov.loadItem(forTypeIdentifier: UTType.movie.identifier)
+            if let url = item as? URL {
+                return .init(url: url, attachmentType: .video, attachmentInfo: localAttachmentInfo)
+            } else if let data = item as? Data {
+                let fileName = localAttachmentInfo[.name] as? String ?? fileName(of: prov, result: result, type: UTType.movie)
+                let tempURL = try data.copyToTemporaryLocalFileUrl(fileName)
+                return .init(url: tempURL, attachmentType: .video, attachmentInfo: localAttachmentInfo)
+            } else {
+                throw(ClientError("PHPickerResult return unexpected type: \(String(describing: type(of: item)))"))
             }
+        } else if prov.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+            let item = try await prov.loadItem(forTypeIdentifier: UTType.image.identifier)
+            if let url = item as? URL {
+                return .init(url: url, attachmentType: .image, attachmentInfo: localAttachmentInfo)
+            } else if let data = item as? Data {
+                let fileName = localAttachmentInfo[.name] as? String ?? fileName(of: prov, result: result, type: UTType.image)
+                let tempURL = try data.copyToTemporaryLocalFileUrl(fileName)
+                return .init(url: tempURL, attachmentType: .image, attachmentInfo: localAttachmentInfo)
+            } else if let image = item as? UIImage {
+                let tempURL = try image.temporaryLocalFileUrl(fileName: fileName(of: prov, result: result, type: UTType.image))
+                localAttachmentInfo[.originalImage] = image
+                return .init(url: tempURL, attachmentType: .image, attachmentInfo: localAttachmentInfo)
+            } else {
+                throw(ClientError("PHPickerResult return unexpected type: \(String(describing: type(of: item)))"))
+            }
+        } else {
+            throw(ClientError("PHPicker result does not have a valid UTType"))
         }
     }
 
-    func handlePickerResult(_ result: PHPickerResult, completion: ((Result<AttachmentPickerResult, Error>) -> Void)?) {
-        let prov = result.itemProvider
-
-        if prov.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-            prov.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, error in
-                guard error == nil else {
-                    completion?(.failure(error!))
-                    return
-                }
-                guard let url else {
-                    completion?(.failure(ClientError.AttachmentURLNotFound()))
-                    return
-                }
-                do {
-                    let tempURL = try url.copyToTemporaryLocalFileUrl()
-                    completion?(.success(.init(url: tempURL, attachmentType: .video, attachmentInfo: [:])))
-                } catch {
-                    completion?(.failure(ClientError.AttachmentURLNotFound()))
-                }
+    private func getAttachmentInfos(of result: PHPickerResult) async throws -> [LocalAttachmentInfoKey: Any] {
+        var localAttachmentInfo: [LocalAttachmentInfoKey: Any] = [:]
+        
+        guard let assetId = result.assetIdentifier else {
+            throw ClientError.Unexpected("Can't asset asset with id: \(result.assetIdentifier ?? "nil")")
+        }
+        localAttachmentInfo[.assetId] = assetId
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+        if let asset = assets.firstObject {
+            localAttachmentInfo[.duration] = asset.duration
+            localAttachmentInfo[.width] = asset.pixelWidth
+            localAttachmentInfo[.height] = asset.pixelHeight
+            if let thumbnailImage = await getThumbnailImage(for: asset) {
+                localAttachmentInfo[.thumbnailImage] = thumbnailImage
             }
-        } else if prov.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-            prov.loadObject(ofClass: UIImage.self, completionHandler: { [weak prov] item, error in
-                guard error == nil else {
-                    completion?(.failure(error!))
-                    return
-                }
 
-                guard let image = item as? UIImage, let url = try? image.temporaryLocalFileUrl(fileName: prov?.suggestedName) else {
-                    completion?(.failure(ClientError.AttachmentURLNotFound()))
-                    return
-                }
-                var localAttachmentInfo: [LocalAttachmentInfoKey: Any] = [:]
-                localAttachmentInfo[.originalImage] = image
+            let assetResources = PHAssetResource.assetResources(for: asset)
+            if let resource = assetResources.first {
+                let unsignedInt64 = resource.value(forKey: "fileSize") as? CLong ?? 0
+                let size = Int64(bitPattern: UInt64(unsignedInt64))
+                localAttachmentInfo[.size] = size
+                //
+                localAttachmentInfo[.name] = resource.originalFilename
+            }
+        } else {
+            throw ClientError.Unexpected("Can't asset asset with id: \(result.assetIdentifier ?? "nil")")
+        }
+        return localAttachmentInfo
+    }
 
-                completion?(.success(.init(url: url, attachmentType: .image, attachmentInfo: localAttachmentInfo)))
+    private func fileName(of provider: NSItemProvider, result: PHPickerResult, type: UTType) -> String {
+        // 1. If Photos asset available, get the true filename
+        if let assetId = result.assetIdentifier {
+            let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+            if let asset = assets.firstObject,
+               let resource = PHAssetResource.assetResources(for: asset).first {
+                return resource.originalFilename   // ✅ includes correct extension
+            }
+        }
+
+        // 2. Fallback: use suggestedName + extension
+        var defaultFileExt: String = ""
+        switch type {
+        case .movie, .video: defaultFileExt = "mov"
+        case .image: defaultFileExt = "jpg"
+        default: defaultFileExt = "jpg"
+        }
+        let suggested = provider.suggestedName ?? UUID().uuidString
+        let ext = type.preferredFilenameExtension ?? defaultFileExt
+        if suggested.contains(".") {
+            return suggested
+        } else {
+            return "\(suggested).\(ext)"
+        }
+    }
+
+    private func getThumbnailImage(for asset: PHAsset) async -> UIImage? {
+        try await withCheckedContinuation { continuation in
+            PHImageManager.default().requestImage(for: asset,
+                                                  targetSize: .init(width: 1000, height: 1000),
+                                                  contentMode: .aspectFit,
+                                                  options: nil,
+                                                  resultHandler: { image, info in
+                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if !isDegraded {
+                    continuation.resume(returning: image)
+                }
             })
         }
+
     }
     // MARK: - UIDocumentPickerViewControllerDelegate
 

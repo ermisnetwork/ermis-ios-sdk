@@ -43,6 +43,7 @@ public class UnsupportedAttachmentViewInjector: CustomCellViewInjector {
                     assetRemoteURL: $0.uploadingState?.localFileURL ?? URL(string: "unknown")!,
                     file: .init(type: .unknown, size: 0, mimeType: nil)
                 ),
+                thumbnailData: $0.thumbnailData,
                 uploadingState: $0.uploadingState
             )
         }

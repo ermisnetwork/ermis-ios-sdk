@@ -39,8 +39,12 @@ class AttachmentDTO: NSManagedObject {
 
     /// An attachment local url.
     @NSManaged var localURL: URL?
+    /// An Asset identifier.
+    @NSManaged var assetId: String?
     /// An attachment raw `Data`.
     @NSManaged var data: Data
+    /// An thumbnail Image data.
+    @NSManaged var thumbnailData: Data?
 
     @NSManaged var fileSize: Int
 
@@ -110,7 +114,6 @@ extension NSManagedObjectContext: AttachmentDatabaseSession {
         dto.attachmentType = payload.type
         dto.data = try JSONEncoder.default.encode(payload.payload)
         dto.message = messageDTO
-        dto.localURL = nil
         dto.localState = nil
 
         return dto
@@ -129,9 +132,12 @@ extension NSManagedObjectContext: AttachmentDatabaseSession {
         dto.attachmentType = attachment.type
 
         dto.localURL = attachment.localFileURL
+        dto.thumbnailData = attachment.thumbnailData
+        dto.assetId = attachment.assetId
         dto.localState = attachment.localFileURL == nil ? .uploaded : .pendingUpload
 
         dto.data = try JSONEncoder.ermis.encode(attachment.payload.asAnyEncodable)
+        dto.thumbnailData = attachment.thumbnailData
         dto.message = messageDTO
 
         return dto
@@ -145,7 +151,7 @@ extension NSManagedObjectContext: AttachmentDatabaseSession {
 private extension AttachmentDTO {
     var uploadingState: AttachmentUploadingState? {
         guard
-            let localURL = localURL,
+            let localURL,
             let localState = localState
         else { return nil }
 
@@ -177,6 +183,7 @@ extension AttachmentDTO {
             id: id,
             type: attachmentType,
             payload: data,
+            thumbnailData: thumbnailData,
             uploadingState: uploadingState
         )
     }

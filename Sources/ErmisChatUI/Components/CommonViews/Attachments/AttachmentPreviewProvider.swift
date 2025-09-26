@@ -19,7 +19,7 @@ extension ImageAttachmentPayload: AttachmentPreviewProvider {
     /// The view representing the attachment.
     public func previewView(components: Components) -> UIView {
         let view = components.imageAttachmentComposerPreview.init()
-        view.content = imageURL
+        view.content = .init(url: imageURL, thumbnail: thumbnailData != nil ? UIImage(data: thumbnailData!) : nil)
         return view
     }
 }
@@ -45,7 +45,10 @@ extension VideoAttachmentPayload: AttachmentPreviewProvider {
     /// The view representing the video attachment.
     public func previewView(components: Components) -> UIView {
         let preview = components.videoAttachmentComposerPreview.init()
-        preview.content = videoURL
+
+        preview.content = .init(url: videoURL,
+                                thumbnailImage: thumbnailData != nil ? UIImage(data: thumbnailData!) : nil,
+                                duration: duration)
         return preview
     }
 }

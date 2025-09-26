@@ -53,7 +53,6 @@ open class GalleryAttachmentViewInjector: CustomCellViewInjector {
 
     open override func contentViewDidLayout(options: MessageLayoutOptions) {
         super.contentViewDidLayout(options: options)
-
         contentView.bubbleView?.clipsToBounds = true
 
         let ratio = galleryViewAspectRatio ?? galleryViewDefaultAspectRatio

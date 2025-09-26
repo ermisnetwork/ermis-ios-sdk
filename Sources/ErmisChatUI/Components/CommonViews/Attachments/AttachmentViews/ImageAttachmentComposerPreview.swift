@@ -11,7 +11,7 @@ open class ImageAttachmentComposerPreview: _View, UIProvider, RemoteImageDisplay
     open var height: CGFloat = 100
 
     /// Local URL of the image preview to show.
-    public var content: URL? {
+    public var content: Content? {
         didSet {
             updateContentIfNeeded()
         }
@@ -43,6 +43,18 @@ open class ImageAttachmentComposerPreview: _View, UIProvider, RemoteImageDisplay
         super.contentDidChanged()
 
         let size = CGSize(width: width, height: height)
-        loadImage(from: content, with: ImageLoaderOptions(resize: ImageResize(size)))
+        imageView.currentImageLoadingTask?.cancel()
+        if let thumbnail = content?.thumbnail {
+            imageView.image = thumbnail
+        } else {
+            loadImage(from: content?.url, with: ImageLoaderOptions(resize: ImageResize(size)))
+        }
+    }
+}
+
+public extension ImageAttachmentComposerPreview {
+    struct Content {
+        let url: URL
+        let thumbnail: UIImage?
     }
 }

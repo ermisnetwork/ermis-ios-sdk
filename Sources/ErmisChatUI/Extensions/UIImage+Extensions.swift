@@ -41,17 +41,3 @@ extension UIImage {
         return photoURL
     }
 }
-
-extension URL {
-    public func copyToTemporaryLocalFileUrl() throws -> URL {
-        let documentDirectory = NSTemporaryDirectory()
-        let localPath = documentDirectory.appending(lastPathComponent)
-        let tempURL = URL(fileURLWithPath: localPath)
-        if FileManager.default.fileExists(atPath: tempURL.path) {
-            try FileManager.default.removeItem(at: tempURL)
-        }
-
-        try FileManager.default.copyItem(at: self, to: tempURL)
-        return tempURL
-    }
-}

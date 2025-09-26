@@ -6,6 +6,7 @@ import CoreData
 import Foundation
 import UIKit
 import AVFoundation
+import Photos
 
 /// Observers the storage for attachments in a `.pendingUpload` state and uploads data from `localURL` to backend.
 ///
@@ -127,7 +128,7 @@ class AttachmentQueueUploader: Worker {
     }
 
     private func uploadVideoThumbnail(of videoAttachment: AnyMessageAttachment,
-                                              completion: @escaping (Result<UploadedAttachment, Error>) -> Void) {
+                                      completion: @escaping (Result<UploadedAttachment, Error>) -> Void) {
         let commonError = NSError(domain: "Upload video thumbnail failed", code: 999)
         guard let localVideoUrl = videoAttachment.uploadingState?.localFileURL else {
             completion(.failure(commonError))
@@ -144,11 +145,12 @@ class AttachmentQueueUploader: Worker {
                 }
 
                 let thumbnailAttachment = AnyMessageAttachment(id: videoAttachment.id,
-                                                                   type: .image,
-                                                                   payload: .init(),
-                                                                   uploadingState: .init(localFileURL: url,
-                                                                                         state: .pendingUpload,
-                                                                                         file: attachmentFile))
+                                                               type: .image,
+                                                               payload: .init(),
+                                                               thumbnailData: nil,
+                                                               uploadingState: .init(localFileURL: url,
+                                                                                     state: .pendingUpload,
+                                                                                     file: attachmentFile))
                 self?.apiClient.uploadVideoThumbnail(attachment: thumbnailAttachment, completion: completion)
             case .failure(let error):
                 completion(.failure(error))
@@ -161,19 +163,60 @@ class AttachmentQueueUploader: Worker {
         database.write { session in
             guard let attachment = session.attachment(id: id) else { return }
 
-            if let temporaryURL = attachment.localURL {
-                do {
-                    let localURL = try attachmentStorage.storeAttachment(id: id, temporaryURL: temporaryURL)
-                    attachment.localURL = localURL
-                } catch {
-                    log.error("Could not copy attachment to local storage: \(error.localizedDescription)", subsystems: .offlineSupport)
+            let onCompletion: () -> Void = {
+                DispatchQueue.main.async {
+                    let model = attachment.asAnyModel()
+                    completion(attachment.asAnyModel())
                 }
             }
 
-            let model = attachment.asAnyModel()
+            var temporaryURL = attachment.localURL
+            /// Check if local url exist, if not, we will fetch from asset id.
+            if let temporaryURL, temporaryURL.path.contains("File Provider Storage/photospicker") {
+                // This url is temporary, can't using it.
+                guard let assetId = attachment.assetId else {
+                    log.error("File not exist", subsystems: .offlineSupport)
+                    onCompletion()
+                    return
+                }
 
-            DispatchQueue.main.async {
-                completion(model)
+                let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                guard let asset = fetchResult.firstObject, let resource = PHAssetResource.assetResources(for: asset).first else {
+                    log.error("Asset not exist", subsystems: .offlineSupport)
+                    onCompletion()
+                    return
+                }
+
+                let url = attachmentStorage.sandboxedURL(for: id, temporaryURL: temporaryURL)
+                if attachmentStorage.fileExists(at: url) {
+                    attachment.localURL = url
+                    onCompletion()
+                    return
+                }
+
+                let options = PHAssetResourceRequestOptions()
+                options.isNetworkAccessAllowed = true
+
+                PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: options) { error in
+                    if let error {
+                        log.error("File not exist", subsystems: .offlineSupport)
+                        onCompletion()
+                        return
+                    } else {
+                        attachment.localURL = url
+                        onCompletion()
+                        return
+                    }
+                }
+            } else if let temporaryURL = attachment.localURL {
+                do {
+                    let localURL = try attachmentStorage.storeAttachment(id: id, temporaryURL: temporaryURL)
+                    attachment.localURL = localURL
+                    onCompletion()
+                } catch {
+                    log.error("Could not copy attachment to local storage: \(error.localizedDescription)", subsystems: .offlineSupport)
+                    onCompletion()
+                }
             }
         }
     }
@@ -345,11 +388,7 @@ private class AttachmentStorage {
     /// using `.documentsDirectory`, is stable though.
     /// Because of that, if the file is already in our storage, the only thing we will do is to return a fresh and valid url to access it.
     func storeAttachment(id: AttachmentId, temporaryURL: URL) throws -> URL {
-        // The file name should be composed by the id of the attachment so that it is unique.
-        let fileExtension = temporaryURL.pathExtension
-        let attachmentId = [id.cid.rawValue, id.messageId, String(id.index)].joined(separator: "-")
-        let fileId = "\(attachmentId).\(fileExtension)"
-        let sandboxedURL = baseURL.appendingPathComponent(fileId)
+        let sandboxedURL = sandboxedURL(for: id, temporaryURL: temporaryURL)
 
         // If the attachment is already sandboxed, return it.
         if fileExists(at: sandboxedURL) {
@@ -358,6 +397,15 @@ private class AttachmentStorage {
 
         // If not, copy the data of the temporary url to the sandbox directory.
         try Data(contentsOf: temporaryURL).write(to: sandboxedURL)
+        return sandboxedURL
+    }
+
+    func sandboxedURL(for id: AttachmentId, temporaryURL: URL) -> URL {
+        // The file name should be composed by the id of the attachment so that it is unique.
+        let fileExtension = temporaryURL.pathExtension
+        let attachmentId = [id.cid.rawValue, id.messageId, String(id.index)].joined(separator: "-")
+        let fileId = "\(attachmentId).\(fileExtension)"
+        let sandboxedURL = baseURL.appendingPathComponent(fileId)
         return sandboxedURL
     }
 
@@ -370,7 +418,7 @@ private class AttachmentStorage {
         }
     }
 
-    private func fileExists(at url: URL) -> Bool {
+    func fileExists(at url: URL) -> Bool {
         fileManager.fileExists(atPath: url.path)
     }
 }

@@ -12,7 +12,7 @@ open class VideoAttachmentComposerPreview: _View, UIProvider {
     open var height: CGFloat = 100
 
     /// Local URL of the video to show a preview for.
-    public var content: URL? {
+    public var content: Content? {
         didSet { updateContentIfNeeded() }
     }
 
@@ -92,7 +92,14 @@ open class VideoAttachmentComposerPreview: _View, UIProvider {
         previewImageView.image = nil
         videoDurationLabel.text = nil
 
-        if let url = content {
+        if let duration = content?.duration {
+            videoDurationLabel.text = formatters.videoDuration.format(duration)
+        }
+
+        if let thumbnailImage = content?.thumbnailImage {
+            self.previewImageView.currentImageLoadingTask?.cancel()
+            self.previewImageView.image = thumbnailImage
+        } else if let url = content?.url {
             components.videoLoader.loadPreviewForVideo(at: url) { [weak self] in
                 self?.loadingIndicator.isHidden = true
                 switch $0 {
@@ -102,9 +109,19 @@ open class VideoAttachmentComposerPreview: _View, UIProvider {
                     self?.previewImageView.image = nil
                 }
             }
-            videoDurationLabel.text = formatters.videoDuration.format(
-                components.videoLoader.videoAsset(at: url).duration.seconds
-            )
+            if content?.duration == nil {
+                videoDurationLabel.text = formatters.videoDuration.format(
+                    components.videoLoader.videoAsset(at: url).duration.seconds
+                )
+            }
         }
+    }
+}
+
+public extension VideoAttachmentComposerPreview {
+    struct Content {
+        let url: URL
+        let thumbnailImage: UIImage?
+        let duration: TimeInterval?
     }
 }
