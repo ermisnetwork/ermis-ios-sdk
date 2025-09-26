@@ -110,7 +110,7 @@ public struct AttachmentType: RawRepresentable, Codable, Hashable, ExpressibleBy
         case "image":
             self = .image
         case "video":
-            self = .video
+            self = attachmentFileType.isVideo ? .video : .file
         case "audio":
             self = .audio
         default:
@@ -294,6 +294,15 @@ public enum AttachmentFileType: String, Codable, Equatable, CaseIterable {
     public var isAudio: Bool {
         switch self {
         case .mp3, .wav, .ogg, .m4a, .aac:
+            return true
+        default:
+            return false
+        }
+    }
+
+    public var isVideo: Bool {
+        switch self {
+        case .mov, .wmv, .webm:
             return true
         default:
             return false

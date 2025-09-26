@@ -287,14 +287,12 @@ class AttachmentQueueUploader: Worker {
             let result: Result<UIImage, Error>
             if let thumbnail = image {
                 result = .success(.init(cgImage: thumbnail))
-            } else if let error = error {
-                result = .failure(error)
+            } else if let thumbnail = UIImage(systemName: "questionmark.video") {
+                // place default thumbnail
+                result = .success(thumbnail)
             } else {
-                log.error("Both error and image are `nil`.")
-                result = .failure(NSError(domain: "Generated thumb failed", code: 999) as Error)
-                return
+                result = .failure(ClientError("Failed to generate thumbnail"))
             }
-
             completion(result)
         }
     }
