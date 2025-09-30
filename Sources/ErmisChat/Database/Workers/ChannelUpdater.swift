@@ -481,7 +481,8 @@ class ChannelUpdater: Worker {
             let attachment = AnyMessageAttachment(
                 id: .init(cid: cid, messageId: "", index: 0), // messageId and index won't be used for uploading
                 type: type,
-                payload: .init(), // payload won't be used for uploading
+                payload: .init(),
+                thumbnailData: nil, // thumbnail data won't be used for uploading
                 uploadingState: .init(
                     localFileURL: localFileURL,
                     state: .pendingUpload, // will not be used

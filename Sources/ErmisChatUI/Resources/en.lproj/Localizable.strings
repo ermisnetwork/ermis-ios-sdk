@@ -322,6 +322,9 @@
 /// Generic title text in the popups.
 "alert.title.info" = "Info";
 
+"alert.title.permission-required" = "Permission required";
+/// Message of require camera access alert.
+"alert.message.photo-library-access-notgrandted" = "%@ doesn't have permission to use Photo library, please change privacy settings";
 
 /// Shown as title in the composer when editing a message.
 "composer.title.edit" = "Edit Message";

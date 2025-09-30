@@ -17,6 +17,8 @@ public struct MessageAttachment<Payload> {
     /// The attachment payload.
     public var payload: Payload
 
+    public var thumbnailData: Data?
+
     /// The uploading state of the attachment.
     ///
     /// Reflects uploading progress for local attachments that require file uploading.
@@ -29,11 +31,13 @@ public struct MessageAttachment<Payload> {
         id: AttachmentId,
         type: AttachmentType,
         payload: Payload,
+        thumbnailData: Data?,
         uploadingState: AttachmentUploadingState?
     ) {
         self.id = id
         self.type = type
         self.payload = payload
+        self.thumbnailData = thumbnailData
         self.uploadingState = uploadingState
     }
 }
@@ -83,6 +87,7 @@ public extension AnyMessageAttachment {
             id: id,
             type: type,
             payload: concretePayload,
+            thumbnailData: thumbnailData,
             uploadingState: uploadingState
         )
     }
@@ -96,6 +101,7 @@ public extension MessageAttachment where Payload: AttachmentPayload {
             id: id,
             type: type,
             payload: try! JSONEncoder.ermis.encode(payload),
+            thumbnailData: thumbnailData,
             uploadingState: uploadingState
         )
     }
@@ -118,6 +124,7 @@ public extension MessageAttachment where Payload: AttachmentPayload {
             id: id,
             type: .file,
             payload: concretePayload,
+            thumbnailData: thumbnailData,
             uploadingState: uploadingState
         )
     }

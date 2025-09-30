@@ -322,6 +322,9 @@
 /// Generic title text in the popups.
 "alert.title.info" = "Thông tin";
 
+"alert.title.permission-required" = "Yêu cầu quyền truy cập";
+/// Message of require camera access alert.
+"alert.message.photo-library-access-notgrandted" = "%@ không có quyền truy cập vào thư viện ảnh, xin hãy cấp quyền truy cập.";
 
 /// Shown as title in the composer when editing a message.
 "composer.title.edit" = "Chỉnh sửa tin nhắn";

@@ -18,6 +18,7 @@ enum AttachmentCodingKeys: String, CodingKey, CaseIterable {
     case imageURL = "image_url"
     case assetURL = "asset_url"
     case titleLink = "title_link"
+    case thumbnailData = "thumbnail_data"
     case originalWidth = "original_width"
     case originalHeight = "original_height"
     case fileSize = "file_size"

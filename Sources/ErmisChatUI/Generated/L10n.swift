@@ -30,11 +30,19 @@ public enum L10n {
       /// Unpin
       public static var unpin: String { L10n.tr("Localizable", "alert.actions.unpin") }
     }
+    public enum Message {
+      /// %@ doesn't have permission to use Photo library, please change privacy settings
+      public static func photoLibraryAccessNotgrandted(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "alert.message.photo-library-access-notgrandted", String(describing: p1))
+      }
+    }
     public enum Title {
       /// Error
       public static var error: String { L10n.tr("Localizable", "alert.title.error") }
       /// Info
       public static var info: String { L10n.tr("Localizable", "alert.title.info") }
+      /// Permission required
+      public static var permissionRequired: String { L10n.tr("Localizable", "alert.title.permission-required") }
       /// Success
       public static var success: String { L10n.tr("Localizable", "alert.title.success") }
     }

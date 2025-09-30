@@ -88,17 +88,22 @@ extension MessageGalleryView {
 
         override open func contentDidChanged() {
             super.contentDidChanged()
-
             let attachment = content
 
-            loadingIndicator.isVisible = true
-            imageTask = components.imageLoader.loadImage(
-                into: imageView,
-                from: attachment?.payload,
-                maxResolutionInPixels: components.imageAttachmentMaxPixels
-            ) { [weak self] _ in
-                self?.loadingIndicator.isVisible = false
-                self?.imageTask = nil
+            if let thumbData = attachment?.thumbnailData, let thumbImage = UIImage(data: thumbData) {
+                imageView.currentImageLoadingTask?.cancel()
+                imageView.image = thumbImage
+                loadingIndicator.isVisible = false
+            } else {
+                loadingIndicator.isVisible = true
+                imageTask = components.imageLoader.loadImage(
+                    into: imageView,
+                    from: attachment?.payload,
+                    maxResolutionInPixels: components.imageAttachmentMaxPixels
+                ) { [weak self] _ in
+                    self?.loadingIndicator.isVisible = false
+                    self?.imageTask = nil
+                }
             }
 
             uploadingOverlay.content = content?.uploadingState
