@@ -5,7 +5,7 @@
 import Foundation
 
 extension Bundle {
-    static var ermisCallUI: Bundle {
+    public static var ermisCallUI: Bundle {
         return Bundle.module
     }
 }
