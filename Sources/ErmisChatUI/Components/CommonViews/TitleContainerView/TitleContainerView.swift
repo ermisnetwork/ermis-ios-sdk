@@ -43,7 +43,9 @@ open class TitleContainerView: _View, ThemeProvider, SwiftUIRepresentable {
         super.setUp()
 
         titleLabel.textAlignment = .center
+        titleLabel.setContentHuggingPriority(.lowest, for: .horizontal)
         subtitleLabel.textAlignment = .center
+        subtitleLabel.setContentHuggingPriority(.lowest, for: .horizontal)
 
         containerView.axis = .vertical
         containerView.alignment = .center

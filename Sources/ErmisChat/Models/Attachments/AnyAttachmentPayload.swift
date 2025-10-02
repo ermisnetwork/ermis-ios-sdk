@@ -38,6 +38,10 @@ public struct AnyAttachmentPayload {
 public struct AnyAttachmentLocalMetadata {
     /// The asset identifier of PHAsset item.
     public var assetId: String?
+
+    /// The title of attachment.
+    public var title: String?
+
     /// The original width and height of an image or video attachment in Pixels.
     public var originalResolution: (width: Double, height: Double)?
 
@@ -135,7 +139,7 @@ public extension AnyAttachmentPayload {
         switch attachmentType {
         case .image:
             payload = ImageAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 imageRemoteURL: localFileURL,
                 file: file,
                 thumbnailData: localMetadata?.thumbnailData,
@@ -144,7 +148,7 @@ public extension AnyAttachmentPayload {
             )
         case .video:
             payload = VideoAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 videoRemoteURL: localFileURL,
                 thumbnailURL: nil,
                 thumbnailData: localMetadata?.thumbnailData,
@@ -152,13 +156,13 @@ public extension AnyAttachmentPayload {
             )
         case .audio:
             payload = AudioAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 audioRemoteURL: localFileURL,
                 file: file
             )
         case .file:
             payload = FileAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 assetRemoteURL: localFileURL,
                 file: file
             )
