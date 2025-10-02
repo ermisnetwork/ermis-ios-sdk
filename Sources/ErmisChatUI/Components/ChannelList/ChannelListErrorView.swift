@@ -29,15 +29,15 @@ open class ChannelListErrorView: _View, UIProvider {
     override open func setUpTheme() {
         super.setUpTheme()
         retryButton.setImage(theme.icons.restart, for: .normal)
-        backgroundColor = theme.colors.subTitleTextLow
-        titleLabel.textColor = theme.colors.white
-        retryButton.tintColor = theme.colors.white
+        backgroundColor = theme.colors.surfaceContainer
+        titleLabel.textColor = theme.colors.onSurface
+        retryButton.tintColor = theme.colors.onSurface
     }
 
     override open func setUpUI() {
         super.setUpUI()
 
-        heightAnchor.pin(equalToConstant: channelListErrorViewHeight).isActive = true
+        heightAnchor.pin(greaterThanOrEqualToConstant: channelListErrorViewHeight).isActive = true
         directionalLayoutMargins = .init(top: 16, leading: 16, bottom: 16, trailing: 16)
         addSubview(container)
         container.pin(anchors: [.leading, .trailing, .top], to: layoutMarginsGuide)
