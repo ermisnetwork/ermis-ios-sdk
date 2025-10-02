@@ -1506,6 +1506,10 @@ open class ComposerViewController: _ViewController,
             localMetadata.assetId = assetId
         }
 
+        if let title = info[.name] as? String {
+            localMetadata.title = title
+        }
+
         if let width = info[.width] as? Int, let height = info[.height] as? Int {
             localMetadata.originalResolution = (
                 width: Double(width),
