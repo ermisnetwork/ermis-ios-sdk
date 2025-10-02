@@ -301,9 +301,8 @@ open class ChannelViewController: _ViewController,
         }
 
         navigationItem.leftItemsSupplementBackButton = true
-        navigationItem.leftBarButtonItem = UIBarButtonItem(customView: headerView)
+        navigationItem.titleView = headerView
         navigationItem.largeTitleDisplayMode = .never
-
 
         addChildViewController(messageListVC, targetView: view)
         messageListTopConstraint = messageListVC.view.topAnchor.pin(equalTo: view.safeAreaLayoutGuide.topAnchor)
