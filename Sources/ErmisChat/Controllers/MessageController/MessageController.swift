@@ -248,12 +248,16 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     public func editMessage(
         text: String,
         attachments: [AnyAttachmentPayload] = [],
+        mentionedUserIds: [UserId] = [],
+        mentionedAll: Bool = false,
         completion: ((Error?) -> Void)? = nil
     ) {
         messageUpdater.editMessage(
             messageId: messageId,
             text: text,
-            attachments: attachments
+            attachments: attachments,
+            mentionedUserIds: mentionedUserIds,
+            mentionedAll: mentionedAll
         ) { error in
             self.callback {
                 completion?(error)

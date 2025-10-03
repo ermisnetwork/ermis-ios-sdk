@@ -13,8 +13,7 @@ public protocol CallManagerDelegate: AnyObject {
     func callManager(_ manager: CallManager, didAccept call: Call?)
 }
 
-public
-class CallManager: NSObject, CXProviderDelegate {
+public class CallManager: NSObject, CXProviderDelegate {
     public static let shared = CallManager()
     
     public let sessionId = UUID().uuidString.lowercased()
@@ -24,13 +23,23 @@ class CallManager: NSObject, CXProviderDelegate {
     var calls: [Call] = []
     var callUUIDDictionary: [String: UUID] = [:]
     lazy var  eventsController = client.eventsController()
-    lazy var ioAccessManager = IOAccessManager()
+    public lazy var ioAccessManager = IOAccessManager()
     /// Return current active call.
     public var currentCall: Call? {
         return calls.last(where: { $0.details.state != .ended })
     }
 
     public weak var delegate: CallManagerDelegate?
+
+    public static var needShowRequestMicrophoneAccessAlert: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "callKit.microphoneAccessDenied")
+        }
+
+        set {
+            UserDefaults.standard.setValue(newValue, forKey: "callKit.microphoneAccessDenied")
+        }
+    }
 
     lazy var onCallEnded: ((Call?) -> Void) = { [weak self] call in
         DispatchQueue.main.async {
@@ -234,7 +243,6 @@ class CallManager: NSObject, CXProviderDelegate {
             }
         }
     }
-
     // MARK: - Report call events.
     /// Report new incomming call to `CallKit`
     package func reportIncommingCall(_ event: CallSignalEvent?, completion: @escaping (Error?) -> Void) {
@@ -370,6 +378,15 @@ class CallManager: NSObject, CXProviderDelegate {
         log.debug("[CallKit] provider perform call answer: \(action).", subsystems: .call)
         Task {
             do {
+                let isMicrophoneAccessGranted = ioAccessManager.isMicrophoneAccessGranted
+                guard isMicrophoneAccessGranted else {
+                    CallManager.needShowRequestMicrophoneAccessAlert = true
+                    action.fail()
+                    if let currentCall {
+                        await CallManager.shared.endCall(currentCall)
+                    }
+                    return
+                }
                 delegate?.callManager(self, didAccept: currentCall)
                 try await currentCall?.connectionSocket()
                 try await currentCall?.acceptCall()
