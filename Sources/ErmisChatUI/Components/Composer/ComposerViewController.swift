@@ -703,7 +703,7 @@ open class ComposerViewController: _ViewController,
     }
 
     open func updateRecordButtonVisibility() {
-        guard isSendMessageEnabled else {
+        guard isSendMessageEnabled && content.editingMessage == nil else {
             composerView.recordButton.isHidden = true
             return
         }
@@ -773,7 +773,7 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || !content.isEmpty || content.isVoiceRecording
+        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || content.editingMessage != nil || !content.isEmpty || content.isVoiceRecording
         Animate {
             self.composerView.photoButton.isHidden = isPhotoButtonHidden
         }
@@ -785,7 +785,7 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        let isStickerButtonHidden = !isAttachmentsEnabled || content.hasCommand || !content.isEmpty || content.isVoiceRecording
+        let isStickerButtonHidden = !isAttachmentsEnabled || content.hasCommand || content.editingMessage != nil || !content.isEmpty || content.isVoiceRecording
         Animate {
             self.composerView.stickerButton.isHidden = isStickerButtonHidden
         }
@@ -987,7 +987,22 @@ open class ComposerViewController: _ViewController,
         }
 
         if let editingMessage = content.editingMessage {
-            editMessage(withId: editingMessage.id, newText: text)
+            for user in content.mentionedUsers {
+                if !text.contains(user.mentionString) {
+                    content.mentionedUsers.remove(user)
+                }
+            }
+
+            if !text.contains("@all") {
+                content.hasMentionedAll = false
+            }
+
+            editMessage(withId: editingMessage.id,
+                        newText: text,
+                        mentionedUserIds: content.mentionedUsers.map { $0.userId },
+                        mentionedAll: content.hasMentionedAll
+            )
+
             channelController?.sendStopTypingEvent()
             content.clear()
             mentionTokens = []
@@ -1163,7 +1178,10 @@ open class ComposerViewController: _ViewController,
     /// - Parameters:
     ///   - id: The id of the editing message.
     ///   - newText: The new text content of the message.
-    open func editMessage(withId id: MessageId, newText: String) {
+    open func editMessage(withId id: MessageId,
+                          newText: String,
+                          mentionedUserIds: [UserId] = [],
+                          mentionedAll: Bool = false) {
         guard let cid = channelController?.cid else { return }
         let messageController = channelController?.client.messageController(
             cid: cid,
@@ -1172,7 +1190,9 @@ open class ComposerViewController: _ViewController,
         // TODO: Adjust LLC to edit mentions
         messageController?.editMessage(
             text: newText,
-            attachments: content.attachments
+            attachments: content.attachments,
+            mentionedUserIds:mentionedUserIds,
+            mentionedAll: mentionedAll
         )
     }
 

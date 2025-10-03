@@ -46,7 +46,8 @@ extension Endpoint {
         .init(
             path: .editMessage(payload.id, channelId),
             method: .post,
-            body: ["message": payload, "old_message": oldMessage]
+            body: ["message": payload,
+                   "old_message": oldMessage]
         )
     }
 

@@ -110,6 +110,8 @@ class MessageUpdater: Worker {
         messageId: MessageId,
         text: String,
         attachments: [AnyAttachmentPayload] = [],
+        mentionedUserIds: [UserId] = [],
+        mentionedAll: Bool = false,
         completion: ((Error?) -> Void)? = nil
     ) {
         database.write({ session in
@@ -139,6 +141,14 @@ class MessageUpdater: Worker {
                         return try session.createNewAttachment(attachment: attachment, id: id)
                     }
                 )
+
+                messageDTO.mentionedAll = mentionedAll
+                messageDTO.mentionedUserIds = mentionedUserIds
+
+//                messageDTO.mentionedUsers = try Set(mentionedUserIds.compactMap {
+//                    let user = try session.user(id: $0, projectId: cid.projectId)
+//                    return user
+//                })
             }
 
             if messageDTO.isBounced {
