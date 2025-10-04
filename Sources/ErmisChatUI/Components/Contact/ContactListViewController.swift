@@ -26,7 +26,7 @@ class ContactListViewController: ChannelListViewController, UICollectionViewDele
     }
 
     open override var isChannelListStatesEnabled: Bool {
-        return true
+        return false
     }
 
     public
@@ -50,7 +50,7 @@ class ContactListViewController: ChannelListViewController, UICollectionViewDele
     // MARK: -
 
     open override func buildSnapshot(from channels: [Channel]) -> NSDiffableDataSourceSnapshot<String, Channel> {
-        let newChannels = Array(controller.channels).sorted(by: {
+        let newChannels = channels.sorted(by: {
             let lLastMessageAt = $0.lastMessageAt ?? $0.updatedAt
             let rLastMessageAt = $1.lastMessageAt ?? $1.updatedAt
             return lLastMessageAt > rLastMessageAt

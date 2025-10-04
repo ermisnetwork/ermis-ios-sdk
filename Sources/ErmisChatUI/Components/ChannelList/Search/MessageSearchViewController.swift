@@ -29,9 +29,8 @@ open class MessageSearchViewController: ChannelListSearchViewController, Message
     }
 
     // MARK: - ChannelListSearchViewController Abstract Implementations
-
-    override open var hasEmptyResults: Bool {
-        messages.isEmpty
+    open override func shouldShowEmptyView() -> Bool {
+        return messages.isEmpty
     }
 
     override open func loadSearchResults(with text: String) {

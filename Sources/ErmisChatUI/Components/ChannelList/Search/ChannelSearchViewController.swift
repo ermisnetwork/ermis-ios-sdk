@@ -14,24 +14,8 @@ open class ChannelSearchViewController: ChannelListSearchViewController {
 
     // MARK: - ChannelListSearchViewController Abstract Implementations
 
-    override open var hasEmptyResults: Bool {
-        return false//channels.isEmpty
-    }
-
     override open func loadSearchResults(with text: String) {
-        guard let currentUserId = controller.client.currentUserId else { return }
-
-        replaceQuery(.init(
-            filter: .and([
-                .autocomplete(.name, text: text),
-                .or([
-                    .joinedChannels(memberId: currentUserId,
-                                    projectId: controller.client.projectId),
-                    .publicChannel(projectId: controller.client.projectId)
-                ])
-
-            ])
-        ))
+        super.loadSearchResults(with: text)
     }
 
     override open func loadMoreSearchResults() {

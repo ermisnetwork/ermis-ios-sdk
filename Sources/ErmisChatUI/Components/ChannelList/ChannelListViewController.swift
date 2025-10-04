@@ -603,10 +603,12 @@ open class ChannelListViewController: _ViewController,
 
             switch newState {
             case .initialized:
-                isLoading = controller.channels.isEmpty
+                shouldHideEmptyView = !shouldShowEmptyView()
+                isLoading = shouldShowEmptyView()
             case .localDataFetched:
+                isLoading = false
                 reloadChannels()
-                isLoading = controller.channels.isEmpty
+                shouldHideEmptyView = !shouldShowEmptyView()
             case .remoteDataFetched:
                 isLoading = false
                 shouldHideEmptyView = !shouldShowEmptyView()
@@ -618,7 +620,6 @@ open class ChannelListViewController: _ViewController,
                 shouldHideErrorView = isChannelListStatesEnabled ? false : true
                 channelListErrorView.show()
             }
-
             emptyView.isHidden = shouldHideEmptyView
             if isLoading, channelListLoadingView.isHidden {
                 channelListLoadingView.isHidden = false
@@ -633,13 +634,14 @@ open class ChannelListViewController: _ViewController,
         } else {
             switch newState {
             case .initialized:
-                if controller.channels.isEmpty {
+                if shouldShowEmptyView() {
                     loadingIndicator.startAnimating()
                 } else {
                     loadingIndicator.stopAnimating()
                 }
             case .localDataFetched:
                 reloadChannels()
+                loadingIndicator.stopAnimating()
             case .remoteDataFetched:
                 reloadChannels()
                 updateUserMissingInfo(of: channels)

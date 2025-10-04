@@ -12,28 +12,6 @@ open class InvitedChannelSearchViewController: InvitedChannelListSearchViewContr
     /// The closure that is triggered whenever a channel is selected from the search result.
     public var didSelectChannel: ((Channel) -> Void)?
 
-    // MARK: - ChannelListSearchViewController Abstract Implementations
-
-    override open var hasEmptyResults: Bool {
-        channels.isEmpty
-    }
-
-    override open func loadSearchResults(with text: String) {
-        guard let currentUserId = controller.client.currentUserId else { return }
-
-        replaceQuery(.init(
-            filter: .and([
-                .autocomplete(.name, text: text),
-                .invitedChannels(memberId: currentUserId,
-                                 projectId: controller.client.projectId)
-            ])
-        ))
-    }
-
-    override open func loadMoreSearchResults() {
-        loadMoreChannels()
-    }
-
     // MARK: - Collection View Implementations
 
     open override func cellItem(for collectionView: UICollectionView, indexPath: IndexPath, channel: Channel) -> UICollectionViewCell? {

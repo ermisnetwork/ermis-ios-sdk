@@ -61,6 +61,20 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
 
 //        emptyView.iconView.image = theme.icons.emptySearch
     }
+    // MARK: - ChannelList override
+    open override func shouldShowEmptyView() -> Bool {
+        return channels.isEmpty
+    }
+
+    open override func buildSnapshot(from channels: [Channel]) -> NSDiffableDataSourceSnapshot<String, Channel> {
+        let predicate = NSPredicate(format: "SELF CONTAINS[cd] %@", self.currentSearchText)
+
+        let channels = channels.filter { self.currentSearchText.isEmpty ? true : predicate.evaluate(with: $0.name) }
+        var snapshot = NSDiffableDataSourceSnapshot<String, Channel>()
+        snapshot.appendSections(["all"])
+        snapshot.appendItems(channels, toSection: "all")
+        return snapshot
+    }
 
     // MARK: - UISearchResultsUpdating
 
@@ -70,6 +84,14 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
         }
 
         currentSearchText = text
+        reloadChannels { [weak self] in
+            guard let self else {
+                return
+            }
+            emptyView.subtitleLabel.text = currentSearchText.isEmpty ? "" : L10n.ChannelList.Search.Empty.subtitle("\"\(currentSearchText)\"")
+
+            emptyView.isHidden = !shouldShowEmptyView()
+        }
 
         debouncer.execute { [weak self] in
             self?.loadSearchResults(with: text)
@@ -80,7 +102,7 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
 
     /// Whether the current search results are empty.
     open var hasEmptyResults: Bool {
-        fatalError("This function should be implemented by a subclass.")
+        return shouldShowEmptyView()
     }
 
     // swiftlint:disable unavailable_function
@@ -88,31 +110,27 @@ open class ChannelListSearchViewController: ChannelListViewController, UISearchR
     ///
     /// - Parameter text: The text query inputted by the user.
     open func loadSearchResults(with text: String) {
-        fatalError("This function should be implemented by a subclass.")
+        // Implement in subclass
     }
 
     /// Called when a new page of search results should be performed.
     open func loadMoreSearchResults() {
-        fatalError("This function should be implemented by a subclass.")
+        // Implement in subclass
     }
-    
-    // swiftlint:enable unavailable_function
 
     // MARK: - State Handling
 
-    override open func controller(_ controller: DataController, didChangeState state: DataController.State) {
-        super.controller(controller, didChangeState: state)
-        switch state {
+    open override func handleStateChanges(_ newState: DataController.State) {
+        super.handleStateChanges(newState)
+
+        switch newState {
         case .initialized, .localDataFetched:
-            if hasEmptyResults {
-                loadingIndicator.startAnimating()
-            } else {
-                loadingIndicator.stopAnimating()
-            }
+            loadingIndicator.stopAnimating()
+            emptyView.isHidden = !shouldShowEmptyView()
         case .remoteDataFetched:
             loadingIndicator.stopAnimating()
             emptyView.subtitleLabel.text = L10n.ChannelList.Search.Empty.subtitle("\"\(currentSearchText)\"")
-            emptyView.isHidden = !hasEmptyResults
+            emptyView.isHidden = !shouldShowEmptyView()
         default:
             loadingIndicator.stopAnimating()
         }
