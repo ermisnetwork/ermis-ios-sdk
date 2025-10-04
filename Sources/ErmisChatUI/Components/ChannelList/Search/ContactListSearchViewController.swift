@@ -9,16 +9,12 @@ import UIKit
 /// It is a subclass of the Channel List since most of the logic is reused from the original Channel List.
 @available(iOSApplicationExtension, unavailable)
 open class ContactListSearchViewController: ContactListViewController, UISearchResultsUpdating {
-    /// The component responsible to debounce search requests.
-    public var debouncer = Debouncer(0.3, queue: .main)
-
     /// The current active search text.
     public var currentSearchText: String = ""
 
-    /// A component responsible to handle when to load new search results.
-    private lazy var viewPaginationHandler: ViewPaginationHandling = {
-        ScrollViewPaginationHandler(scrollView: collectionView)
-    }()
+    open override var isChannelListStatesEnabled: Bool {
+        return false
+    }
 
     // MARK: - Lifecycle
 
@@ -49,11 +45,6 @@ open class ContactListSearchViewController: ContactListViewController, UISearchR
         )
 
         collectionView.delegate = self
-
-        viewPaginationHandler.bottomThreshold = 800
-        viewPaginationHandler.onNewBottomPage = { [weak self] in
-            self?.loadMoreSearchResults()
-        }
         setupDiffableDataSource()
     }
 
@@ -62,6 +53,16 @@ open class ContactListSearchViewController: ContactListViewController, UISearchR
 
     }
 
+    // MARK: - ChannelList override
+    open override func shouldShowEmptyView() -> Bool {
+        return contacts.isEmpty
+    }
+
+    open override func buildSnapshot(from channels: [Channel]) -> NSDiffableDataSourceSnapshot<String, Channel> {
+        let predicate = NSPredicate(format: "SELF CONTAINS[cd] %@", self.currentSearchText)
+        let filteredChannels: [Channel] = channels.filter { self.currentSearchText.isEmpty ? true : predicate.evaluate(with: $0.directUserMembership?.displayName) }
+        return super.buildSnapshot(from: filteredChannels)
+    }
     // MARK: - UISearchResultsUpdating
 
     open func updateSearchResults(for searchController: UISearchController) {
@@ -70,56 +71,27 @@ open class ContactListSearchViewController: ContactListViewController, UISearchR
         }
 
         currentSearchText = text
-
-        debouncer.execute { [weak self] in
-            self?.loadSearchResults(with: text)
+        reloadChannels { [weak self] in
+            guard let self else {
+                return
+            }
+            emptyView.subtitleLabel.text = currentSearchText.isEmpty ? "" : L10n.ChannelList.Search.Empty.subtitle("\"\(currentSearchText)\"")
+            emptyView.isHidden = !shouldShowEmptyView()
         }
     }
-
-    // MARK: - Required Implementations
-
-    /// Whether the current search results are empty.
-    open var hasEmptyResults: Bool {
-        fatalError("This function should be implemented by a subclass.")
-    }
-
-    // swiftlint:disable unavailable_function
-    /// Performs a request to fetch search results with the given text.
-    ///
-    /// - Parameter text: The text query inputted by the user.
-    open func loadSearchResults(with text: String) {
-        fatalError("This function should be implemented by a subclass.")
-    }
-
-    /// Called when a new page of search results should be performed.
-    open func loadMoreSearchResults() {
-        fatalError("This function should be implemented by a subclass.")
-    }
-
-    // swiftlint:enable unavailable_function
-
     // MARK: - State Handling
-
-    override open func controller(_ controller: DataController, didChangeState state: DataController.State) {
-        switch state {
+    open override func handleStateChanges(_ newState: DataController.State) {
+        super.handleStateChanges(newState)
+        switch newState {
         case .initialized, .localDataFetched:
-            if hasEmptyResults {
-                loadingIndicator.startAnimating()
-            } else {
-                loadingIndicator.stopAnimating()
-            }
+            loadingIndicator.stopAnimating()
+            emptyView.isHidden = !shouldShowEmptyView()
         case .remoteDataFetched:
             loadingIndicator.stopAnimating()
             emptyView.subtitleLabel.text = L10n.ChannelList.Search.Empty.subtitle("\"\(currentSearchText)\"")
-            emptyView.isHidden = !hasEmptyResults
+            emptyView.isHidden = !shouldShowEmptyView()
         default:
             loadingIndicator.stopAnimating()
         }
-    }
-
-    // MARK: - Deinit
-
-    deinit {
-        debouncer.invalidate()
     }
 }
