@@ -77,7 +77,11 @@ class AttachmentQueueUploader: Worker {
     }
 
     private func uploadAttachment(with id: AttachmentId) {
-        prepareAttachmentForUpload(with: id) { [weak self] attachment in
+        prepareAttachmentForUpload(with: id) { [weak self] attachment, error in
+            guard error == nil else {
+                self?.updateAttachmentIfNeeded(attachmentId: id, uploadedAttachment: nil, newState: .uploadingFailed)
+                return
+            }
             guard let attachment = attachment else {
                 self?.removePendingAttachment(with: id)
                 return
@@ -139,7 +143,7 @@ class AttachmentQueueUploader: Worker {
             switch result {
             case .success(let thumbnailImage):
                 guard let url = try? self?.temporaryLocalFileUrl(of: thumbnailImage),
-                      let attachmentFile = try? AttachmentFile(url: url) else {
+                      let attachmentFile = try? AttachmentFile(url: url, fileSize: nil) else {
                     completion(.failure(commonError))
                     return
                 }
@@ -158,64 +162,88 @@ class AttachmentQueueUploader: Worker {
         }
     }
 
-    private func prepareAttachmentForUpload(with id: AttachmentId, completion: @escaping (AnyMessageAttachment?) -> Void) {
+    private func prepareAttachmentForUpload(with id: AttachmentId, completion: @escaping (AnyMessageAttachment?, Error?) -> Void) {
         let attachmentStorage = self.attachmentStorage
         database.write { session in
             guard let attachment = session.attachment(id: id) else { return }
 
-            let onCompletion: () -> Void = {
+            let onCompletion: (Error?) -> Void = { error in
                 DispatchQueue.main.async {
                     let model = attachment.asAnyModel()
-                    completion(attachment.asAnyModel())
+                    completion(attachment.asAnyModel(), error)
                 }
             }
 
             var temporaryURL = attachment.localURL
             /// Check if local url exist, if not, we will fetch from asset id.
-            if let temporaryURL, temporaryURL.path.contains("File Provider Storage/photospicker") {
+            if let temporaryURL, temporaryURL.path.contains("photospicker") {
                 // This url is temporary, can't using it.
                 guard let assetId = attachment.assetId else {
                     log.error("File not exist", subsystems: .offlineSupport)
-                    onCompletion()
+                    onCompletion(ClientError.AttachmentDoesNotExist(id: id))
                     return
                 }
 
                 let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
                 guard let asset = fetchResult.firstObject, let resource = PHAssetResource.assetResources(for: asset).first else {
                     log.error("Asset not exist", subsystems: .offlineSupport)
-                    onCompletion()
+                    onCompletion(ClientError.AttachmentDoesNotExist(id: id))
                     return
                 }
 
                 let url = attachmentStorage.sandboxedURL(for: id, temporaryURL: temporaryURL)
                 if attachmentStorage.fileExists(at: url) {
                     attachment.localURL = url
-                    onCompletion()
+                    onCompletion(nil)
                     return
                 }
 
-                let options = PHAssetResourceRequestOptions()
-                options.isNetworkAccessAllowed = true
+                if asset.mediaType == .image {
+                    let options = PHImageRequestOptions()
+                    options.isSynchronous = true
+                    options.isNetworkAccessAllowed = true
+                    PHImageManager.default().requestImage(for: asset,
+                                                          targetSize: PHImageManagerMaximumSize,
+                                                          contentMode: .aspectFit,
+                                                          options: options) { image, _ in
+                        guard let image else {
+                            onCompletion(ClientError.AttachmentDoesNotExist(id: id))
+                            return
+                        }
+                        let imageData = image.jpegData(compressionQuality: 1.0)
+                        do {
+                            try imageData?.write(to: url)
+                            attachment.localURL = url
+                            onCompletion(nil)
+                        } catch {
+                            onCompletion(ClientError.Unexpected("Faild to write data to fileURL: \(url)"))
+                        }
+                    }
+                } else {
+                    let options = PHAssetResourceRequestOptions()
+                    options.isNetworkAccessAllowed = true
 
-                PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: options) { error in
-                    if let error {
-                        log.error("File not exist", subsystems: .offlineSupport)
-                        onCompletion()
-                        return
-                    } else {
-                        attachment.localURL = url
-                        onCompletion()
-                        return
+                    PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: options) { error in
+                        if let error {
+                            log.error("File not exist", subsystems: .offlineSupport)
+                            onCompletion(ClientError.AttachmentDoesNotExist(id: id))
+                            return
+                        } else {
+                            attachment.localURL = url
+                            onCompletion(nil)
+                            return
+                        }
                     }
                 }
+
             } else if let temporaryURL = attachment.localURL {
                 do {
                     let localURL = try attachmentStorage.storeAttachment(id: id, temporaryURL: temporaryURL)
                     attachment.localURL = localURL
-                    onCompletion()
+                    onCompletion(nil)
                 } catch {
                     log.error("Could not copy attachment to local storage: \(error.localizedDescription)", subsystems: .offlineSupport)
-                    onCompletion()
+                    onCompletion(ClientError.AttachmentDoesNotExist(id: id))
                 }
             }
         }
@@ -395,8 +423,14 @@ private class AttachmentStorage {
             return sandboxedURL
         }
 
-        // If not, copy the data of the temporary url to the sandbox directory.
-        try Data(contentsOf: temporaryURL).write(to: sandboxedURL)
+        if let type = try? temporaryURL.resourceValues(forKeys: [.contentTypeKey]).contentType,
+           type.conforms(to: .heic), let data = try? Data(contentsOf: temporaryURL),
+           let image = UIImage(data: data),
+           let jpegData = image.jpegData(compressionQuality: 1.0) {
+            try jpegData.write(to: sandboxedURL)
+        } else {
+            try Data(contentsOf: temporaryURL).write(to: sandboxedURL)
+        }
         return sandboxedURL
     }
 

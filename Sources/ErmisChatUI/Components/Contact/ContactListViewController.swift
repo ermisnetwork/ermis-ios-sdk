@@ -26,7 +26,7 @@ class ContactListViewController: ChannelListViewController, UICollectionViewDele
     }
 
     open override var isChannelListStatesEnabled: Bool {
-        return false
+        return true
     }
 
     public

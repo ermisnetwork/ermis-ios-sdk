@@ -551,7 +551,7 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
         type: AttachmentType,
         info: [LocalAttachmentInfoKey: Any]
     ) throws -> AnyAttachmentPayload {
-        let fileSize = try AttachmentFile(url: url).size
+        let fileSize = try AttachmentFile(url: url, fileSize: nil).size
 
 //        let maxAttachmentSize = maxAttachmentSize(for: type)
 //        guard fileSize <= maxAttachmentSize else {

@@ -38,7 +38,7 @@ public struct ChannelAttachmentPayload: Decodable {
 
     public var isImage: Bool {
         switch fileType {
-        case .jpeg, .png, .gif, .bmp, .webp:
+        case .jpeg, .png, .gif, .bmp, .webp, .heic:
             return true
         default:
             return false

@@ -1511,7 +1511,7 @@ open class ComposerViewController: _ViewController,
 
         var fileSize: Int64! = info[.size] as? Int64
         if fileSize == nil {
-            fileSize = try? AttachmentFile(url: url).size
+            fileSize = try? AttachmentFile(url: url, fileSize: nil).size
         }
 
         let maxAttachmentSize = maxAttachmentSize(for: type)
@@ -1863,7 +1863,12 @@ open class ComposerViewController: _ViewController,
                 let size = Int64(bitPattern: UInt64(unsignedInt64))
                 localAttachmentInfo[.size] = size
                 //
-                localAttachmentInfo[.name] = resource.originalFilename
+                var fileName = resource.originalFilename
+                if fileName.hasSuffix(".heic") || fileName.hasSuffix(".HEIC") {
+                    fileName.removeLast(4)
+                    fileName = fileName + "jpg"
+                }
+                localAttachmentInfo[.name] = fileName
             }
         } else {
             throw ClientError.Unexpected("Can't asset asset with id: \(result.assetIdentifier ?? "nil")")
