@@ -301,7 +301,11 @@ open class ChannelViewController: _ViewController,
         }
 
         navigationItem.leftItemsSupplementBackButton = true
-        navigationItem.titleView = headerView
+        if #available(iOS 26.0, *) {
+            navigationItem.titleView = headerView
+        } else {
+            navigationItem.leftBarButtonItem = UIBarButtonItem(customView: headerView)
+        }
         navigationItem.largeTitleDisplayMode = .never
 
         addChildViewController(messageListVC, targetView: view)
