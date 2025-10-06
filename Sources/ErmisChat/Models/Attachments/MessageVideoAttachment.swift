@@ -22,6 +22,10 @@ public struct VideoAttachmentPayload: AttachmentPayload {
     public var videoURL: URL
     /// A link to the video thumbnail.
     public var thumbnailURL: URL?
+    /// Data of thumbnail image.
+    public var thumbnailData: Data?
+    /// The duration of the video
+    public var duration: TimeInterval?
     /// The video itself.
     public var file: AttachmentFile
 
@@ -31,10 +35,12 @@ public struct VideoAttachmentPayload: AttachmentPayload {
     public init(title: String?,
                 videoRemoteURL: URL,
                 thumbnailURL: URL? = nil,
+                thumbnailData: Data? = nil,
                 file: AttachmentFile) {
         self.title = title
         videoURL = videoRemoteURL
         self.thumbnailURL = thumbnailURL
+        self.thumbnailData = thumbnailData
         self.file = file
     }
 }
@@ -67,6 +73,7 @@ extension VideoAttachmentPayload: Decodable {
             title: try container.decodeIfPresent(String.self, forKey: .title),
             videoRemoteURL: try container.decode(URL.self, forKey: .assetURL),
             thumbnailURL: try container.decodeIfPresent(URL.self, forKey: .thumbURL),
+            thumbnailData: try container.decodeIfPresent(Data.self, forKey: .thumbnailData),
             file: try AttachmentFile(from: decoder)
         )
     }

@@ -191,9 +191,6 @@ open class ShareViewController: _ViewController, UIProvider, ChannelListControll
     public func channelController(_ channelController: ChannelController, didUpdateMessages changes: [ListChange<ChatMessage>]) {
         for change in changes {
             if case .update(let item, let _) = change {
-                if messageId == item.id {
-                    log.debug("TTTTTTT ITEM LOCAL STATE: \(item.localState)")
-                }
                 if messageId == item.id, item.localState == nil {
                     DispatchQueue.main.async {
                         self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
@@ -554,7 +551,7 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
         type: AttachmentType,
         info: [LocalAttachmentInfoKey: Any]
     ) throws -> AnyAttachmentPayload {
-        let fileSize = try AttachmentFile(url: url).size
+        let fileSize = try AttachmentFile(url: url, fileSize: nil).size
 
 //        let maxAttachmentSize = maxAttachmentSize(for: type)
 //        guard fileSize <= maxAttachmentSize else {

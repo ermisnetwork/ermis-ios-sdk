@@ -26,6 +26,8 @@ public struct ImageAttachmentPayload: AttachmentPayload {
     public var originalHeight: Double?
     /// The image itself.
     public var file: AttachmentFile
+    /// The data of thumbnail image.
+    public var thumbnailData: Data?
 
     /// Creates `ImageAttachmentPayload` instance.
     ///
@@ -34,12 +36,14 @@ public struct ImageAttachmentPayload: AttachmentPayload {
         title: String?,
         imageRemoteURL: URL,
         file: AttachmentFile,
+        thumbnailData: Data?,
         originalWidth: Double? = nil,
         originalHeight: Double? = nil
     ) {
         self.title = title
         imageURL = imageRemoteURL
         self.file = file
+        self.thumbnailData = thumbnailData
         self.originalWidth = originalWidth
         self.originalHeight = originalHeight
     }
@@ -87,7 +91,7 @@ extension ImageAttachmentPayload: Decodable {
                 container.decodeIfPresent(String.self, forKey: .fallback) ??
                 container.decodeIfPresent(String.self, forKey: .name)
         )?.trimmingCharacters(in: .whitespacesAndNewlines)
-
+        let thumbnailData = try container.decodeIfPresent(Data.self, forKey: .thumbnailData)
         let originalWidth = try container.decodeIfPresent(Double.self, forKey: .originalWidth)
         let originalHeight = try container.decodeIfPresent(Double.self, forKey: .originalHeight)
         let file = try AttachmentFile(from: decoder)
@@ -95,6 +99,7 @@ extension ImageAttachmentPayload: Decodable {
             title: title,
             imageRemoteURL: imageURL,
             file: file,
+            thumbnailData: thumbnailData,
             originalWidth: originalWidth,
             originalHeight: originalHeight
         )

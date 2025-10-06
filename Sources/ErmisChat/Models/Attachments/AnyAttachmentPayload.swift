@@ -17,12 +17,18 @@ public protocol AttachmentPayload: Codable {
 public struct AnyAttachmentPayload {
     /// A type of attachment that will be created when the message is sent.
     public let type: AttachmentType
+    
+    /// The asset identifier
+    public let assetId: String?
 
     /// A payload that will exposed on attachment when the message is sent.
     public let payload: Encodable
 
     /// A URL referencing to the local file that should be uploaded.
     public let localFileURL: URL?
+
+    /// The data of thumbnail Image
+    public let thumbnailData: Data?
     /// The size of attachment
     public let fileSize: Int?
 }
@@ -30,6 +36,12 @@ public struct AnyAttachmentPayload {
 /// Local Metadata related to an attachment.
 /// It is used to describe additional information of a local attachment.
 public struct AnyAttachmentLocalMetadata {
+    /// The asset identifier of PHAsset item.
+    public var assetId: String?
+
+    /// The title of attachment.
+    public var title: String?
+
     /// The original width and height of an image or video attachment in Pixels.
     public var originalResolution: (width: Double, height: Double)?
 
@@ -41,6 +53,9 @@ public struct AnyAttachmentLocalMetadata {
 
     /// The file size
     public var fileSize: Int?
+
+    /// The data of thumbnail Image.
+    public var thumbnailData: Data?
 
     public init() {}
 }
@@ -59,8 +74,10 @@ public extension AnyAttachmentPayload {
     init<Payload: AttachmentPayload>(payload: Payload) {
         self.init(
             type: Payload.type,
+            assetId: nil,
             payload: payload,
             localFileURL: nil,
+            thumbnailData: nil,
             fileSize: nil
         )
     }
@@ -74,15 +91,21 @@ public extension AnyAttachmentPayload {
     ///
     /// - Parameters:
     ///   - localFileURL: The local file url in the user's device.
+    ///   - assetId: The local assetId of the attachment file
+    ///   - thumbnailData: The data of preview image.
     ///   - customPayload: The custom attachment payload.
     init<Payload: AttachmentPayload>(
         localFileURL: URL,
+        assetId: String?,
+        thumbnailData: Data?,
         customPayload: Payload
     ) {
         self.init(
             type: Payload.type,
+            assetId: assetId,
             payload: customPayload,
             localFileURL: localFileURL,
+            thumbnailData: thumbnailData,
             fileSize: nil
         )
     }
@@ -110,34 +133,36 @@ public extension AnyAttachmentPayload {
         attachmentType: AttachmentType,
         localMetadata: AnyAttachmentLocalMetadata? = nil
     ) throws {
-        let file = try AttachmentFile(url: localFileURL)
+        let file = try AttachmentFile(url: localFileURL, fileSize: localMetadata?.fileSize)
 
         let payload: AttachmentPayload
         switch attachmentType {
         case .image:
             payload = ImageAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 imageRemoteURL: localFileURL,
                 file: file,
+                thumbnailData: localMetadata?.thumbnailData,
                 originalWidth: localMetadata?.originalResolution?.width,
-                originalHeight: localMetadata?.originalResolution?.height
+                originalHeight: localMetadata?.originalResolution?.height,
             )
         case .video:
             payload = VideoAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 videoRemoteURL: localFileURL,
                 thumbnailURL: nil,
+                thumbnailData: localMetadata?.thumbnailData,
                 file: file
             )
         case .audio:
             payload = AudioAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 audioRemoteURL: localFileURL,
                 file: file
             )
         case .file:
             payload = FileAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 assetRemoteURL: localFileURL,
                 file: file
             )
@@ -155,8 +180,10 @@ public extension AnyAttachmentPayload {
 
         self.init(
             type: attachmentType,
+            assetId: localMetadata?.assetId,
             payload: payload,
             localFileURL: localFileURL,
+            thumbnailData: localMetadata?.thumbnailData,
             fileSize: localMetadata?.fileSize
         )
     }
@@ -193,8 +220,10 @@ extension MessageAttachment<Data> {
         // If the attachment is local, we should create the payload as a local file
         if let uploadingState = self.uploadingState, uploadingState.state != .uploaded {
             return AnyAttachmentPayload(type: type,
+                                        assetId: nil,
                                         payload: payload,
                                         localFileURL: uploadingState.localFileURL,
+                                        thumbnailData: thumbnailData,
                                         fileSize: self.payload.count)
         }
 

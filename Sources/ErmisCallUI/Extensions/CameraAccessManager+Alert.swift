@@ -71,7 +71,7 @@ public extension IOAccessManager {
                                       message: L10n.Alert.Message.micAccessNotgrandted(appDisplayName),
                                       preferredStyle: .alert)
 
-        let cancelActionTitle = L10n.Alert.Actions.ok
+        let cancelActionTitle = L10n.Alert.Actions.cancel
         let cancelAction = UIAlertAction(title: cancelActionTitle, style: .cancel)
 
         let settingsActionTitle = L10n.Alert.Actions.settings
@@ -89,5 +89,6 @@ public extension IOAccessManager {
         }
         presentingViewController.present(alert, animated: true)
     }
+
 }
 

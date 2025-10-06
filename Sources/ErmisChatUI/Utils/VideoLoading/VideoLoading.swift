@@ -8,6 +8,13 @@ import UIKit
 
 /// A protocol the video loader must conform to.
 public protocol VideoLoading: AnyObject {
+
+    /// Get a preview for the video at given URL.
+    /// - Parameters:
+    ///   - url: A video URL.
+    /// - Returns: The preivew image of this video.
+    func previewForVideo(at url: URL) -> UIImage?
+
     /// Loads a preview for the video at given URL.
     /// - Parameters:
     ///   - url: A video URL.
@@ -43,6 +50,10 @@ open class ErmisVideoLoader: VideoLoading {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    public func previewForVideo(at url: URL) -> UIImage? {
+        return cache[url]
     }
 
     open func loadPreviewForVideo(at url: URL, completion: @escaping (Result<UIImage, Error>) -> Void) {

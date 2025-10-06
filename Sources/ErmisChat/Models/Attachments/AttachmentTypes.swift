@@ -18,6 +18,7 @@ enum AttachmentCodingKeys: String, CodingKey, CaseIterable {
     case imageURL = "image_url"
     case assetURL = "asset_url"
     case titleLink = "title_link"
+    case thumbnailData = "thumbnail_data"
     case originalWidth = "original_width"
     case originalHeight = "original_height"
     case fileSize = "file_size"
@@ -160,7 +161,8 @@ public struct AttachmentFile: Codable, Hashable {
         self.mimeType = mimeType
     }
 
-    public init(url: URL) throws {
+    public init(url: URL, fileSize: Int? = nil) throws {
+        // The url can be photo temporary url, in this case we need to send fileSize, or it will be nil.
         guard url.isFileURL else {
             throw ClientError.InvalidAttachmentFileURL(url)
         }
@@ -169,7 +171,7 @@ public struct AttachmentFile: Codable, Hashable {
 
         self.init(
             type: fileType,
-            size: attributes?[.size] as? Int64 ?? 0,
+            size: fileSize.map { Int64($0) } ?? attributes?[.size] as? Int64 ?? 0,
             mimeType: fileType.mimeType
         )
     }
@@ -211,7 +213,7 @@ public enum AttachmentFileType: String, Codable, Equatable, CaseIterable {
     /// Video
     case mov, avi, wmv, webm
     /// Image
-    case jpeg, png, gif, bmp, webp
+    case jpeg, png, gif, bmp, webp, heic
     /// Unknown
     case unknown
 
@@ -248,7 +250,8 @@ public enum AttachmentFileType: String, Codable, Equatable, CaseIterable {
         "image/png": .png,
         "image/gif": .gif,
         "image/bmp": .bmp,
-        "image/webp": .webp
+        "image/webp": .webp,
+        "image/heic": .jpeg
     ]
 
     /// Init an attachment file type by mime type.
@@ -268,6 +271,11 @@ public enum AttachmentFileType: String, Codable, Equatable, CaseIterable {
         let ext = ext.lowercased()
 
         if ext == "jpg" {
+            self = .jpeg
+            return
+        }
+
+        if ext == "heic" {
             self = .jpeg
             return
         }

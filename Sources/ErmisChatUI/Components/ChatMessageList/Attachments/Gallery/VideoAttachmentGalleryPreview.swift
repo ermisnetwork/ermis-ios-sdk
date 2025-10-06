@@ -90,6 +90,10 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
         imageView.image = nil
         playButton.isVisible = false
 
+        if let thumbnailData = content?.thumbnailData, let thumbImage = UIImage(data: thumbnailData) {
+            imageView.currentImageLoadingTask?.cancel()
+            imageView.image = thumbImage
+        }
         if let thumbnailURL = content?.thumbnailURL {
             showPreview(using: thumbnailURL)
         } else if let url = content?.videoURL {

@@ -477,11 +477,12 @@ class ChannelUpdater: Worker {
         completion: @escaping ((Result<UploadedAttachment, Error>) -> Void)
     ) {
         do {
-            let attachmentFile = try AttachmentFile(url: localFileURL)
+            let attachmentFile = try AttachmentFile(url: localFileURL, fileSize: nil)
             let attachment = AnyMessageAttachment(
                 id: .init(cid: cid, messageId: "", index: 0), // messageId and index won't be used for uploading
                 type: type,
-                payload: .init(), // payload won't be used for uploading
+                payload: .init(),
+                thumbnailData: nil, // thumbnail data won't be used for uploading
                 uploadingState: .init(
                     localFileURL: localFileURL,
                     state: .pendingUpload, // will not be used

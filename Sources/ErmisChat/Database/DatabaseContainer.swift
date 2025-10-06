@@ -168,6 +168,8 @@ class DatabaseContainer: NSPersistentContainer {
         case let .onDisk(databaseFileURL):
             description.url = databaseFileURL
         }
+        description.setOption(true as NSNumber, forKey: NSMigratePersistentStoresAutomaticallyOption)
+        description.setOption(true as NSNumber, forKey: NSInferMappingModelAutomaticallyOption)
 
         persistentStoreDescriptions = [description]
     }

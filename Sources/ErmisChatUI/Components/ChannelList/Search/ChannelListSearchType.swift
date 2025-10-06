@@ -64,7 +64,12 @@ public struct ChannelListSearchType {
         if let channelSearchVC = searchVC.init() as? ChannelSearchViewController {
             channelSearchVC.controller = channelListVC.controller
             channelSearchVC.didSelectChannel = { [weak channelListVC] channel in
-                channelListVC?.router.showChannel(for: channel.cid)
+                if channel.topicsEnabled {
+                    channelListVC?.router.showTopicList(of: channel.cid)
+                } else {
+                    channelListVC?.router.showChannel(for: channel.cid)
+                }
+//                channelListVC?.router.showChannel(for: channel.cid)
             }
             let searchController = UISearchController(searchResultsController: channelSearchVC)
             searchController.searchResultsUpdater = channelSearchVC

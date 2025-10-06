@@ -62,10 +62,11 @@ open class UploadingOverlayView: _View, UIProvider {
         super.setUpTheme()
 
         uploadingProgressLabel.numberOfLines = 0
-        uploadingProgressLabel.textColor = theme.colors.inverseOnSurface
+        uploadingProgressLabel.textColor = theme.colors.onSurface
         uploadingProgressLabel.font = theme.fonts.footnote
 
         bottomContainer.backgroundColor = theme.colors.surfaceContainerHigh
+        self.backgroundColor = theme.colors.surfaceContainerLow.withAlphaComponent(0.6)
     }
 
     override open func setUpUI() {
@@ -100,7 +101,7 @@ open class UploadingOverlayView: _View, UIProvider {
             case .uploaded:
                 return nil
             default:
-                return theme.colors.surfaceContainerLow
+                return theme.colors.surfaceContainerLow.withAlphaComponent(0.6)
             }
         }
 

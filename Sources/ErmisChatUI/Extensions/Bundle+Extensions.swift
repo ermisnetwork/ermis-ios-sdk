@@ -7,7 +7,7 @@ import Foundation
 private class BundleIdentifyingClass {}
 
 extension Bundle {
-    static var ermisChatUI: Bundle {
+    public static var ermisChatUI: Bundle {
         return Bundle.module
     }
 }
