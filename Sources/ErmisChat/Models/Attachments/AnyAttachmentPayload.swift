@@ -133,7 +133,7 @@ public extension AnyAttachmentPayload {
         attachmentType: AttachmentType,
         localMetadata: AnyAttachmentLocalMetadata? = nil
     ) throws {
-        let file = try AttachmentFile(url: localFileURL)
+        let file = try AttachmentFile(url: localFileURL, fileSize: localMetadata?.fileSize)
 
         let payload: AttachmentPayload
         switch attachmentType {

@@ -159,7 +159,7 @@ private extension AttachmentDTO {
             return .init(
                 localFileURL: localURL,
                 state: localState,
-                file: try AttachmentFile(url: localURL)
+                file: try AttachmentFile(url: localURL, fileSize: nil)
             )
         } catch {
             let id = attachmentID?.rawValue ?? ""
