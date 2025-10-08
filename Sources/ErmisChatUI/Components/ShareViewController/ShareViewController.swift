@@ -271,16 +271,17 @@ extension ShareViewController: UISearchControllerDelegate, UISearchResultsUpdati
 // MARK: - ForwardinMessageItemViewDelegate
 extension ShareViewController: ShareItemViewDelegate {
     public func shareItemViewDidTapSendButton(_ view: ShareItemView, cid: ChannelId?) {
-        guard !isSendingMessage else {
-            return
-        }
-        isSendingMessage = true
         guard hasFinishedLoadingItems else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: {
                 self.shareItemViewDidTapSendButton(view, cid: cid)
             })
             return
         }
+        guard !isSendingMessage else {
+            return
+        }
+        isSendingMessage = true
+
         guard let cid, let client = controller?.client else {
             return
         }
@@ -403,21 +404,32 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
             self?.finish()
         }
         // Load image content if available
-        if provider.canLoadObject(ofClass: UIImage.self) {
-            provider.loadObject(ofClass: UIImage.self) { [weak self] image, error in
-                guard let self else {
+        if typeIdentifier == UTType.image.identifier {
+            provider.loadItem(forTypeIdentifier: UTType.image.identifier) { [weak self] item, error in
+                guard let self, let item else {
                     completion(error)
                     return
                 }
-                if let image = image as? PlatformImage {
-                    do {
-                        let tempURL = try image.temporaryLocalFileUrl()
-                        let attachment = try self.getAttachment(from: tempURL, type: .image, info: [.originalImage: image])
+                do {
+                    if let url = item as? URL {
+                        let data = try Data(contentsOf: url)
+                        let tempURL = try data.copyToTemporaryLocalFileUrl(url.lastPathComponent)
+                        let attachment = try self.getAttachment(from: tempURL, type: .image, info: [:])
                         result.attachment = attachment
-                    } catch let erorr {
+                    } else if let data = item as? Data {
+                        let tempURL = try data.copyToTemporaryLocalFileUrl(UUID().uuidString.lowercased() + ".jpeg")
+                        let attachment = try self.getAttachment(from: tempURL, type: .image, info: [:])
+                        result.attachment = attachment
+                    } else if let image = item as? UIImage {
+                        let tempURL = try image.temporaryLocalFileUrl()
+                        let attachment = try self.getAttachment(from: tempURL, type: .image, info: [:])
+                        result.attachment = attachment
+                    } else {
                         completion(error)
-                        return
                     }
+                } catch let error {
+                    completion(error)
+                    return
                 }
 
                 completion(error)

@@ -166,27 +166,6 @@ public extension MemberRole {
         .owner
     ]
 
-    var title: String {
-        switch self {
-        case .member:
-            return "Member"
-        case .admin:
-            return "Admin"
-        case .owner:
-            return "Owner"
-        case .pending:
-            return "Pending"
-        case .moderator:
-            return "Moderator"
-        case .skipped:
-            return "skipped"
-        case .rejected:
-            return "Rejected"
-        default:
-            return "Unknown"
-        }
-    }
-
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         let value = try container.decode(String.self)

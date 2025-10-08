@@ -1775,7 +1775,7 @@ open class ComposerViewController: _ViewController,
                     })
                 }
             } catch(let error) {
-                self.presentAlert(title: "Error", message: "Failed to load attachment.")
+                self.presentAlert(title: "Error", message: "Failed to load attachment")
                 log.error(error)
             }
         }
@@ -1790,7 +1790,7 @@ open class ComposerViewController: _ViewController,
             for (index, result) in results.enumerated() {
                 group.addTask { [weak self] in
                     guard let self else {
-                        throw(ClientError.Unexpected())
+                        throw(ClientError.Unexpected("Self has been deallocated"))
                     }
                     let attachment = try await self.handlePickerResult(result)
                     return (index, attachment)
@@ -1845,7 +1845,7 @@ open class ComposerViewController: _ViewController,
         var localAttachmentInfo: [LocalAttachmentInfoKey: Any] = [:]
         
         guard let assetId = result.assetIdentifier else {
-            throw ClientError.Unexpected("Can't asset asset with id: \(result.assetIdentifier ?? "nil")")
+            throw ClientError.Unexpected("Can't asset with id: \(result.assetIdentifier ?? "nil")")
         }
         localAttachmentInfo[.assetId] = assetId
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
@@ -1871,7 +1871,7 @@ open class ComposerViewController: _ViewController,
                 localAttachmentInfo[.name] = fileName
             }
         } else {
-            throw ClientError.Unexpected("Can't asset asset with id: \(result.assetIdentifier ?? "nil")")
+            throw ClientError.Unexpected("Can't asset with id: \(result.assetIdentifier ?? "nil")")
         }
         return localAttachmentInfo
     }
@@ -1882,7 +1882,7 @@ open class ComposerViewController: _ViewController,
             let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
             if let asset = assets.firstObject,
                let resource = PHAssetResource.assetResources(for: asset).first {
-                return resource.originalFilename   // ✅ includes correct extension
+                return resource.originalFilename
             }
         }
 
@@ -1904,18 +1904,25 @@ open class ComposerViewController: _ViewController,
 
     private func getThumbnailImage(for asset: PHAsset) async -> UIImage? {
         try await withCheckedContinuation { continuation in
+            let options = PHImageRequestOptions()
+            options.deliveryMode = .highQualityFormat
+            options.isSynchronous = false
+            options.isNetworkAccessAllowed = true
+
             PHImageManager.default().requestImage(for: asset,
-                                                  targetSize: .init(width: 1000, height: 1000),
+                                                  targetSize: .init(width: 300, height: 300),
                                                   contentMode: .aspectFit,
-                                                  options: nil,
+                                                  options: options,
                                                   resultHandler: { image, info in
-                let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                if !isDegraded {
-                    continuation.resume(returning: image)
+                guard let thumbnail = image else {
+                    return
                 }
+                if let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool), isDegraded {
+                    return
+                }
+                continuation.resume(returning: thumbnail)
             })
         }
-
     }
     // MARK: - UIDocumentPickerViewControllerDelegate
 

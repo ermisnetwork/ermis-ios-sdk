@@ -14,7 +14,7 @@ public class ConsoleLogDestination: BaseLogDestination {
 
     override open func write(message: String) {
         print(message)
-        appendToLogFile(message)
+//        appendToLogFile(message)
     }
 
     func appendToLogFile(_ message: String) {

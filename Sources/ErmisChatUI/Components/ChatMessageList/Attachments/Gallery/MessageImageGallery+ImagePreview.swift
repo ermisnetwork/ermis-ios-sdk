@@ -90,7 +90,9 @@ extension MessageGalleryView {
             super.contentDidChanged()
             let attachment = content
 
-            if let thumbData = attachment?.thumbnailData, let thumbImage = UIImage(data: thumbData) {
+            if let uploadingState = attachment?.uploadingState,
+               uploadingState.state != .uploaded,
+               let thumbData = attachment?.thumbnailData, let thumbImage = UIImage(data: thumbData) {
                 imageView.currentImageLoadingTask?.cancel()
                 imageView.image = thumbImage
                 loadingIndicator.isVisible = false

@@ -176,13 +176,7 @@ class AttachmentQueueUploader: Worker {
 
             var temporaryURL = attachment.localURL
             /// Check if local url exist, if not, we will fetch from asset id.
-            if let temporaryURL, temporaryURL.path.contains("photospicker") {
-                // This url is temporary, can't using it.
-                guard let assetId = attachment.assetId else {
-                    log.error("File not exist", subsystems: .offlineSupport)
-                    onCompletion(ClientError.AttachmentDoesNotExist(id: id))
-                    return
-                }
+            if let temporaryURL, temporaryURL.isTemporaryItemProviderURL, let assetId = attachment.assetId  {
 
                 let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
                 guard let asset = fetchResult.firstObject, let resource = PHAssetResource.assetResources(for: asset).first else {
@@ -201,6 +195,7 @@ class AttachmentQueueUploader: Worker {
                 if asset.mediaType == .image {
                     let options = PHImageRequestOptions()
                     options.isSynchronous = true
+                    options.deliveryMode = .highQualityFormat
                     options.isNetworkAccessAllowed = true
                     PHImageManager.default().requestImage(for: asset,
                                                           targetSize: PHImageManagerMaximumSize,
