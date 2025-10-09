@@ -316,6 +316,25 @@ public enum L10n {
     }
   }
 
+  public enum MemberRole {
+    /// Admin
+    public static var admin: String { L10n.tr("Localizable", "member-role.admin") }
+    /// Member
+    public static var member: String { L10n.tr("Localizable", "member-role.member") }
+    /// Moderator
+    public static var moderator: String { L10n.tr("Localizable", "member-role.moderator") }
+    /// Owner
+    public static var owner: String { L10n.tr("Localizable", "member-role.owner") }
+    /// Pending
+    public static var pending: String { L10n.tr("Localizable", "member-role.pending") }
+    /// Rejected
+    public static var rejected: String { L10n.tr("Localizable", "member-role.rejected") }
+    /// Skipped
+    public static var skipped: String { L10n.tr("Localizable", "member-role.skipped") }
+    /// Unknown
+    public static var unknown: String { L10n.tr("Localizable", "member-role.unknown") }
+  }
+
   public enum Message {
     /// Message deleted
     public static var deletedMessagePlaceholder: String { L10n.tr("Localizable", "message.deleted-message-placeholder") }

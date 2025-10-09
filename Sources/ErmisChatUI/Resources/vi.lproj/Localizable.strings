@@ -378,6 +378,17 @@
 /// Show as title of join button label.
 "composer.join-button" = "Tham gia";
 
+// Member role
+/// Show as title of member roles.
+"member-role.member" = "Thành viên";
+"member-role.admin" = "Quản trị viên";
+"member-role.owner" = "Chủ nhóm";
+"member-role.pending" = "Đang chờ";
+"member-role.moderator" = "Điều hành viên";
+"member-role.skipped" = "Bỏ qua";
+"member-role.rejected" = "Từ chối";
+"member-role.unknown" = "Không xác định";
+
 /// Forward
 
 /// Show as title of the forward message screen.
