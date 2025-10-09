@@ -110,7 +110,9 @@ open class VideoPlaybackControlView: _View, UIProvider {
 
         timeSlider.minimumValue = 0
         timeSlider.maximumValue = 1
+        timeSlider.addTarget(self, action: #selector(timeSliderDidBeginEditing), for: .touchDown)
         timeSlider.addTarget(self, action: #selector(timeSliderDidChange), for: .valueChanged)
+        timeSlider.addTarget(self, action: #selector(timeSliderDidEndEditing), for: [.touchUpInside, .touchUpOutside, .touchCancel])
 
         timestampLabel.font = theme.fonts.footnote.bold
         durationLabel.font = theme.fonts.footnote.bold
@@ -173,20 +175,19 @@ open class VideoPlaybackControlView: _View, UIProvider {
         }
     }
 
+    @objc open func timeSliderDidBeginEditing(_ sender: UISlider) {
+        player?.pause()
+    }
+
     /// Is invoked when time slider changes the value.
     @objc open func timeSliderDidChange(_ sender: UISlider, event: UIEvent) {
-        switch event.allTouches?.first?.phase {
-        case .began:
-            player?.pause()
-        case .moved:
-            let duration = player?.currentItem?.duration.seconds ?? 0
-            let time = CMTime(seconds: duration * .init(sender.value), preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-            player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
-        case .ended, .cancelled:
-            player?.play()
-        default:
-            break
-        }
+        let duration = player?.currentItem?.duration.seconds ?? 0
+        let time = CMTime(seconds: duration * .init(sender.value), preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+        player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
+
+    @objc open func timeSliderDidEndEditing(_ sender: UISlider) {
+        player?.play()
     }
 
     /// Is invoked when current track reached the end.
