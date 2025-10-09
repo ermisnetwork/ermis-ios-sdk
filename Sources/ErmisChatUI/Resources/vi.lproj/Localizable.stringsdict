@@ -13,9 +13,9 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>one</key>
-			<string>%d unread</string>
+			<string>%d chưa đọc</string>
 			<key>other</key>
-			<string>%d unread</string>
+			<string>%d chưa đọc</string>
 		</dict>
 	</dict>
 	<key>messageList.typingIndicator.users</key>
@@ -29,11 +29,11 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>zero</key>
-			<string> is typing</string>
+			<string>đang nhập</string>
 			<key>one</key>
-			<string> and %2$d other are typing</string>
+			<string>và %2$d người khác đang nhập</string>
 			<key>other</key>
-			<string> and %2$d others are typing</string>
+			<string>và %2$d người khác đang nhập</string>
 		</dict>
 	</dict>
 	<key>message.threads.count</key>
@@ -47,11 +47,11 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>zero</key>
-			<string>No Thread Replies</string>
+			<string>Không có trả lời trong Thread</string>
 			<key>one</key>
-			<string>%d Thread Reply</string>
+			<string>%d trả lời trong Thread</string>
 			<key>other</key>
-			<string>%d Thread Replies</string>
+			<string>%d trả lời trong Thread</string>
 		</dict>
 	</dict>
 	<key>message.thread.replies.count</key>
@@ -65,11 +65,11 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>zero</key>
-			<string>NO REPLIES</string>
+			<string>KHÔNG CÓ TRẢ LỜI</string>
 			<key>one</key>
-			<string>%d REPLY</string>
+			<string>%d TRẢ LỜI</string>
 			<key>other</key>
-			<string>%d REPLIES</string>
+			<string>%d TRẢ LỜI</string>
 		</dict>
 	</dict>
 	<key>message.unread.count</key>
@@ -83,11 +83,11 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>zero</key>
-			<string>UNREAD MESSAGES</string>
+			<string>TIN NHẮN CHƯA ĐỌC</string>
 			<key>one</key>
-			<string>%d UNREAD MESSAGE</string>
+			<string>%d TIN NHẮN CHƯA ĐỌC</string>
 			<key>other</key>
-			<string>%d UNREAD MESSAGES</string>
+			<string>%d TIN NHẮN CHƯA ĐỌC</string>
 		</dict>
 	</dict>
 	<key>reaction.authors.number-of-reactions</key>
@@ -101,11 +101,11 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>zero</key>
-			<string>%d Message Reactions</string>
+			<string>%d Cảm xúc</string>
 			<key>one</key>
-			<string>%d Message Reaction</string>
+			<string>%d Cảm xúc</string>
 			<key>other</key>
-			<string>%d Message Reactions</string>
+			<string>%d Cảm xúc</string>
 		</dict>
 	</dict>
 	<key>recording.presentation.name</key>
@@ -119,11 +119,11 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>other</key>
-			<string>Recording(%d)</string>
+			<string>Đang ghi âm(%d)</string>
 			<key>zero</key>
-			<string>Recording</string>
+			<string>Đang ghi âm</string>
 			<key>one</key>
-			<string>Recording(%d)</string>
+			<string>Đang ghi âm(%d)</string>
 		</dict>
 	</dict>
 </dict>

@@ -33,7 +33,7 @@ extension UIImage {
         guard let imageData = jpegData(compressionQuality: 1.0) else {
             throw ClientError.Unknown("Failed to convert image to data")
         }
-        let imageName = fileName == nil ? "\(UUID().uuidString).jpg" : "\(fileName!).jpg"
+        let imageName = fileName == nil ? "\(UUID().uuidString).jpeg" : "\(fileName!).jpeg"
         let documentDirectory = NSTemporaryDirectory()
         let localPath = documentDirectory.appending(imageName)
         let photoURL = URL(fileURLWithPath: localPath)

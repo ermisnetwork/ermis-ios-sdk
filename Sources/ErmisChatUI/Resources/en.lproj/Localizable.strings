@@ -378,6 +378,17 @@
 /// Show as title of join button label.
 "composer.join-button" = "Join";
 
+// Member role
+/// Show as title of member roles.
+"member-role.member" = "Member";
+"member-role.admin" = "Admin";
+"member-role.owner" = "Owner";
+"member-role.pending" = "Pending";
+"member-role.moderator" = "Moderator";
+"member-role.skipped" = "Skipped";
+"member-role.rejected" = "Rejected";
+"member-role.unknown" = "Unknown";
+
 /// Forward
 
 /// Show as title of the forward message screen.
