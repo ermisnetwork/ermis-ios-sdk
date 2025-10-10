@@ -424,25 +424,6 @@ public struct ChannelCapability: RawRepresentable, ExpressibleByStringLiteral, H
     public static var sendLinks: Self = "send-links"
     /// Ability to pin message.
     public static var pinMessage: Self = "pin-message"
-
-    public var title: String {
-        switch self {
-        case .sendMessage:
-            return "Send Messages"
-        case .sendLinks:
-            return "Send Links"
-        case .updateOwnMessage:
-            return "Edit Messages"
-        case .deleteOwnMessage:
-            return "Delete Messages"
-        case .sendReaction:
-            return "React messages"
-        case .pinMessage:
-            return "Pin/Unpin Messages"
-        default:
-            return ""
-        }
-    }
 }
 
 public extension Channel {
