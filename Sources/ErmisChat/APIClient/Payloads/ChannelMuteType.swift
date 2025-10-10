@@ -44,22 +44,5 @@ enum ChannelMuteType: Equatable {
             return false
         }
     }
-
-    public var title: String {
-        switch self {
-        case .muted:
-            return "Until i turn it back on"
-        case .mutedForDuration(let duration):
-            let timeInterval = TimeInterval(duration / 1000)
-            let formater = DateComponentsFormatter()
-            formater.allowedUnits = [.hour, .minute, .second]
-            formater.unitsStyle = .full
-            formater.zeroFormattingBehavior = .dropAll
-            let timeString = formater.string(from: timeInterval)
-            return "Mute for \(timeString ?? "")"
-        case .unMuted:
-            return "Unmute"
-        }
-    }
 }
 

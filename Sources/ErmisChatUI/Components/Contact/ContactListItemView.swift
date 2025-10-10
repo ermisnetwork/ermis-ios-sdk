@@ -104,11 +104,11 @@ open class ContactListItemView: _View, UIProvider, SwiftUIRepresentable {
     open var subtitleText: String? {
         guard let content = content, let directMember = content.channel.directUserMembership else { return nil }
         if directMember.isOnline {
-            return "Online"
+            return L10n.Message.Title.online
         } else if let lastActive = directMember.lastActiveAt {
-            return "Offline"//return "Last active: " + timestampFormatter.format(lastActive)
+            return L10n.Message.Title.offline//return "Last active: " + timestampFormatter.format(lastActive)
         } else {
-            return "Offline"
+            return L10n.Message.Title.offline
         }
     }
 
