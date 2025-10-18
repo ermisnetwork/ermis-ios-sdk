@@ -6,8 +6,7 @@ import AVFoundation
 import ErmisChat
 import UIKit
 
-/// Sourced and modified from: https://github.com/bastienFalcou/SoundWave/blob/master/SoundWave/Classes/AudioVisualizationView.swift
-open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
+open class AudioVisualizationView: _View, UIProvider {
     public enum AudioVisualizationMode {
         case read
         case write
@@ -21,68 +20,32 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
 
     // MARK: - Configuration Properties
     /// The colour of the waveform bar that isn't part of the "played" duration.
-    private var _barColor: UIColor?
-
-    open var barColor: UIColor? {
-        set {
-            _barColor = newValue ?? theme.colors.subTitleTextLow
-        }
-        
-        get {
-            _barColor ?? theme.colors.subTitleTextLow
-        }
-    }
+    open var barColor: UIColor!
 
     /// The colour of the waveform bar that is part of the "played" duration.
-    private var _highlightedBarColor: UIColor?
-    
-    open var highlightedBarColor: UIColor? {
-        set {
-            _highlightedBarColor = newValue ?? theme.colors.primary
-        }
-        
-        get {
-            _highlightedBarColor ?? theme.colors.primary
-        }
-    }
+    open var highlightedBarColor: UIColor!
 
 
     /// The colour of the waveform bar's background.
-    private var _barBackgroundColor: UIColor?
-    
-    open var barBackgroundColor: UIColor? {
-        set {
-            _barBackgroundColor = newValue ?? theme.colors.surface
-        }
-        
-        get {
-            _barBackgroundColor ?? theme.colors.surface
-        }
-    }
-
-        
-    
-    
-    
-    open var customMaximumBarHeight: CGFloat?
+    open var barBackgroundColor: UIColor!
 
     /// The rendering mode of the waveform. On `.write` the view scrolls to accommodate new points
     /// while in `.read` it scales(up or down) all dataPoints to it's current size.
     open var audioVisualizationMode: AudioVisualizationMode = .read
 
-    internal var meteringLevelBarWidth: CGFloat = 1.5 {
+    internal var meteringLevelBarWidth: CGFloat = 3 {
         didSet {
             setNeedsDisplay()
         }
     }
 
-    internal var meteringLevelBarInterItem: CGFloat = 2.0 {
+    internal var meteringLevelBarInterItem: CGFloat = 4 {
         didSet {
             setNeedsDisplay()
         }
     }
 
-    internal var meteringLevelBarCornerRadius: CGFloat = 0.75 {
+    internal var meteringLevelBarCornerRadius: CGFloat = 1.5 {
         didSet {
             setNeedsDisplay()
         }
@@ -101,17 +64,38 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
         return meteringLevelsArray
     }
 
+    required public init() {
+        super.init(frame: .zero)
+        barColor = theme.colors.subTitleTextLow
+        highlightedBarColor = theme.colors.primary
+        barBackgroundColor = theme.colors.surface
+    }
+    
+    @MainActor required public init?(coder: NSCoder) {
+        super.init(coder: coder)
+        barColor = theme.colors.subTitleTextLow
+        highlightedBarColor = theme.colors.primary
+        barBackgroundColor = theme.colors.surface
+    }
     // MARK: - Lifecycle
 
     override open func draw(_ rect: CGRect) {
         super.draw(rect)
 
         if let context = UIGraphicsGetCurrentContext() {
+            context.saveGState()
+            if effectiveUserInterfaceLayoutDirection == .rightToLeft {
+                context.translateBy(x: frame.size.width, y: 0)
+                context.scaleBy(x: -1, y: 1)
+            }
+
             drawLevelBarsMaskAndGradient(inContext: context)
+            context.restoreGState()
         }
     }
 
-    override open func contentDidChanged() {
+    open override func contentDidChanged() {
+        super.contentDidChanged()
         if let meteringLevels = content {
             meteringLevelsClusteredArray = meteringLevels
             currentGradientPercentage = 0.0
@@ -150,7 +134,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
 
         let maskContext = UIGraphicsGetCurrentContext()
 
-        barBackgroundColor!.set()
+        barBackgroundColor.set()
 
         drawMeteringLevelBars(inContext: maskContext!)
 
@@ -182,8 +166,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
         let colorLocations: [CGFloat] = [0.0, 1.0]
         let colors: [CGColor]
 
-        let color = highlightedBarColor!
-        colors = [color.cgColor, color.cgColor]
+        colors = [highlightedBarColor.cgColor, highlightedBarColor.cgColor]
 
         let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: colorLocations)
 
@@ -209,22 +192,13 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
         squarePath.close()
         squarePath.addClip()
 
-        barColor!.set()
+        barColor.set()
         squarePath.fill()
 
         context.restoreGState()
     }
 
     // MARK: - Bars
-    public func configure(
-        barWidth: CGFloat? = nil,
-        barInterItem: CGFloat? = nil,
-        barCornerRadius: CGFloat? = nil
-    ) {
-        meteringLevelBarWidth = barWidth ?? meteringLevelBarWidth
-        meteringLevelBarInterItem = barInterItem ?? meteringLevelBarInterItem
-        meteringLevelBarCornerRadius = barCornerRadius ?? meteringLevelBarCornerRadius
-    }
 
     private func drawMeteringLevelBars(inContext context: CGContext) {
         if audioVisualizationMode == .write {
@@ -239,8 +213,8 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
             }
         } else {
             let array = currentMeteringLevelsArray.count > maximumNumberBars
-                ? currentMeteringLevelsArray.downsample(to: maximumNumberBars)
-                : currentMeteringLevelsArray.upsample(to: maximumNumberBars)
+            ? currentMeteringLevelsArray.downsample(to: maximumNumberBars)
+            : currentMeteringLevelsArray.upsample(to: maximumNumberBars)
 
             for index in 0..<array.count {
                 drawBar(
@@ -267,7 +241,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
         )
         let barPath: UIBezierPath = UIBezierPath(roundedRect: barRect, cornerRadius: meteringLevelBarCornerRadius)
 
-        barBackgroundColor!.set()
+        barBackgroundColor.set()
         barPath.fill()
 
         context.restoreGState()
@@ -280,7 +254,7 @@ open class AudioVisualizationView: _View, ComponentsProvider, ThemeProvider {
     }
 
     private var maximumBarHeight: CGFloat {
-        (customMaximumBarHeight != nil) ?  customMaximumBarHeight! : bounds.size.height
+        bounds.size.height
     }
 
     private var minimumBarHeight: CGFloat {

@@ -45,6 +45,9 @@ open class WaveformView: _View, UIProvider {
         didSet { updateContentIfNeeded() }
     }
 
+    /// The previous waveform's data
+    public var previousWaveform: [Float] = []
+
     // MARK: - UI Components
 
     open private(set) lazy var audioVisualizationView: AudioVisualizationView = .init()
@@ -82,11 +85,19 @@ open class WaveformView: _View, UIProvider {
         slider.value = Float(content.currentTime)
 
         audioVisualizationView.audioVisualizationMode = content.isRecording ? .write : .read
-        if audioVisualizationView.content != content.waveform {
-            audioVisualizationView.content = content.waveform
+
+        if previousWaveform != content.waveform {
+            audioVisualizationView.content = increaseWaveformValue(content.waveform)
         }
         audioVisualizationView.currentGradientPercentage = max(0, min(1, Float(content.currentTime / content.duration)))
         audioVisualizationView.setNeedsLayout()
         audioVisualizationView.setNeedsDisplay()
+    }
+
+    func increaseWaveformValue(_ waveform: [Float]) -> [Float] {
+        let max = waveform.max() ?? 1
+        let ratio = 1.0 / max
+        let result = waveform.map { $0 * ratio }
+        return result
     }
 }
