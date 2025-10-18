@@ -83,7 +83,7 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
             combinedAvatarView.isHidden = true
             combinedAvatarView.cancelLoading()
             loadDirectMessageChannelAvatar()
-        } else if content.lastActiveMembers.filter { $0.isJoined }.count < 2 {
+        } else if content.lastActiveMembers.filter { $0.isJoined }.count < 3 {
             presenceAvatarView.isHidden = false
             combinedAvatarView.isHidden = true
             combinedAvatarView.cancelLoading()

@@ -86,7 +86,7 @@ public class Call: NSObject {
         ])
 
         let turnIceServer = ICEServer(userName: "hoang", password: "pass1", urls: [
-            "turn:36.50.62.242:3478"
+            "turn:36.50.63.8:3478"
         ])
         
         let audioManager = RTCAudioManager()
