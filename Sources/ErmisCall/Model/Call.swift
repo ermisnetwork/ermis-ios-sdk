@@ -146,6 +146,7 @@ public class Call: NSObject {
     }
 
     func rejectCall() async throws {
+        log.debug("[Call] Reject call with id: \(details.callId)")
         try await webRTCClient.rejectCall()
         setState(.ended)
     }

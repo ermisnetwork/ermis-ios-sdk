@@ -1742,15 +1742,16 @@ open class ComposerViewController: _ViewController,
     }
 
     open func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-        if #available(iOS 16, *) {
-            let assetIdentifiers = results.compactMap(\.assetIdentifier)
-            if !assetIdentifiers.isEmpty {
-                picker.deselectAssets(withIdentifiers: results.compactMap(\.assetIdentifier))
-            }
-        }
-
         _Concurrency.Task {
             do {
+                let limitedAssetIds = limitedAssets(results)
+                if !limitedAssetIds.isEmpty {
+                    let aproveIds = await PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: picker)
+                    if !Set(limitedAssetIds).isSuperset(of: aproveIds) {
+                        throw ClientError.Unexpected("Don't have permission to pick limited assets")
+                    }
+                }
+
                 let attachmentResults = try await self.handlePickerResults(results)
 
                 await MainActor.run {
@@ -1773,16 +1774,23 @@ open class ComposerViewController: _ViewController,
                             return
                         }
                     })
+
+                    if #available(iOS 16, *) {
+                        let assetIdentifiers = results.compactMap(\.assetIdentifier)
+                        if !assetIdentifiers.isEmpty {
+                            picker.deselectAssets(withIdentifiers: results.compactMap(\.assetIdentifier))
+                        }
+                    }
+
+                    picker.dismiss(animated: true)
                 }
             } catch(let error) {
-                self.presentAlert(title: "Error", message: "Failed to load attachment")
+                picker.dismiss(animated: true) {
+                    self.presentAlert(title: "Error", message: "Failed to load attachment")
+                }
                 log.error(error)
             }
         }
-
-        picker.dismiss(animated: true, completion: {
-
-        })
     }
 
     func handlePickerResults(_ results: [PHPickerResult]) async throws -> [(Int, AttachmentPickerResult)] {
@@ -1923,6 +1931,17 @@ open class ComposerViewController: _ViewController,
                 continuation.resume(returning: thumbnail)
             })
         }
+    }
+
+    private func limitedAssets(_ results: [PHPickerResult]) -> [String] {
+        var assetIds = results.compactMap { $0.assetIdentifier }
+        var results = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: nil)
+        results.enumerateObjects { asset, index, _ in
+            if let index = assetIds.firstIndex(where: { $0 == asset.localIdentifier }) {
+                assetIds.remove(at: index)
+            }
+        }
+        return assetIds
     }
     // MARK: - UIDocumentPickerViewControllerDelegate
 

@@ -29,11 +29,11 @@
 			<key>NSStringFormatValueTypeKey</key>
 			<string>d</string>
 			<key>zero</key>
-			<string>đang nhập</string>
+			<string> đang nhập</string>
 			<key>one</key>
-			<string>và %2$d người khác đang nhập</string>
+			<string> và %2$d người khác đang nhập</string>
 			<key>other</key>
-			<string>và %2$d người khác đang nhập</string>
+			<string> và %2$d người khác đang nhập</string>
 		</dict>
 	</dict>
 	<key>message.threads.count</key>

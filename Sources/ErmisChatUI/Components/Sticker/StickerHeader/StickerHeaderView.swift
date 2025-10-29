@@ -45,10 +45,18 @@ open class StickerHeaderView: _View, UIProvider, UICollectionViewDataSource, UIC
     public func setSelectedIndex(_ selectedIndex: Int) {
         guard self.selectedIndex != selectedIndex else { return }
         var visibleIndexPaths = collectionView.indexPathsForVisibleItems.sorted { $0.item < $1.item }
-        visibleIndexPaths.removeFirst()
-        visibleIndexPaths.removeLast()
+        if !visibleIndexPaths.isEmpty {
+            visibleIndexPaths.removeFirst()
+        }
+        if !visibleIndexPaths.isEmpty {
+            visibleIndexPaths.removeLast()
+        }
 
         if !visibleIndexPaths.contains(IndexPath(row: selectedIndex, section: 0)) {
+            let totalItems = collectionView.numberOfItems(inSection: 0)
+            guard selectedIndex >= 0 && selectedIndex < totalItems else {
+                return
+            }
             collectionView.scrollToItem(at: IndexPath(row: selectedIndex, section: 0), at: selectedIndex < self.selectedIndex ? .left : .right, animated: true)
         }
         self.selectedIndex = selectedIndex
