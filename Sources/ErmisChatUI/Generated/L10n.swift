@@ -116,6 +116,32 @@ public enum L10n {
     }
   }
 
+  public enum ChannelCapability {
+    /// Delete Messages
+    public static var deleteOwnMessages: String { L10n.tr("Localizable", "channel-capability.delete-own-messages") }
+    /// Pin/Unpin Message
+    public static var pinMessages: String { L10n.tr("Localizable", "channel-capability.pin-messages") }
+    /// Send Links
+    public static var sendLinks: String { L10n.tr("Localizable", "channel-capability.send-links") }
+    /// Send Messages
+    public static var sendMessages: String { L10n.tr("Localizable", "channel-capability.send-messages") }
+    /// React messages
+    public static var sendReaction: String { L10n.tr("Localizable", "channel-capability.send-reaction") }
+    /// Edit Messages
+    public static var updateOwnMessages: String { L10n.tr("Localizable", "channel-capability.update-own-messages") }
+  }
+
+  public enum ChannelMuteType {
+    /// Mute for %@
+    public static func muteFor(_ p1: Any) -> String {
+      return L10n.tr("Localizable", "channel-mute-type.mute-for", String(describing: p1))
+    }
+    /// Unmute
+    public static var unmute: String { L10n.tr("Localizable", "channel-mute-type.unmute") }
+    /// Until i turn it back on
+    public static var untilITurnBack: String { L10n.tr("Localizable", "channel-mute-type.until-i-turn-back") }
+  }
+
   public enum ChannelList {
     /// Search
     public static var search: String { L10n.tr("Localizable", "channelList.search") }

@@ -703,7 +703,7 @@ open class ComposerViewController: _ViewController,
     }
 
     open func updateRecordButtonVisibility() {
-        guard isSendMessageEnabled && content.editingMessage == nil else {
+        guard isSendMessageEnabled && content.editingMessage == nil && !isSlowModeOn else {
             composerView.recordButton.isHidden = true
             return
         }
@@ -760,7 +760,7 @@ open class ComposerViewController: _ViewController,
     open func updateSendButtonEnabled() {
         composerView.sendButton.isEnabled = (!content.isEmpty) &&
         !self.inputContainsFilterKeyword &&
-        (self.canSendLinks || !self.inputContainsLinks)
+        (self.canSendLinks || !self.inputContainsLinks) && isSendMessageEnabled
     }
 
     open func updateConfirmButtonEnabled() {
@@ -773,7 +773,7 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || content.editingMessage != nil || !content.isEmpty || content.isVoiceRecording
+        let isPhotoButtonHidden = !isAttachmentsEnabled || content.hasCommand || content.editingMessage != nil || !content.isEmpty || content.isVoiceRecording || isSlowModeOn
         Animate {
             self.composerView.photoButton.isHidden = isPhotoButtonHidden
         }
@@ -785,7 +785,7 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        let isStickerButtonHidden = !isAttachmentsEnabled || content.hasCommand || content.editingMessage != nil || !content.isEmpty || content.isVoiceRecording
+        let isStickerButtonHidden = !isAttachmentsEnabled || content.hasCommand || content.editingMessage != nil || !content.isEmpty || content.isVoiceRecording || isSlowModeOn
         Animate {
             self.composerView.stickerButton.isHidden = isStickerButtonHidden
         }

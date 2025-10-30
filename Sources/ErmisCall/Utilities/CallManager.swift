@@ -362,7 +362,14 @@ public class CallManager: NSObject, CXProviderDelegate {
     // MARK: - CXProviderDelegate
     public func providerDidBegin(_ provider: CXProvider) {
         log.debug("[CallKit] Provider did begin.", subsystems: .call)
+        let providerConfig = CXProviderConfiguration()
+        providerConfig.supportsVideo = true
+        providerConfig.supportedHandleTypes = [.generic]
+        providerConfig.maximumCallsPerCallGroup = 1
+        providerConfig.maximumCallGroups = 1
+        providerConfig.ringtoneSound = "ringback.mp3"
 
+        callProvider.configuration = providerConfig
     }
 
     public func providerDidReset(_ provider: CXProvider) {

@@ -378,6 +378,21 @@
 /// Show as title of join button label.
 "composer.join-button" = "Join";
 
+// Channel Mute type
+/// Show as title of channel mute type.
+"channel-mute-type.until-i-turn-back" = "Until i turn it back on";
+"channel-mute-type.mute-for" = "Mute for %@";
+"channel-mute-type.unmute" = "Unmute";
+
+// Channel Capabillities title
+/// Show as title of channel capabilities.
+"channel-capability.send-messages" = "Send Messages";
+"channel-capability.send-links" = "Send Links";
+"channel-capability.update-own-messages" = "Edit Messages";
+"channel-capability.delete-own-messages" = "Delete Messages";
+"channel-capability.send-reaction" = "React messages";
+"channel-capability.pin-messages" = "Pin/Unpin Message";
+
 // Member role
 /// Show as title of member roles.
 "member-role.member" = "Member";

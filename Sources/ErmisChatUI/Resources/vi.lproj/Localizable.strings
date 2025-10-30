@@ -378,6 +378,21 @@
 /// Show as title of join button label.
 "composer.join-button" = "Tham gia";
 
+// Channel Mute type
+/// Show as title of channel mute type.
+"channel-mute-type.until-i-turn-back" = "Cho đến khi tôi bật lại.";
+"channel-mute-type.mute-for" = "Tắt thông báo trong %@";
+"channel-mute-type.unmute" = "Bật thông báo";
+
+// Channel Capabillities title
+/// Show as title of channel capabilities.
+"channel-capability.send-messages" = "Gửi tin nhắn";
+"channel-capability.send-links" = "Gửi link";
+"channel-capability.update-own-messages" = "Chỉnh sửa tin nhắn";
+"channel-capability.delete-own-messages" = "Xoá tin nhắn";
+"channel-capability.send-reaction" = "Thả biểu tượng cảm xúc";
+"channel-capability.pin-messages" = "Ghim/Bỏ ghim tin nhắn";
+
 // Member role
 /// Show as title of member roles.
 "member-role.member" = "Thành viên";
