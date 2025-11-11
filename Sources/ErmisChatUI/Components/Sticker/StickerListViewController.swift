@@ -80,15 +80,15 @@ open class StickerListViewController: _ViewController, UIProvider, UICollectionV
         }
 
         isReloadingStickers = true
-        let newStickerPacks = Array(controller.stickerPacks)
+        let newStickerPacks = Array(controller.stickerPacks).sorted(by: { $0.orderIndex < $1.orderIndex })
         var snapshot = buildSnapshot(from: newStickerPacks)
         snapshot.reconfigureItems(snapshot.itemIdentifiers)
         dataSource?.apply(snapshot, animatingDifferences: true) { [weak self] in
             guard let self else {
                 return
             }
+            reloadHeaderView()
             self.isReloadingStickers = false
-
             if hasPendingReloadStickers {
                 hasPendingReloadStickers = false
                 reloadStickers(completion: completion)
@@ -100,7 +100,7 @@ open class StickerListViewController: _ViewController, UIProvider, UICollectionV
     }
     
     open func onStickerReloaded() {
-        reloadHeaderView()
+        //reloadHeaderView()
     }
 
     /// Build data source snapshot for collection view.

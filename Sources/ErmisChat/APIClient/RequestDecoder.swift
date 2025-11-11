@@ -44,7 +44,7 @@ struct DefaultRequestDecoder: RequestDecoder {
             throw ClientError.Unexpected("Expecting `HTTPURLResponse` but received: \(response?.description ?? "nil").")
         }
 
-        log.debug("URL request response: \(httpResponse), data:\n\(data.debugPrettyPrintedJSON))", subsystems: .httpRequests)
+//        log.debug("URL request response: \(httpResponse), data:\n\(data.debugPrettyPrintedJSON))", subsystems: .httpRequests)
         // Handler ermis api error.
         if let ermisErrorPayload = try? JSONDecoder.default.decode(ErmisErrorPayload.self, from: data) {
             let ermisApiError: ErmisApiError

@@ -13,7 +13,6 @@ struct EventDataProcessorMiddleware: EventMiddleware {
 
         do {
             try session.saveEvent(payload: payload)
-            log.debug("Event data saved to db: \(payload)")
             return event
         } catch {
             log.error("Failed saving incoming `Event` data to DB. Error: \(error)")

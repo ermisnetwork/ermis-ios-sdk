@@ -112,7 +112,6 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
                     log.warning("Callback called while self is nil")
                     return
                 }
-                log.debug("didChangeChannels: \(changes.map(\.debugDescription))")
                 $0.controller(self, didChangeChannels: changes)
             }
         }

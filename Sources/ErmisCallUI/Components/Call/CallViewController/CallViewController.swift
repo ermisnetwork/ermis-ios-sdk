@@ -445,10 +445,17 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             if ioAccessManager.isCameraAccessGranted {
                 controller.togleVideo()
             } else {
-                ioAccessManager.presentCameraPermissionDeniedAlert(from: self, showSettingAction: false, animated: true)
-                var content = view.content
-                content?.isVideoEnable = false
-                view.content = content
+                Task {
+                    let isCameraAccessGranted = await ioAccessManager.requestCameraAccessIfNeeded()
+                    if isCameraAccessGranted {
+                        controller.togleVideo()
+                    } else {
+                        ioAccessManager.presentCameraPermissionDeniedAlert(from: self, showSettingAction: false, animated: true)
+                        var content = view.content
+                        content?.isVideoEnable = false
+                        view.content = content
+                    }
+                }
             }
         case .switchCamera:
             controller.switchCamera()
