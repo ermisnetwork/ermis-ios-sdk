@@ -15,9 +15,7 @@ public class Call: NSObject {
     /// The ermis chat client instance.
     public let client: ErmisClient
     /// The webrtc client instance.
-    public let webRTCClient: WebRTCClient
-    /// The audio manager 
-    public let audioManager: RTCAudioManager
+    public let callNodeClient: CallNodeClient
     /// The details infomation of the call.
     public var details: CallDetails {
         didSet {
@@ -41,6 +39,9 @@ public class Call: NSObject {
     /// The publisher that publish the connection status.
     public private(set) var connectionStatusPublisher = CurrentValueSubject<CallConnectionStatus, Never>(.normal)
 
+    public var audioManager: ErmisCallAudioManager {
+        return ErmisCallAudioManager.shared
+    }
     /// Timer for timeout when connecting call. If call not connected after timeout, the call will be ended automatically.
     var timeoutTimer: Timer?
     /// Timer for call connection time.
@@ -59,41 +60,29 @@ public class Call: NSObject {
 
     private let connectionController: ConnectionController
 
-    init(sessionId: String, client: ErmisClient, webRTCClient: WebRTCClient, audioManager: RTCAudioManager, callDetails: CallDetails) {
+    init(sessionId: String, client: ErmisClient, callNodeClient: CallNodeClient, callDetails: CallDetails) {
         self.sessionId = sessionId
         self.client = client
-        self.webRTCClient = webRTCClient
-        self.audioManager = audioManager
+        self.callNodeClient = callNodeClient
         self.details = callDetails
         self.connectionController = client.connectionController()
         super.init()
-        webRTCClient.delegate = self
-        webRTCClient.call = self
+        callNodeClient.delegate = self
+        callNodeClient.call = self
     }
 
-    convenience init(sessionId: String, uuid: UUID, callId: String, cid: ChannelId, client: ErmisClient, isVideo: Bool, isIncoming: Bool) {
+    convenience init?(sessionId: String, uuid: UUID, callId: String, cid: ChannelId, client: ErmisClient, isVideo: Bool, isIncoming: Bool) {
         let channelController = client.channelController(for: cid)
         guard let channel = channelController.channel else {
-            fatalError("Channel not found")
+            return nil
         }
-
-        let iceServer = ICEServer(userName: "", password: "", urls: [
-            "stun:stun.l.google.com:19302",
-            "stun:stun1.l.google.com:19302",
-            "stun:stun2.l.google.com:19302",
-            "stun:stun3.l.google.com:19302",
-            "stun:stun4.l.google.com:19302"
-        ])
-
-        let turnIceServer = ICEServer(userName: "hoang", password: "pass1", urls: [
-            "turn:36.50.63.8:3478"
-        ])
         
-        let audioManager = RTCAudioManager()
+        let audioManager = ErmisCallAudioManager.shared
         let signaling = Signaler(client: channelController.client, cid: channel.cid)
-        let webRTCClient = WebRTCClient(signaling: signaling,
-                                        iceServers: [turnIceServer],
-                                        audioManager: audioManager)
+        let relayUrls = ["https://iroh-relay.ermis.network:8443"]
+        guard let callNodeClient = CallNodeClient(signaling: signaling, relayUrls: relayUrls) else {
+            return nil
+        }
 
 
         let callDetails = CallDetails(uuid: uuid,
@@ -107,12 +96,11 @@ public class Call: NSObject {
 
         self.init(sessionId: sessionId,
                   client: client,
-                  webRTCClient: webRTCClient,
-                  audioManager: audioManager,
+                  callNodeClient: callNodeClient,
                   callDetails: callDetails)
         startTimeoutTimer()
 
-        audioManager.setUseManualAudio(isIncoming)
+//        audioManager.setUseManualAudio(isIncoming)
     }
 
     public override var description: String {
@@ -136,28 +124,27 @@ public class Call: NSObject {
     }
 
     func createCall() async throws {
-        try await webRTCClient.createCall(details.isVideo, sessionId: sessionId)
-        details.state = .ringing
+        try await callNodeClient.createCall(details.isVideo, sessionId: sessionId)
     }
 
     func acceptCall() async throws {
-        try await webRTCClient.acceptCall()
         setState(.connecting)
+        try await callNodeClient.acceptCall()
     }
 
     func rejectCall() async throws {
         log.debug("[Call] Reject call with id: \(details.callId)")
-        try await webRTCClient.rejectCall()
+        try await callNodeClient.rejectCall()
         setState(.ended)
     }
 
     func endCall() async throws {
-        try await webRTCClient.endCall()
+        try await callNodeClient.endCall()
         setState(.ended)
     }
 
     func close() async throws {
-        try await webRTCClient.close()
+        try await callNodeClient.close()
         setState(.ended)
     }
 
@@ -175,7 +162,7 @@ public class Call: NSObject {
         callStatePublisher.send(callState)
         switch callState {
         case .ringing:
-            CallManager.shared.playRingingSoundIfNeeded()
+            break
         case .connected:
             if !details.isIncoming {
                 CallManager.shared.reportOutgoingCallConnected(uuid: details.uuid, connectedAt: Date())
@@ -187,6 +174,14 @@ public class Call: NSObject {
             break
         }
     }
+
+    public func didActiveAudioSession() {
+        callNodeClient.didActiveAudioSession()
+    }
+
+    public func didDeactiveAudioSession() {
+        callNodeClient.didDeactiveAudioSession()
+    }
     // MARK: - Control
     /// Set new audio port
     ///
@@ -197,7 +192,7 @@ public class Call: NSObject {
     }
     /// Toggle mute state, if current mic is mute, it will unmute and otherwise.
     func toggleMute() {
-        webRTCClient.toggleAudio()
+        callNodeClient.toggleAudio()
     }
 
     /// Set mic mute state
@@ -205,12 +200,12 @@ public class Call: NSObject {
     ///  - Parameters:
     ///   - isMute: The boolean value for mic mute state. if `true` mic will be muted and otherwise.
     func setMute(_ isMute: Bool) {
-        webRTCClient.setAudioEnable(!isMute)
+        callNodeClient.setAudioEnable(!isMute)
     }
 
     /// Toggle video enable state.
     func toggleVideo() {
-        webRTCClient.toggleVideo()
+        callNodeClient.toggleVideo()
     }
 
     /// Set video enable state
@@ -218,14 +213,14 @@ public class Call: NSObject {
     ///  - Parameters:
     ///   - isEnabled: The boolean value for video enable state. if `true` video will be enabled and otherwise.
     func setVideoEnabled(_ isEnabled: Bool) {
-        webRTCClient.setVideoEnabled(isEnabled)
+        callNodeClient.setVideoEnabled(isEnabled)
     }
 
     /// Toggle camera position.
     func toggleCameraPosition() {
         Task {
             do {
-                try await webRTCClient.toggleCameraPosition()
+                try await callNodeClient.toggleCameraPosition()
             } catch let error {
                 log.error("[WebRTC] Error when changing camera position: \(error)")
             }
@@ -239,7 +234,7 @@ public class Call: NSObject {
     func setCameraPosition(_ position: CameraPosition) {
         Task {
             do {
-                try await webRTCClient.setCameraPosition(position)
+                try await callNodeClient.setCameraPosition(position)
             } catch let error {
                 log.error("[WebRTC] Error when changing camera position: \(error)")
             }
@@ -301,7 +296,10 @@ extension Call {
             lastTimeReceivedHealthCallMessage = Date()
         }
 
-        webRTCClient.sendMessage(.healthCall)
+        if callNodeClient.isCallNodeConnected() {
+            lastTimeReceivedHealthCallMessage = Date()
+        }
+
         if let durationNotReceivedHealthCallMessage = lastTimeReceivedHealthCallMessage?.timeIntervalSinceNow {
             if durationNotReceivedHealthCallMessage < -30 {
                 Task {
@@ -319,13 +317,10 @@ extension Call {
             }
         }
 
-
-
-
         if Int(duration) % 10 == 0 {
             Task {
                 do {
-                    try await webRTCClient.sendHealthCallSignal()
+                    try await callNodeClient.sendHealthCallSignal()
                 } catch let error {
                     log.error("[Call] Error when send health call signal: \(error)")
                 }
@@ -335,9 +330,7 @@ extension Call {
 }
 // MARK: - WebRTCClientDelegate
 extension Call: WebRTCClientDelegate {
-    func webRTCClientDidReciveHealthCallMessage(_ webRTCClient: WebRTCClient) {
-        lastTimeReceivedHealthCallMessage = Date()
-    }
+
 }
 // MARK: - Equatable
 extension Call {
@@ -345,3 +338,4 @@ extension Call {
         lhs.details.callId == rhs.details.callId
     }
 }
+

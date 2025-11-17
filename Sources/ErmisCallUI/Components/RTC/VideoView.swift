@@ -6,7 +6,6 @@ import Foundation
 import UIKit
 import ErmisChat
 import ErmisChatUI
-import StreamWebRTC
 
 open class VideoView: _View, UIProvider, RemoteImageDisplayable {
     public var imageView: UIImageView {
@@ -18,8 +17,9 @@ open class VideoView: _View, UIProvider, RemoteImageDisplayable {
         return UIVisualEffectView(effect: blurEffect)
             .withoutAutoresizingMaskConstraints
     }()
-    public private(set) lazy var videoView = RTCMTLVideoView()
+    public private(set) lazy var videoView = UIView()
         .withoutAutoresizingMaskConstraints
+
     public private(set) lazy var backgroundImageView = UIImageView()
         .withoutAutoresizingMaskConstraints
 

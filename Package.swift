@@ -31,11 +31,14 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/Recouse/EventSource.git", from: "0.1.4"),
-        .package(url: "https://github.com/GetStream/stream-video-swift-webrtc.git", exact: "114.5735.08"),
         .package(url: "https://github.com/reown-com/reown-swift", from: "1.6.0"),
         .package(url: "https://github.com/Boilertalk/Web3.swift.git", from: "0.6.0"),
         .package(url: "https://github.com/daltoniam/Starscream.git", from: "3.1.2"),
-        .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2")
+        .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2"),
+//        .package(url: "https://github.com/ermisnetwork/call-node-ios", from: "0.0.1"),
+//        .package(url: "https://github.com/ermisnetwork/ErmisOpus", from: "0.0.1")
+        .package(path: "../ErmisCallNode"),
+        .package(path: "../ErmisOpus")
     ],
     targets: [
         .target(
@@ -48,7 +51,9 @@ let package = Package(
             name: "ErmisCall",
             dependencies: [
                 "ErmisChat",
-                .product(name: "StreamWebRTC", package: "stream-video-swift-webrtc")
+                .product(name: "ErmisCallNode", package: "ErmisCallNode"),
+//                .product(name: "ErmisCallNode", package: "call-node-ios"),
+                .product(name: "ErmisOpus", package: "ErmisOpus")
             ],
             exclude: ["Info.plist"],
             resources: [.process("Resources")]

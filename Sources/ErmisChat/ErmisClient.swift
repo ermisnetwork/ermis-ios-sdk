@@ -722,7 +722,8 @@ public class ErmisClient {
                     action: CallAction,
                     isVideo: Bool,
                     signalType: SignalType? = nil,
-                    sdp: String? = nil) async throws -> CallSignalRequestPayload {
+                    sdp: String? = nil,
+                    metadata: Metadata?) async throws -> CallSignalRequestPayload {
         var signal: CallSignal?
         if let signalType, let sdp {
             signal = CallSignal(type: signalType, sdp: sdp)
@@ -732,7 +733,8 @@ public class ErmisClient {
                                          cid: cid,
                                          action: action,
                                          isVideo: isVideo,
-                                         signal: signal)
+                                         signal: signal,
+                                         metadata: metadata)
         return  try await self.callRepository.sendSignal(body: body)
     }
 
@@ -757,7 +759,8 @@ public class ErmisClient {
                                               callAction: callSignalEventDTO.callAction,
                                               isVideo: callSignalEventDTO.isVideo,
                                               signal: callSignalEventDTO.signal,
-                                              createdAt: callSignalEventDTO.createdAt)
+                                              createdAt: callSignalEventDTO.createdAt,
+                                              metadata: callSignalEventDTO.metadata)
         completion(.success(callSignalEvent))
     }
 }

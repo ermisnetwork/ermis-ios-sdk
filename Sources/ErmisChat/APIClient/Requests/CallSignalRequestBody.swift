@@ -12,6 +12,7 @@ struct CallSignalRequestBody: Encodable {
     let isVideo: Bool
     let signal: CallSignal?
     let ios = true
+    let metadata: Metadata?
 
     enum CodingKeys: String, CodingKey {
         case sesionId = "session_id"
@@ -21,6 +22,7 @@ struct CallSignalRequestBody: Encodable {
         case isVideo = "is_video"
         case signal
         case ios
+        case metadata
     }
 
     func encode(to encoder: any Encoder) throws {
@@ -32,5 +34,14 @@ struct CallSignalRequestBody: Encodable {
         try container.encode(self.isVideo, forKey: .isVideo)
         try container.encodeIfPresent(self.signal, forKey: .signal)
         try container.encode(ios, forKey: .ios)
+        try container.encode(metadata, forKey: .metadata)
+    }
+}
+
+public struct Metadata: Codable {
+    public let address: String?
+
+    public init(localAddress: String?) {
+        self.address = localAddress
     }
 }

@@ -14,6 +14,7 @@ class CallSignalEventDTO: EventDTO {
     public let isVideo: Bool?
     public let signal: CallSignal?
     public let createdAt: Date
+    public let metadata: Metadata?
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
@@ -25,6 +26,7 @@ class CallSignalEventDTO: EventDTO {
         isVideo = try? response.value(at: \.isVideo)
         signal = try? response.value(at: \.signal)
         createdAt = try response.value(at: \.createdAt)
+        metadata = try? response.value(at: \.metadata)
         payload = response
     }
 
@@ -37,7 +39,7 @@ class CallSignalEventDTO: EventDTO {
                                     callAction: callAction,
                                     isVideo: isVideo,
                                     signal: signal,
-                                    createdAt: createdAt)
+                                    createdAt: createdAt, metadata: metadata)
     }
 }
 
@@ -62,6 +64,8 @@ public struct CallSignalEvent: Event, Encodable {
     /// The event timestamp.
     public let createdAt: Date
 
+    public let metadata: Metadata?
+
     public func encode(to encoder: any Encoder) throws {
         typealias CodingKeys = EventPayload.CodingKeys
         var container = encoder.container(keyedBy: CodingKeys.self)
@@ -73,5 +77,6 @@ public struct CallSignalEvent: Event, Encodable {
         try container.encode(signal, forKey: .signal)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode("signal", forKey: .eventType)
+        try container.encode(metadata, forKey: .metadata)
     }
 }

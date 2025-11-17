@@ -42,6 +42,7 @@ class EventPayload: Decodable {
         case signal = "signal"
         case isVideo = "is_video"
         case callAction = "action"
+        case metadata
     }
 
     let eventType: EventType
@@ -79,6 +80,7 @@ class EventPayload: Decodable {
     let isVideo: Bool?
     let signal: CallSignal?
     let callAction: CallAction?
+    let metadata: Metadata?
     init(
         eventType: EventType,
         connectionId: String? = nil,
@@ -113,7 +115,8 @@ class EventPayload: Decodable {
         callId: String? = nil,
         isVideo: Bool? = nil,
         signal: CallSignal? = nil,
-        callAction: CallAction? = nil
+        callAction: CallAction? = nil,
+        metadata: Metadata? = nil
     ) {
         self.eventType = eventType
         self.connectionId = connectionId
@@ -149,6 +152,7 @@ class EventPayload: Decodable {
         self.callAction = callAction
         self.channelType = channelType
         self.channelId = channelId
+        self.metadata = metadata
     }
 
     required init(from decoder: Decoder) throws {
@@ -189,6 +193,7 @@ class EventPayload: Decodable {
         topicCids = try container.decodeIfPresent([ChannelId].self, forKey: .topicCids)
         channelType = try container.decodeIfPresent(ChannelType.self, forKey: .channelType)
         channelId = try container.decodeIfPresent(String.self, forKey: .channelId)
+        metadata = try container.decodeIfPresent(Metadata.self, forKey: .metadata)
     }
 
     func event() throws -> Event {

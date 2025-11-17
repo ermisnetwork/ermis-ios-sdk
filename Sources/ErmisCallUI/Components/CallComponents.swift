@@ -10,8 +10,10 @@ public struct CallComponents {
     public var callVC: CallViewController.Type = CallViewController.self
     /// The navigation titleview of CallViewController.
     public var callTitleContainerView: CallTitleContainerView.Type = CallTitleContainerView.self
-    /// The video view that render user's video.
-    public var videoView: VideoView.Type = VideoView.self
+    /// The video view that render local user's video.
+    public var localVideoView: LocalVideoView.Type = LocalVideoView.self
+    /// The video view that render remote user's video.
+    public var remoteVideoView: RemoteVideoView.Type = RemoteVideoView.self
     /// The view show connection status when the connection has problem.
     public var connectionStatusView: CallConnectionStatusView.Type = CallConnectionStatusView.self
     /// The view show control buttons.

@@ -8,7 +8,7 @@ import Combine
 import ErmisChat
 import ErmisCall
 import ErmisChatUI
-import StreamWebRTC
+import ErmisCallNode
 
 public protocol CallViewControllerDelegate: AnyObject {
     func callViewControllerWantsToMinize(_ callVC: CallViewController)
@@ -16,6 +16,7 @@ public protocol CallViewControllerDelegate: AnyObject {
 }
 /// Controller responsible for displaying auido/video call.
 open class CallViewController: _ViewController, UIProvider, CallComponentsProvider, CallControllerDelegate, CallControlViewDelegate {
+    
     /// The view for showing as a navigation title view.
     public private(set) lazy var titleView = callComponents
         .callTitleContainerView.init()
@@ -30,7 +31,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     /// The View responsible for other user's video.
     /// If Video is turn off, it will display user avatar with blur efect.
     public private(set) lazy var remoteVideoView = callComponents
-        .videoView.init()
+        .remoteVideoView.init()
         .withoutAutoresizingMaskConstraints
     /// The view responsible for displaying other user's avatar.
     public private(set) lazy var remoteAvatarView = components
@@ -42,6 +43,8 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     public private(set) lazy var stateLabel = createStateLabel()
     /// The view responsible for displaying call's duration.
     public private(set) lazy var durationLabel = createDurationLabel()
+
+    public private(set) lazy var connectionStatusLabel = UILabel().withoutAutoresizingMaskConstraints
     /// The view responsible for displaying call's connection status.
     public private(set) lazy var connectionStatusView = callComponents
         .connectionStatusView.init()
@@ -96,7 +99,6 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     open override func setUp() {
         super.setUp()
         setupNavigation()
-        setupWebRTC()
         /// If outgoing call is not going, start it.
         if !callDetails.isIncoming, callDetails.state == .idle {
             startCall()
@@ -106,13 +108,15 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         eventsController.delegate = self
         controller.startCallObservers()
 
+        connectionStatusLabel.numberOfLines = 0
+
         remoteVideoView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(onRemoteVideoDidTapped)))
         /// Set default audio port.
-        if callDetails.isVideo {
-            controller.setAudioPort(.builtInSpeaker)
-        } else {
-            controller.setAudioPort(.builtInReceiver)
-        }
+//        if callDetails.isVideo {
+//            controller.setAudioPort(.builtInSpeaker)
+//        } else {
+//            controller.setAudioPort(.builtInReceiver)
+//        }
 
         updateViewByCallIOState()
     }
@@ -128,7 +132,8 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             connectionStatusView,
             localVideoView,
             localAvatarView,
-            controls
+            controls,
+            connectionStatusLabel
         ])
 
         remoteVideoView.pin(to: view)
@@ -162,6 +167,11 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         controls.pin(anchors: [.height], to: 56)
         controlsBottomConstraint = controls.bottomAnchor.pin(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40)
         controlsBottomConstraint?.isActive = true
+
+        setupCallNode()
+
+        connectionStatusLabel.pin(anchors: [.leading, .trailing], to: view)
+        connectionStatusLabel.topAnchor.pin(equalTo: view.topAnchor, constant: 200).isActive = true
     }
 
     open override func setUpTheme() {
@@ -176,7 +186,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         titleView.tintColor = theme.colors.white
     }
 
-    private func setupWebRTC() {
+    private func setupCallNode() {
         Task {
             if callDetails.isVideo {
                 let isCameraAvailable = await ioAccessManager.requestCameraAccessIfNeeded()
@@ -184,10 +194,12 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
                     controller.setVideoEnabled(false)
                     return
                 }
-                DispatchQueue.main.async {
-                    self.controller.renderLocalVideo(to: self.localVideoView.videoView)
-                }
+
             }
+        }
+        DispatchQueue.main.async {
+            self.localVideoView.attach(with: self.call.callNodeClient.capturer)
+            self.remoteVideoView.attach(with: self.call.callNodeClient.player)
         }
     }
 
@@ -294,10 +306,11 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     /// Update speaker menu button.
     func updateSpeakerMenu() {
         if let speakerButton = controls.getButton(of: .speaker) {
+            let currentPort = controller.getCurrentAudioPort()
             speakerButton.menu = UIMenu(children:
                                             controller.getAllAudioPort().map({ port in
                 return UIAction(title: port.name,
-                                state: port == controller.getCurrentAudioPort() ? .on : .off, handler: { [weak self] _ in
+                                state: port == currentPort ? .on : .off, handler: { [weak self] _ in
                     guard let self else {
                         return
                     }
@@ -409,12 +422,6 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             CallManager.shared.reportUpdateCall(for: callDetails.uuid, hasVideo: true)
         }
         updateViewByCallIOState()
-
-        callIOState
-    }
-
-    open func remoteVideoTrackDidChange(to remoteVideoTrack: RTCVideoTrack?) {
-        remoteVideoTrack?.add(self.remoteVideoView.videoView)
     }
 
     open func durationDidChange(to duration: TimeInterval) {
@@ -436,6 +443,25 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
               callId == callDetails.callId else { return }
         self.close()
     }
+
+    public func callDidUpdateConnectionStats(status: ErmisCallNode.ConnectionStats) {
+        var connectionType: String = ""
+        switch status.connectionType {
+        case .direct:
+            connectionType = "Direct"
+        case .mixed:
+            connectionType = "Mixed"
+        case .relay:
+            connectionType = "Relay"
+        case .none:
+            connectionType = "None"
+        default:
+            break
+        }
+        let content = "\(connectionType) - packetloss: \(status.packetLoss), rtt: \(status.roundTripTimeMs)"
+        connectionStatusLabel.text = content
+    }
+
     // MARK: - CallControlViewDelegate
     open func callControlView(_ view: CallControlView, didSelect buttonType: CallControlButtonType) {
         switch buttonType {
@@ -523,8 +549,8 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         return label
     }
 
-    open func createLocalVideoView() -> VideoView {
-        let view = callComponents.videoView.init().withoutAutoresizingMaskConstraints
+    open func createLocalVideoView() -> LocalVideoView {
+        let view = callComponents.localVideoView.init().withoutAutoresizingMaskConstraints
         view.layer.cornerRadius = 10
         view.clipsToBounds = true
         return view
@@ -567,16 +593,18 @@ extension CallViewController {
 
         localVideoView.videoView.isHidden = !callIOState.isVideoEnabled
         remoteVideoView.videoView.isHidden = !callIOState.isRemoteVideoEnabled
-        if !localVideoView.videoView.isHidden {
-            DispatchQueue.main.async {
-                self.controller.renderLocalVideo(to: self.localVideoView.videoView)
-            }
-        }
-        if !remoteVideoView.videoView.isHidden {
-            DispatchQueue.main.async {
-                self.controller.renderRemoteVideo(to: self.remoteVideoView.videoView)
-            }
-        }
+
+
+//        if !localVideoView.videoView.isHidden {
+//            DispatchQueue.main.async {
+//                self.localVideoView.attach(with: self.call.callNodeClient.capturer)
+//            }
+//        }
+//        if !remoteVideoView.videoView.isHidden {
+//            DispatchQueue.main.async {
+//                self.remoteVideoView.config(with: self.call.callNodeClient.player)
+//            }
+//        }
     }
 
     /// Update controls view.

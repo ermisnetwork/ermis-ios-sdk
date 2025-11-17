@@ -4,7 +4,6 @@
 
 import CoreData
 import Foundation
-import Lottie
 
 @objc(StickerDTO)
 class StickerDTO: NSManagedObject {

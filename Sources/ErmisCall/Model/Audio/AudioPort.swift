@@ -27,12 +27,10 @@ struct AudioPort: Equatable {
     }
 
     public var isExternal: Bool {
-        switch portType {
-        case .builtInMic, .builtInSpeaker, .builtInReceiver:
-            return false
-        default:
-            return true
-        }
+        return portType == .bluetoothA2DP ||
+        portType == .bluetoothHFP ||
+        portType == .bluetoothLE ||
+        portType == .headphones ||
+        portType == .carAudio
     }
 }
-

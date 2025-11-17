@@ -4,19 +4,20 @@
 
 import Foundation
 import ErmisChat
-import StreamWebRTC
 import UIKit
 import Combine
+import AVFAudio
+import ErmisCallNode
 
 public
 protocol CallControllerDelegate: AnyObject {
     func callStateDidChange(to callState: CallState)
     func callConnectionStatusDidChange(to connectionStatus: CallConnectionStatus)
     func callIOStateDidChange(to callIOState: CallIOState)
-    func remoteVideoTrackDidChange(to remoteVideoTrack: RTCVideoTrack?)
     func durationDidChange(to duration: TimeInterval)
     func audioPortChange(to port: AudioPort?)
     func callDidEnd(_ notification: Notification)
+    func callDidUpdateConnectionStats(status: ConnectionStats)
 }
 
 public
@@ -28,8 +29,8 @@ class CallController: NSObject {
 
     private var cancelBags: Set<AnyCancellable> = []
 
-    public var webRTCClient: WebRTCClient {
-        return call.webRTCClient
+    public var callNodeClient: CallNodeClient {
+        return call.callNodeClient
     }
 
 
@@ -55,24 +56,28 @@ class CallController: NSObject {
             }
             .store(in: &cancelBags)
 
-        webRTCClient.callIOStatePublisher
+        callNodeClient.callIOStatePublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] callIOState in
                 self?.delegate?.callIOStateDidChange(to: callIOState)
             }
             .store(in: &cancelBags)
-
-        webRTCClient.remoteVideoTrackPublisher
-            .receive(on: RunLoop.main)
-            .sink(receiveValue: { [weak self] remoteTrack in
-                self?.delegate?.remoteVideoTrackDidChange(to: remoteTrack)
-            })
-            .store(in: &cancelBags)
+//
+//        callNodeClient.remoteVideoTrackPublisher
+//            .receive(on: RunLoop.main)
+//            .sink(receiveValue: { [weak self] remoteTrack in
+//                self?.delegate?.remoteVideoTrackDidChange(to: remoteTrack)
+//            })
+//            .store(in: &cancelBags)
 
         call.durationTimerPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] duration in
                 self?.delegate?.durationDidChange(to: duration)
+                let stats = self?.callNodeClient.getConnectionStats()
+                if let stats {
+                    self?.delegate?.callDidUpdateConnectionStats(status: stats)
+                }
             }
             .store(in: &cancelBags)
 
@@ -94,6 +99,9 @@ class CallController: NSObject {
     /// Create and start new outgoing call.
     public func startCall() async throws {
         try await call.createCall()
+        ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: false)
+//        call.callNodeClient.startIO()
+        CallManager.shared.playRingingSoundIfNeeded()
         CallManager.shared.reportOutgoingCallStarted(call)
     }
 
@@ -161,23 +169,6 @@ class CallController: NSObject {
     public func setAudioPort(_ port: AVAudioSession.Port) {
         call.setAudioPort(port)
     }
-
-    /// Render local video to the renderer.
-    ///
-    /// - Parameters:
-    ///    - renderer: The renderer to render local video track in.
-    public func renderLocalVideo(to renderer: RTCVideoRenderer) {
-        webRTCClient.renderLocalVideo(to: renderer)
-    }
-
-    /// Render remote video to the renderer.
-    ///
-    /// - Parameters:
-    ///    - renderer: The renderer to render remote video track in.
-    public func renderRemoteVideo(to renderer: RTCVideoRenderer) {
-        webRTCClient.renderRemoteVideo(to: renderer)
-    }
-    // MARK: -
 }
 
 // MARK: - Computed properties
@@ -188,7 +179,7 @@ package extension CallController {
     /// Current `CallIO` state which contain infomations about state of local and remote audio/video,
     /// camera position ...
     public var callIOState: CallIOState {
-        return  webRTCClient.callIOStatePublisher.value
+        return  callNodeClient.callIOStatePublisher.value
     }
 
     /// Current call state.

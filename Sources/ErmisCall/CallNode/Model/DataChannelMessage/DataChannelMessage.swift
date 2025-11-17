@@ -6,9 +6,7 @@ import Foundation
 import ErmisChat
 
 enum DataChannelMessage: Codable {
-    case transciverState(TransciverState)
     case endCall
-    case healthCall
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -18,13 +16,8 @@ enum DataChannelMessage: Codable {
     func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .transciverState(let transciverState):
-            try container.encode(DataChannelMessageType.tranciverState, forKey: .type)
-            try container.encode(transciverState, forKey: .body)
         case .endCall:
             try container.encode(DataChannelMessageType.endCall, forKey: .type)
-        case .healthCall:
-            try container.encode(DataChannelMessageType.healthCall, forKey: .type)
         }
     }
 
@@ -32,32 +25,21 @@ enum DataChannelMessage: Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = try container.decode(DataChannelMessageType.self, forKey: .type)
         switch type {
-        case .tranciverState:
-            let body = try container.decode(TransciverState.self, forKey: .body)
-            self = .transciverState(body)
         case .endCall:
             self = .endCall
-        case .healthCall:
-            self = .healthCall
         }
     }
 
     var description: String {
         switch self {
-        case .transciverState(let transciverState):
-            return transciverState.description
         case .endCall:
             return "End call"
-        case .healthCall:
-            return "Health call"
         }
     }
 }
 
 enum DataChannelMessageType: String, Codable {
-    case tranciverState = "transciver_state"
     case endCall = "end_call"
-    case healthCall = "health_call"
 }
 
 public struct TransciverState: Codable {

@@ -49,7 +49,7 @@ public class CallManager: NSObject, CXProviderDelegate {
         self?.calls.removeAll(where: { $0.details.callId == call.details.callId })
         self?.calls.removeAll(where: { $0.details.state == .ended })
         self?.sendEndCallNotification(call)
-        try? call.audioManager.deactiveAudioSession()
+        try? call.audioManager.didDeactivateAudioSession()
     }
 
     override init() {
@@ -80,18 +80,21 @@ public class CallManager: NSObject, CXProviderDelegate {
     ///   - isVideoCall: A boolean value detect this call is video call or audio call.
     ///
     /// - Returns: New outgoing call.
-    public func createNewOutgoingCall(in channelId: ChannelId, isVideoCall: Bool) -> Call {
+    public func createNewOutgoingCall(in channelId: ChannelId, isVideoCall: Bool) -> Call? {
         if let currentCall, currentCall.details.cid == channelId {
             return currentCall
         }
         let uuid = UUID()
-        let call = Call(sessionId: sessionId,
+        guard let call = Call(sessionId: sessionId,
                         uuid: uuid,
                         callId: uuid.uuidString,
                         cid: channelId,
                         client: client,
                         isVideo: isVideoCall,
-                        isIncoming: false)
+                              isIncoming: false) else {
+            log.debug("[Call] Failed to create new call with uuid: \(uuid.uuidString)", subsystems: .call)
+            return nil
+        }
         addCall(call)
         log.debug("[Call] Create new call with uuid: \(uuid.uuidString)", subsystems: .call)
         return call
@@ -105,13 +108,17 @@ public class CallManager: NSObject, CXProviderDelegate {
     ///
     /// - Returns: New incoming call.
     public func createNewIncomingCall(from event: CallSignalEvent, uuid: UUID) {
-        let call = Call(sessionId: sessionId,
+        guard let call = Call(sessionId: sessionId,
                         uuid: uuid,
                         callId: event.callId,
                         cid: event.cid,
                         client: client,
                         isVideo: event.isVideo ?? false,
-                        isIncoming: true)
+                              isIncoming: true) else {
+            log.debug("[Call] Failed to create new incoming call with uuid: \(uuid.uuidString)", subsystems: .call)
+            return
+        }
+        call.callNodeClient.call?.callNodeClient.remoteAddress = event.metadata?.address
         addCall(call)
     }
 
@@ -200,7 +207,7 @@ public class CallManager: NSObject, CXProviderDelegate {
         guard let call else {
             return
         }
-        if call.details.isIncoming {
+        if call.details.isIncoming, call.details.state != .ended {
             log.debug("[CallKit] endcall with UUID: \(call.details.uuid)", subsystems: .call)
             let endAction = CXEndCallAction(call: call.details.uuid)
 
@@ -265,6 +272,8 @@ public class CallManager: NSObject, CXProviderDelegate {
         var callUUID = UUID()
         if let event, let call = call(with: event.callId) {
             callUUID = call.details.uuid
+        } else if let event {
+            createNewIncomingCall(from: event, uuid: callUUID)
         }
 
         callUpdate.remoteHandle = CXHandle(type: .generic, value: event?.cid.rawValue ?? callUUID.uuidString)
@@ -272,10 +281,8 @@ public class CallManager: NSObject, CXProviderDelegate {
             if let error {
                 log.error("[PushKit] Failed to report incoming call: \(error.localizedDescription)", subsystems: .call)
             } else {
+//                ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true)
                 log.debug("[PushKit] Reported incoming call: \(callUUID.uuidString)", subsystems: .call)
-                if let event {
-                    createNewIncomingCall(from: event, uuid: callUUID)
-                }
             }
             completion(error)
         })
@@ -381,31 +388,33 @@ public class CallManager: NSObject, CXProviderDelegate {
         log.debug("[CallKit] provider did reset.", subsystems: .call)
     }
 
-        public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-            log.debug("[CallKit] provider perform call start: \(action).", subsystems: .call)
-            action.fulfill()
-        }
+    public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        log.debug("[CallKit] provider perform call start: \(action).", subsystems: .call)
+        action.fulfill()
+    }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         log.debug("[CallKit] provider perform call answer: \(action).", subsystems: .call)
+        let isMicrophoneAccessGranted = ioAccessManager.isMicrophoneAccessGranted
+        guard isMicrophoneAccessGranted else {
+            CallManager.needShowRequestMicrophoneAccessAlert = true
+            if let currentCall {
+                Task {
+                    await CallManager.shared.endCall(currentCall)
+                    action.fail()
+                }
+            }
+            return
+        }
+        action.fulfill()
+        ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true)
+
         Task {
             do {
-                let isMicrophoneAccessGranted = ioAccessManager.isMicrophoneAccessGranted
-                guard isMicrophoneAccessGranted else {
-                    CallManager.needShowRequestMicrophoneAccessAlert = true
-                    action.fail()
-                    if let currentCall {
-                        await CallManager.shared.endCall(currentCall)
-                    }
-                    return
-                }
                 delegate?.callManager(self, didAccept: currentCall)
                 try await currentCall?.connectionSocket()
                 try await currentCall?.acceptCall()
                 // Wait until call connected.
-                while currentCall?.details.state != .connected {
-                    try await Task.sleep(nanoseconds: 500_000_000)
-                }
             } catch(let error) {
                 log.debug("[CallKit] provider perform call answer failed with erorr: \(error)", subsystems: .call)
                 if let currentCall {
@@ -414,7 +423,6 @@ public class CallManager: NSObject, CXProviderDelegate {
                     }
                 }
             }
-            action.fulfill()
         }
     }
 
@@ -432,7 +440,7 @@ public class CallManager: NSObject, CXProviderDelegate {
             return
         }
 
-        Task {
+        Task(priority: .high) {
             do {
                 if currentCall.details.state.isConnected || currentCall.isMissed {
                     try await currentCall.endCall()
@@ -466,7 +474,6 @@ public class CallManager: NSObject, CXProviderDelegate {
                 action.fail()
             }
         }
-        action.fulfill()
     }
     //
     public func provider(_ provider: CXProvider, perform action: CXSetGroupCallAction) {
@@ -493,13 +500,13 @@ public class CallManager: NSObject, CXProviderDelegate {
 
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         log.debug("[CallKit] provider did activate audio session.", subsystems: .call)
-        try? currentCall?.audioManager.activeAudioSession()
+        currentCall?.didActiveAudioSession()
         playRingingSoundIfNeeded()
     }
 
     public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         log.debug("[CallKit] provider did reset audio session.", subsystems: .call)
-        try? currentCall?.audioManager.deactiveAudioSession()
+        currentCall?.didDeactiveAudioSession()
     }
 
     // MARK: - PushRegistry
