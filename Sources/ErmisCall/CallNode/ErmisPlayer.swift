@@ -8,6 +8,7 @@ import CoreMedia
 import AudioToolbox
 import ErmisOpus
 import ErmisChat
+import UIKit
 
 public class ErmisPlayer {
     public var videoLayer: AVSampleBufferDisplayLayer
@@ -49,6 +50,9 @@ public class ErmisPlayer {
         if let observer = audioSessionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        log.debug("TTTT PLAYER DEINIT")
+        stopRequestingMedia()
+        stop()
     }
 
     package func setupPlayerIfNeeded() {
@@ -81,7 +85,7 @@ public class ErmisPlayer {
             case .began:
                 log.debug("[Player] Audio session interrupted", subsystems: .call)
                 // Pause synchronizer
-                self.synchronizer.rate = 0
+//                self.synchronizer.rate = 0
 
             case .ended:
                 log.debug("[Player] Audio session interruption ended", subsystems: .call)
@@ -102,7 +106,7 @@ public class ErmisPlayer {
         }
     }
 
-    private func stop() {
+    func stop() {
         synchronizer.rate = 0
         if #available(iOS 17.0, *) {
             videoLayer.sampleBufferRenderer.flush()
@@ -122,21 +126,21 @@ public class ErmisPlayer {
 
     private func startRequestingMediaData() {
         if #available(iOS 17.0, *) {
-            videoLayer.sampleBufferRenderer.requestMediaDataWhenReady(on: videoQueue) {
-                self.supplyVideoData()
+            videoLayer.sampleBufferRenderer.requestMediaDataWhenReady(on: videoQueue) { [weak self] in
+                self?.supplyVideoData()
             }
         } else {
-            videoLayer.requestMediaDataWhenReady(on: videoQueue) {
-                self.supplyVideoData()
+            videoLayer.requestMediaDataWhenReady(on: videoQueue) { [weak self] in
+                self?.supplyVideoData()
             }
         }
 
-        audioRenderer?.requestMediaDataWhenReady(on: audioQueue) {
-            self.supplyAudioData()
+        audioRenderer?.requestMediaDataWhenReady(on: audioQueue) { [weak self] in
+            self?.supplyAudioData()
         }
     }
 
-    private func stopRequestingMedia() {
+    func stopRequestingMedia() {
         if #available(iOS 17.0, *) {
             videoLayer.sampleBufferRenderer.stopRequestingMediaData()
         } else {
@@ -466,36 +470,6 @@ public class ErmisPlayer {
         if videoBuffer.count > maxBufferSize {
             videoBuffer.removeFirst(videoBuffer.count - maxBufferSize)
         }
-////        log.debug("[Player] Enqueue video sample buffer.")
-//        if #available(iOS 17.0, *) {
-//            if self.videoLayer.sampleBufferRenderer.isReadyForMoreMediaData {
-//                self.videoLayer.sampleBufferRenderer.enqueue(sampleBuffer)
-//
-//                // Start playback if not started
-//                if !self.isPlaying {
-//                    self.synchronizer.setRate(1.0, time: timestamp)
-//                    log.debug("[Player] Start playing from timestamp: \(timestamp)")
-//                    self.isPlaying = true
-//                    print("▶️ Playback started")
-//                }
-//            } else {
-//                print("⚠️ Video layer not ready")
-//            }
-//        } else {
-//            if self.videoLayer.isReadyForMoreMediaData {
-//                self.videoLayer.enqueue(sampleBuffer)
-//
-//                // Start playback if not started
-//                if !self.isPlaying {
-//                    self.synchronizer.setRate(1.0, time: timestamp)
-//                    log.debug("[Player] Start playing from timestamp: \(timestamp)")
-//                    self.isPlaying = true
-//                    print("▶️ Playback started")
-//                }
-//            } else {
-//                print("⚠️ Video layer not ready")
-//            }
-//        }
     }
 
     // MARK: - Handle audio data
@@ -614,24 +588,11 @@ public class ErmisPlayer {
     private func enqueueAudioSampleBuffer(_ sampleBuffer: CMSampleBuffer, timestamp: CMTime) {
         audioBufferLock.lock()
         defer { audioBufferLock.unlock() }
-
+        
         audioBuffer.append((sampleBuffer, timestamp))
         if audioBuffer.count > maxBufferSize {
             audioBuffer.removeFirst(audioBuffer.count - maxBufferSize)
         }
-//        let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-//        if self.audioRenderer!.isReadyForMoreMediaData {
-//            self.audioRenderer!.enqueue(sampleBuffer)
-////            log.debug("[Player] Enqueue audio sample buffer")
-//            if !self.isPlaying {
-//                let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-//                self.synchronizer.setRate(1.0, time: timestamp)
-//                log.debug("[Player] Start playing from timestamp: \(timestamp)")
-//                self.isPlaying = true
-//            }
-//        } else {
-//            log.warning("[Player] Audio player not ready, drop data", subsystems: .call)
-//        }
     }
 
     private func isADTSHeader(_ data: Data) -> Bool {
@@ -686,16 +647,42 @@ public class ErmisPlayer {
     }
     // MARK: - Handle orientation
     public func handleDeviceOrientationEvent(_ videoOrientation: VideoOrientation) {
-        if Thread.isMainThread {
-            self.videoLayer.setAffineTransform(
-                CGAffineTransform(rotationAngle: .pi * videoOrientation.rotation / 180)
-            )
-        } else {
-            DispatchQueue.main.async {
-                self.videoLayer.setAffineTransform(
-                    CGAffineTransform(rotationAngle: .pi * videoOrientation.rotation / 180)
-                )
-            }
-        }
+//        if Thread.isMainThread {
+//            CATransaction.begin()
+//            CATransaction.setDisableActions(true)
+//
+//            let frame = self.videoLayer.frame
+//
+//            if UIDevice.current.isPhone {
+//                let isFit = videoOrientation.rotation == 0 || videoOrientation.rotation == 180
+//                self.videoLayer.videoGravity = isFit ? .resizeAspect : .resizeAspectFill
+//            } else {
+//                self.videoLayer.videoGravity = .resizeAspect
+//            }
+//            self.videoLayer.frame = frame   // force geometry refresh
+//            self.videoLayer.setAffineTransform(
+//                CGAffineTransform(rotationAngle: .pi * videoOrientation.rotation / 180)
+//            )
+//            CATransaction.commit()
+//        } else {
+//            DispatchQueue.main.async {
+//                CATransaction.begin()
+//                CATransaction.setDisableActions(true)
+//                
+//                let frame = self.videoLayer.superlayer?.frame ?? self.videoLayer.frame
+//
+//                if UIDevice.current.isPhone {
+//                    let isFit = videoOrientation.rotation == 0 || videoOrientation.rotation == 180
+//                    self.videoLayer.videoGravity = isFit ? .resizeAspect : .resizeAspectFill
+//                } else {
+//                    self.videoLayer.videoGravity = .resizeAspect
+//                }
+//                self.videoLayer.frame = frame   // force geometry refresh
+//                self.videoLayer.setAffineTransform(
+//                    CGAffineTransform(rotationAngle: .pi * videoOrientation.rotation / 180)
+//                )
+//                CATransaction.commit()
+//            }
+//        }
     }
 }

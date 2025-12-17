@@ -18,6 +18,7 @@ protocol CallControllerDelegate: AnyObject {
     func audioPortChange(to port: AudioPort?)
     func callDidEnd(_ notification: Notification)
     func callDidUpdateConnectionStats(status: ConnectionStats)
+    func remoteVideoOrientationDidChanged(to orientation: VideoOrientation)
 }
 
 public
@@ -39,6 +40,9 @@ class CallController: NSObject {
         self.call = call
     }
 
+    deinit {
+        log.debug("TTTT CALL CONTROLLER DEINIT")
+    }
     // MARK: - Observer
     /// Start observer call. You can handle all changes via `CallControllerDelegate`.
     package func startCallObservers() {
@@ -60,6 +64,13 @@ class CallController: NSObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] callIOState in
                 self?.delegate?.callIOStateDidChange(to: callIOState)
+            }
+            .store(in: &cancelBags)
+
+        callNodeClient.remoteVideoOrientationPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] videoOrientation in
+                self?.delegate?.remoteVideoOrientationDidChanged(to: videoOrientation)
             }
             .store(in: &cancelBags)
 //

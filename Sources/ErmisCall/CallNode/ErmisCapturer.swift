@@ -44,6 +44,10 @@ public class ErmisCapturer: NSObject {
         startObserverDeviceOrientation()
     }
 
+    deinit {
+        log.debug("TTTT CAPTURER CLIENT DEINIT")
+    }
+
     func setup() {
         self.videoSessionLock.lock()
         videoCaptureSession.beginConfiguration()

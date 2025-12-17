@@ -9,6 +9,7 @@ import ErmisChat
 import ErmisCall
 import ErmisChatUI
 import ErmisCallNode
+import AVFoundation
 
 public protocol CallViewControllerDelegate: AnyObject {
     func callViewControllerWantsToMinize(_ callVC: CallViewController)
@@ -89,7 +90,11 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     @MainActor required public init?(coder: NSCoder) {
         super.init(coder: coder)
     }
-    
+
+    deinit {
+        log.debug("TTTT CALL VIEW CONTROLLER DEINIT")
+    }
+
     // MARK: - Setup
     open override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -460,6 +465,49 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         }
         let content = "\(connectionType) - packetloss: \(status.packetLoss), rtt: \(status.roundTripTimeMs)"
         connectionStatusLabel.text = content
+    }
+
+    public func remoteVideoOrientationDidChanged(to orientation: VideoOrientation) {
+        guard let previewLayer = self.remoteVideoView.previewLayer else { return }
+
+        self.remoteVideoView.layoutIfNeeded()
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+
+        // Determine video gravity
+        let videoGravity: AVLayerVideoGravity
+        if UIDevice.current.isPhone {
+            let isFit = orientation.rotation == 0 || orientation.rotation == 180
+            videoGravity = isFit ? .resizeAspect : .resizeAspectFill
+        } else {
+            videoGravity = .resizeAspect
+        }
+        previewLayer.videoGravity = videoGravity
+
+        let rotationAngle = CGFloat(orientation.rotation) * .pi / 180
+        let containerBounds = self.remoteVideoView.bounds
+
+        if orientation.rotation == 90 || orientation.rotation == 270 {
+            // For 90° and 270° rotations, swap width and height
+            previewLayer.setAffineTransform(.identity)
+            previewLayer.frame = CGRect(
+                x: 0,
+                y: 0,
+                width: containerBounds.height,  // Swap dimensions
+                height: containerBounds.width
+            )
+            // Center the layer after swapping dimensions
+            previewLayer.position = CGPoint(x: containerBounds.midX, y: containerBounds.midY)
+            previewLayer.setAffineTransform(CGAffineTransform(rotationAngle: rotationAngle))
+        } else {
+            // For 0° and 180° rotations, use normal dimensions
+            previewLayer.setAffineTransform(.identity)
+            previewLayer.frame = containerBounds
+            previewLayer.setAffineTransform(CGAffineTransform(rotationAngle: rotationAngle))
+        }
+
+        CATransaction.commit()
     }
 
     // MARK: - CallControlViewDelegate

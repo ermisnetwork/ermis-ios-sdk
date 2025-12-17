@@ -27,7 +27,7 @@ extension VideoOrientation: CallNodeEventProtocol {
         }
         let rotationValue: UInt32 = payload.withUnsafeBytes { raw in
             var val: UInt32 = 0
-            memcpy(&val, raw.baseAddress!, 2)
+            memcpy(&val, raw.baseAddress!, 4)
             return UInt32(bigEndian: val)
         }
         rotation = CGFloat(rotationValue)

@@ -103,6 +103,10 @@ public class Call: NSObject {
 //        audioManager.setUseManualAudio(isIncoming)
     }
 
+    deinit {
+        log.debug("TTTT CALL DEINIT")
+    }
+
     public override var description: String {
         return "Call \(details)"
     }
@@ -124,6 +128,7 @@ public class Call: NSObject {
     }
 
     func createCall() async throws {
+        log.debug("TTTT CREATE CALL")
         try await callNodeClient.createCall(details.isVideo, sessionId: sessionId)
     }
 

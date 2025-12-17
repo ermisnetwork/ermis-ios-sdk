@@ -20,6 +20,8 @@ public class CallNodeConnection {
         return connectionPublisher.value == .connected
     }
 
+    public var receivingTask: Task<Void, Error>?
+
     init(relayUrls: [String], secretKey: Data?) throws {
         endpoint = try ErmisCallEndpoint(relayUrls: relayUrls, secretKey: secretKey)
         Task {
@@ -29,6 +31,10 @@ public class CallNodeConnection {
                 log.warning("[CallNode] Failed to get local address with error: \(error)", subsystems: .call)
             }
         }
+    }
+
+    deinit {
+        receivingTask?.cancel()
     }
 
     public func getLocalAddress() async throws -> String {
@@ -84,28 +90,34 @@ public class CallNodeConnection {
     }
 
     public func startReceivingData() {
-        Task.detached(name: "call_node_receive_data", priority: .medium) {
-            while true {
-                let data = try await self.endpoint.recv()
-                self.dataPublisher.send(data)
+        receivingTask = Task.detached(name: "call_node_receive_data", priority: .medium) { [weak self] in
+            guard let self else {
+                return
+            }
+            while !Task.isCancelled {
+                do {
+                    let data = try await self.endpoint.recv()
+                    self.dataPublisher.send(data)
+                } catch is CancellationError {
+                    break
+                } catch {
+                    log.error("[CallNode] failed to get event with error: \(error)")
+                }
+
             }
         }
     }
 
     public func close() {
         endpoint.close()
+        receivingTask?.cancel()
     }
 
     func sendAudioData(data: Data) async throws {
         guard isConnected else {
             return
         }
-//        if !hasBeginGop {
-//            hasBeginGop = true
-//            try endpoint.beginGopWith(data: data)
-//        } else {
             try endpoint.sendAudioFrame(data: data)
-//        }
     }
 
     func sendVideoDeltaFrameData(data: Data) async throws {

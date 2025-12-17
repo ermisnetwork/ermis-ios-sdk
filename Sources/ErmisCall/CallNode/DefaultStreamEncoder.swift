@@ -127,8 +127,10 @@ public class DefaultStreamEncoder: StreamEncoder {
         )
 
         guard status == noErr, let compressionSession else {
+            log.error("[Encoder] Failed to init video encoder")
             throw NSError(domain: "Ermis", code: 999, userInfo: nil)
         }
+        log.debug("[Encoder] Video encoder initialized")
     }
 
     // MARK: - Encoding video

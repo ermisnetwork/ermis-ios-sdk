@@ -74,6 +74,9 @@ public class ErmisCallAudioManager {
                                         .duckOthers,
                                     ])
             try session.setPreferredSampleRate(48_000)
+            if isActive {
+                try session.setActive(true)
+            }
             log.debug("[AudioManager] configure audio session, isIncoming call: \(isIncomingCall)")
         } catch {
             log.warning("[AudioManager] Config audio session failed: \(error)")
@@ -188,7 +191,7 @@ public class ErmisCallAudioManager {
             for output in route.outputs {
                 print("TTTT Output:", output.portType.rawValue)
             }
-            log.error("[AudioManager] set audio output port, isSpeaker: \(isSpeaker)")
+            log.debug("[AudioManager] set audio output port, isSpeaker: \(isSpeaker)")
         } catch {
             log.error("[AudioManager] Failed to set audio output port: \(error)")
         }

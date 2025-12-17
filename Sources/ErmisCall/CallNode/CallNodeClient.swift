@@ -38,6 +38,7 @@ class CallNodeClient: NSObject, ObservableObject {
     private var callIOState: CallIOState
     /// The publisher for callIOState.
     public private(set) var callIOStatePublisher = CurrentValueSubject<CallIOState, Never>(.init())
+    public private(set) var remoteVideoOrientationPublisher = CurrentValueSubject<VideoOrientation, Never>.init(.init(rotation: 0))
 
     private let jsonEncoder: JSONEncoder = JSONEncoder()
     private let jsonDecoder: JSONDecoder = JSONDecoder()
@@ -147,6 +148,10 @@ class CallNodeClient: NSObject, ObservableObject {
             log.error("[Call] Failed to create call node connection with error: \(error)")
             return nil
         }
+    }
+
+    deinit {
+        log.debug("TTTT CALL NODE CLIENT DEINIT")
     }
     // MARK: - Setup
     private func setUp() {
@@ -270,12 +275,36 @@ class CallNodeClient: NSObject, ObservableObject {
                 }
                 let type = CallNodeEventType(with: data[0])
                 switch type {
-                case .audioConfig, .videoConfig, .audioFrame, .videoKeyFrame, .videoDeltaFrame, .orientation:
+                case .audioConfig, .audioFrame, .videoKeyFrame, .videoDeltaFrame:
                     do {
                         player.parseEvent(data)
                     } catch {
                         log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
                     }
+                case .videoConfig:
+                    do {
+                        player.parseEvent(data)
+                    } catch {
+                        log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
+                    }
+                    let payload = Data(data.subdata(in: 1..<data.count))
+                    guard let videoConfig = VideoConfig(payload: payload) else {
+                        return
+                    }
+                    let videoOrientation = VideoOrientation(rotation: CGFloat(videoConfig.orientation))
+                    remoteVideoOrientationPublisher.send(videoOrientation)
+
+                case .orientation:
+                    do {
+                        player.parseEvent(data)
+                    } catch {
+                        log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
+                    }
+                    let payload = Data(data.subdata(in: 1..<data.count))
+                    guard let videoOrientation = VideoOrientation(payload: payload) else {
+                        return
+                    }
+                    remoteVideoOrientationPublisher.send(videoOrientation)
                 case .connected:
                     call?.setState(.connected)
                     if isReadyToSendFrame {
@@ -319,10 +348,6 @@ class CallNodeClient: NSObject, ObservableObject {
                                         self.streamEncoder.isReadyToEncode = true
                                     }
                                 }
-                                let orientation = self.capturer.currentDeviceOrientation
-                                let rotation = self.previewRotationValue(for: orientation)
-                                let videoOrientation = VideoOrientation(rotation: CGFloat(rotation))
-                                try await self.callNodeConnection.sendEvent(videoOrientation)
                             } catch let error {
                                 log.error("[Call] failed to sent connect signal: \(error)", subsystems: .call)
                                 await CallManager.shared.endCall(self.call)
@@ -366,6 +391,10 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private func sendVideoConfigIfNeeded(_ config: VideoConfig) {
+        var config = config
+        let orientation = self.capturer.currentDeviceOrientation
+        let rotation = self.previewRotationValue(for: orientation)
+        config.orientation = Int(rotation)
         if callNodeConnection.isConnected, !sendingVideoConfig, !hasSentVideoConfig {
             sendingVideoConfig = true
             Task(name: "call_node_send_config", priority: .high) {
@@ -739,6 +768,8 @@ class CallNodeClient: NSObject, ObservableObject {
         defer {
             capturer.stopCapturer()
             callNodeConnection.close()
+            player.stopRequestingMedia()
+            player.stop()
         }
         setAudioEnable(false)
         setVideoEnabled(false)
