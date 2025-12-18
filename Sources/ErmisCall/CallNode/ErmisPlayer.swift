@@ -10,7 +10,7 @@ import ErmisOpus
 import ErmisChat
 import UIKit
 
-public class ErmisPlayer {
+public class ErmisPlayer: AppLifecycleObserver {
     public var videoLayer: AVSampleBufferDisplayLayer
     public var audioRenderer: AVSampleBufferAudioRenderer?
     public let synchronizer: AVSampleBufferRenderSynchronizer
@@ -192,7 +192,7 @@ public class ErmisPlayer {
         while audioRenderer.isReadyForMoreMediaData, !audioBuffer.isEmpty {
             let (sampleBuffer, timestamp) = audioBuffer.removeFirst()
             audioRenderer.enqueue(sampleBuffer)
-
+//            log.debug("[Player] did enquque audio data", subsystems: .call)
             if !isPlaying {
                 synchronizer.setRate(1, time: timestamp)
                 isPlaying = true
@@ -647,42 +647,33 @@ public class ErmisPlayer {
     }
     // MARK: - Handle orientation
     public func handleDeviceOrientationEvent(_ videoOrientation: VideoOrientation) {
-//        if Thread.isMainThread {
-//            CATransaction.begin()
-//            CATransaction.setDisableActions(true)
-//
-//            let frame = self.videoLayer.frame
-//
-//            if UIDevice.current.isPhone {
-//                let isFit = videoOrientation.rotation == 0 || videoOrientation.rotation == 180
-//                self.videoLayer.videoGravity = isFit ? .resizeAspect : .resizeAspectFill
-//            } else {
-//                self.videoLayer.videoGravity = .resizeAspect
-//            }
-//            self.videoLayer.frame = frame   // force geometry refresh
-//            self.videoLayer.setAffineTransform(
-//                CGAffineTransform(rotationAngle: .pi * videoOrientation.rotation / 180)
-//            )
-//            CATransaction.commit()
-//        } else {
-//            DispatchQueue.main.async {
-//                CATransaction.begin()
-//                CATransaction.setDisableActions(true)
-//                
-//                let frame = self.videoLayer.superlayer?.frame ?? self.videoLayer.frame
-//
-//                if UIDevice.current.isPhone {
-//                    let isFit = videoOrientation.rotation == 0 || videoOrientation.rotation == 180
-//                    self.videoLayer.videoGravity = isFit ? .resizeAspect : .resizeAspectFill
-//                } else {
-//                    self.videoLayer.videoGravity = .resizeAspect
-//                }
-//                self.videoLayer.frame = frame   // force geometry refresh
-//                self.videoLayer.setAffineTransform(
-//                    CGAffineTransform(rotationAngle: .pi * videoOrientation.rotation / 180)
-//                )
-//                CATransaction.commit()
-//            }
-//        }
+        
+    }
+
+    // MARK: - App life cycle
+    public func appDidBecomeActive() {
+        if #available(iOS 17.0, *) {
+            videoLayer.sampleBufferRenderer.flush()
+        } else {
+            videoLayer.flush()
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: {
+            self.startRequestingMediaData()
+        })
+    }
+
+    public func appWillResignActive() {
+
+    }
+
+    public func appDidEnterBackground() {
+        if #available(iOS 17.0, *) {
+            videoLayer.sampleBufferRenderer.stopRequestingMediaData()
+            videoLayer.sampleBufferRenderer.flush()
+        } else {
+            videoLayer.stopRequestingMediaData()
+            videoLayer.flush()
+        }
     }
 }

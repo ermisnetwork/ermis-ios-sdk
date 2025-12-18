@@ -99,6 +99,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     open override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         self.updateSpeakerMenu()
+        self.updateViewByCallIOState()
     }
 
     open override func setUp() {
@@ -641,7 +642,7 @@ extension CallViewController {
 
         localVideoView.videoView.isHidden = !callIOState.isVideoEnabled
         remoteVideoView.videoView.isHidden = !callIOState.isRemoteVideoEnabled
-
+        log.debug("TTTT CALL IO STATE IS REMOTE VIDEO: \(callIOState.isRemoteVideoEnabled)")
 
 //        if !localVideoView.videoView.isHidden {
 //            DispatchQueue.main.async {

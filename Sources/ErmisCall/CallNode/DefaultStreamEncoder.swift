@@ -12,7 +12,13 @@ import ErmisOpus
 import Combine
 import ErmisChat
 
-public protocol StreamEncoder {
+public protocol AppLifecycleObserver: AnyObject {
+    func appDidBecomeActive()
+    func appWillResignActive()
+    func appDidEnterBackground()
+}
+
+public protocol StreamEncoder: AppLifecycleObserver {
     var audioConfigPublisher: CurrentValueSubject<AudioConfig?, Never> { get }
     var videoConfigPublisher: CurrentValueSubject<VideoConfig?, Never> { get }
     var videoKeyFramePublisher: PassthroughSubject<(VideoKeyFrame), Never> { get }
@@ -48,6 +54,9 @@ public class DefaultStreamEncoder: StreamEncoder {
 
     var forceKeyFrame: Bool = true
 
+    private let encoderQueue = DispatchQueue(label: "network.ermis.encoder-queue")
+    private var isSessionValid = false
+
     private lazy var sourceDescriptionFormat: AudioStreamBasicDescription = {
         return AudioStreamBasicDescription(
             mSampleRate: audioCodec.sampleRate,
@@ -82,6 +91,10 @@ public class DefaultStreamEncoder: StreamEncoder {
     // Video codec
     var videoCodec: CMVideoCodecType = kCMVideoCodecType_HEVC
 
+    var width: Int32 = 1280
+    var height: Int32 = 720
+    var bitrate: Int = 800_000
+
     // Publisher
     public var audioConfigPublisher = CurrentValueSubject<AudioConfig?, Never>(nil)
     public var videoConfigPublisher = CurrentValueSubject<VideoConfig?, Never>(nil)
@@ -101,6 +114,16 @@ public class DefaultStreamEncoder: StreamEncoder {
 
     // MARK: - Setup
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        if let session = self.compressionSession {
+            VTCompressionSessionInvalidate(session)
+            self.compressionSession = nil
+        }
+        self.isSessionValid = false
+        log.debug("[Encoder] Compression session invalidated", subsystems: .call)
+    }
+
     public func setupVideoEncoder(
         width: Int32 = 1280,
         height: Int32 = 720,
@@ -109,9 +132,12 @@ public class DefaultStreamEncoder: StreamEncoder {
         bitrate: Int = 800_000,
         fps: Double = 30
     ) throws {
-        self.fps = fps
+        self.width = width
+        self.height = height
         self.videoCodec = videoCodec
         self.audioCodec = audioCodec
+        self.bitrate = bitrate
+        self.fps = fps
 
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
@@ -130,6 +156,8 @@ public class DefaultStreamEncoder: StreamEncoder {
             log.error("[Encoder] Failed to init video encoder")
             throw NSError(domain: "Ermis", code: 999, userInfo: nil)
         }
+
+        isSessionValid = true
         log.debug("[Encoder] Video encoder initialized")
     }
 
@@ -162,6 +190,9 @@ public class DefaultStreamEncoder: StreamEncoder {
         )
         if status != noErr {
             log.warning("[Encoder] Error encoding video frame: \(status)", subsystems: .call)
+            if status == kVTInvalidSessionErr {
+                self.handleInvalidSession()
+            }
         } else if presentationTimeStamp != .zero {
             forceKeyFrame = false
         }
@@ -679,155 +710,6 @@ public class DefaultStreamEncoder: StreamEncoder {
         }
     }
 
-//    private func encodeAACFrame(_ pcmFrame: [Int16]) -> Data? {
-//        // CRITICAL: AAC requires exactly 1024 samples
-//        guard pcmFrame.count == audioCodec.frameSize else {
-//            log.warning("[Encoder] Invalid frame size: \(pcmFrame.count), expected: \(audioCodec.frameSize)")
-//            return nil
-//        }
-//
-//        // Initialize converter if needed
-//        if self.audioConverter == nil {
-//            var status = AudioConverterNew(
-//                &sourceDescriptionFormat,
-//                &aacDescriptionFormat,
-//                &audioConverter
-//            )
-//
-//            guard status == noErr, let audioConverter else {
-//                log.error("[Encoder] Failed to create audio converter: \(status)")
-//                return nil
-//            }
-//
-//            // Set bitrate
-//            var bitRate: UInt32 = audioCodec.bitrate
-//            status = AudioConverterSetProperty(
-//                audioConverter,
-//                kAudioConverterEncodeBitRate,
-//                UInt32(MemoryLayout<UInt32>.size),
-//                &bitRate
-//            )
-//
-//            if status != noErr {
-//                log.warning("[Encoder] Failed to setup AAC bitrate: \(status)")
-//            }
-//
-//            // Set quality
-//            var quality = kAudioConverterQuality_High
-//            AudioConverterSetProperty(
-//                audioConverter,
-//                kAudioConverterCodecQuality,
-//                UInt32(MemoryLayout<UInt32>.size),
-//                &quality
-//            )
-//
-//            log.debug("[Encoder] AAC encoder initialized (\(audioCodec.sampleRate)Hz, \(audioCodec.bitrate)bps)")
-//        }
-//
-//        guard let audioConverter else {
-//            return nil
-//        }
-//
-//        // Convert PCM data
-//        let pcmData = pcmFrame.withUnsafeBufferPointer { buffer in
-//            Data(bytes: buffer.baseAddress!, count: buffer.count * MemoryLayout<Int16>.size)
-//        }
-//
-//        // Allocate output buffer
-//        // AAC frames are typically 768 bytes for 128kbps stereo at 44.1kHz
-//        // Use a safe maximum
-//        let maxOutputSize = 1024
-//        var outputBuffer = [UInt8](repeating: 0, count: maxOutputSize)
-//        var outputDataPacketSize: UInt32 = 1
-//
-//        var outputBufferList = AudioBufferList(
-//            mNumberBuffers: 1,
-//            mBuffers: AudioBuffer(
-//                mNumberChannels: UInt32(audioCodec.numberOfChannels),
-//                mDataByteSize: UInt32(maxOutputSize),
-//                mData: &outputBuffer
-//            )
-//        )
-//
-//        // ✅ FIXED: Store input data in a way the callback can access it
-//        var inputData = pcmData
-//        var dataConsumed = false
-//
-//        let status = inputData.withUnsafeMutableBytes { inputBytes -> OSStatus in
-//            var context = ConverterContext(
-//                data: inputBytes.baseAddress,
-//                dataSize: pcmData.count,
-//                channels: UInt32(audioCodec.numberOfChannels),
-//                bytesPerPacket: sourceDescriptionFormat.mBytesPerPacket
-//            )
-//
-//            return AudioConverterFillComplexBuffer(
-//                audioConverter,
-//                { (converter, ioNumberDataPackets, ioData, outDataPacketDescription, inUserData) -> OSStatus in
-//                    guard let userData = inUserData else {
-//                        print("❌ No user data")
-//                        return -1
-//                    }
-//
-//                    let context = userData.assumingMemoryBound(to: ConverterContext.self)
-//
-//                    // ✅ FIXED: Check if we still have data BEFORE we set it to nil
-//                    guard let dataPtr = context.pointee.data, context.pointee.dataSize > 0 else {
-//                        // No more data available
-//                        ioNumberDataPackets.pointee = 0
-//                        return -1  // Signal we're out of data
-//                    }
-//
-//                    // Calculate number of packets we can provide
-//                    let numberOfPackets = UInt32(context.pointee.dataSize) / context.pointee.bytesPerPacket
-//
-//                    // Setup the output buffer list
-//                    ioData.pointee.mNumberBuffers = 1
-//                    ioData.pointee.mBuffers.mData = UnsafeMutableRawPointer(mutating: dataPtr)
-//                    ioData.pointee.mBuffers.mDataByteSize = UInt32(context.pointee.dataSize)
-//                    ioData.pointee.mBuffers.mNumberChannels = context.pointee.channels
-//
-//                    // Tell the converter how many packets we're providing
-//                    ioNumberDataPackets.pointee = numberOfPackets
-//
-//                    // ✅ Mark data as consumed AFTER we've set it up
-//                    context.pointee.data = nil
-//                    context.pointee.dataSize = 0
-//
-//                    return noErr
-//                },
-//                &context,
-//                &outputDataPacketSize,
-//                &outputBufferList,
-//                nil
-//            )
-//        }
-//
-//        guard status == noErr else {
-//            log.warning("[Encoder] AAC encoding failed with status: \(status)")
-//            return nil
-//        }
-//
-//        // Check if we actually got output
-//        guard outputDataPacketSize > 0 else {
-//            log.warning("[Encoder] No output packets generated")
-//            return nil
-//        }
-//
-//        let actualOutputSize = Int(outputBufferList.mBuffers.mDataByteSize)
-//        guard actualOutputSize > 0 else {
-//            log.warning("[Encoder] Output buffer is empty")
-//            return nil
-//        }
-//
-//        // Return the encoded data
-//        let encodedData = Data(bytes: outputBuffer, count: actualOutputSize)
-//
-//        log.debug("[Encoder] Encoded \(pcmData.count) bytes to \(actualOutputSize) bytes AAC")
-//
-//        return encodedData
-//    }
-
     private func encodeAACFrame(_ pcmFrame: [Int16]) -> Data? {
 
         if !hasAudioConfig {
@@ -1049,7 +931,62 @@ public class DefaultStreamEncoder: StreamEncoder {
         let asc = Data([byte1, byte2])
         return asc.base64EncodedString()
     }
+    // MARK: - Handle app cycle
+    public func appWillResignActive() {
+        // Don't invalidate immediately, wait for background
+    }
 
+    public func appDidEnterBackground() {
+        invalidateSession()
+    }
+
+    public func appDidBecomeActive() {
+        // Small delay to ensure camera is ready
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.recreateSession()
+        }
+    }
+
+    private func recreateSession() {
+        invalidateSession()
+        encoderQueue.async(execute: { [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                try setupVideoEncoder(width: width,
+                                      height: height,
+                                      videoCodec: videoCodec,
+                                      audioCodec: audioCodec,
+                                      bitrate: bitrate,
+                                      fps: fps)
+            } catch {
+                log.error("[Encoder] Failed to recreate session: \(error)")
+            }
+        })
+    }
+
+    private func invalidateSession() {
+        encoderQueue.async {
+            if let session = self.compressionSession {
+                VTCompressionSessionInvalidate(session)
+                self.compressionSession = nil
+            }
+            self.isSessionValid = false
+            log.debug("[Encoder] Compression session invalidated", subsystems: .call)
+        }
+    }
+
+    private func handleInvalidSession() {
+        log.debug("[Encoder] handle invalidate session")
+        isSessionValid = false
+
+        // Recreate session on main queue to avoid race conditions
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.recreateSession()
+        }
+    }
 }
 
 fileprivate struct ConverterContext {

@@ -74,7 +74,7 @@ class CallNodeClient: NSObject, ObservableObject {
         guard call?.details.state == .connected else {
             return false
         }
-        if call?.details.isVideo == true {
+        if call?.callNodeClient.callIOState.isVideoEnabled == true {
             return hasSentVideoConfig && hasSentAudioConfig
         } else {
             return hasSentAudioConfig
@@ -177,6 +177,31 @@ class CallNodeClient: NSObject, ObservableObject {
         } catch {
             log.error("[ErmisCall] Failed to setup stream encoder")
         }
+
+        observerAppLifecycleNotifications()
+    }
+
+    private func observerAppLifecycleNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appWillResignActive),
+            name: UIApplication.willResignActiveNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidBecomeActive),
+            name: UIApplication.didBecomeActiveNotification,
+            object: nil
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
     }
 
     private func observerCapturerOutput() {
@@ -410,6 +435,25 @@ class CallNodeClient: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - App lifecycle
+    @objc private func appWillResignActive() {
+        log.debug("[CallNode] Call node client app will resign active", subsystems: .call)
+        streamEncoder.appWillResignActive()
+        capturer.appWillResignActive()
+    }
+
+    @objc private func appDidEnterBackground() {
+        log.debug("[CallNode] Call node client app did enter background", subsystems: .call)
+        streamEncoder.appDidEnterBackground()
+        capturer.appDidEnterBackground()
+    }
+
+    @objc private func appDidBecomeActive() {
+        log.debug("[CallNode] Call node client app did become active", subsystems: .call)
+        streamEncoder.appDidBecomeActive()
+        capturer.appDidBecomeActive()
     }
 
     // MARK: - Action

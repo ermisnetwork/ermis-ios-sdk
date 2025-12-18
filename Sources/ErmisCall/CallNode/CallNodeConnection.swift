@@ -35,6 +35,7 @@ public class CallNodeConnection {
 
     deinit {
         receivingTask?.cancel()
+        receivingTask = nil
     }
 
     public func getLocalAddress() async throws -> String {
@@ -90,6 +91,8 @@ public class CallNodeConnection {
     }
 
     public func startReceivingData() {
+        receivingTask?.cancel()
+        receivingTask = nil
         receivingTask = Task.detached(name: "call_node_receive_data", priority: .medium) { [weak self] in
             guard let self else {
                 return

@@ -406,7 +406,6 @@ public class CallManager: NSObject, CXProviderDelegate {
             }
             return
         }
-        action.fulfill()
         ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true)
 
         Task {
@@ -415,6 +414,11 @@ public class CallManager: NSObject, CXProviderDelegate {
                 try await currentCall?.connectionSocket()
                 try await currentCall?.acceptCall()
                 // Wait until call connected.
+                while currentCall?.details.state != .connected {
+                    try await Task.sleep(nanoseconds: 200_000_000)
+                }
+                action.fulfill(withDateConnected: Date())
+
             } catch(let error) {
                 log.debug("[CallKit] provider perform call answer failed with erorr: \(error)", subsystems: .call)
                 if let currentCall {

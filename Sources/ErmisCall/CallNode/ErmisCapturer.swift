@@ -7,7 +7,7 @@ import AVFoundation
 import Combine
 import ErmisChat
 
-public class ErmisCapturer: NSObject {
+public class ErmisCapturer: NSObject, AppLifecycleObserver {
     public let videoCaptureSession = AVCaptureSession()
     public let audioCaptureSession = AVCaptureSession()
 
@@ -42,6 +42,7 @@ public class ErmisCapturer: NSObject {
         super.init()
         setup()
         startObserverDeviceOrientation()
+        startObserverNotifications()
     }
 
     deinit {
@@ -85,11 +86,12 @@ public class ErmisCapturer: NSObject {
     }
 
     func startCapturer(_ isAudioEnable: Bool, _ isVideoEnable: Bool) {
+        getCurrentAppState()
         isReadyToStart = true
         isVideoSessionRunning = isVideoEnable
         isAudioSessionRunning = isAudioEnable
 
-        DispatchQueue.global(qos: .userInteractive).async {
+        sessionQueue.async {
             if isVideoEnable {
                 log.debug("[Capturer] Start video capture")
                 self.videoCaptureSession.startRunning()
@@ -102,7 +104,26 @@ public class ErmisCapturer: NSObject {
         }
     }
 
+    private func getCurrentAppState() {
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
+            let state = scene.activationState
+
+            switch state {
+            case .foregroundActive:
+                print("TTTT Foreground & active")
+            case .foregroundInactive:
+                print("TTTT Foreground but inactive")
+            case .background:
+                print("TTTT Background")
+            @unknown default:
+                break
+            }
+        }
+    }
+
     func stopCapturer() {
+        isVideoSessionRunning = false
+        isAudioSessionRunning = false
         log.debug("[Capturer] Stop audio, video capture")
         self.audioCaptureSession.stopRunning()
         self.videoCaptureSession.stopRunning()
@@ -222,6 +243,8 @@ public class ErmisCapturer: NSObject {
         guard let videoInput, isVideoSessionRunning else {
             return
         }
+        videoCaptureSession.removeInput(videoInput)
+        self.videoInput = nil
         self.isVideoSessionRunning = false
         sessionQueue.async {
             self.videoSessionLock.lock()
@@ -235,6 +258,8 @@ public class ErmisCapturer: NSObject {
         guard let audioInput, isAudioSessionRunning else {
             return
         }
+        audioCaptureSession.removeInput(audioInput)
+        self.audioInput = nil
         isAudioSessionRunning = false
         sessionQueue.async {
             self.audioSessionLock.lock()
@@ -252,6 +277,78 @@ public class ErmisCapturer: NSObject {
         }
         return videoDevice
     }
+
+    func startObserverNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(sessionWasInterrupted),
+            name: .AVCaptureSessionWasInterrupted,
+            object: self.videoCaptureSession
+        )
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(sessionInterruptionEnded),
+            name: .AVCaptureSessionInterruptionEnded,
+            object: self.videoCaptureSession
+        )
+    }
+
+    public func appWillResignActive() {
+//        isVideoSessionRunning = false
+//
+//        sessionQueue.async {
+//            self.videoSessionLock.lock()
+//            log.debug("[Capturer] Remove video input")
+//            self.videoCaptureSession.stopRunning()
+//            self.videoSessionLock.unlock()
+//        }
+    }
+
+    public func appDidBecomeActive() {
+        sessionQueue.async {
+            self.ensureVideoSessionRunning()
+        }
+    }
+
+    public func appDidEnterBackground() {
+        isVideoSessionRunning = false
+    }
+
+    @objc func sessionWasInterrupted(notification: Notification) {
+        isVideoSessionRunning = false
+        guard let userInfoValue = notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as AnyObject?,
+              let reasonIntegerValue = userInfoValue.integerValue,
+              let reason = AVCaptureSession.InterruptionReason(rawValue: reasonIntegerValue) else {
+            return
+        }
+
+        print("Capture session interrupted: \(reason)")
+
+        switch reason {
+        case .videoDeviceNotAvailableInBackground:
+            // Session stopped because app went to background
+            print("Camera stopped - app in background")
+
+        case .audioDeviceInUseByAnotherClient:
+            print("Audio device in use by another client")
+
+        case .videoDeviceInUseByAnotherClient:
+            print("Video device in use by another client")
+
+        case .videoDeviceNotAvailableWithMultipleForegroundApps:
+            print("Camera not available with multiple foreground apps")
+
+        @unknown default:
+            print("Unknown interruption reason")
+        }
+    }
+
+    @objc func sessionInterruptionEnded(notification: Notification) {
+        print("Capture session interruption ended")
+        ensureVideoSessionRunning()
+    }
+
     // MARK: - Orientation
     func startObserverDeviceOrientation() {
         NotificationCenter.default.addObserver(
