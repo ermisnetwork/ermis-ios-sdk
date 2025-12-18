@@ -47,6 +47,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 
     deinit {
         log.debug("TTTT CAPTURER CLIENT DEINIT")
+        self.stopCapturer()
     }
 
     func setup() {
@@ -346,7 +347,9 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 
     @objc func sessionInterruptionEnded(notification: Notification) {
         print("Capture session interruption ended")
-        ensureVideoSessionRunning()
+        sessionQueue.async {
+            self.ensureVideoSessionRunning()
+        }
     }
 
     // MARK: - Orientation
