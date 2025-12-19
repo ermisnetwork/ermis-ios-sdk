@@ -93,7 +93,9 @@ class CallController: NSObject {
             .store(in: &cancelBags)
 
         call.audioManager.onPortsChange = { [weak self] in
-            self?.delegate?.audioPortChange(to: self?.call.audioManager.currentPort)
+            DispatchQueue.main.async {
+                self?.delegate?.audioPortChange(to: self?.call.audioManager.currentPort)
+            }
         }
 
         NotificationCenter.default
@@ -110,9 +112,6 @@ class CallController: NSObject {
     /// Create and start new outgoing call.
     public func startCall() async throws {
         try await call.createCall()
-        ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: false)
-//        call.callNodeClient.startIO()
-//        CallManager.shared.playRingingSoundIfNeeded()
         CallManager.shared.reportOutgoingCallStarted(call)
     }
 

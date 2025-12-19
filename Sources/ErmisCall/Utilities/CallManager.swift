@@ -390,6 +390,7 @@ public class CallManager: NSObject, CXProviderDelegate {
 
     public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         log.debug("[CallKit] provider perform call start: \(action).", subsystems: .call)
+        ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: false)
         action.fulfill()
     }
 
