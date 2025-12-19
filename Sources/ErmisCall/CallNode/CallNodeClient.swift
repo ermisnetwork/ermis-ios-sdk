@@ -68,6 +68,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private var isReadyToSendFrame: Bool {
+//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected), - \(hasSentAudioConfig), - \(hasSentVideoConfig)")
         guard callNodeConnection.isConnected else {
             return false
         }
@@ -266,6 +267,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
+                log.debug("[CallNode] Receive video frame from encoder")
                 sendVideoFrameIfNeeded(videoFrame)
             }
             .store(in: &cancelBags)
@@ -276,6 +278,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
+                log.debug("[CallNode] Receive video frame from encoder")
                 sendVideoFrameIfNeeded(videoFrame)
             }
             .store(in: &cancelBags)

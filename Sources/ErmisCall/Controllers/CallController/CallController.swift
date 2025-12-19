@@ -112,7 +112,7 @@ class CallController: NSObject {
         try await call.createCall()
         ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: false)
 //        call.callNodeClient.startIO()
-        CallManager.shared.playRingingSoundIfNeeded()
+//        CallManager.shared.playRingingSoundIfNeeded()
         CallManager.shared.reportOutgoingCallStarted(call)
     }
 

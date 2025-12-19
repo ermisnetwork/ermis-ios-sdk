@@ -115,6 +115,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         controller.startCallObservers()
 
         connectionStatusLabel.numberOfLines = 0
+        connectionStatusLabel.isHidden = true
 
         remoteVideoView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(onRemoteVideoDidTapped)))
         /// Set default audio port.

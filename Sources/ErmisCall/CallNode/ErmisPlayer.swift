@@ -240,7 +240,6 @@ public class ErmisPlayer: AppLifecycleObserver {
 //            log.debug("[Player] start handle delta key frame")
             self.handleVideoFrame(videoFrame.encodedFrame, timestamp: videoFrame.timestamp)
         case .audioFrame:
-//            log.debug("[Player] parse audio frame")
             guard isReadyToPlay else {
                 return
             }
@@ -652,6 +651,9 @@ public class ErmisPlayer: AppLifecycleObserver {
 
     // MARK: - App life cycle
     public func appDidBecomeActive() {
+        guard isReadyToPlay else {
+            return
+        }
         if #available(iOS 17.0, *) {
             videoLayer.sampleBufferRenderer.flush()
         } else {

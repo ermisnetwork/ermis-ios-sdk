@@ -186,7 +186,9 @@ public class ErmisCallAudioManager {
 
     public func setOverrideOutputPort(isSpeaker: Bool) {
         do {
-            try AVAudioSession.sharedInstance().overrideOutputAudioPort(isSpeaker ? .speaker : .none)
+            if isSpeaker {
+                try AVAudioSession.sharedInstance().overrideOutputAudioPort(.speaker)
+            }
             let route = AVAudioSession.sharedInstance().currentRoute
             for output in route.outputs {
                 print("TTTT Output:", output.portType.rawValue)
