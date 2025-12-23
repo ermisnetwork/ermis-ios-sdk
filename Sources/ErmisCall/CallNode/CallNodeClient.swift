@@ -471,11 +471,8 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     package func didActiveAudioSession() {
-        call?.audioManager.didActivateAudioSession()
-        if call?.audioManager.currentPort == nil {
-            call?.audioManager.setOverrideOutputPort(isSpeaker: call?.details.isVideo == true)
-        }
         self.startIO()
+        call?.audioManager.didActivateAudioSession()
     }
 
     package func didDeactiveAudioSession() {
