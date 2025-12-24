@@ -72,18 +72,6 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
         } else {
             log.error("[Capturer] Video output not added to session")
         }
-
-        // Setup audio output
-        self.audioOutput = AVCaptureAudioDataOutput()
-        self.audioOutput?.setSampleBufferDelegate(self, queue: self.audioQueue)
-        if let audioOutput = self.audioOutput, self.audioCaptureSession.canAddOutput(audioOutput) {
-            self.audioCaptureSession.addOutput(audioOutput)
-            log.debug("[Capturer] Audio output added to session")
-        } else {
-            log.error("[Capturer] Audio output not added to session")
-        }
-
-
     }
 
     func startCapturer(_ isAudioEnable: Bool, _ isVideoEnable: Bool) {
@@ -100,7 +88,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 
             if isAudioEnable {
                 log.debug("[Capturer] Start audio capture")
-                self.audioCaptureSession.startRunning()
+//                self.audioCaptureSession.startRunning()
             }
         }
     }
@@ -126,7 +114,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
         isVideoSessionRunning = false
         isAudioSessionRunning = false
         log.debug("[Capturer] Stop audio, video capture")
-        self.audioCaptureSession.stopRunning()
+//        self.audioCaptureSession.stopRunning()
         self.videoCaptureSession.stopRunning()
     }
 
@@ -193,7 +181,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     public func addAudioInput(_ device: AVCaptureDevice) throws {
         if let audioInput {
             if audioInput.device != device {
-                audioCaptureSession.removeInput(audioInput)
+//                audioCaptureSession.removeInput(audioInput)
             } else {
                 sessionQueue.async {
                     self.ensureAudioSessionRunning()
@@ -202,22 +190,22 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
         }
 
         // Add new input
-        guard let audioInput = try? AVCaptureDeviceInput(device: device),
-              audioCaptureSession.canAddInput(audioInput) else {
-            return
-        }
-
-        sessionQueue.async {
-            self.audioSessionLock.lock()
-            self.audioCaptureSession.beginConfiguration()
-            self.audioCaptureSession.addInput(audioInput)
-            self.audioInput = audioInput
-            log.debug("[Capturer] Add audio input")
-            self.audioCaptureSession.commitConfiguration()
-            self.audioSessionLock.unlock()
-
-            self.ensureAudioSessionRunning()
-        }
+//        guard let audioInput = try? AVCaptureDeviceInput(device: device),
+//              audioCaptureSession.canAddInput(audioInput) else {
+//            return
+//        }
+//
+//        sessionQueue.async {
+//            self.audioSessionLock.lock()
+//            self.audioCaptureSession.beginConfiguration()
+//            self.audioCaptureSession.addInput(audioInput)
+//            self.audioInput = audioInput
+//            log.debug("[Capturer] Add audio input")
+//            self.audioCaptureSession.commitConfiguration()
+//            self.audioSessionLock.unlock()
+//
+//            self.ensureAudioSessionRunning()
+//        }
     }
 
     private func ensureVideoSessionRunning() {
@@ -231,13 +219,13 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     private func ensureAudioSessionRunning() {
-        if self.isReadyToStart, !self.isAudioSessionRunning {
-            self.isAudioSessionRunning = true
-            log.debug("[Capturer] Start audio capture")
-            self.audioSessionLock.lock()
-            self.audioCaptureSession.startRunning()
-            self.audioSessionLock.unlock()
-        }
+//        if self.isReadyToStart, !self.isAudioSessionRunning {
+//            self.isAudioSessionRunning = true
+//            log.debug("[Capturer] Start audio capture")
+//            self.audioSessionLock.lock()
+//            self.audioCaptureSession.startRunning()
+//            self.audioSessionLock.unlock()
+//        }
     }
 
     public func removeVideoInput() {
@@ -256,18 +244,18 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     public func removeAudioInput() {
-        guard let audioInput, isAudioSessionRunning else {
-            return
-        }
-        audioCaptureSession.removeInput(audioInput)
-        self.audioInput = nil
-        isAudioSessionRunning = false
-        sessionQueue.async {
-            self.audioSessionLock.lock()
-            log.debug("[Capturer] Remove audio input")
-            self.audioCaptureSession.stopRunning()
-            self.audioSessionLock.unlock()
-        }
+//        guard let audioInput, isAudioSessionRunning else {
+//            return
+//        }
+//        audioCaptureSession.removeInput(audioInput)
+//        self.audioInput = nil
+//        isAudioSessionRunning = false
+//        sessionQueue.async {
+//            self.audioSessionLock.lock()
+//            log.debug("[Capturer] Remove audio input")
+//            self.audioCaptureSession.stopRunning()
+//            self.audioSessionLock.unlock()
+//        }
     }
 
     func videoCapturerDevice(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {

@@ -281,7 +281,7 @@ public class CallManager: NSObject, CXProviderDelegate {
             if let error {
                 log.error("[PushKit] Failed to report incoming call: \(error.localizedDescription)", subsystems: .call)
             } else {
-//                ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true)
+                ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true, isVideoCall: callUpdate.hasVideo)
                 log.debug("[PushKit] Reported incoming call: \(callUUID.uuidString)", subsystems: .call)
             }
             completion(error)
@@ -407,7 +407,7 @@ public class CallManager: NSObject, CXProviderDelegate {
             }
             return
         }
-        ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true, isVideoCall: currentCall?.details.isVideo ?? false)
+//        ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true, isVideoCall: currentCall?.details.isVideo ?? false)
 
         Task {
             do {
@@ -416,7 +416,7 @@ public class CallManager: NSObject, CXProviderDelegate {
                 try await currentCall?.acceptCall()
                 // Wait until call connected.
                 while currentCall?.details.state != .connected {
-                    try await Task.sleep(nanoseconds: 200_000_000)
+                    try await Task.sleep(nanoseconds: 100_000_000)
                 }
                 action.fulfill(withDateConnected: Date())
 

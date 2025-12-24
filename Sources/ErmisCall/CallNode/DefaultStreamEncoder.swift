@@ -34,7 +34,7 @@ public protocol StreamEncoder: AppLifecycleObserver {
                            bitrate: Int,
                            fps: Double) throws
     func encodeVideo(_ sampleBuffer: CMSampleBuffer, isKeyFrame: Bool)
-    func encodeAudio(_ sampleBuffer: CMSampleBuffer)
+    func encodeAudio(_ pcmSample: [Int16], timestamp: CMTime)
 
 }
 
@@ -577,14 +577,8 @@ public class DefaultStreamEncoder: StreamEncoder {
     }
 
     // MARK: - Encode Audio
-    public func encodeAudio(_ sampleBuffer: CMSampleBuffer) {
-        guard let samples = extractAudioFrame(from: sampleBuffer) else {
-            return
-        }
-        let presentationTimeStamp = isReadyToEncode ? CMSampleBufferGetPresentationTimeStamp(
-            sampleBuffer
-        ) : .zero
-        accumulateFrame(samples, presentationTimeStamp: presentationTimeStamp)
+    public func encodeAudio(_ pcmSample: [Int16], timestamp: CMTime) {
+        accumulateFrame(pcmSample, presentationTimeStamp: isReadyToEncode ? timestamp : .zero)
     }
 
     // Split sample buffer to each audio frame

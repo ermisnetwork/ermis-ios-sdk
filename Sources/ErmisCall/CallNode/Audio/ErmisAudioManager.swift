@@ -69,9 +69,10 @@ public class ErmisCallAudioManager {
                                     mode: .voiceChat,
                                     options: [
                                         .allowBluetooth,
-                                        .allowBluetoothHFP,
+                                        .allowBluetoothA2DP
                                     ])
             try session.setPreferredSampleRate(48_000)
+            try session.setPreferredIOBufferDuration(0.02)
             if isActive {
                 try session.setActive(true)
             }
@@ -101,6 +102,9 @@ public class ErmisCallAudioManager {
             if isActive {
                 setDefaultPort()
             }
+        case .categoryChange:
+            log.debug("[AudioManager] → Handling category change, re-applying preferred route: \(AVAudioSession.sharedInstance().categoryOptions)")
+            allPort = getAllAudioPort()
         default:
             break
         }
@@ -152,6 +156,7 @@ public class ErmisCallAudioManager {
             allPort = getAllAudioPort()
 
             isActive = true
+            // Check if Bluetooth was already active before setting default
             setDefaultPort()
         } catch {
             log.warning("[AudioManager] Config audio session failed: \(error)")
@@ -255,15 +260,33 @@ public class ErmisCallAudioManager {
     private func changeAudioPort(to port: AudioPort) {
         currentPort = port
         let audioSession = AVAudioSession.sharedInstance()
-        let isBuiltIn = port.portType == .builtInReceiver
+        let isBuiltInReceiver = port.portType == .builtInReceiver
+
+        guard isActive else {
+            log.warning("[AudioManager] Ignore changing audio port because session is not active")
+            return
+        }
 
         do {
-            if !isActive, port.isExternal {
-                try audioSession.overrideOutputAudioPort(port.port)
+            if port.isExternal {
+                // Use setPreferredInput for external input ports
+                let preferredInput = audioSession.currentRoute.inputs.first(where: { $0.uid == port.port?.uid })
+                try audioSession.setPreferredInput(preferredInput)
+                try audioSession.overrideOutputAudioPort(.none)
+                log.debug("[AudioManger] set preferred input: \(preferredInput)", subsystems: .call)
+                // Do not change output override
+            } else if port.portType == .builtInSpeaker {
+                // Override output to speaker
+                log.debug("[AudioManger] set override output to speaker", subsystems: .call)
+                try audioSession.setPreferredInput(nil)
+                try audioSession.overrideOutputAudioPort(.speaker)
+                // Remove preferred input
+            } else {
+                // Default case: no override, remove preferred input
+                log.debug("[AudioManger] default, not override anythings", subsystems: .call)
+                try audioSession.setPreferredInput(nil)
+                try audioSession.overrideOutputAudioPort(.none)
             }
-
-            try audioSession.overrideOutputAudioPort(isBuiltIn ? .speaker : .none)
-            try audioSession.setPreferredInput(port.isExternal ? port.port : port.portType.isBuiltIn)
             log.debug("[AudioManager] changeAudioPort(to port: \(port)")
         } catch {
             log.error("[AudioManager] Failed to set audio port: \(error)")
@@ -283,7 +306,7 @@ public class ErmisCallAudioManager {
             allPort.append(builtInSpeaker)
         }
 
-        if !allPort.contains(where: { $0.portType == .builtInReceiver }), !UIDevice.current.isMac {
+        if !allPort.contains(where: { $0.portType == .builtInReceiver || $0.isExternal }), UIDevice.current.isPhone {
             let builtInReceiver = AudioPort(identifier: builtInIdentifier,
                                             name: UIDevice.current.localizedModel,
                                             port: nil,
@@ -298,5 +321,4 @@ public class ErmisCallAudioManager {
         return allPort
     }
 }
-
 

@@ -10,7 +10,7 @@ public struct TransciverEvent: CallNodeEventProtocol {
     public var state: TransciverState
 
     public var payload: Data {
-        return (try? JSONEncoder().encode(state)) ?? Data()
+        return (try! JSONEncoder().encode(state)) ?? Data()
     }
 
     public init?(payload: Data) {

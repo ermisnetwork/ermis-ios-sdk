@@ -25,11 +25,14 @@ class CallNodeClient: NSObject, ObservableObject {
         return ErmisCallAudioManager.shared
     }
 
+    public var voipManager: ErmisVoIPManagerAdvanced?
+
     public let capturer: ErmisCapturer
     public let player: ErmisPlayer
 
 
     public var streamEncoder: StreamEncoder
+    public var streamDecoder: StreamDecoder
 
     public var eventPublisher = PassthroughSubject<CallNodeEventProtocol, Never>()
 
@@ -124,7 +127,10 @@ class CallNodeClient: NSObject, ObservableObject {
         self.callNodeConnection = callNodeConnection
         self.capturer = ErmisCapturer()
         self.player = ErmisPlayer()
+        self.voipManager = ErmisVoIPManagerAdvanced()
+        self.player.targetLatencyMs = 60
         self.streamEncoder = DefaultStreamEncoder()
+        self.streamDecoder = DefaultStreamDecoder()
         self.callIOState = CallIOState(isAudioEnabled: true,
                                        isVideoEnabled: false,
                                        isRemoteAudioEnabled: true,
@@ -167,6 +173,7 @@ class CallNodeClient: NSObject, ObservableObject {
         }
         observerCapturerOutput()
         observerEncoderOutput()
+        observerDecoderOutput()
         observerDataChannel()
         observerConnectionState()
         do {
@@ -217,14 +224,9 @@ class CallNodeClient: NSObject, ObservableObject {
             }
             .store(in: &cancelBags)
 
-        capturer.audioBufferPublisher
-            .receive(on: RunLoop.main)
-            .sink { [weak self] sampleBuffer in
-//                log.debug("[CallNode] Received capturer audio output frame.")
-                self?.streamEncoder.encodeAudio(sampleBuffer)
-                
-            }
-            .store(in: &cancelBags)
+        voipManager?.onMicrophoneOutput = { [weak self] (pcmSample, timestamp) in
+            self?.streamEncoder.encodeAudio(pcmSample, timestamp: timestamp)
+        }
 
         capturer.orientationPublisher
             .receive(on: RunLoop.main)
@@ -267,7 +269,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
-                log.debug("[CallNode] Receive video frame from encoder")
+//                log.debug("[CallNode] Receive video frame from encoder")
                 sendVideoFrameIfNeeded(videoFrame)
             }
             .store(in: &cancelBags)
@@ -278,7 +280,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
-                log.debug("[CallNode] Receive video frame from encoder")
+//                log.debug("[CallNode] Receive video frame from encoder")
                 sendVideoFrameIfNeeded(videoFrame)
             }
             .store(in: &cancelBags)
@@ -294,6 +296,31 @@ class CallNodeClient: NSObject, ObservableObject {
             .store(in: &cancelBags)
     }
 
+    private func observerDecoderOutput() {
+        log.debug("[Observer] Setting up decoder output observers. CancelBags count: \(cancelBags.count)")
+
+        streamDecoder.videoBufferPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] (videoBuffer, timestamp) in
+                guard let self else {
+                    return
+                }
+                self.player.enqueueVideoSampleBuffer(videoBuffer, timestamp: timestamp)
+            }
+            .store(in: &cancelBags)
+
+        streamDecoder.audioBufferPublisher
+            .receive(on: RunLoop.main)
+            .sink { [weak self] pcmData in
+                guard let self else {
+                    return
+                }
+                //self.player.enqueueAudioSamples(pcmData)
+                self.voipManager?.playAudio(pcmData)
+            }
+            .store(in: &cancelBags)
+    }
+
     private func observerDataChannel() {
         callNodeConnection.dataPublisher
             .receive(on: RunLoop.main)
@@ -302,36 +329,60 @@ class CallNodeClient: NSObject, ObservableObject {
                     return
                 }
                 let type = CallNodeEventType(with: data[0])
+                let payload = Data(data.subdata(in: 1..<data.count))
+
                 switch type {
-                case .audioConfig, .audioFrame, .videoKeyFrame, .videoDeltaFrame:
-                    do {
-                        player.parseEvent(data)
-                    } catch {
-                        log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
-                    }
-                case .videoConfig:
-                    do {
-                        player.parseEvent(data)
-                    } catch {
-                        log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
-                    }
-                    let payload = Data(data.subdata(in: 1..<data.count))
-                    guard let videoConfig = VideoConfig(payload: payload) else {
+                case .audioConfig:
+                    guard let audioConfig = AudioConfig(payload: payload) else {
+                        log.error("[CallNode] Failed to decode audio config event \(data.toString())")
                         return
                     }
+                    streamDecoder.setAudioConfig(audioConfig)
+                case .videoConfig:
+                    guard let videoConfig = VideoConfig(payload: payload) else {
+                        log.error("[CallNode] Failed to decode video config event \(data.toString())")
+                        return
+                    }
+                    streamDecoder.setVideoConfig(videoConfig)
+
                     let videoOrientation = VideoOrientation(rotation: CGFloat(videoConfig.orientation))
                     remoteVideoOrientationPublisher.send(videoOrientation)
+                    player.handleDeviceOrientationEvent(VideoOrientation(rotation: CGFloat(videoConfig.orientation)))
 
-                case .orientation:
-                    do {
-                        player.parseEvent(data)
-                    } catch {
-                        log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
-                    }
-                    let payload = Data(data.subdata(in: 1..<data.count))
-                    guard let videoOrientation = VideoOrientation(payload: payload) else {
+                case .audioFrame:
+                    guard player.isReadyToPlay else {
+                        log.debug("TTTTTT IGNORE AUDIO FRAME< PLAYER IS NOT READY TO PLAY")
                         return
                     }
+                    guard let audioFrame = AudioFrame(payload: payload) else {
+                        log.error("[CallNode] Failed to decode audio frame \(data.toString())")
+                        return
+                    }
+                    streamDecoder.decodeAudioFrame(audioFrame)
+                case .videoKeyFrame:
+                    guard player.isReadyToPlay else {
+                        return
+                    }
+                    guard let videoFrame = VideoKeyFrame(payload: payload) else {
+                        log.error("[CallNode] Failed to decode video key frame \(data.toString())")
+                        return
+                    }
+                    streamDecoder.decodeVideoFrame(data: videoFrame.encodedFrame, timestamp: videoFrame.timestamp)
+                case .videoDeltaFrame:
+                    guard player.isReadyToPlay else {
+                        return
+                    }
+                    guard let videoFrame = VideoDeltaFrame(payload: payload) else {
+                        log.error("[CallNode] Failed to decode video delta frame \(data.toString())")
+                        return
+                    }
+                    streamDecoder.decodeVideoFrame(data: videoFrame.encodedFrame, timestamp: videoFrame.timestamp)
+                case .orientation:
+                    guard let videoOrientation = VideoOrientation(payload: payload) else {
+                        log.error("[CallNode] Failed to decode video orientation frame \(data.toString())")
+                        return
+                    }
+                    player.handleDeviceOrientationEvent(videoOrientation)
                     remoteVideoOrientationPublisher.send(videoOrientation)
                 case .connected:
                     call?.setState(.connected)
@@ -340,7 +391,6 @@ class CallNodeClient: NSObject, ObservableObject {
                     }
                     log.debug("[CallNode] Received connected event")
                 case .transciver:
-                    let payload = Data(data.subdata(in: 1..<data.count))
                     guard let transciverEvent = TransciverEvent(payload: payload) else {
                         log.error("[CallNode] Failed to decode transciver event \(data.toString())")
                         return
@@ -462,6 +512,11 @@ class CallNodeClient: NSObject, ObservableObject {
     // MARK: - Action
     package func startIO() {
         capturer.startCapturer(true, true)
+        do {
+            try voipManager?.start()
+        } catch {
+            log.error("[CallNode] Failed to start VoIP manager: \(error)")
+        }
         player.setupPlayerIfNeeded()
 //        if call?.details.isVideo == true {
 //            call?.audioManager.changeAudioPort(to: .builtInSpeaker)
@@ -538,6 +593,7 @@ class CallNodeClient: NSObject, ObservableObject {
             }
             if !isEnable {
                 callIOState.isAudioEnabled = false
+                voipManager?.setMicrophoneEnabled(false)
                 capturer.removeAudioInput()
             } else {
                 let isMicrophoneAccessGranted = await ioAccessManager.requestMicrophoneAccessIfNeeded()
@@ -550,6 +606,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 }
                 do {
                     try capturer.addAudioInput(audioDevice)
+                    voipManager?.setMicrophoneEnabled(true)
                     callIOState.isAudioEnabled = true
                 } catch {
                     log.warning("[CallNode] Failed to add audio input: \(error)")

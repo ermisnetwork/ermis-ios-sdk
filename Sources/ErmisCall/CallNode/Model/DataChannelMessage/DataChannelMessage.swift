@@ -57,9 +57,15 @@ public struct TransciverState: Codable {
     }
 
     public init(from decoder: any Decoder) throws {
-        let container: KeyedDecodingContainer<TransciverState.CodingKeys> = try decoder.container(keyedBy: TransciverState.CodingKeys.self)
-        self.audioEnable = try container.decode(Bool.self, forKey: TransciverState.CodingKeys.audioEnable)
-        self.videoEnable = try container.decode(Bool.self, forKey: TransciverState.CodingKeys.videoEnable)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.audioEnable = try container.decode(Bool.self, forKey: .audioEnable)
+        self.videoEnable = try container.decode(Bool.self, forKey: .videoEnable)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(audioEnable, forKey: .audioEnable)
+        try container.encode(videoEnable, forKey: .videoEnable)
     }
 
     var description: String {
