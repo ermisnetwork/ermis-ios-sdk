@@ -13,6 +13,7 @@ public enum CallNodeEventType {
     case transciver
     case requestConfig
     case requestKeyframe
+    case endCall
     case unknown
 
     var rawValue: UInt8 {
@@ -37,6 +38,8 @@ public enum CallNodeEventType {
             return 8
         case .requestKeyframe:
             return 9
+        case .endCall:
+            return 10
         default:
             return 255
         }
@@ -60,6 +63,12 @@ public enum CallNodeEventType {
             self = .connected
         case 7:
             self = .transciver
+        case 8:
+            self = .requestConfig
+        case 9:
+            self = .requestKeyframe
+        case 10:
+            self = .endCall
         default:
             self = .unknown
         }

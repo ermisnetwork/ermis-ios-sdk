@@ -56,33 +56,40 @@ class CallNodeClient: NSObject, ObservableObject {
     private var sendingAudioConfig: Bool = false
     private var hasSentAudioConfig: Bool = false {
         didSet {
-            if isReadyToSendFrame {
-                streamEncoder.isReadyToEncode = true
+            if isReadyToSendAudioFrame {
+                streamEncoder.isReadyToEncodeAudio = true
             }
         }
     }
     private var sendingVideoConfig: Bool = false
     private var hasSentVideoConfig: Bool = false {
         didSet {
-            if isReadyToSendFrame {
-                streamEncoder.isReadyToEncode = true
+            if isReadyToSendVideoFrame {
+                streamEncoder.isReadyToEncodeVideo = true
             }
         }
     }
 
-    private var isReadyToSendFrame: Bool {
-//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected), - \(hasSentAudioConfig), - \(hasSentVideoConfig)")
+    private var isReadyToSendVideoFrame: Bool {
+//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected) - \(hasSentVideoConfig)")
         guard callNodeConnection.isConnected else {
             return false
         }
         guard call?.details.state == .connected else {
             return false
         }
-        if call?.callNodeClient.callIOState.isVideoEnabled == true {
-            return hasSentVideoConfig && hasSentAudioConfig
-        } else {
-            return hasSentAudioConfig
+        return hasSentVideoConfig
+    }
+
+    private var isReadyToSendAudioFrame: Bool {
+//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected), - \(hasSentAudioConfig)")
+        guard callNodeConnection.isConnected else {
+            return false
         }
+        guard call?.details.state == .connected else {
+            return false
+        }
+        return hasSentAudioConfig
     }
 
     public weak var call: Call? {
@@ -219,8 +226,8 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
-//                log.debug("[CallNode] Received capturer video output frame.")
-                self.streamEncoder.encodeVideo(sampleBuffer, isKeyFrame: isReadyToSendFrame ? isKeyFrame : true)
+                log.debug("[CallNode] Received capturer video output frame.")
+                self.streamEncoder.encodeVideo(sampleBuffer, isKeyFrame: isReadyToSendVideoFrame ? isKeyFrame : true)
             }
             .store(in: &cancelBags)
 
@@ -248,7 +255,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self, let config else {
                     return
                 }
-//                log.debug("[CallNode] Receive audio config from encoder: \(config)")
+                log.debug("[CallNode] Receive audio config from encoder: \(config)")
                 sendAudioConfigIfNeeded(config)
             }
             .store(in: &cancelBags)
@@ -259,6 +266,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self, let config else {
                     return
                 }
+//                log.debug("[CallNode] Receive video config from encoder: \(config)")
                 sendVideoConfigIfNeeded(config)
             }
             .store(in: &cancelBags)
@@ -269,7 +277,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
-//                log.debug("[CallNode] Receive video frame from encoder")
+                log.debug("[CallNode] Receive video frame from encoder")
                 sendVideoFrameIfNeeded(videoFrame)
             }
             .store(in: &cancelBags)
@@ -280,7 +288,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
-//                log.debug("[CallNode] Receive video frame from encoder")
+                log.debug("[CallNode] Receive video frame from encoder")
                 sendVideoFrameIfNeeded(videoFrame)
             }
             .store(in: &cancelBags)
@@ -288,23 +296,24 @@ class CallNodeClient: NSObject, ObservableObject {
         streamEncoder.audioFramePublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] audioFrame in
-                guard let self, isReadyToSendFrame else {
+//                log.debug("[CallNode] Receive audio frame from encoder")
+                guard let self, isReadyToSendAudioFrame else {
                     return
                 }
+//                log.debug("[CallNode] Send audio frame from encoder")
                 callNodeConnection.sendEvent(audioFrame)
             }
             .store(in: &cancelBags)
     }
 
     private func observerDecoderOutput() {
-        log.debug("[Observer] Setting up decoder output observers. CancelBags count: \(cancelBags.count)")
-
         streamDecoder.videoBufferPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] (videoBuffer, timestamp) in
                 guard let self else {
                     return
                 }
+//                log.debug("[CallNode] Enqueue video sample buffer.")
                 self.player.enqueueVideoSampleBuffer(videoBuffer, timestamp: timestamp)
             }
             .store(in: &cancelBags)
@@ -337,12 +346,14 @@ class CallNodeClient: NSObject, ObservableObject {
                         log.error("[CallNode] Failed to decode audio config event \(data.toString())")
                         return
                     }
+                    log.debug("[CallNode] Decode audio config event \(data.toString())")
                     streamDecoder.setAudioConfig(audioConfig)
                 case .videoConfig:
                     guard let videoConfig = VideoConfig(payload: payload) else {
                         log.error("[CallNode] Failed to decode video config event \(data.toString())")
                         return
                     }
+                    log.debug("[CallNode] Decode video config event \(data.toString())")
                     streamDecoder.setVideoConfig(videoConfig)
 
                     let videoOrientation = VideoOrientation(rotation: CGFloat(videoConfig.orientation))
@@ -350,16 +361,13 @@ class CallNodeClient: NSObject, ObservableObject {
                     player.handleDeviceOrientationEvent(VideoOrientation(rotation: CGFloat(videoConfig.orientation)))
 
                 case .audioFrame:
-                    guard player.isReadyToPlay else {
-                        log.debug("TTTTTT IGNORE AUDIO FRAME< PLAYER IS NOT READY TO PLAY")
-                        return
-                    }
                     guard let audioFrame = AudioFrame(payload: payload) else {
                         log.error("[CallNode] Failed to decode audio frame \(data.toString())")
                         return
                     }
                     streamDecoder.decodeAudioFrame(audioFrame)
                 case .videoKeyFrame:
+//                    log.debug("TTTT DECODE VIDEO FRAME - \(player.isReadyToPlay)")
                     guard player.isReadyToPlay else {
                         return
                     }
@@ -369,6 +377,7 @@ class CallNodeClient: NSObject, ObservableObject {
                     }
                     streamDecoder.decodeVideoFrame(data: videoFrame.encodedFrame, timestamp: videoFrame.timestamp)
                 case .videoDeltaFrame:
+//                    log.debug("TTTT DECODE VIDEO FRAME - \(player.isReadyToPlay)")
                     guard player.isReadyToPlay else {
                         return
                     }
@@ -376,6 +385,7 @@ class CallNodeClient: NSObject, ObservableObject {
                         log.error("[CallNode] Failed to decode video delta frame \(data.toString())")
                         return
                     }
+//                    log.debug("TTTT DECODE VIDEO FRAME")
                     streamDecoder.decodeVideoFrame(data: videoFrame.encodedFrame, timestamp: videoFrame.timestamp)
                 case .orientation:
                     guard let videoOrientation = VideoOrientation(payload: payload) else {
@@ -386,8 +396,11 @@ class CallNodeClient: NSObject, ObservableObject {
                     remoteVideoOrientationPublisher.send(videoOrientation)
                 case .connected:
                     call?.setState(.connected)
-                    if isReadyToSendFrame {
-                        streamEncoder.isReadyToEncode = true
+                    if isReadyToSendVideoFrame {
+                        streamEncoder.isReadyToEncodeVideo = true
+                    }
+                    if isReadyToSendAudioFrame {
+                        streamEncoder.isReadyToEncodeAudio = true
                     }
                     log.debug("[CallNode] Received connected event")
                 case .transciver:
@@ -398,7 +411,23 @@ class CallNodeClient: NSObject, ObservableObject {
                     let transciverState = transciverEvent.state
                     callIOState.isRemoteAudioEnable = transciverState.audioEnable
                     callIOState.isRemoteVideoEnabled = transciverState.videoEnable
+                    if callIOState.isRemoteVideoEnabled {
+                        player.isEnable = true
+                    } else {
+                        player.isEnable = false
+                    }
                     callIOStatePublisher.send(callIOState)
+                case .requestConfig:
+                    break
+                case .requestKeyframe:
+                    break
+                case .endCall:
+                    Task(priority: .high) { [weak self] in
+                        guard let self else {
+                            return
+                        }
+                        await  CallManager.shared.endCall(self.call)
+                    }
                 case .unknown:
                     log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
                 default:
@@ -422,8 +451,11 @@ class CallNodeClient: NSObject, ObservableObject {
                                 try await self.callNodeConnection.sendControlFrame(CallConnected().data)
                                 DispatchQueue.main.async {
                                     self.call?.setState(.connected)
-                                    if self.isReadyToSendFrame {
-                                        self.streamEncoder.isReadyToEncode = true
+                                    if self.isReadyToSendVideoFrame {
+                                        self.streamEncoder.isReadyToEncodeVideo = true
+                                    }
+                                    if self.isReadyToSendAudioFrame {
+                                        self.streamEncoder.isReadyToEncodeAudio = true
                                     }
                                 }
                             } catch let error {
@@ -445,7 +477,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private func sendVideoFrameIfNeeded(_ event: CallNodeEventProtocol) {
-        if isReadyToSendFrame {
+        if isReadyToSendVideoFrame {
             callNodeConnection.sendEvent(event)
         }
     }
@@ -469,11 +501,11 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private func sendVideoConfigIfNeeded(_ config: VideoConfig) {
-        var config = config
-        let orientation = self.capturer.currentDeviceOrientation
-        let rotation = self.previewRotationValue(for: orientation)
-        config.orientation = Int(rotation)
         if callNodeConnection.isConnected, !sendingVideoConfig, !hasSentVideoConfig {
+            var config = config
+            let orientation = self.capturer.currentDeviceOrientation
+            let rotation = self.previewRotationValue(for: orientation)
+            config.orientation = Int(rotation)
             sendingVideoConfig = true
             Task(name: "call_node_send_config", priority: .high) {
                 do {
@@ -495,34 +527,32 @@ class CallNodeClient: NSObject, ObservableObject {
         log.debug("[CallNode] Call node client app will resign active", subsystems: .call)
         streamEncoder.appWillResignActive()
         capturer.appWillResignActive()
+        player.appWillResignActive()
     }
 
     @objc private func appDidEnterBackground() {
         log.debug("[CallNode] Call node client app did enter background", subsystems: .call)
         streamEncoder.appDidEnterBackground()
         capturer.appDidEnterBackground()
+        player.appDidEnterBackground()
     }
 
     @objc private func appDidBecomeActive() {
         log.debug("[CallNode] Call node client app did become active", subsystems: .call)
         streamEncoder.appDidBecomeActive()
         capturer.appDidBecomeActive()
+        player.appDidBecomeActive()
     }
 
     // MARK: - Action
     package func startIO() {
-        capturer.startCapturer(true, true)
+        capturer.startCapturer(call?.details.isVideo ?? false)
+        player.setupPlayerIfNeeded()
         do {
             try voipManager?.start()
         } catch {
             log.error("[CallNode] Failed to start VoIP manager: \(error)")
         }
-        player.setupPlayerIfNeeded()
-//        if call?.details.isVideo == true {
-//            call?.audioManager.changeAudioPort(to: .builtInSpeaker)
-//        } else {
-//            call?.audioManager.changeAudioPort(to: .builtInReceiver)
-//        }
     }
 
     package func didActiveAudioSession() {
@@ -594,18 +624,18 @@ class CallNodeClient: NSObject, ObservableObject {
             if !isEnable {
                 callIOState.isAudioEnabled = false
                 voipManager?.setMicrophoneEnabled(false)
-                capturer.removeAudioInput()
             } else {
                 let isMicrophoneAccessGranted = await ioAccessManager.requestMicrophoneAccessIfNeeded()
                 guard isMicrophoneAccessGranted else {
-                    setAudioEnable(false)
+                    log.debug("[CallNode] Don't have mic permission")
+                    voipManager?.setMicrophoneEnabled(false)
+                    callIOState.isAudioEnabled = false
                     return
                 }
                 guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
                     return
                 }
                 do {
-                    try capturer.addAudioInput(audioDevice)
                     voipManager?.setMicrophoneEnabled(true)
                     callIOState.isAudioEnabled = true
                 } catch {
@@ -632,30 +662,19 @@ class CallNodeClient: NSObject, ObservableObject {
     /// - Parameters:
     ///    - message: The message to send.
     /// - Returns: A boolean value, `true` if message send success.
-    func sendMessage(_ message: DataChannelMessage) -> Bool {
+    func sendEndcallEvent() -> Bool {
         guard callNodeConnection.isConnected else {
             return false
         }
-        do {
-            var data = try JSONEncoder().encode(message)
-            var type: UInt8
-            switch message {
-            case .endCall:
-                type = 7
+        let data = Data(bytes: [CallNodeEventType.endCall.rawValue])
+        Task(name: "call_node_send_event", priority: .high) {
+            do {
+                try await callNodeConnection.sendControlFrame(data)
+            } catch {
+                log.error("[CallNode] Failed to end call event: \(error)", subsystems: .call)
             }
-            data.insert(type, at: 0)
-            Task(name: "call_node_send_event", priority: .high) {
-                do {
-                    try await callNodeConnection.sendControlFrame(data)
-                } catch {
-                    log.error("[CallNode] Failed to send data message: \(message) with error: \(error)", subsystems: .call)
-                }
-            }
-            return true
-        } catch {
-            log.error("[WebRTC] error when encoding message: \(message)", subsystems: .webRTC)
-            return false
         }
+        return true
     }
 
     func isCallNodeConnected() -> Bool {
@@ -736,47 +755,6 @@ class CallNodeClient: NSObject, ObservableObject {
         }
     }
 
-//    /// Create and send offer signal to other.
-//    ///
-//    /// - Returns: Throws error if not successful.
-//    public func sendOffer() async throws {
-//        let sdp = try await peerConnection.createOffer(with: .default)
-//        try await signaling.sendSignal(sessionId: sessionId,
-//                                       callId: call?.details.callId,
-//                                       action: .signalCall,
-//                                       isVideo: isVideoCall,
-//                                       signalType: .offer, sdp: sdp.sdp)
-//        log.debug("[WebRTC] Send offer callID: \(call?.details.callId ?? "")")
-//    }
-//
-//    /// Create and send answer signal to other.
-//    ///
-//    /// - Returns: Throws error if not successful.
-//    public func sendAnswer() async throws {
-//        let sdp = try await peerConnection.createAnswer(with: .default)
-//        try await signaling.sendSignal(sessionId: sessionId,
-//                                       callId: call?.details.callId,
-//                                       action: .signalCall,
-//                                       isVideo: isVideoCall,
-//                                       signalType: .answer,
-//                                       sdp: sdp.sdp)
-//        log.debug("[WebRTC] Send answer callID: \(call?.details.callId ?? "")")
-//    }
-
-//    /// Sending all current pending ices to other.
-//    ///
-//    /// - Returns: Throws error if not successful.
-//    public func sendPendingIces() async throws {
-//        for ice in pendingLocalICE {
-//            try await signaling.sendSignal(sessionId: sessionId,
-//                                           callId: call?.details.callId,
-//                                           action: .signalCall,
-//                                           isVideo: isVideoCall,
-//                                           signalType: .ice,
-//                                           sdp: ice.sdpString)
-//        }
-//    }
-
     /// Send upgrade signal to change from audio call to video call.
     ///
     /// - Returns: Throws error if not successful.
@@ -850,7 +828,8 @@ class CallNodeClient: NSObject, ObservableObject {
         guard call?.details.state != .ended else {
             return
         }
-        try? await sendMessage(.endCall)
+        try? sendEndcallEvent()
+        capturer.stopCapturer()
         try await signaling.sendSignal(sessionId: sessionId,
                                        callId: call?.details.callId,
                                        action: .rejectCall,
@@ -858,7 +837,6 @@ class CallNodeClient: NSObject, ObservableObject {
                                        signalType: nil,
                                        sdp: nil,
                                        metadata: nil)
-        capturer.stopCapturer()
         callNodeConnection.close()
     }
 
@@ -880,7 +858,7 @@ class CallNodeClient: NSObject, ObservableObject {
         guard call?.details.state != .ended else {
             return
         }
-        try? await sendMessage(.endCall)
+        try? await sendEndcallEvent()
         if call?.isMissed == true {
             try await signaling.sendSignal(sessionId: sessionId,
                                            callId: call?.details.callId,
@@ -954,8 +932,11 @@ class CallNodeClient: NSObject, ObservableObject {
             }
         case .connectCall:
             call?.setState(.connected)
-            if isReadyToSendFrame {
-                streamEncoder.isReadyToEncode = true
+            if isReadyToSendVideoFrame {
+                streamEncoder.isReadyToEncodeVideo = true
+            }
+            if isReadyToSendAudioFrame {
+                streamEncoder.isReadyToEncodeAudio = true
             }
         case .healthCall:
             break
@@ -971,24 +952,6 @@ class CallNodeClient: NSObject, ObservableObject {
         }
     }
 
-    /// Handle received data channel message from WebRTC data channel.
-    ///
-    /// - Parameters:
-    ///    - message: The received data channel message to handle.
-    func handleDataChannelMessage(_ message: DataChannelMessage) {
-        switch message {
-        case .endCall:
-            call?.setState(.ended)
-            Task {
-                await  CallManager.shared.endCall(call)
-            }
-            Task {
-                try? await endCall()
-            }
-            break
-        }
-    }
-
 //    // MARK: - Helper
     private func previewRotationValue(for orientation: UIDeviceOrientation) -> UInt32 {
         switch orientation {
@@ -1001,7 +964,7 @@ class CallNodeClient: NSObject, ObservableObject {
         case .landscapeRight:
             return 0
         case .unknown:
-            return 0
+            return 90
         @unknown default:
             return 0
         }

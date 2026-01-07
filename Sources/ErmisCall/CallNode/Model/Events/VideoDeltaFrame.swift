@@ -11,7 +11,7 @@ public struct VideoDeltaFrame: CallNodeEventProtocol {
 
     public var type: CallNodeEventType { .videoDeltaFrame }
     public var payload: Data {
-        let ptsMs = UInt64(CMTimeConvertScale(timestamp, timescale: 1_000_000_000, method: .default).value)
+        let ptsMs = UInt64(CMTimeConvertScale(timestamp, timescale: 1_000_000, method: .default).value)
         var timestampBE = ptsMs.bigEndian
         let timeStampData = Data(
             bytes: &timestampBE,
@@ -33,7 +33,7 @@ public struct VideoDeltaFrame: CallNodeEventProtocol {
             memcpy(&val, raw.baseAddress!, 8)
             return UInt64(bigEndian: val)
         }
-        timestamp = CMTime(value: CMTimeValue(timestampValue), timescale: 1_000_000_000)
+        timestamp = CMTime(value: CMTimeValue(timestampValue), timescale: 1_000_000)
         encodedFrame = payload.subdata(in: 8..<payload.count)
     }
 

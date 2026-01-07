@@ -301,8 +301,8 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     public func endCall() {
         Task {
             do {
-                try await controller.endCall()
                 close()
+                try await controller.endCall()
             } catch let error {
                 close()
                 log.error("[ErmisCall] end call failed with error: \(error)", subsystems: .call)
@@ -644,17 +644,6 @@ extension CallViewController {
         localVideoView.videoView.isHidden = !callIOState.isVideoEnabled
         remoteVideoView.videoView.isHidden = !callIOState.isRemoteVideoEnabled
         log.debug("TTTT CALL IO STATE IS REMOTE VIDEO: \(callIOState.isRemoteVideoEnabled)")
-
-//        if !localVideoView.videoView.isHidden {
-//            DispatchQueue.main.async {
-//                self.localVideoView.attach(with: self.call.callNodeClient.capturer)
-//            }
-//        }
-//        if !remoteVideoView.videoView.isHidden {
-//            DispatchQueue.main.async {
-//                self.remoteVideoView.config(with: self.call.callNodeClient.player)
-//            }
-//        }
     }
 
     /// Update controls view.
@@ -722,7 +711,8 @@ extension CallViewController {
 // MARK: - PiPable
 extension CallViewController: PiPable {
     public func willMinimizedPiP() {
-
+        isPiP = true
+        stopHideControlsTimer()
     }
 
     public func didMinimizedPiP() {
@@ -731,11 +721,12 @@ extension CallViewController: PiPable {
     }
 
     public func willExpanedPiP() {
-
+        isPiP = false
     }
 
     public func didExpanedPiP() {
         isPiP = false
+        startHideControlsTimer()
         onPiPStateDidChange()
     }
 

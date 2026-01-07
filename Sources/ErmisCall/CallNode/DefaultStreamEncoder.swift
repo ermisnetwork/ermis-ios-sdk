@@ -25,7 +25,8 @@ public protocol StreamEncoder: AppLifecycleObserver {
     var videoDeltaFramePublisher: PassthroughSubject<(VideoDeltaFrame), Never> { get }
     var audioFramePublisher: PassthroughSubject<AudioFrame, Never> { get }
 
-    var isReadyToEncode: Bool { get set }
+    var isReadyToEncodeVideo: Bool { get set }
+    var isReadyToEncodeAudio: Bool { get set }
 
     func setupVideoEncoder(width: Int32,
                            height: Int32,
@@ -102,7 +103,8 @@ public class DefaultStreamEncoder: StreamEncoder {
     public var videoDeltaFramePublisher = PassthroughSubject<(VideoDeltaFrame), Never>()
     public var audioFramePublisher = PassthroughSubject<AudioFrame, Never>()
 
-    public var isReadyToEncode: Bool = false
+    public var isReadyToEncodeVideo: Bool = false
+    public var isReadyToEncodeAudio: Bool = false
 
     var hasVideoConfig: Bool {
         return videoConfigPublisher.value != nil
@@ -166,10 +168,11 @@ public class DefaultStreamEncoder: StreamEncoder {
         guard let compressionSession,
               let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
         else {
+            log.warning("[Encoder] COMPRESSION SESSION OR IMAGE BUFFER IS NIL")
             return
         }
 
-        let presentationTimeStamp = isReadyToEncode ? CMSampleBufferGetPresentationTimeStamp(
+        let presentationTimeStamp = isReadyToEncodeVideo ? CMSampleBufferGetPresentationTimeStamp(
             sampleBuffer
         ) : .zero
 
@@ -249,9 +252,10 @@ public class DefaultStreamEncoder: StreamEncoder {
             }
         }
 
-        guard encoder.isReadyToEncode else {
+        guard encoder.isReadyToEncodeVideo else {
             let videoConfig = encoder.videoConfigPublisher.value
             encoder.videoConfigPublisher.send(videoConfig)
+            log.debug("[Encoder] Video not ready to encode, send config only")
             return
         }
         // Extract encoded data
@@ -272,6 +276,7 @@ public class DefaultStreamEncoder: StreamEncoder {
         )
 
         guard let pointer = dataPointer, totalLenth > 0 else {
+            log.debug("[Encoder] data pointer nil or lenth < 0: \(dataPointer), \(totalLenth)")
             return
         }
 
@@ -279,6 +284,7 @@ public class DefaultStreamEncoder: StreamEncoder {
         let presentationTimeStamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
         guard presentationTimeStamp != .zero else {
+            log.debug("[Encoder] PTS is zero")
             return
         }
 
@@ -578,7 +584,7 @@ public class DefaultStreamEncoder: StreamEncoder {
 
     // MARK: - Encode Audio
     public func encodeAudio(_ pcmSample: [Int16], timestamp: CMTime) {
-        accumulateFrame(pcmSample, presentationTimeStamp: isReadyToEncode ? timestamp : .zero)
+        accumulateFrame(pcmSample, presentationTimeStamp: isReadyToEncodeAudio ? timestamp : .zero)
     }
 
     // Split sample buffer to each audio frame
@@ -643,10 +649,12 @@ public class DefaultStreamEncoder: StreamEncoder {
                 if presentationTimeStamp != .zero {
                     audioBufferStartTimestamp = CMTimeAdd(audioBufferStartTimestamp, frameDuration)
                 }
+                log.debug("[Encoder] Failed to encoded audio frame")
                 return
             }
 
             guard presentationTimeStamp != .zero else {
+                log.debug("[Encoder] Presentation timestamp is zero")
                 return
             }
 
@@ -680,7 +688,7 @@ public class DefaultStreamEncoder: StreamEncoder {
             audioConfigPublisher.send(audioConfig)
         }
 
-        guard isReadyToEncode else {
+        guard isReadyToEncodeAudio else {
             let audioConfig = audioConfigPublisher.value
             audioConfigPublisher.send(audioConfig)
             return nil
@@ -720,9 +728,10 @@ public class DefaultStreamEncoder: StreamEncoder {
             audioConfigPublisher.send(audioConfig)
         }
 
-        guard isReadyToEncode else {
+        guard isReadyToEncodeAudio else {
             let audioConfig = audioConfigPublisher.value
             audioConfigPublisher.send(audioConfig)
+            log.warning("[Encoder] Not ready to encode audio")
             return nil
         }
 
@@ -733,6 +742,7 @@ public class DefaultStreamEncoder: StreamEncoder {
                 &audioConverter
             )
             guard status == noErr, let audioConverter else {
+                log.warning("[Encoder] create audio converter failed with status: \(status)")
                 return nil
             }
 

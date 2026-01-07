@@ -112,7 +112,7 @@ public class CallNodeConnection {
     }
 
     public func close() {
-        endpoint.close()
+        endpoint.closeConnection()
         receivingTask?.cancel()
     }
 

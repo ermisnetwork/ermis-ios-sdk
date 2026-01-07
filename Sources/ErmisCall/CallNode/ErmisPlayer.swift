@@ -1,4 +1,5 @@
 import AVFoundation
+import UIKit
 import AudioToolbox
 import CoreMedia
 import ErmisChat
@@ -22,6 +23,22 @@ public class ErmisPlayer: AppLifecycleObserver {
     package var isReadyToPlay: Bool = false
     private var hasSetupRenderer: Bool = false
     private var audioUnitStarted: Bool = false
+    private var isRequestingMedia: Bool = false
+    var isEnable: Bool = false {
+        didSet {
+            if isEnable {
+                log.debug("[Player] START REQUEST MEDIA - IS ENABLE TRUE")
+                startRequestingMediaIfNeeded()
+            } else {
+                log.debug("[Player] STOP REQUEST MEDIA - IS ENABLE FAILED")
+                stopRequestingMedia()
+            }
+        }
+    }
+
+    private var isApplicationActive: Bool {
+        return UIApplication.shared.applicationState == .active
+    }
 
     // MARK: - Video Buffer
     private var videoBuffer: [(sampleBuffer: CMSampleBuffer, timestamp: CMTime)] = []
@@ -55,12 +72,14 @@ public class ErmisPlayer: AppLifecycleObserver {
     // MARK: - Setup
 
     package func setupPlayerIfNeeded() {
+        log.debug("[Player] Setup Player")
         isReadyToPlay = true
         if !hasSetupRenderer {
             hasSetupRenderer = true
 
             synchronizer.addRenderer(videoLayer)
             videoLayer.videoGravity = .resizeAspectFill
+            isRequestingMedia = true
             startRequestingMediaData()
         }
     }
@@ -85,7 +104,20 @@ public class ErmisPlayer: AppLifecycleObserver {
         isPlaying = false
     }
 
-    private func startRequestingMediaData() {
+    func startRequestingMediaIfNeeded() {
+        guard isEnable, !isRequestingMedia, isApplicationActive else {
+            log.debug("[Player] no need requetsing media: isEnable: \(isEnable), isRequestingMedia: \(isRequestingMedia), isApplicationActive: \(isApplicationActive)")
+            return
+        }
+        if isEnable {
+            isRequestingMedia = true
+            startRequestingMediaData()
+        }
+
+    }
+
+    func startRequestingMediaData() {
+        log.debug("[Player] Start requesting media")
         if #available(iOS 17.0, *) {
             videoLayer.sampleBufferRenderer.requestMediaDataWhenReady(on: videoQueue) { [weak self] in
                 self?.supplyVideoData()
@@ -98,10 +130,19 @@ public class ErmisPlayer: AppLifecycleObserver {
     }
 
     func stopRequestingMedia() {
+        log.debug("[Player] Stop requesting media")
+        isPlaying = false
+        synchronizer.rate = 0
+        isRequestingMedia = false
+        videoBufferLock.lock()
+        videoBuffer.removeAll()
+        videoBufferLock.unlock()
         if #available(iOS 17.0, *) {
             videoLayer.sampleBufferRenderer.stopRequestingMediaData()
+            videoLayer.sampleBufferRenderer.flush()
         } else {
             videoLayer.stopRequestingMediaData()
+            videoLayer.flush()
         }
     }
 
@@ -124,13 +165,16 @@ public class ErmisPlayer: AppLifecycleObserver {
             let (sampleBuffer, timestamp) = videoBuffer.removeFirst()
             if #available(iOS 17.0, *) {
                 videoLayer.sampleBufferRenderer.enqueue(sampleBuffer)
+                totalSamplesPlayed += 1
                 isReady = videoLayer.sampleBufferRenderer.isReadyForMoreMediaData
             } else {
                 videoLayer.enqueue(sampleBuffer)
+                totalSamplesPlayed += 1
                 isReady = videoLayer.isReadyForMoreMediaData
             }
 
             if !isPlaying {
+                log.debug("[Player] start playing at timestamp: \(timestamp)")
                 synchronizer.setRate(1, time: timestamp)
                 isPlaying = true
             }
@@ -138,13 +182,20 @@ public class ErmisPlayer: AppLifecycleObserver {
     }
 
     package func enqueueVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, timestamp: CMTime) {
-        guard hasSetupRenderer else { return }
+        log.debug("[Player] Enqueue video sample buffer: \(timestamp)")
+        guard hasSetupRenderer, isApplicationActive else {
+            if !videoBuffer.isEmpty {
+                videoBuffer.removeAll()
+            }
+            return
+        }
 
         videoBufferLock.lock()
         defer { videoBufferLock.unlock() }
-
+        totalSamplesEnqueued += 1
         videoBuffer.append((sampleBuffer, timestamp))
         if videoBuffer.count > maxVideoBufferSize {
+            droppedSamples += videoBuffer.count - maxVideoBufferSize
             videoBuffer.removeFirst(videoBuffer.count - maxVideoBufferSize)
         }
     }
@@ -156,28 +207,20 @@ public class ErmisPlayer: AppLifecycleObserver {
     }
 
     public func appDidBecomeActive() {
-        guard isReadyToPlay else { return }
-
-        if #available(iOS 17.0, *) {
-            videoLayer.sampleBufferRenderer.flush()
-        } else {
-            videoLayer.flush()
+        guard isReadyToPlay else {
+            log.warning("[Player] appdidbecomeactive but not ready to play")
+            return
         }
-
+        log.debug("[Player] Application did become active")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.startRequestingMediaData()
+            self.startRequestingMediaIfNeeded()
         }
     }
 
     public func appWillResignActive() {}
 
     public func appDidEnterBackground() {
-        if #available(iOS 17.0, *) {
-            videoLayer.sampleBufferRenderer.stopRequestingMediaData()
-            videoLayer.sampleBufferRenderer.flush()
-        } else {
-            videoLayer.stopRequestingMediaData()
-            videoLayer.flush()
-        }
+        log.debug("[Player] STOP REQUEST MEDIA - APP DID ENTER BG")
+        stopRequestingMedia()
     }
 }

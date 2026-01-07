@@ -13,7 +13,7 @@ public struct AudioFrame: CallNodeEventProtocol {
     public var type: CallNodeEventType { .audioFrame }
 
     public var payload: Data {
-        let ptsMs = UInt64(CMTimeConvertScale(timestamp, timescale: 1_000_000_000, method: .default).value)
+        let ptsMs = UInt64(CMTimeConvertScale(timestamp, timescale: 1_000_000, method: .default).value)
         var timestampBE = ptsMs.bigEndian
         let timeStampData = Data(
             bytes: &timestampBE,
@@ -36,7 +36,7 @@ public struct AudioFrame: CallNodeEventProtocol {
             return UInt64(bigEndian: val)
         }
 
-        timestamp = CMTime(value: CMTimeValue(timestampValue), timescale: 1_000_000_000)
+        timestamp = CMTime(value: CMTimeValue(timestampValue), timescale: 1_000_000)
         encodedFrame = payload.subdata(in: 8..<payload.count)
     }
 

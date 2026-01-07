@@ -223,7 +223,7 @@ public class Call: NSObject {
 
     /// Toggle camera position.
     func toggleCameraPosition() {
-        Task {
+        Task(priority: .high) {
             do {
                 try await callNodeClient.toggleCameraPosition()
             } catch let error {
@@ -237,7 +237,7 @@ public class Call: NSObject {
     ///  - Parameters:
     ///   - position: New camera position want to set.
     func setCameraPosition(_ position: CameraPosition) {
-        Task {
+        Task(priority: .high) {
             do {
                 try await callNodeClient.setCameraPosition(position)
             } catch let error {
@@ -266,7 +266,7 @@ extension Call {
     @objc func timerDidFire() {
         switch details.state {
         case .idle, .ringing, .connecting:
-            Task {
+            Task(priority: .high) {
                 isMissed = true
                 try await CallManager.shared.endCall(self)
             }
@@ -307,7 +307,7 @@ extension Call {
 
         if let durationNotReceivedHealthCallMessage = lastTimeReceivedHealthCallMessage?.timeIntervalSinceNow {
             if durationNotReceivedHealthCallMessage < -30 {
-                Task {
+                Task(priority: .high) {
                     await CallManager.shared.endCall(self)
                 }
                 stopDurationTimer()

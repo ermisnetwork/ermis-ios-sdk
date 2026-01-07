@@ -9,16 +9,12 @@ import ErmisChat
 
 public class ErmisCapturer: NSObject, AppLifecycleObserver {
     public let videoCaptureSession = AVCaptureSession()
-    public let audioCaptureSession = AVCaptureSession()
 
     private var videoInput: AVCaptureDeviceInput?
     private var videoOutput: AVCaptureVideoDataOutput?
-    private var audioInput: AVCaptureDeviceInput?
-    private var audioOutput: AVCaptureAudioDataOutput?
 
     private let sessionQueue = DispatchQueue(label: "network.ermis.session")
     private let videoQueue = DispatchQueue(label: "network.ermis.video")
-    private let audioQueue = DispatchQueue(label: "network.ermis.audio")
 
 
     private var preset: AVCaptureSession.Preset = .iFrame960x540
@@ -28,15 +24,12 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 
     private let desiredFPS: Float64 = 30
 
-    public var audioBufferPublisher = PassthroughSubject<CMSampleBuffer, Never>()
     public var videoBufferPublisher = PassthroughSubject<(CMSampleBuffer, Bool), Never>()
-    public var orientationPublisher = PassthroughSubject<UIDeviceOrientation, Never>()
+    public var orientationPublisher = CurrentValueSubject<UIDeviceOrientation, Never>(.portrait)
 
     private var isReadyToStart: Bool = false
     private var isVideoSessionRunning: Bool = false
-    private var isAudioSessionRunning: Bool = false
     private let videoSessionLock = NSLock()
-    private let audioSessionLock = NSLock()
 
     public override init() {
         super.init()
@@ -74,47 +67,21 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
         }
     }
 
-    func startCapturer(_ isAudioEnable: Bool, _ isVideoEnable: Bool) {
-        getCurrentAppState()
+    func startCapturer(_ isVideoEnable: Bool) {
         isReadyToStart = true
-        isVideoSessionRunning = isVideoEnable
-        isAudioSessionRunning = isAudioEnable
 
         sessionQueue.async {
+            self.isVideoSessionRunning = isVideoEnable
             if isVideoEnable {
                 log.debug("[Capturer] Start video capture")
                 self.videoCaptureSession.startRunning()
-            }
-
-            if isAudioEnable {
-                log.debug("[Capturer] Start audio capture")
-//                self.audioCaptureSession.startRunning()
-            }
-        }
-    }
-
-    private func getCurrentAppState() {
-        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-            let state = scene.activationState
-
-            switch state {
-            case .foregroundActive:
-                print("TTTT Foreground & active")
-            case .foregroundInactive:
-                print("TTTT Foreground but inactive")
-            case .background:
-                print("TTTT Background")
-            @unknown default:
-                break
             }
         }
     }
 
     func stopCapturer() {
         isVideoSessionRunning = false
-        isAudioSessionRunning = false
-        log.debug("[Capturer] Stop audio, video capture")
-//        self.audioCaptureSession.stopRunning()
+        log.debug("[Capturer] Stop video capture")
         self.videoCaptureSession.stopRunning()
     }
 
@@ -178,36 +145,6 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
         }
     }
 
-    public func addAudioInput(_ device: AVCaptureDevice) throws {
-        if let audioInput {
-            if audioInput.device != device {
-//                audioCaptureSession.removeInput(audioInput)
-            } else {
-                sessionQueue.async {
-                    self.ensureAudioSessionRunning()
-                }
-            }
-        }
-
-        // Add new input
-//        guard let audioInput = try? AVCaptureDeviceInput(device: device),
-//              audioCaptureSession.canAddInput(audioInput) else {
-//            return
-//        }
-//
-//        sessionQueue.async {
-//            self.audioSessionLock.lock()
-//            self.audioCaptureSession.beginConfiguration()
-//            self.audioCaptureSession.addInput(audioInput)
-//            self.audioInput = audioInput
-//            log.debug("[Capturer] Add audio input")
-//            self.audioCaptureSession.commitConfiguration()
-//            self.audioSessionLock.unlock()
-//
-//            self.ensureAudioSessionRunning()
-//        }
-    }
-
     private func ensureVideoSessionRunning() {
         if self.isReadyToStart, !self.isVideoSessionRunning {
             self.isVideoSessionRunning = true
@@ -216,16 +153,6 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
             self.videoCaptureSession.startRunning()
             self.videoSessionLock.unlock()
         }
-    }
-
-    private func ensureAudioSessionRunning() {
-//        if self.isReadyToStart, !self.isAudioSessionRunning {
-//            self.isAudioSessionRunning = true
-//            log.debug("[Capturer] Start audio capture")
-//            self.audioSessionLock.lock()
-//            self.audioCaptureSession.startRunning()
-//            self.audioSessionLock.unlock()
-//        }
     }
 
     public func removeVideoInput() {
@@ -241,21 +168,6 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
             self.videoCaptureSession.stopRunning()
             self.videoSessionLock.unlock()
         }
-    }
-
-    public func removeAudioInput() {
-//        guard let audioInput, isAudioSessionRunning else {
-//            return
-//        }
-//        audioCaptureSession.removeInput(audioInput)
-//        self.audioInput = nil
-//        isAudioSessionRunning = false
-//        sessionQueue.async {
-//            self.audioSessionLock.lock()
-//            log.debug("[Capturer] Remove audio input")
-//            self.audioCaptureSession.stopRunning()
-//            self.audioSessionLock.unlock()
-//        }
     }
 
     func videoCapturerDevice(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
@@ -301,11 +213,15 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     public func appDidEnterBackground() {
-        isVideoSessionRunning = false
+        sessionQueue.async {
+            self.isVideoSessionRunning = false
+        }
     }
 
     @objc func sessionWasInterrupted(notification: Notification) {
-        isVideoSessionRunning = false
+        sessionQueue.async {
+            self.isVideoSessionRunning = false
+        }
         guard let userInfoValue = notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as AnyObject?,
               let reasonIntegerValue = userInfoValue.integerValue,
               let reason = AVCaptureSession.InterruptionReason(rawValue: reasonIntegerValue) else {
@@ -360,18 +276,13 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate
 extension ErmisCapturer: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        if output == videoOutput {
-            let needEncodeAsKeyFrame: Bool = lastDeviceOrientation != currentDeviceOrientation
-            if needEncodeAsKeyFrame {
-                lastDeviceOrientation = currentDeviceOrientation
-                orientationPublisher.send(currentDeviceOrientation)
-                log.debug("[Capturer] Did send divice orientaion: \(currentDeviceOrientation.rawValue)")
-            }
-            videoBufferPublisher.send((sampleBuffer, needEncodeAsKeyFrame))
-        } else if output == audioOutput {
-//            printPCMHex(from: sampleBuffer)
-            audioBufferPublisher.send(sampleBuffer)
+        let needEncodeAsKeyFrame: Bool = lastDeviceOrientation != currentDeviceOrientation
+        if needEncodeAsKeyFrame {
+            lastDeviceOrientation = currentDeviceOrientation
+            orientationPublisher.send(currentDeviceOrientation)
+            log.debug("[Capturer] Did send divice orientaion: \(currentDeviceOrientation.rawValue)")
         }
+        videoBufferPublisher.send((sampleBuffer, needEncodeAsKeyFrame))
     }
 
     func printPCMHex(from sampleBuffer: CMSampleBuffer) {
