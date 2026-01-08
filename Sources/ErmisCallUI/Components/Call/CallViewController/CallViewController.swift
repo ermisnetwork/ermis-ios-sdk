@@ -100,6 +100,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         super.viewWillAppear(animated)
         self.updateSpeakerMenu()
         self.updateViewByCallIOState()
+//        self.call.callNodeClient.sendRequestKeyframeEvent()
     }
 
     open override func setUp() {

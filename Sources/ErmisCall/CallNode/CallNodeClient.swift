@@ -686,7 +686,7 @@ class CallNodeClient: NSObject, ObservableObject {
         return true
     }
 
-    func sendRequestKeyframeEvent() {
+    public func sendRequestKeyframeEvent() {
         guard callNodeConnection.isConnected else {
             return
         }

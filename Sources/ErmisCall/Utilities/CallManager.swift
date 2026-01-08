@@ -46,9 +46,9 @@ public class CallManager: NSObject, CXProviderDelegate {
 
     lazy var onCallEnded: ((Call?) -> Void) = { [weak self] call in
         defer {
+            self?.calls.removeAll()
             self?.callUUIDDictionary.removeAll()
             self?.endingCallUUIDs.removeAll()
-            self?.calls.removeAll()
 //            self?.calls.removeAll(where: { $0.details.callId == call.details.callId })
 //            self?.calls.removeAll(where: { $0.details.state == .ended })
         }
@@ -56,6 +56,9 @@ public class CallManager: NSObject, CXProviderDelegate {
             UIApplication.shared.isIdleTimerDisabled = false
         }
         guard let call else { return }
+        Task(priority: .high) { [weak call] in
+            await try call?.close()
+        }
         self?.sendEndCallNotification(call)
         try? call.audioManager.didDeactivateAudioSession()
 
