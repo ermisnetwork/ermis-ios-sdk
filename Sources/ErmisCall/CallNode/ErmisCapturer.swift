@@ -99,6 +99,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 
         let videoInput = try AVCaptureDeviceInput(device: device)
         guard videoCaptureSession.canAddInput(videoInput) else {
+            log.warning("[Capturer] can not add video input")
             throw ClientError.CannotAddVideoInput()
         }
 
@@ -174,6 +175,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
         guard let videoDevice = AVCaptureDevice.default(.builtInWideAngleCamera,
                                                         for: .video,
                                                         position: position) else {
+            log.warning("[Capturer] Can't find capturer device for position.")
             return nil
         }
         return videoDevice
@@ -228,7 +230,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
             return
         }
 
-        print("Capture session interrupted: \(reason)")
+        log.warning("[Capturer]Capture session interrupted: \(reason)")
 
         switch reason {
         case .videoDeviceNotAvailableInBackground:
@@ -250,7 +252,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     @objc func sessionInterruptionEnded(notification: Notification) {
-        print("Capture session interruption ended")
+        log.debug("[Capturer] Capture session interruption ended")
         sessionQueue.async {
             self.ensureVideoSessionRunning()
         }

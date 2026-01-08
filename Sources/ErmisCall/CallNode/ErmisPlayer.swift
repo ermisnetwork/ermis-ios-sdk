@@ -1,37 +1,31 @@
 import AVFoundation
 import UIKit
-import AudioToolbox
 import CoreMedia
 import ErmisChat
-
-public enum AudioUnitType {
-    case remoteIO
-    case voiceProcessingIO
-}
 
 public class ErmisPlayer: AppLifecycleObserver {
 
     // MARK: - Video Properties
-    public var videoLayer: AVSampleBufferDisplayLayer
-    public let synchronizer: AVSampleBufferRenderSynchronizer
+    public private(set) var videoLayer: AVSampleBufferDisplayLayer
 
-    // MARK: - Audio Unit
-    private let videoQueue = DispatchQueue(label: "ermis.player.video.queue", qos: .unspecified)
+    // MARK: - Queue
+    private let videoQueue = DispatchQueue(label: "ermis.player.video.queue", qos: .userInteractive)
 
     // MARK: - State
     private var isPlaying = false
     package var isReadyToPlay: Bool = false
     private var hasSetupRenderer: Bool = false
-    private var audioUnitStarted: Bool = false
-    private var isRequestingMedia: Bool = false
+
+    var onRequiredKeyframe: (() -> Void)?
+
     var isEnable: Bool = false {
         didSet {
             if isEnable {
-                log.debug("[Player] START REQUEST MEDIA - IS ENABLE TRUE")
-                startRequestingMediaIfNeeded()
+                log.debug("[Player] Enabling player")
+                start()
             } else {
-                log.debug("[Player] STOP REQUEST MEDIA - IS ENABLE FAILED")
-                stopRequestingMedia()
+                log.debug("[Player] Disabling player")
+                stop()
             }
         }
     }
@@ -40,33 +34,45 @@ public class ErmisPlayer: AppLifecycleObserver {
         return UIApplication.shared.applicationState == .active
     }
 
-    // MARK: - Video Buffer
-    private var videoBuffer: [(sampleBuffer: CMSampleBuffer, timestamp: CMTime)] = []
-    private let videoBufferLock = NSLock()
-    public var maxVideoBufferSize: Int = 5
-
-    // MARK: - Jitter Buffer
-    public var targetLatencyMs: Double = 40  // Reduced for lower latency
-    private var playbackStarted: Bool = false
-    private var minSamplesToStart: Int = 0
-
-    // MARK: - Debug
-    private var totalSamplesEnqueued: Int = 0
-    private var totalSamplesPlayed: Int = 0
-    private var renderCallbackCount: Int = 0
-    private var droppedSamples: Int = 0
-
     // MARK: - Initialization
 
     public init() {
-        synchronizer = AVSampleBufferRenderSynchronizer()
         videoLayer = AVSampleBufferDisplayLayer()
+        configureLayer()
+        setupNotifications()
+    }
+
+    func stopRequestingMedia() {
+
     }
 
     deinit {
-        log.debug("[Player] DEINIT - Enqueued: \(totalSamplesEnqueued), Played: \(totalSamplesPlayed), Dropped: \(droppedSamples)")
-        stopRequestingMedia()
         stop()
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: - Configuration
+
+    private func configureLayer() {
+        videoLayer.videoGravity = .resizeAspectFill
+        videoLayer.backgroundColor = UIColor.black.cgColor
+
+        // CRITICAL: Set controlTimebase to nil for immediate display mode
+        // This tells the layer to display frames immediately as they arrive
+        // instead of waiting for presentation timestamps
+        videoLayer.controlTimebase = nil
+
+        // Prevent capture for privacy
+        videoLayer.preventsCapture = false
+    }
+
+    private func setupNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlerDecodeFailed),
+            name: .AVSampleBufferDisplayLayerFailedToDecode,
+            object: videoLayer
+        )
     }
 
     // MARK: - Setup
@@ -74,86 +80,72 @@ public class ErmisPlayer: AppLifecycleObserver {
     package func setupPlayerIfNeeded() {
         log.debug("[Player] Setup Player")
         isReadyToPlay = true
+
         if !hasSetupRenderer {
             hasSetupRenderer = true
-
-            synchronizer.addRenderer(videoLayer)
-            videoLayer.videoGravity = .resizeAspectFill
-            isRequestingMedia = true
-            startRequestingMediaData()
+            if isEnable && isApplicationActive {
+                start()
+            }
         }
     }
 
     // MARK: - Control
 
-    func stop() {
-        synchronizer.rate = 0
-
-        if #available(iOS 17.0, *) {
-            videoLayer.sampleBufferRenderer.flush()
-        } else {
-            videoLayer.flush()
-        }
-
-        playbackStarted = false
-
-        videoBufferLock.lock()
-        videoBuffer.removeAll()
-        videoBufferLock.unlock()
-
-        isPlaying = false
-    }
-
-    func startRequestingMediaIfNeeded() {
-        guard isEnable, !isRequestingMedia, isApplicationActive else {
-            log.debug("[Player] no need requetsing media: isEnable: \(isEnable), isRequestingMedia: \(isRequestingMedia), isApplicationActive: \(isApplicationActive)")
+    private func start() {
+        guard isReadyToPlay, isApplicationActive, !isPlaying else {
+            log.debug("[Player] Cannot start: ready=\(isReadyToPlay), active=\(isApplicationActive), playing=\(isPlaying)")
             return
         }
-        if isEnable {
-            isRequestingMedia = true
-            startRequestingMediaData()
-        }
 
+        isPlaying = true
+        log.debug("[Player] Started")
     }
 
-    func startRequestingMediaData() {
-        log.debug("[Player] Start requesting media")
-        if #available(iOS 17.0, *) {
-            videoLayer.sampleBufferRenderer.requestMediaDataWhenReady(on: videoQueue) { [weak self] in
-                self?.supplyVideoData()
-            }
-        } else {
-            videoLayer.requestMediaDataWhenReady(on: videoQueue) { [weak self] in
-                self?.supplyVideoData()
-            }
-        }
-    }
-
-    func stopRequestingMedia() {
-        log.debug("[Player] Stop requesting media")
+    func stop() {
         isPlaying = false
-        synchronizer.rate = 0
-        isRequestingMedia = false
-        videoBufferLock.lock()
-        videoBuffer.removeAll()
-        videoBufferLock.unlock()
-        if #available(iOS 17.0, *) {
-            videoLayer.sampleBufferRenderer.stopRequestingMediaData()
-            videoLayer.sampleBufferRenderer.flush()
-        } else {
-            videoLayer.stopRequestingMediaData()
-            videoLayer.flush()
+
+        videoQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            if #available(iOS 17.0, *) {
+                self.videoLayer.sampleBufferRenderer.flush()
+            } else {
+                self.videoLayer.flush()
+            }
+        }
+
+        log.debug("[Player] Stopped")
+    }
+
+    // MARK: - Video Frame Handling
+
+    /// Enqueue a video sample buffer for immediate display
+    /// - Parameters:
+    ///   - sampleBuffer: The decoded video frame
+    ///   - timestamp: The presentation timestamp (used for logging only in immediate mode)
+    package func enqueueVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, timestamp: CMTime) {
+        guard isPlaying, isApplicationActive else {
+            log.debug("[Player] Not playing because is not playing, or app is not active")
+            return
+        }
+
+        videoQueue.async { [weak self] in
+            self?.enqueueFrame(sampleBuffer)
         }
     }
 
-    // MARK: - Video
+    private func enqueueFrame(_ sampleBuffer: CMSampleBuffer) {
+        // Check if layer needs recovery
+        if needsKeyframe() {
+            log.warning("[Player] Layer needs keyframe")
+            flushAndRequestKeyframe()
+            return
+        }
 
-    private func supplyVideoData() {
-        videoBufferLock.lock()
-        defer { videoBufferLock.unlock() }
+        // Mark for immediate display
+        markForImmediateDisplay(sampleBuffer)
 
-        guard !videoBuffer.isEmpty else { return }
-
+        // Check if ready and enqueue
         var isReady: Bool
         if #available(iOS 17.0, *) {
             isReady = videoLayer.sampleBufferRenderer.isReadyForMoreMediaData
@@ -161,66 +153,135 @@ public class ErmisPlayer: AppLifecycleObserver {
             isReady = videoLayer.isReadyForMoreMediaData
         }
 
-        while isReady, !videoBuffer.isEmpty {
-            let (sampleBuffer, timestamp) = videoBuffer.removeFirst()
-            if #available(iOS 17.0, *) {
-                videoLayer.sampleBufferRenderer.enqueue(sampleBuffer)
-                totalSamplesPlayed += 1
-                isReady = videoLayer.sampleBufferRenderer.isReadyForMoreMediaData
-            } else {
-                videoLayer.enqueue(sampleBuffer)
-                totalSamplesPlayed += 1
-                isReady = videoLayer.isReadyForMoreMediaData
-            }
-
-            if !isPlaying {
-                log.debug("[Player] start playing at timestamp: \(timestamp)")
-                synchronizer.setRate(1, time: timestamp)
-                isPlaying = true
-            }
-        }
-    }
-
-    package func enqueueVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, timestamp: CMTime) {
-        log.debug("[Player] Enqueue video sample buffer: \(timestamp)")
-        guard hasSetupRenderer, isApplicationActive else {
-            if !videoBuffer.isEmpty {
-                videoBuffer.removeAll()
-            }
+        guard isReady else {
+            log.debug("[Player] Layer not ready, dropping frame")
             return
         }
 
-        videoBufferLock.lock()
-        defer { videoBufferLock.unlock() }
-        totalSamplesEnqueued += 1
-        videoBuffer.append((sampleBuffer, timestamp))
-        if videoBuffer.count > maxVideoBufferSize {
-            droppedSamples += videoBuffer.count - maxVideoBufferSize
-            videoBuffer.removeFirst(videoBuffer.count - maxVideoBufferSize)
+        // Enqueue the frame
+        if #available(iOS 17.0, *) {
+            videoLayer.sampleBufferRenderer.enqueue(sampleBuffer)
+        } else {
+            videoLayer.enqueue(sampleBuffer)
         }
     }
 
-    // MARK: - Orientation & Lifecycle
+    /// Mark sample buffer for immediate display - critical for real-time video
+    private func markForImmediateDisplay(_ sampleBuffer: CMSampleBuffer) {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true) as? [NSMutableDictionary],
+              let attachment = attachments.first else {
+            return
+        }
 
-    public func handleDeviceOrientationEvent(_ videoOrientation: VideoOrientation) {
-
+        // Display immediately without waiting for presentation timestamp
+        attachment[kCMSampleAttachmentKey_DisplayImmediately] = true
     }
+
+    private func flushAndRequestKeyframe() {
+        if #available(iOS 17.0, *) {
+            videoLayer.sampleBufferRenderer.flush()
+        } else {
+            videoLayer.flush()
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.onRequiredKeyframe?()
+        }
+    }
+
+    private func needsKeyframe() -> Bool {
+        if #available(iOS 14.0, *) {
+            if videoLayer.requiresFlushToResumeDecoding {
+                return true
+            }
+        }
+        return videoLayer.status == .failed
+    }
+
+    @objc private func handlerDecodeFailed(_ notification: Notification) {
+        if let error = notification.userInfo?[AVSampleBufferDisplayLayerFailedToDecodeNotificationErrorKey] as? NSError {
+            log.error("[Player] Decode failed: \(error.localizedDescription)")
+        }
+
+        videoQueue.async { [weak self] in
+            self?.flushAndRequestKeyframe()
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    public func handleDeviceOrientationEvent(_ videoOrientation: VideoOrientation) {}
 
     public func appDidBecomeActive() {
         guard isReadyToPlay else {
-            log.warning("[Player] appdidbecomeactive but not ready to play")
+            log.warning("[Player] appDidBecomeActive but not ready")
             return
         }
-        log.debug("[Player] Application did become active")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            self.startRequestingMediaIfNeeded()
+
+        log.debug("[Player] App became active")
+
+        if isEnable {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                self?.start()
+            }
         }
     }
 
     public func appWillResignActive() {}
 
     public func appDidEnterBackground() {
-        log.debug("[Player] STOP REQUEST MEDIA - APP DID ENTER BG")
-        stopRequestingMedia()
+        log.debug("[Player] App entered background")
+        stop()
+    }
+}
+
+
+// MARK: - Alternative: Minimal Jitter Buffer for Network Variance
+
+/// Use this if you experience frame reordering from the network
+/// but still want low latency
+final class JitterBuffer {
+
+    private var frames: [(buffer: CMSampleBuffer, order: UInt64)] = []
+    private var insertCounter: UInt64 = 0
+    private let lock = NSLock()
+
+    // Very small buffer for minimal latency
+    private let targetDepth: Int = 2
+    private let maxDepth: Int = 5
+
+    func push(_ sampleBuffer: CMSampleBuffer) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        frames.append((sampleBuffer, insertCounter))
+        insertCounter += 1
+
+        // Keep buffer small
+        while frames.count > maxDepth {
+            frames.removeFirst()
+        }
+    }
+
+    func pull() -> CMSampleBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        // Wait for minimum frames
+        guard frames.count >= targetDepth else { return nil }
+
+        return frames.removeFirst().buffer
+    }
+
+    func flush() {
+        lock.lock()
+        frames.removeAll()
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return frames.count
     }
 }

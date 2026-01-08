@@ -71,7 +71,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private var isReadyToSendVideoFrame: Bool {
-//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected) - \(hasSentVideoConfig)")
+        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected) - \(hasSentVideoConfig)")
         guard callNodeConnection.isConnected else {
             return false
         }
@@ -82,7 +82,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private var isReadyToSendAudioFrame: Bool {
-//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected), - \(hasSentAudioConfig)")
+        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected), - \(hasSentAudioConfig)")
         guard callNodeConnection.isConnected else {
             return false
         }
@@ -135,7 +135,6 @@ class CallNodeClient: NSObject, ObservableObject {
         self.capturer = ErmisCapturer()
         self.player = ErmisPlayer()
         self.voipManager = ErmisVoIPManagerAdvanced()
-        self.player.targetLatencyMs = 60
         self.streamEncoder = DefaultStreamEncoder()
         self.streamDecoder = DefaultStreamDecoder()
         self.callIOState = CallIOState(isAudioEnabled: true,
@@ -191,6 +190,10 @@ class CallNodeClient: NSObject, ObservableObject {
                                                 fps: 30)
         } catch {
             log.error("[ErmisCall] Failed to setup stream encoder")
+        }
+
+        player.onRequiredKeyframe = { [weak self] in
+            self?.sendRequestKeyframeEvent()
         }
 
         observerAppLifecycleNotifications()
@@ -367,8 +370,9 @@ class CallNodeClient: NSObject, ObservableObject {
                     }
                     streamDecoder.decodeAudioFrame(audioFrame)
                 case .videoKeyFrame:
-//                    log.debug("TTTT DECODE VIDEO FRAME - \(player.isReadyToPlay)")
+                    log.debug("TTTT RECEIVER VIDEO FRAME - \(player.isReadyToPlay)")
                     guard player.isReadyToPlay else {
+                        log.debug("TTTT PLAYER IS NOT READY")
                         return
                     }
                     guard let videoFrame = VideoKeyFrame(payload: payload) else {
@@ -395,6 +399,7 @@ class CallNodeClient: NSObject, ObservableObject {
                     player.handleDeviceOrientationEvent(videoOrientation)
                     remoteVideoOrientationPublisher.send(videoOrientation)
                 case .connected:
+                    log.debug("[CallNode] receive connected event")
                     call?.setState(.connected)
                     if isReadyToSendVideoFrame {
                         streamEncoder.isReadyToEncodeVideo = true
@@ -404,6 +409,7 @@ class CallNodeClient: NSObject, ObservableObject {
                     }
                     log.debug("[CallNode] Received connected event")
                 case .transciver:
+                    log.debug("[CallNode] Receive transciver event")
                     guard let transciverEvent = TransciverEvent(payload: payload) else {
                         log.error("[CallNode] Failed to decode transciver event \(data.toString())")
                         return
@@ -418,10 +424,12 @@ class CallNodeClient: NSObject, ObservableObject {
                     }
                     callIOStatePublisher.send(callIOState)
                 case .requestConfig:
-                    break
+                    log.debug("[CallNode] Receive requestConfig event")
                 case .requestKeyframe:
-                    break
+                    log.debug("[CallNode] Receive requestKeyframe event")
+                    streamEncoder.forceKeyFrame = true
                 case .endCall:
+                    log.debug("[CallNode] Receive endcall event")
                     Task(priority: .high) { [weak self] in
                         guard let self else {
                             return
@@ -478,6 +486,7 @@ class CallNodeClient: NSObject, ObservableObject {
 
     private func sendVideoFrameIfNeeded(_ event: CallNodeEventProtocol) {
         if isReadyToSendVideoFrame {
+            log.debug("TTTT SEND VIDEO FRAME")
             callNodeConnection.sendEvent(event)
         }
     }
@@ -677,6 +686,21 @@ class CallNodeClient: NSObject, ObservableObject {
         return true
     }
 
+    func sendRequestKeyframeEvent() {
+        guard callNodeConnection.isConnected else {
+            return
+        }
+        let data = Data(bytes: [CallNodeEventType.requestKeyframe.rawValue])
+        Task(name: "call_node_send_event", priority: .high) {
+            do {
+                try await callNodeConnection.sendControlFrame(data)
+            } catch {
+                log.error("[CallNode] Failed to end call event: \(error)", subsystems: .call)
+            }
+        }
+        return
+    }
+
     func isCallNodeConnected() -> Bool {
         return callNodeConnection.getConnectionState()
     }
@@ -815,7 +839,6 @@ class CallNodeClient: NSObject, ObservableObject {
                                        metadata: nil)
         Task.detached(name: "call_connect", priority: .high) {
             try await self.callNodeConnection.connect(to: remoteAddress)
-            self.call?.details.state = .connected
         }
     }
 
@@ -844,14 +867,14 @@ class CallNodeClient: NSObject, ObservableObject {
     ///
     /// - Returns: Throws error if not successful.
     public func endCall() async throws {
-        defer {
-            capturer.stopCapturer()
-            callNodeConnection.close()
-            player.stopRequestingMedia()
-            player.stop()
-        }
         setAudioEnable(false)
         setVideoEnabled(false)
+
+        capturer.stopCapturer()
+        voipManager?.stop()
+        player.stopRequestingMedia()
+        player.stop()
+
         if call?.details.isIncoming == false {
             try audioManager.didDeactivateAudioSession()
         }
@@ -859,6 +882,7 @@ class CallNodeClient: NSObject, ObservableObject {
             return
         }
         try? await sendEndcallEvent()
+        callNodeConnection.close()
         if call?.isMissed == true {
             try await signaling.sendSignal(sessionId: sessionId,
                                            callId: call?.details.callId,
@@ -885,6 +909,8 @@ class CallNodeClient: NSObject, ObservableObject {
             try? audioManager.didDeactivateAudioSession()
         }
         capturer.stopCapturer()
+        player.stop()
+        voipManager?.stop()
         callNodeConnection.close()
     }
 
@@ -917,9 +943,10 @@ class CallNodeClient: NSObject, ObservableObject {
             self.remoteAddress = localAddress
         case .acceptCall:
             if call?.details.state == .ringing {
-                call?.setState(.connecting)
+                DispatchQueue.main.async {
+                    self.call?.setState(.connecting)
+                }
             }
-//            try await sendOffer()
         case .rejectCall:
             call?.setState(.ended)
             Task {
@@ -931,12 +958,14 @@ class CallNodeClient: NSObject, ObservableObject {
                 try? await endCall()
             }
         case .connectCall:
-            call?.setState(.connected)
-            if isReadyToSendVideoFrame {
-                streamEncoder.isReadyToEncodeVideo = true
-            }
-            if isReadyToSendAudioFrame {
-                streamEncoder.isReadyToEncodeAudio = true
+            DispatchQueue.main.async {
+                self.call?.setState(.connected)
+                if self.isReadyToSendVideoFrame {
+                    self.streamEncoder.isReadyToEncodeVideo = true
+                }
+                if self.isReadyToSendAudioFrame {
+                    self.streamEncoder.isReadyToEncodeAudio = true
+                }
             }
         case .healthCall:
             break

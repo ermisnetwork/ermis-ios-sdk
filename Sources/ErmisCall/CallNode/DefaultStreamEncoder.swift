@@ -27,6 +27,7 @@ public protocol StreamEncoder: AppLifecycleObserver {
 
     var isReadyToEncodeVideo: Bool { get set }
     var isReadyToEncodeAudio: Bool { get set }
+    var forceKeyFrame: Bool { get set }
 
     func setupVideoEncoder(width: Int32,
                            height: Int32,
@@ -53,7 +54,7 @@ public class DefaultStreamEncoder: StreamEncoder {
     private var audioConverter: AudioConverterRef?
     private var opusEncoder: OpusEncoder?
 
-    var forceKeyFrame: Bool = true
+    public var forceKeyFrame: Bool = true
 
     private let encoderQueue = DispatchQueue(label: "network.ermis.encoder-queue")
     private var isSessionValid = false
@@ -179,7 +180,8 @@ public class DefaultStreamEncoder: StreamEncoder {
         let duration = CMSampleBufferGetDuration(sampleBuffer)
         let frameProps =
         [
-            kVTEncodeFrameOptionKey_ForceKeyFrame: isKeyFrame || forceKeyFrame
+            kVTCompressionPropertyKey_MaxKeyFrameInterval: (keyframeInterval * fps) as CFNumber,
+            kVTEncodeFrameOptionKey_ForceKeyFrame: isKeyFrame || forceKeyFrame,
         ] as CFDictionary
 
         let status = VTCompressionSessionEncodeFrame(

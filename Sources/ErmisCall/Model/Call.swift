@@ -49,8 +49,8 @@ public class Call: NSObject {
     /// Call connection time value.
     private var duration: TimeInterval = 0
 
-    /// Last time receive health call message from other, if this longer than max waiting time, the call will be ended.
-    private var lastTimeReceivedHealthCallMessage: Date?
+//    /// Last time receive health call message from other, if this longer than max waiting time, the call will be ended.
+//    private var lastTimeReceivedHealthCallMessage: Date?
 
     var isLocalId: Bool {
         return details.uuid.uuidString == details.callId
@@ -155,7 +155,7 @@ public class Call: NSObject {
 
     func setRemoteCallId(_ callId: String) {
         details.callId = callId
-        CallManager.shared.addCall(self)
+        CallManager.shared.callUUIDDictionary[callId] = details.uuid
     }
     /// Set new state for current call.
     ///
@@ -163,20 +163,31 @@ public class Call: NSObject {
     ///    - callState: The new state of current call.
 
     public func setState(_ callState: CallState) {
-        self.details.state = callState
-        callStatePublisher.send(callState)
-        switch callState {
-        case .ringing:
-            break
-        case .connected:
-            if !details.isIncoming {
-                CallManager.shared.reportOutgoingCallConnected(uuid: details.uuid, connectedAt: Date())
+        let setStateBlock = {
+            log.debug("[Call] Set state: \(callState)")
+            self.details.state = callState
+            self.callStatePublisher.send(callState)
+            switch callState {
+            case .ringing:
+                break
+            case .connected:
+                if !self.details.isIncoming {
+                    CallManager.shared.reportOutgoingCallConnected(uuid: self.details.uuid, connectedAt: Date())
+                    CallManager.shared.stopPlayingRingingSound()
+                }
+            case .ended:
                 CallManager.shared.stopPlayingRingingSound()
+            default:
+                break
             }
-        case .ended:
-            CallManager.shared.stopPlayingRingingSound()
-        default:
-            break
+        }
+
+        if Thread.isMainThread {
+            setStateBlock()
+        } else {
+            DispatchQueue.main.async {
+                setStateBlock()
+            }
         }
     }
 
@@ -266,9 +277,11 @@ extension Call {
     @objc func timerDidFire() {
         switch details.state {
         case .idle, .ringing, .connecting:
-            Task(priority: .high) {
-                isMissed = true
-                try await CallManager.shared.endCall(self)
+            if !details.isIncoming {
+                Task(priority: .high) {
+                    isMissed = true
+                    try await CallManager.shared.endCall(self)
+                }
             }
         default:
             break
@@ -297,30 +310,49 @@ extension Call {
         duration += 1
         durationTimerPublisher.send(duration)
 
-        if lastTimeReceivedHealthCallMessage == nil {
-            lastTimeReceivedHealthCallMessage = Date()
-        }
+//        if lastTimeReceivedHealthCallMessage == nil {
+//            lastTimeReceivedHealthCallMessage = Date()
+//        }
 
-        if callNodeClient.isCallNodeConnected() {
-            lastTimeReceivedHealthCallMessage = Date()
-        }
-
-        if let durationNotReceivedHealthCallMessage = lastTimeReceivedHealthCallMessage?.timeIntervalSinceNow {
-            if durationNotReceivedHealthCallMessage < -30 {
+        if !callNodeClient.isCallNodeConnected() {
+            connectionStatusPublisher.send(.yourConnectionIsBeingEstablished)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: {
                 Task(priority: .high) {
                     await CallManager.shared.endCall(self)
                 }
-                stopDurationTimer()
-                return
-            } else if durationNotReceivedHealthCallMessage < -6 {
-                let isConnected = client.connectionStatus == .connected
-                connectionStatusPublisher.send(isConnected ? .theirConnectionIsBeingEstablished(userIds: []) : .yourConnectionIsBeingEstablished)
-            } else if durationNotReceivedHealthCallMessage < -3 {
-                connectionStatusPublisher.send(.lowConnection)
-            } else {
-                connectionStatusPublisher.send(.normal)
-            }
+                self.stopDurationTimer()
+            })
+            return
         }
+
+//        if callNodeClient.isCallNodeConnected() {
+//            lastTimeReceivedHealthCallMessage = Date()
+//            connectionStatusPublisher.send(.yourConnectionIsBeingEstablished)
+//            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: {
+//                Task(priority: .high) {
+//                    await CallManager.shared.endCall(self)
+//                }
+//                self.stopDurationTimer()
+//            })
+//            return
+//        }
+//
+//        if let durationNotReceivedHealthCallMessage = lastTimeReceivedHealthCallMessage?.timeIntervalSinceNow {
+//            if durationNotReceivedHealthCallMessage < -30 {
+//                Task(priority: .high) {
+//                    await CallManager.shared.endCall(self)
+//                }
+//                stopDurationTimer()
+//                return
+//            } else if durationNotReceivedHealthCallMessage < -6 {
+//                let isConnected = client.connectionStatus == .connected
+//                connectionStatusPublisher.send(isConnected ? .theirConnectionIsBeingEstablished(userIds: []) : .yourConnectionIsBeingEstablished)
+//            } else if durationNotReceivedHealthCallMessage < -3 {
+//                connectionStatusPublisher.send(.lowConnection)
+//            } else {
+//                connectionStatusPublisher.send(.normal)
+//            }
+//        }
 
         if Int(duration) % 10 == 0 {
             Task {
