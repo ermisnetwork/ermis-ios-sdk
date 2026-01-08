@@ -580,7 +580,7 @@ public class CallManager: NSObject, CXProviderDelegate {
             switch result {
             case .success(let callSignalEvent):
                 // Reject call if has other ongoing call.
-                if let currentCall, currentCall.details.state != .ended, endingCallUUIDs.isEmpty {
+                if let currentCall, currentCall.details.callId != callSignalEvent.callId, currentCall.details.state != .ended, endingCallUUIDs.isEmpty {
                     let uuid = UUID()
                     let callUpdate = CXCallUpdate()
                     callUpdate.hasVideo = callSignalEvent.isVideo ?? false
@@ -638,8 +638,11 @@ extension CallManager: EventsControllerDelegate {
                                      hasVideo: event.isVideo)
                 }
                 if !isCurrentUser {
-                    // TODO: - Handle case receive call event via socket first
-//                     reportIncommingCall(event, completion: { _ in })
+                    // Voip come before, so ignore this signal.
+                    guard !callUUIDDictionary.contains(where: { $0.key == event.callId }) else {
+                        return
+                    }
+                     reportIncommingCall(event, completion: { _ in })
                 }
             case .acceptCall:
                 // Call answer from other device.

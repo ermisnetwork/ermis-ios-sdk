@@ -949,13 +949,13 @@ class CallNodeClient: NSObject, ObservableObject {
             }
         case .rejectCall:
             call?.setState(.ended)
-            Task {
-                try? await endCall()
+            Task(priority: .high) {
+                try? await close()
             }
         case .missCall:
             call?.setState(.ended)
-            Task {
-                try? await endCall()
+            Task(priority: .high) {
+                try? await close()
             }
         case .connectCall:
             DispatchQueue.main.async {
@@ -971,8 +971,8 @@ class CallNodeClient: NSObject, ObservableObject {
             break
         case .endCall:
             call?.setState(.ended)
-            Task {
-                try? await endCall()
+            Task(priority: .high) {
+                try? await close()
             }
         case .signalCall:
             break

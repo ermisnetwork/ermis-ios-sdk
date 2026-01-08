@@ -142,8 +142,8 @@ public final class ErmisVoIPManagerAdvanced {
 
     public func stop() {
         guard isRunning else { return }
-        audioEngine.stop()
         isRunning = false
+        audioEngine.stop()
     }
 
     /// Mute/unmute the microphone (still captures but doesn't send)
