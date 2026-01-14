@@ -220,7 +220,7 @@ public class ErmisPlayer: AppLifecycleObserver {
         log.debug("[Player] App became active")
 
         if isEnable {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 self?.onRequiredKeyframe?()
                 self?.start()
             }

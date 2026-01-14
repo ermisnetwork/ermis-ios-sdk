@@ -425,7 +425,7 @@ class CallNodeClient: NSObject, ObservableObject {
                     streamEncoder.forceKeyFrame = true
                 case .endCall:
                     log.debug("[CallNode] Receive endcall event")
-                    CallManager.shared.endCall(with: self.call?.details.callId ?? "")
+                    CallManager.shared.clearCall(self.call?.details.callId ?? "", with: .remoteEnded)
                 case .unknown:
                     log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
                 default:
@@ -473,10 +473,10 @@ class CallNodeClient: NSObject, ObservableObject {
                 try? await self.callNodeConnection.sendControlFrame(CallConnected().data)
                 DispatchQueue.main.async {
                     self.call?.setState(.connected)
-                    if self.isReadyToSendVideoFrame {
+                    if self.hasSentVideoConfig {
                         self.streamEncoder.isReadyToEncodeVideo = true
                     }
-                    if self.isReadyToSendAudioFrame {
+                    if self.hasSentAudioConfig {
                         self.streamEncoder.isReadyToEncodeAudio = true
                     }
                 }
@@ -504,12 +504,16 @@ class CallNodeClient: NSObject, ObservableObject {
             Task(name: "call_node_send_config", priority: .high) {
                 do {
                     try await self.callNodeConnection.sendControlFrame(config.data)
-                    self.sendingAudioConfig = false
-                    self.hasSentAudioConfig = true
+                    DispatchQueue.main.async {
+                        self.sendingAudioConfig = false
+                        self.hasSentAudioConfig = true
+                    }
                     log.debug("[CallNode] Sent audio config: \(config)")
                 } catch {
-                    self.sendingAudioConfig = false
-                    self.hasSentAudioConfig = false
+                    DispatchQueue.main.async {
+                        self.sendingAudioConfig = false
+                        self.hasSentAudioConfig = false
+                    }
                     log.debug("[CallNode] Sent audio config failed: \(error)")
                 }
             }
@@ -780,11 +784,12 @@ class CallNodeClient: NSObject, ObservableObject {
         DispatchQueue.main.async {
             self.call?.setState(.ringing)
         }
-        Task.detached(name: "call_accept_connection", priority: .high) {
+        Task.detached(name: "call_accept_connection", priority: .high) { [weak self] in
             do {
-                try await self.callNodeConnection.acceptConnect()
+                try await self?.callNodeConnection.acceptConnect()
             } catch {
                 log.error("[CallNode] Failed to accept connection \(error)")
+                CallManager.shared.endCall(with: self?.call?.details.callId ?? "")
             }
         }
     }
@@ -848,9 +853,7 @@ class CallNodeClient: NSObject, ObservableObject {
                                        sdp: nil,
                                        metadata: nil)
         call?.isAccected = true
-        Task.detached(name: "call_connect", priority: .high) {
-            try await self.callNodeConnection.connect(to: remoteAddress)
-        }
+//        try await self.callNodeConnection.connect(to: remoteAddress)
     }
 
     /// Send reject call signal.
@@ -887,11 +890,22 @@ class CallNodeClient: NSObject, ObservableObject {
         }
     }
 
+    public func connectToRemote() async throws {
+        guard let remoteAddress else {
+            throw ClientError("[CallNode] No remote address to connect to.")
+        }
+        try await self.callNodeConnection.connect(to: remoteAddress)
+        log.debug("[CallNode] Connected to remote: \(remoteAddress)")
+    }
+
+    public func stop() {
+        setAudioEnable(false)
+        setVideoEnabled(false)
+    }
+
     /// Stop IO and close peerconnection.
     /// - Note: This will not send end call signal to other device
     public func close() {
-        setAudioEnable(false)
-        setVideoEnabled(false)
         if call?.details.isIncoming == false {
             try? audioManager.didDeactivateAudioSession()
         }
@@ -944,12 +958,12 @@ class CallNodeClient: NSObject, ObservableObject {
             self.connectedCallIfAvailable()
         case .rejectCall:
             call?.setState(.ended)
-            CallManager.shared.endCall(with: callSignal.callId)
+            CallManager.shared.clearCall(callSignal.callId, with: .remoteEnded)
 //            try? close()
             break
         case .missCall:
             call?.setState(.ended)
-            CallManager.shared.endCall(with: callSignal.callId)
+            CallManager.shared.clearCall(callSignal.callId, with: .unanswered)
 //            try? close()
             break
         case .connectCall:
@@ -967,7 +981,7 @@ class CallNodeClient: NSObject, ObservableObject {
             break
         case .endCall:
             call?.setState(.ended)
-            CallManager.shared.endCall(with: callSignal.callId)
+            CallManager.shared.clearCall(callSignal.callId, with: .remoteEnded)
 //            try? close()
         case .signalCall:
             break

@@ -52,21 +52,35 @@ public class CallManager: NSObject, CXProviderDelegate {
 
     lazy var onCallEnded: ((Call?) -> Void) = { [weak self] call in
         log.debug("[Call] On call ended callUUID: \(call?.details.uuid)", subsystems: .call)
-        defer {
-//            self?.callUUIDDictionary.removeAll()
-            self?.endingCallUUIDs.removeAll()
-            self?.calls.removeAll(where: { $0.details.callId == call?.details.callId })
-        }
+//        defer {
+////            self?.callUUIDDictionary.removeAll()
+//            self?.endingCallUUIDs.removeAll()
+//            self?.calls.removeAll(where: { $0.details.callId == call?.details.callId })
+//        }
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = false
         }
         guard let call else { return }
+        DispatchQueue.main.async {
+            call.callNodeClient.stop()
+//            call.callNodeClient.close()
+        }
         if call.details.state != .ended {
             call.details.state == .ended
         }
-        call.callNodeClient.close()
-        self?.sendEndCallNotification(call)
+        self?.sendEndCallNotification(call.details.callId, cid: call.details.cid)
         try? call.audioManager.didDeactivateAudioSession()
+        if call.callNodeClient.isCallNodeConnected() {
+            Task(priority: .high) { [weak self, weak call] in
+                await call?.callNodeClient.close()
+                self?.endingCallUUIDs.removeAll()
+                self?.calls.removeAll(where: { $0.details.callId == call?.details.callId })
+            }
+        } else {
+            self?.endingCallUUIDs.removeAll()
+            self?.calls.removeAll(where: { $0.details.callId == call.details.callId })
+        }
+//        call.callNodeClient.close()
 
     }
 
@@ -219,29 +233,28 @@ public class CallManager: NSObject, CXProviderDelegate {
 
     public func removeCall(_ call: Call) {
         log.debug("[Call] Remove call: \(call)")
-        sendStartEndingCallNotification(call)
-        sendEndCallNotification(call)
+        sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
+        sendEndCallNotification(call.details.callId, cid: call.details.cid)
         try? call.close()
         calls.removeAll(where: { $0.details.callId == call.details.callId })
     }
 
     // Remove current call without send ending signal.
     public func clearCall(_ callId: String, with reason: CXCallEndedReason) {
-        endCall(with: callId)
-//        guard let call = call(with: callId), endingCallUUIDs.isEmpty else {
-//            return
-//        }
-//        log.warning("[Call] Clear call: \(call.details.callId), reason: \(reason)", subsystems: .call)
-//        endingCallUUIDs.insert(call.details.uuid)
-//        sendStartEndingCallNotification(call)
-//        DispatchQueue.main.async {
-//            UIApplication.shared.isIdleTimerDisabled = false
-//        }
-//        callProvider.reportCall(with: call.details.uuid, endedAt: Date(), reason: reason)
-//        Task(priority: .high) { [weak self] in
-//            try? await callNodeClient.close()
-//            onCallEnded(call)
-//        }
+        guard let call = call(with: callId), endingCallUUIDs.isEmpty else {
+            return
+        }
+        log.warning("[Call] Clear call: \(call.details.callId), reason: \(reason)", subsystems: .call)
+        endingCallUUIDs.insert(call.details.uuid)
+        call.callNodeClient.close()
+        callProvider.reportCall(with: call.details.uuid, endedAt: Date(), reason: reason)
+        DispatchQueue.main.async {
+            UIApplication.shared.isIdleTimerDisabled = false
+            self.sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
+            self.pendingTasks.forEach({ $0.cancel()})
+            call.setState(.ended)
+            self.onCallEnded(call)
+        }
     }
 
     /// End the call with given identifier.
@@ -250,6 +263,7 @@ public class CallManager: NSObject, CXProviderDelegate {
     ///   - callId: The call identifier.
     public func endCall(with callId: String) {
         guard let call = call(with: callId), endingCallUUIDs.isEmpty else {
+            log.debug("[CallKit] endCall guard failed - call: \(call(with: callId)), endingCallUUIDs: \(endingCallUUIDs)")
             return
         }
         endingCallUUIDs.insert(call.details.uuid)
@@ -264,8 +278,8 @@ public class CallManager: NSObject, CXProviderDelegate {
     }
 
     private func endCall(_ call: Call) {
-        UIApplication.shared.isIdleTimerDisabled = true
-        sendStartEndingCallNotification(call)
+        UIApplication.shared.isIdleTimerDisabled = false
+        sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
         self.pendingTasks.forEach({ $0.cancel()})
         log.debug("[CallKit] endcall with UUID: \(call.details.uuid)", subsystems: .call)
         let endAction = CXEndCallAction(call: call.details.uuid)
@@ -326,24 +340,24 @@ public class CallManager: NSObject, CXProviderDelegate {
         onCallEnded(call(with: callUUID))
     }
 
-    func sendEndCallNotification(_ call: Call) {
-        log.debug("[CallManager] Send end call notification callUUID: \(call.details.uuid)")
+    func sendEndCallNotification(_ callId: String?, cid: ChannelId?) {
+        log.debug("[CallManager] Send end call notification callId: \(callId)")
         NotificationCenter.default.post(name: .callDidEnded,
                                         object: self,
                                         userInfo: [
-                                            "call_id": call.details.callId,
-                                            "cid": call.details.cid
+                                            "call_id": callId,
+                                            "cid": cid
                                         ]
         )
     }
 
-    func sendStartEndingCallNotification(_ call: Call) {
-        log.debug("[CallManager] Send start ending call notification: \(call.details.uuid)")
+    func sendStartEndingCallNotification(_ callId: String?, cid: ChannelId?) {
+        log.debug("[CallManager] Send start ending call notification callId: \(callId)")
         NotificationCenter.default.post(name: .startEndingCall,
                                         object: self,
                                         userInfo: [
-                                            "call_id": call.details.callId,
-                                            "cid": call.details.cid
+                                            "call_id": callId,
+                                            "cid": cid
                                         ]
         )
     }
@@ -570,7 +584,7 @@ public class CallManager: NSObject, CXProviderDelegate {
         guard isMicrophoneAccessGranted else {
             CallManager.needShowRequestMicrophoneAccessAlert = true
             if let currentCall {
-                CallManager.shared.endCall(currentCall)
+                endCall(with: currentCall.details.callId)
             }
             action.fulfill()
             return
@@ -605,6 +619,11 @@ public class CallManager: NSObject, CXProviderDelegate {
             } catch(let error) {
                 log.debug("[CallKit] provider perform call answer failed with erorr: \(error)", subsystems: .call)
                 action.fulfill()
+                if let call = call(with: action.callUUID) {
+                    Task(priority: .high) {
+                        try? await call.endCall()
+                    }
+                }
                 onCallEnded(call(with: action.callUUID))
             }
         }
@@ -621,7 +640,7 @@ public class CallManager: NSObject, CXProviderDelegate {
 
         if !endingCallUUIDs.contains(call.details.uuid) {
             endingCallUUIDs.insert(call.details.uuid)
-            sendStartEndingCallNotification(call)
+            sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
         }
 
 
@@ -821,9 +840,8 @@ extension CallManager: EventsControllerDelegate {
                     guard !callUUIDDictionary.contains(where: { $0.key == event.callId }) else {
                         return
                     }
-                    // If is ending other call, report later when receive incoming push.
-                    guard endingCallUUIDs.isEmpty else {
-                        return
+                    while !endingCallUUIDs.isEmpty {
+                        Thread.sleep(forTimeInterval: 0.1)
                     }
                     reportIncommingCall(event, completion: { _ in })
                 }
@@ -876,7 +894,7 @@ extension CallManager: EventsControllerDelegate {
                 } else if isCurrentCall, !isCurrentUser {
                     clearCall(event.callId, with: .remoteEnded)
                 }
-  
+
 //                if isCurrentUser {
 //                    if isCurrentDevice {
 //                        reportCallEnded(event, reason: .unanswered)

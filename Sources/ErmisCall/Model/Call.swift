@@ -118,8 +118,8 @@ public class Call: NSObject {
     }
 
     func acceptCall() async throws {
-        setState(.connecting)
         try await callNodeClient.acceptCall()
+        setState(.connecting)
     }
 
     func rejectCall() async throws {
@@ -155,6 +155,20 @@ public class Call: NSObject {
             switch callState {
             case .ringing:
                 break
+            case .connecting:
+                if self.details.isIncoming {
+                    Task(priority: .high) { [weak self] in
+                        guard let self else {
+                            return
+                        }
+                        do {
+                            try await self.callNodeClient.connectToRemote()
+                        } catch {
+                            log.error("[Call] Failed to connect to remote node, error: \(error)")
+                            CallManager.shared.endCall(with: self.details.callId)
+                        }
+                    }
+                }
             case .connected:
                 if !self.details.isIncoming {
                     CallManager.shared.reportOutgoingCallConnected(uuid: self.details.uuid, connectedAt: Date())
