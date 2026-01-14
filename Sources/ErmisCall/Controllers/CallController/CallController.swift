@@ -16,6 +16,7 @@ protocol CallControllerDelegate: AnyObject {
     func callIOStateDidChange(to callIOState: CallIOState)
     func durationDidChange(to duration: TimeInterval)
     func audioPortChange(to port: AudioPort?)
+    func startEndingCall(_ notification: Notification)
     func callDidEnd(_ notification: Notification)
     func callDidUpdateConnectionStats(status: ConnectionStats)
     func remoteVideoOrientationDidChanged(to orientation: VideoOrientation)
@@ -24,14 +25,14 @@ protocol CallControllerDelegate: AnyObject {
 public
 class CallController: NSObject {
     public let channel: Channel
-    public let call: Call
+    public weak var call: Call?
 
     public weak var delegate: CallControllerDelegate?
 
     private var cancelBags: Set<AnyCancellable> = []
 
-    public var callNodeClient: CallNodeClient {
-        return call.callNodeClient
+    public var callNodeClient: CallNodeClient? {
+        return call?.callNodeClient
     }
 
 
@@ -46,28 +47,28 @@ class CallController: NSObject {
     // MARK: - Observer
     /// Start observer call. You can handle all changes via `CallControllerDelegate`.
     package func startCallObservers() {
-        call.callStatePublisher
+        call?.callStatePublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] callState in
                 self?.delegate?.callStateDidChange(to: callState)
             }
             .store(in: &cancelBags)
 
-        call.connectionStatusPublisher
+        call?.connectionStatusPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] connectionStatus in
                 self?.delegate?.callConnectionStatusDidChange(to: connectionStatus)
             }
             .store(in: &cancelBags)
 
-        callNodeClient.callIOStatePublisher
+        callNodeClient?.callIOStatePublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] callIOState in
                 self?.delegate?.callIOStateDidChange(to: callIOState)
             }
             .store(in: &cancelBags)
 
-        callNodeClient.remoteVideoOrientationPublisher
+        callNodeClient?.remoteVideoOrientationPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] videoOrientation in
                 self?.delegate?.remoteVideoOrientationDidChanged(to: videoOrientation)
@@ -81,22 +82,30 @@ class CallController: NSObject {
 //            })
 //            .store(in: &cancelBags)
 
-        call.durationTimerPublisher
+        call?.durationTimerPublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] duration in
                 self?.delegate?.durationDidChange(to: duration)
-                let stats = self?.callNodeClient.getConnectionStats()
+                let stats = self?.callNodeClient?.getConnectionStats()
                 if let stats {
                     self?.delegate?.callDidUpdateConnectionStats(status: stats)
                 }
             }
             .store(in: &cancelBags)
 
-        call.audioManager.onPortsChange = { [weak self] in
+        call?.audioManager.onPortsChange = { [weak self] in
             DispatchQueue.main.async {
-                self?.delegate?.audioPortChange(to: self?.call.audioManager.currentPort)
+                self?.delegate?.audioPortChange(to: self?.call?.audioManager.currentPort)
             }
         }
+
+        NotificationCenter.default
+            .publisher(for: .startEndingCall)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] notification in
+                self?.delegate?.startEndingCall(notification)
+            }
+            .store(in: &cancelBags)
 
         NotificationCenter.default
             .publisher(for: .callDidEnded)
@@ -111,20 +120,23 @@ class CallController: NSObject {
 
     /// Create and start new outgoing call.
     public func startCall() async throws {
+        guard let call else {
+            throw ClientError("[CallController] Can not start call, no call available.")
+        }
         try await call.createCall()
-        CallManager.shared.reportOutgoingCallStarted(call)
+        try await CallManager.shared.reportOutgoingCallStarted(call)
     }
 
     /// End current call.
-    public func endCall() async throws {
-        try await CallManager.shared.endCall(call)
+    public func endCall() throws {
+        try CallManager.shared.endCall(with: call?.details.callId ?? "")
     }
 
     // MARK: - Control
 
     /// Switch camera position.
     public func switchCamera() {
-        call.toggleCameraPosition()
+        call?.toggleCameraPosition()
     }
 
     /// Set camera postion, throw error if failure.
@@ -132,12 +144,12 @@ class CallController: NSObject {
     ///  - Parameters:
     ///   - position: New camera position want to set.
     public func setCameraPosition(_ position: CameraPosition) {
-        call.setCameraPosition(position)
+        call?.setCameraPosition(position)
     }
 
     /// Turn on/off video.
     public func togleVideo() {
-        call.toggleVideo()
+        call?.toggleVideo()
     }
 
     /// Set video enable state
@@ -145,7 +157,7 @@ class CallController: NSObject {
     ///  - Parameters:
     ///   - isEnabled: The boolean value for video enable state. if `true` video will be enabled and otherwise.
     public func setVideoEnabled(_ isEnabled: Bool) {
-        call.setVideoEnabled(isEnabled)
+        call?.setVideoEnabled(isEnabled)
     }
 
     /// Set mic mute state
@@ -153,22 +165,22 @@ class CallController: NSObject {
     ///  - Parameters:
     ///   - isMute: The boolean value for mic mute state. if `true` mic will be muted and otherwise.
     public func setMute(_ isMute: Bool) {
-        call.setMute(isMute)
+        call?.setMute(isMute)
     }
 
     /// Mute/unmute.
     public func toggleMute() {
-        call.toggleMute()
+        call?.toggleMute()
     }
 
     /// Get all available audio port
     public func getAllAudioPort() -> [AudioPort] {
-        return call.audioManager.allPort
+        return call?.audioManager.allPort ?? []
     }
 
     /// Get all current audio port
     public func getCurrentAudioPort() -> AudioPort? {
-        return call.audioManager.currentPort
+        return call?.audioManager.currentPort
     }
 
     /// Set new audio port
@@ -177,28 +189,28 @@ class CallController: NSObject {
     ///     - port: The audio session port value to set.
 
     public func setAudioPort(_ port: AVAudioSession.Port) {
-        call.setAudioPort(port)
+        call?.setAudioPort(port)
     }
 }
 
 // MARK: - Computed properties
 package extension CallController {
-    public var callDetails: CallDetails {
-        return call.details
+    public var callDetails: CallDetails? {
+        return call?.details
     }
     /// Current `CallIO` state which contain infomations about state of local and remote audio/video,
     /// camera position ...
     public var callIOState: CallIOState {
-        return  callNodeClient.callIOStatePublisher.value
+        return  callNodeClient?.callIOStatePublisher.value ?? CallIOState()
     }
 
     /// Current call state.
     public var callState: CallState {
-        return call.callStatePublisher.value
+        return call?.callStatePublisher.value ?? .ended
     }
 
     /// The duration of call
     public var duration: TimeInterval {
-        return call.durationTimerPublisher.value
+        return call?.durationTimerPublisher.value ?? 0
     }
 }

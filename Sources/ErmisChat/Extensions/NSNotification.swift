@@ -7,6 +7,8 @@ import Foundation
 public extension NSNotification.Name {
     /// Send went callvc is hidden but the call is still ongoing.
     static let callVCDidHidden = Self("network.ermis.ermisChat.callVCDidHidden")
+    // Send went start ending a call.
+    static let startEndingCall = Self("network.ermis.ermisChat.startEndingCall")
     /// Send went call was ended.
     static let callDidEnded = Self("network.ermis.ermisChat.callDidEnded")
     /// Send went tap on ongoing call view to resume call.

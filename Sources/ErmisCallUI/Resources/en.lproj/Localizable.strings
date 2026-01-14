@@ -21,6 +21,8 @@
 "call.connection.other-connection-unstable" = "%@'s network connection is unstable";
 /// Text show when receiver in other call.
 "call.message.receiver-busy" = "Receiver busy";
+/// Text show when failed to create call because no internet connection.
+"call.message.can-not-make-call-because-no-connection" = "Unable to make the call. Please check your network connection";
 // MARK: - Camera authorization
 /// Title of require camera access alert.
 "alert.title.camera" = "Camera";

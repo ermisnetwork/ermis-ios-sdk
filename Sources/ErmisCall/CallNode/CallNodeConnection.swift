@@ -24,10 +24,11 @@ public class CallNodeConnection {
 
     init(relayUrls: [String], secretKey: Data?) throws {
         endpoint = try ErmisCallEndpoint(relayUrls: relayUrls, secretKey: secretKey)
-        Task {
+        Task(priority: .userInitiated) { [weak self] in
             do {
                 localAddress = try await getLocalAddress()
-            } catch {
+            } catch let error {
+                throw error
                 log.warning("[CallNode] Failed to get local address with error: \(error)", subsystems: .call)
             }
         }

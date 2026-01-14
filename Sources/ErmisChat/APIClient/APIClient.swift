@@ -384,7 +384,7 @@ class APIClient {
 //                subsystems: .httpRequests
 //            )
             
-            log.debug("CURL: \(urlRequest.cURL())", subsystems: .httpRequests)
+            print("CURL: \(urlRequest.cURL())")
 
             guard let self = self else {
                 log.warning("Callback called while self is nil", subsystems: .httpRequests)

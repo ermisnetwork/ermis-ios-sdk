@@ -7,7 +7,7 @@ import AVFoundation
 import Combine
 import ErmisChat
 
-public class ErmisCapturer: NSObject, AppLifecycleObserver {
+public class ErmisVideoCapturer: NSObject, AppLifecycleObserver {
     public let videoCaptureSession = AVCaptureSession()
 
     private var videoInput: AVCaptureDeviceInput?
@@ -26,8 +26,8 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 
     public var videoBufferPublisher = PassthroughSubject<(CMSampleBuffer, Bool), Never>()
     public var orientationPublisher = CurrentValueSubject<UIDeviceOrientation, Never>(.portrait)
+    public var isEnable: Bool = false
 
-    private var isReadyToStart: Bool = false
     private var isVideoSessionRunning: Bool = false
     private let videoSessionLock = NSLock()
 
@@ -68,8 +68,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     func startCapturer(_ isVideoEnable: Bool) {
-        isReadyToStart = true
-
+        isEnable = isVideoEnable
         sessionQueue.async {
             self.isVideoSessionRunning = isVideoEnable
             if isVideoEnable {
@@ -80,19 +79,19 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     func stopCapturer() {
+        isEnable = false
         isVideoSessionRunning = false
         log.debug("[Capturer] Stop video capture")
         self.videoCaptureSession.stopRunning()
     }
 
     public func addVideoInput(_ device: AVCaptureDevice) throws {
+        isEnable = true
         if let videoInput {
             if videoInput.device != device {
                 videoCaptureSession.removeInput(videoInput)
             } else {
-                sessionQueue.async {
-                    self.ensureVideoSessionRunning()
-                }
+                self.ensureVideoSessionRunning()
                 return
             }
         }
@@ -147,13 +146,19 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     private func ensureVideoSessionRunning() {
-        if self.isReadyToStart, !self.isVideoSessionRunning {
-            self.isVideoSessionRunning = true
-            log.debug("[Capturer] Start video capture")
-            self.videoSessionLock.lock()
-            self.videoCaptureSession.startRunning()
-            self.videoSessionLock.unlock()
+        sessionQueue.async { [weak self] in
+            guard let self else {
+                return
+            }
+            if self.isEnable, !self.isVideoSessionRunning {
+                self.isVideoSessionRunning = true
+                log.debug("[Capturer] Start video capture")
+                self.videoSessionLock.lock()
+                self.videoCaptureSession.startRunning()
+                self.videoSessionLock.unlock()
+            }
         }
+
     }
 
     public func removeVideoInput() {
@@ -209,15 +214,17 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 
     public func appDidBecomeActive() {
-        sessionQueue.async {
-            self.ensureVideoSessionRunning()
+        log.debug("[Capturer] App did become active, isEnable: \(isEnable)")
+        guard isEnable else {
+            return
         }
+        self.ensureVideoSessionRunning()
     }
 
     public func appDidEnterBackground() {
-        sessionQueue.async {
-            self.isVideoSessionRunning = false
-        }
+//        sessionQueue.async {
+//            self.isVideoSessionRunning = false
+//        }
     }
 
     @objc func sessionWasInterrupted(notification: Notification) {
@@ -253,9 +260,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
 
     @objc func sessionInterruptionEnded(notification: Notification) {
         log.debug("[Capturer] Capture session interruption ended")
-        sessionQueue.async {
-            self.ensureVideoSessionRunning()
-        }
+        self.ensureVideoSessionRunning()
     }
 
     // MARK: - Orientation
@@ -276,7 +281,7 @@ public class ErmisCapturer: NSObject, AppLifecycleObserver {
     }
 }
 // MARK: - AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate
-extension ErmisCapturer: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
+extension ErmisVideoCapturer: AVCaptureVideoDataOutputSampleBufferDelegate, AVCaptureAudioDataOutputSampleBufferDelegate {
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         let needEncodeAsKeyFrame: Bool = lastDeviceOrientation != currentDeviceOrientation
         if needEncodeAsKeyFrame {

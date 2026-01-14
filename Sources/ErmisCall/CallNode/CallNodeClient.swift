@@ -27,7 +27,7 @@ class CallNodeClient: NSObject, ObservableObject {
 
     public var voipManager: ErmisVoIPManagerAdvanced?
 
-    public let capturer: ErmisCapturer
+    public let capturer: ErmisVideoCapturer
     public let player: ErmisPlayer
 
 
@@ -38,7 +38,7 @@ class CallNodeClient: NSObject, ObservableObject {
 
 
     /// Current state of io devices.
-    private var callIOState: CallIOState
+    var callIOState: CallIOState
     /// The publisher for callIOState.
     public private(set) var callIOStatePublisher = CurrentValueSubject<CallIOState, Never>(.init())
     public private(set) var remoteVideoOrientationPublisher = CurrentValueSubject<VideoOrientation, Never>.init(.init(rotation: 0))
@@ -71,7 +71,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private var isReadyToSendVideoFrame: Bool {
-        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected) - \(hasSentVideoConfig)")
+//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected) - \(hasSentVideoConfig)")
         guard callNodeConnection.isConnected else {
             return false
         }
@@ -82,7 +82,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private var isReadyToSendAudioFrame: Bool {
-        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected), - \(hasSentAudioConfig)")
+//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected), - \(hasSentAudioConfig)")
         guard callNodeConnection.isConnected else {
             return false
         }
@@ -114,7 +114,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     public var sessionId: String? {
-        return call?.sessionId
+        return CallManager.shared.sessionId
     }
 
     private var isVideoCall: Bool {
@@ -132,7 +132,7 @@ class CallNodeClient: NSObject, ObservableObject {
          callNodeConnection: CallNodeConnection) {
         self.signaling = signaling
         self.callNodeConnection = callNodeConnection
-        self.capturer = ErmisCapturer()
+        self.capturer = ErmisVideoCapturer()
         self.player = ErmisPlayer()
         self.voipManager = ErmisVoIPManagerAdvanced()
         self.streamEncoder = DefaultStreamEncoder()
@@ -169,12 +169,10 @@ class CallNodeClient: NSObject, ObservableObject {
     // MARK: - Setup
     private func setUp() {
         signaling.onReceiveCallSignal = { [weak self] callSignal in
-            Task {
-                do {
-                    try await self?.handleSignalEvent(callSignal)
-                } catch let error {
-                    log.error("[ErmisCall] handle signal with error: \(error)")
-                }
+            do {
+                try self?.handleSignalEvent(callSignal)
+            } catch let error {
+                log.error("[ErmisCall] handle signal with error: \(error)")
             }
         }
         observerCapturerOutput()
@@ -229,7 +227,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
-                log.debug("[CallNode] Received capturer video output frame.")
+//                log.debug("[CallNode] Received capturer video output frame.")
                 self.streamEncoder.encodeVideo(sampleBuffer, isKeyFrame: isReadyToSendVideoFrame ? isKeyFrame : true)
             }
             .store(in: &cancelBags)
@@ -258,7 +256,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self, let config else {
                     return
                 }
-                log.debug("[CallNode] Receive audio config from encoder: \(config)")
+//                log.debug("[CallNode] Receive audio config from encoder: \(config)")
                 sendAudioConfigIfNeeded(config)
             }
             .store(in: &cancelBags)
@@ -291,7 +289,7 @@ class CallNodeClient: NSObject, ObservableObject {
                 guard let self else {
                     return
                 }
-                log.debug("[CallNode] Receive video frame from encoder")
+//                log.debug("[CallNode] Receive video frame from encoder")
                 sendVideoFrameIfNeeded(videoFrame)
             }
             .store(in: &cancelBags)
@@ -370,9 +368,7 @@ class CallNodeClient: NSObject, ObservableObject {
                     }
                     streamDecoder.decodeAudioFrame(audioFrame)
                 case .videoKeyFrame:
-                    log.debug("TTTT RECEIVER VIDEO FRAME - \(player.isReadyToPlay)")
                     guard player.isReadyToPlay else {
-                        log.debug("TTTT PLAYER IS NOT READY")
                         return
                     }
                     guard let videoFrame = VideoKeyFrame(payload: payload) else {
@@ -407,7 +403,6 @@ class CallNodeClient: NSObject, ObservableObject {
                     if isReadyToSendAudioFrame {
                         streamEncoder.isReadyToEncodeAudio = true
                     }
-                    log.debug("[CallNode] Received connected event")
                 case .transciver:
                     log.debug("[CallNode] Receive transciver event")
                     guard let transciverEvent = TransciverEvent(payload: payload) else {
@@ -430,12 +425,7 @@ class CallNodeClient: NSObject, ObservableObject {
                     streamEncoder.forceKeyFrame = true
                 case .endCall:
                     log.debug("[CallNode] Receive endcall event")
-                    Task(priority: .high) { [weak self] in
-                        guard let self else {
-                            return
-                        }
-                        await  CallManager.shared.endCall(self.call)
-                    }
+                    CallManager.shared.endCall(with: self.call?.details.callId ?? "")
                 case .unknown:
                     log.debug("[CallNode] failed to decode DataChannelMessage \(data.toString())")
                 default:
@@ -453,25 +443,8 @@ class CallNodeClient: NSObject, ObservableObject {
                     return
                 }
                 if status == .connected {
-                    Task {
-                            do {
-                                try await self.sendConnectedCallSignal()
-                                try await self.callNodeConnection.sendControlFrame(CallConnected().data)
-                                DispatchQueue.main.async {
-                                    self.call?.setState(.connected)
-                                    if self.isReadyToSendVideoFrame {
-                                        self.streamEncoder.isReadyToEncodeVideo = true
-                                    }
-                                    if self.isReadyToSendAudioFrame {
-                                        self.streamEncoder.isReadyToEncodeAudio = true
-                                    }
-                                }
-                            } catch let error {
-                                log.error("[Call] failed to sent connect signal: \(error)", subsystems: .call)
-                                await CallManager.shared.endCall(self.call)
-                                return
-                            }
-                    }
+                    log.debug("[CallNode] connection did connected")
+                    connectedCallIfAvailable()
                     if let config = streamEncoder.audioConfigPublisher.value {
                         sendAudioConfigIfNeeded(config)
                     }
@@ -484,9 +457,43 @@ class CallNodeClient: NSObject, ObservableObject {
             .store(in: &cancelBags)
     }
 
+    private func connectedCallIfAvailable() {
+        guard callNodeConnection.isConnected, call?.isAccected == true else {
+            log.debug("[CallNode] Call not ready to connect, callNodeConnected: \(callNodeConnection.isConnected) - callAccepted: \(call?.isAccected ?? false)")
+            return
+        }
+        Task(priority: .userInitiated) { [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                log.debug("[CallNode] Sending connected call signal")
+                try await self.sendConnectedCallSignal()
+                log.debug("[CallNode] Sending connected call event")
+                try? await self.callNodeConnection.sendControlFrame(CallConnected().data)
+                DispatchQueue.main.async {
+                    self.call?.setState(.connected)
+                    if self.isReadyToSendVideoFrame {
+                        self.streamEncoder.isReadyToEncodeVideo = true
+                    }
+                    if self.isReadyToSendAudioFrame {
+                        self.streamEncoder.isReadyToEncodeAudio = true
+                    }
+                }
+                ErmisCallAudioManager.shared.configureAudioSession(
+                    isIncomingCall: call?.details.isIncoming ?? false,
+                    isVideoCall: call?.details.isVideo ?? false)
+
+            } catch let error {
+                log.error("[Call] failed to sent connect signal: \(error)", subsystems: .call)
+                await CallManager.shared.endCall(with: self.call?.details.callId ?? "")
+                return
+            }
+        }
+    }
+
     private func sendVideoFrameIfNeeded(_ event: CallNodeEventProtocol) {
         if isReadyToSendVideoFrame {
-            log.debug("TTTT SEND VIDEO FRAME")
             callNodeConnection.sendEvent(event)
         }
     }
@@ -588,8 +595,8 @@ class CallNodeClient: NSObject, ObservableObject {
     /// Toggle camera position state.
     ///
     ///  - Returns: Throws `Error` if not success.
-    func toggleCameraPosition() async throws {
-        try await setCameraPosition(callIOState.cameraPosition.flip())
+    func toggleCameraPosition() throws {
+        try setCameraPosition(callIOState.cameraPosition.flip())
     }
 
     /// Set video enable state
@@ -716,7 +723,7 @@ class CallNodeClient: NSObject, ObservableObject {
     ///    - device: The capture device.
     /// - Returns: Throws error if not successful.
     public
-    func startCapture(device: AVCaptureDevice?) async throws {
+    func startCapture(device: AVCaptureDevice?) throws {
         guard let device else {
             return
         }
@@ -727,7 +734,7 @@ class CallNodeClient: NSObject, ObservableObject {
     ///
     ///  - Returns: Throws error if not successful.
     public
-    func stopVideoCapture() async throws {
+    func stopVideoCapture() throws {
         capturer.removeVideoInput()
     }
 
@@ -737,11 +744,11 @@ class CallNodeClient: NSObject, ObservableObject {
     ///    - position: Position of camera want to use.
     /// - Returns: Throws error if not successful.
     public
-    func setCameraPosition(_ position: CameraPosition) async throws {
+    func setCameraPosition(_ position: CameraPosition) throws {
         guard let device = capturer.videoCapturerDevice(for: position.captureDevicePosition) else {
             return
         }
-        try await startCapture(device: device)
+        try startCapture(device: device)
         callIOState.cameraPosition = position
     }
 
@@ -752,6 +759,9 @@ class CallNodeClient: NSObject, ObservableObject {
     ///    - isVideo: `true` if this call is video call.
     /// - Returns: Throws error if not successful.
     public func createCall(_ isVideo: Bool, sessionId: String) async throws {
+        if callNodeConnection.isConnected {
+            callNodeConnection.close()
+        }
         guard let localAddress = await callNodeConnection.localAddress else {
             return
         }
@@ -837,6 +847,7 @@ class CallNodeClient: NSObject, ObservableObject {
                                        signalType: nil,
                                        sdp: nil,
                                        metadata: nil)
+        call?.isAccected = true
         Task.detached(name: "call_connect", priority: .high) {
             try await self.callNodeConnection.connect(to: remoteAddress)
         }
@@ -846,13 +857,6 @@ class CallNodeClient: NSObject, ObservableObject {
     ///
     /// - Returns: Throws error if not successful.
     public func rejectCall() async throws {
-        setAudioEnable(false)
-        setVideoEnabled(false)
-        guard call?.details.state != .ended else {
-            return
-        }
-        try? sendEndcallEvent()
-        capturer.stopCapturer()
         try await signaling.sendSignal(sessionId: sessionId,
                                        callId: call?.details.callId,
                                        action: .rejectCall,
@@ -860,29 +864,12 @@ class CallNodeClient: NSObject, ObservableObject {
                                        signalType: nil,
                                        sdp: nil,
                                        metadata: nil)
-        callNodeConnection.close()
     }
 
     /// Stop current call and send endcall signal.
     ///
     /// - Returns: Throws error if not successful.
     public func endCall() async throws {
-        setAudioEnable(false)
-        setVideoEnabled(false)
-
-        capturer.stopCapturer()
-        voipManager?.stop()
-        player.stopRequestingMedia()
-        player.stop()
-
-        if call?.details.isIncoming == false {
-            try audioManager.didDeactivateAudioSession()
-        }
-        guard call?.details.state != .ended else {
-            return
-        }
-        try? await sendEndcallEvent()
-        callNodeConnection.close()
         if call?.isMissed == true {
             try await signaling.sendSignal(sessionId: sessionId,
                                            callId: call?.details.callId,
@@ -902,7 +889,7 @@ class CallNodeClient: NSObject, ObservableObject {
 
     /// Stop IO and close peerconnection.
     /// - Note: This will not send end call signal to other device
-    func close() {
+    public func close() {
         setAudioEnable(false)
         setVideoEnabled(false)
         if call?.details.isIncoming == false {
@@ -911,7 +898,14 @@ class CallNodeClient: NSObject, ObservableObject {
         capturer.stopCapturer()
         player.stop()
         voipManager?.stop()
-        callNodeConnection.close()
+        if call?.details.state != .ended {
+            Task(priority: .userInitiated) {
+                try? await sendEndcallEvent()
+                callNodeConnection.close()
+            }
+        } else {
+            callNodeConnection.close()
+        }
     }
 
     /// Handle received signal event.
@@ -919,7 +913,7 @@ class CallNodeClient: NSObject, ObservableObject {
     /// - Parameters:
     ///    - callSignal: The received signal to handle.
     /// - Returns: Throws error if not successful.
-    func handleSignalEvent(_ callSignal: CallSignalEvent) async throws {
+    func handleSignalEvent(_ callSignal: CallSignalEvent) throws {
         log.debug("receive callID: \(callSignal.callId), action: \(callSignal.callAction), signalType: \(callSignal.signal?.type)")
         guard callSignal.callId == call?.details.callId else {
             log.error("[ErmisCall] Receive invalid signal action: \(callSignal.callAction), callId: \(callSignal.callId), current call: \(call)")
@@ -944,20 +938,22 @@ class CallNodeClient: NSObject, ObservableObject {
         case .acceptCall:
             if call?.details.state == .ringing {
                 DispatchQueue.main.async {
-                    self.call?.setState(.connecting)
+                    self.call?.isAccected = true
                 }
             }
+            self.connectedCallIfAvailable()
         case .rejectCall:
             call?.setState(.ended)
-            Task(priority: .high) {
-                try? await close()
-            }
+            CallManager.shared.endCall(with: callSignal.callId)
+//            try? close()
+            break
         case .missCall:
             call?.setState(.ended)
-            Task(priority: .high) {
-                try? await close()
-            }
+            CallManager.shared.endCall(with: callSignal.callId)
+//            try? close()
+            break
         case .connectCall:
+            log.debug("[CallNode] Receive connected signal.")
             DispatchQueue.main.async {
                 self.call?.setState(.connected)
                 if self.isReadyToSendVideoFrame {
@@ -971,9 +967,8 @@ class CallNodeClient: NSObject, ObservableObject {
             break
         case .endCall:
             call?.setState(.ended)
-            Task(priority: .high) {
-                try? await close()
-            }
+            CallManager.shared.endCall(with: callSignal.callId)
+//            try? close()
         case .signalCall:
             break
         case .upgradeCall:

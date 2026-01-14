@@ -56,7 +56,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     private var hideControlsTimer: Timer?
     private var controlsBottomConstraint: NSLayoutConstraint?
 
-    lazy var eventsController = call.client.eventsController()
+    private var isEndingCall = false
     /// A boolean value, is `true` if call view controller is showing in PiP mode.
     private var isPiP: Bool = false
     /// A default ratio of Pip view.
@@ -107,12 +107,11 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         super.setUp()
         setupNavigation()
         /// If outgoing call is not going, start it.
-        if !callDetails.isIncoming, callDetails.state == .idle {
+        if let callDetails, !callDetails.isIncoming, callDetails.state == .idle {
             startCall()
         }
 
         controller.delegate = self
-        eventsController.delegate = self
         controller.startCallObservers()
 
         connectionStatusLabel.numberOfLines = 0
@@ -196,7 +195,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     private func setupCallNode() {
         Task {
-            if callDetails.isVideo {
+            if let callDetails, callDetails.isVideo {
                 let isCameraAvailable = await ioAccessManager.requestCameraAccessIfNeeded()
                 guard isCameraAvailable else {
                     controller.setVideoEnabled(false)
@@ -206,14 +205,14 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             }
         }
         DispatchQueue.main.async {
-            self.localVideoView.attach(with: self.call.callNodeClient.capturer)
-            self.remoteVideoView.attach(with: self.call.callNodeClient.player)
+            self.localVideoView.attach(with: self.call!.callNodeClient.capturer)
+            self.remoteVideoView.attach(with: self.call!.callNodeClient.player)
         }
     }
 
     open override func contentDidChanged() {
         super.contentDidChanged()
-        navigationItem.title = callDetails.isVideo == true ? L10n.Call.Title.videoCall : L10n.Call.Title.voiceCall
+        navigationItem.title = callDetails?.isVideo == true ? L10n.Call.Title.videoCall : L10n.Call.Title.voiceCall
 
         if let membership = controller.channel.membership {
             localVideoView.content = .init(with: membership, isMirror: true)
@@ -223,21 +222,21 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             remoteVideoView.content = .init(with: directMembership)
         }
 
-        remoteAvatarView.loadImage(from: callDetails.imageURL,
+        remoteAvatarView.loadImage(from: callDetails?.imageURL,
                                    with: ImageLoaderOptions(
                                     resize: .init(components.avatarThumbnailSize),
-                                    placeHolderString: callDetails.title,
+                                    placeHolderString: callDetails?.title,
                                     placeholder: nil
                                    ))
 
-        localAvatarView.loadImage(from: callDetails.currentUser?.imageURL,
+        localAvatarView.loadImage(from: callDetails?.currentUser?.imageURL,
                                    with: ImageLoaderOptions(
                                     resize: .init(components.avatarThumbnailSize),
-                                    placeHolderString: callDetails.currentUser?.displayName,
+                                    placeHolderString: callDetails?.currentUser?.displayName,
                                     placeholder: nil
                                    ))
 
-        titleLabel.text = callDetails.title
+        titleLabel.text = callDetails?.title
         stateLabel.text = L10n.Call.Status.ringing
     }
 
@@ -271,11 +270,30 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     /// Start current call.
     public func startCall() {
-        Task {
+        Task(priority: .userInitiated) { [weak self] in
+            guard let self else {
+                return
+            }
+
+            log.debug("[Call] Show call - ensure websocket connected")
+            // Ensure websocket is connected.
+            let isWebSocketConnect = await CallManager.shared.ensureWebsocketConnected()
+            guard isWebSocketConnect else {
+                self.presentAlert(title: L10n.Call.Message.canNotMakeCallBecauseNoConnection)
+                if let call = CallManager.shared.currentCall {
+                    CallManager.shared.removeCall(call)
+                }
+                return
+            }
+
             do {
                 try await controller.startCall()
             } catch let error {
                 log.error("[ErmisCall] start call failed with error: \(error)", subsystems: .call)
+                if let call = CallManager.shared.currentCall {
+                    CallManager.shared.removeCall(call)
+                }
+                call?.callNodeClient.close()
                 // busy
                 if let clientError = error as? ClientError, clientError.ermisApiError?.type == .otherCallInProgress {
                     DispatchQueue.main.async {
@@ -300,14 +318,17 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     /// End current call.
     public func endCall() {
-        Task {
-            do {
+        isEndingCall = true
+        updateViewForEnding()
+        do {
+            //close()
+            try controller.endCall()
+            if call == nil {
                 close()
-                try await controller.endCall()
-            } catch let error {
-                close()
-                log.error("[ErmisCall] end call failed with error: \(error)", subsystems: .call)
             }
+        } catch let error {
+            //close()
+            log.error("[ErmisCall] end call failed with error: \(error)", subsystems: .call)
         }
     }
 
@@ -333,14 +354,14 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     /// Hide call screen. If current call is video call, video call will be shown in PiP mode.
     @objc private func back() {
-        if callDetails.isVideo {
+        if callDetails?.isVideo == true {
             delegate?.callViewControllerWantsToMinize(self)
         } else {
             NotificationCenter.default.post(name: .callVCDidHidden,
                                             object: self,
                                             userInfo: [
-                                                "call_id": callDetails.callId,
-                                                "cid": callDetails.cid
+                                                "call_id": callDetails?.callId,
+                                                "cid": callDetails?.cid
                                             ])
             delegate?.callViewControllerWantsToDismiss(self)
         }
@@ -361,6 +382,10 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     /// Update screen by call's state.
     private func updateViewByCallState() {
+        guard !isEndingCall else {
+            stateLabel.text = L10n.Call.Status.ended
+            return
+        }
         switch callState {
         case .ringing:
             stateLabel.text = L10n.Call.Status.ringing
@@ -376,6 +401,11 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         stateLabel.isHidden = stateLabel.text.isEmptyOrNil
 
         updateNavigationBarTitleView()
+    }
+
+    private func updateViewForEnding() {
+        updateControlsState()
+        updateViewByCallState()
     }
 
     /// Update screen by call's IO State.
@@ -416,7 +446,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             startHideControlsTimer()
         }
         if callState == .ended {
-            close()
+            //close()
         }
     }
 
@@ -425,8 +455,8 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     open func callIOStateDidChange(to callIOState: ErmisCall.CallIOState) {
-        if !callDetails.isVideo, callIOState.isVideoEnabled || callIOState.isRemoteVideoEnabled {
-            call.details.isVideo = true
+        if let callDetails, !callDetails.isVideo, callIOState.isVideoEnabled || callIOState.isRemoteVideoEnabled {
+            call?.details.isVideo = true
             CallManager.shared.reportUpdateCall(for: callDetails.uuid, hasVideo: true)
         }
         updateViewByCallIOState()
@@ -446,9 +476,20 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         }
     }
 
-    public func callDidEnd(_ notification: Notification) {
+    public func startEndingCall(_ notification: Notification) {
         guard let callId = notification.userInfo?["call_id"] as? String,
-              callId == callDetails.callId else { return }
+              callId == callDetails?.callId else { return }
+        isEndingCall = true
+        updateViewForEnding()
+    }
+
+    public func callDidEnd(_ notification: Notification) {
+        guard let call else {
+            self.close()
+            return
+        }
+        guard let callId = notification.userInfo?["call_id"] as? String,
+              callId == callDetails?.callId else { return }
         self.close()
     }
 
@@ -607,16 +648,6 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         return view
     }
 }
-// MARK: - EventsControllerDelegate
-extension CallViewController: EventsControllerDelegate {
-    public func eventsController(_ controller: ErmisChat.EventsController, didReceiveEvent event: any ErmisChat.Event) {
-        if let callSignalEvent = event as? CallSignalEvent, callDetails.callId == callSignalEvent.callId {
-            if callSignalEvent.callAction == .endCall {
-                close()
-            }
-        }
-    }
-}
 // MARK: - UIContextMenuInteractionDelegate
 extension CallViewController: UIContextMenuInteractionDelegate {
     public func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation point: CGPoint) -> UIContextMenuConfiguration? {
@@ -634,27 +665,26 @@ extension CallViewController {
             remoteAvatarView.isHidden = true
             return
         }
-        localAvatarView.isHidden = callIOState.isVideoEnabled || !callDetails.isVideo
+        localAvatarView.isHidden = callIOState.isVideoEnabled || !(callDetails?.isVideo ?? false)
         remoteAvatarView.isHidden = callIOState.isRemoteVideoEnabled
     }
 
     /// Update user's video view/ other user's video view visble state.
     private func updateVideoViewsState() {
-        localVideoView.isHidden = isPiP || !callDetails.isVideo
+        localVideoView.isHidden = isPiP || !(callDetails?.isVideo ?? false)
 
         localVideoView.videoView.isHidden = !callIOState.isVideoEnabled
         remoteVideoView.videoView.isHidden = !callIOState.isRemoteVideoEnabled
-        log.debug("TTTT CALL IO STATE IS REMOTE VIDEO: \(callIOState.isRemoteVideoEnabled)")
     }
 
     /// Update controls view.
     private func updateControlsState() {
-        controls.isHidden = isPiP
+        controls.isHidden = isPiP || isEndingCall
         controls.content = .init(isAudioEnable: callIOState.isAudioEnabled,
                                  isVideoEnable: callIOState.isVideoEnabled,
                                  currentPort: controller.getCurrentAudioPort()?.portType ?? .builtInReceiver)
         if let switchCamera = controls.getButton(of: .switchCamera) {
-            switchCamera.isHidden = !callDetails.isVideo
+            switchCamera.isHidden = !(callDetails?.isVideo ?? false)
         }
     }
 
@@ -681,19 +711,19 @@ extension CallViewController {
             durationLabel.isHidden = true
             return
         }
-        durationLabel.isHidden = callDetails.isVideo || callState != .connected
+        durationLabel.isHidden = (callDetails?.isVideo ?? false) || callState != .connected
     }
 
     
     private func updateNavigationBarTitleView() {
-        if !callDetails.isVideo {
+        if let callDetails, !callDetails.isVideo {
             titleView.content = .init(title: L10n.Call.Title.voiceCall)
         } else {
             switch callState {
             case .idle, .ringing, .connecting:
                 titleView.content = .init(title: L10n.Call.Title.videoCall)
             case .connected, .ended:
-                titleView.content = .init(title: callDetails.title, subtitle: timeFormater.string(from: duration))
+                titleView.content = .init(title: callDetails?.title, subtitle: timeFormater.string(from: duration))
             }
         }
         navigationItem.titleView = titleView
@@ -706,7 +736,7 @@ extension CallViewController {
 
     private func updateConnectionStatusLabel(_ connectionStatus: CallConnectionStatus) {
         connectionStatusView.content = .init(connectionStatus: connectionStatus,
-                                             callTitle: callDetails.title)
+                                             callTitle: callDetails?.title)
     }
 }
 // MARK: - PiPable
@@ -745,11 +775,11 @@ extension CallViewController: PiPable {
 }
 // MARK: - Computed properties
 extension CallViewController {
-    public var call: Call {
+    public var call: Call? {
         return controller.call
     }
 
-    public var callDetails: CallDetails {
+    public var callDetails: CallDetails? {
         return controller.callDetails
     }
 

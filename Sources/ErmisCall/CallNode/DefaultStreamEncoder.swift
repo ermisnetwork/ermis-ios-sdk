@@ -160,6 +160,24 @@ public class DefaultStreamEncoder: StreamEncoder {
             throw NSError(domain: "Ermis", code: 999, userInfo: nil)
         }
 
+        // Configure session properties
+        let properties: [CFString: Any] = [
+            kVTCompressionPropertyKey_RealTime: true,
+            kVTCompressionPropertyKey_ProfileLevel: videoCodec == kCMVideoCodecType_H264 ? kVTProfileLevel_H264_Main_AutoLevel : kVTProfileLevel_HEVC_Main_AutoLevel, // or appropriate for your codec
+            kVTCompressionPropertyKey_AllowFrameReordering: false, // for low latency
+            kVTCompressionPropertyKey_MaxKeyFrameInterval: keyframeInterval * fps,
+            kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: keyframeInterval,
+            kVTCompressionPropertyKey_AverageBitRate: bitrate,
+            kVTCompressionPropertyKey_ExpectedFrameRate: fps
+        ]
+
+        for (key, value) in properties {
+            let propStatus = VTSessionSetProperty(compressionSession, key: key, value: value as CFTypeRef)
+            if propStatus != noErr {
+                log.warning("[Encoder] Failed to set \(key): \(propStatus)")
+            }
+        }
+
         isSessionValid = true
         log.debug("[Encoder] Video encoder initialized")
     }
@@ -167,7 +185,9 @@ public class DefaultStreamEncoder: StreamEncoder {
     // MARK: - Encoding video
     public func encodeVideo(_ sampleBuffer: CMSampleBuffer, isKeyFrame: Bool = false) {
         guard let compressionSession,
-              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
+              let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+              CVPixelBufferGetWidth(imageBuffer) > 0,
+              CVPixelBufferGetHeight(imageBuffer) > 0
         else {
             log.warning("[Encoder] COMPRESSION SESSION OR IMAGE BUFFER IS NIL")
             return
@@ -180,7 +200,6 @@ public class DefaultStreamEncoder: StreamEncoder {
         let duration = CMSampleBufferGetDuration(sampleBuffer)
         let frameProps =
         [
-            kVTCompressionPropertyKey_MaxKeyFrameInterval: (keyframeInterval * fps) as CFNumber,
             kVTEncodeFrameOptionKey_ForceKeyFrame: isKeyFrame || forceKeyFrame,
         ] as CFDictionary
 
@@ -196,6 +215,8 @@ public class DefaultStreamEncoder: StreamEncoder {
         if status != noErr {
             log.warning("[Encoder] Error encoding video frame: \(status)", subsystems: .call)
             if status == kVTInvalidSessionErr {
+                self.handleInvalidSession()
+            } else if status == kVTVideoEncoderMalfunctionErr {
                 self.handleInvalidSession()
             }
         } else if presentationTimeStamp != .zero {

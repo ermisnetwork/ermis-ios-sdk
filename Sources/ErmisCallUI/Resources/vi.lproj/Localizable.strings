@@ -21,6 +21,8 @@
 "call.connection.other-connection-unstable" = "Kết nối của %@ không ổn định";
 /// Text show when receiver in other call.
 "call.message.receiver-busy" = "Người nhận bận";
+/// Text show when failed to create call because no internet connection.
+"call.message.can-not-make-call-because-no-connection" = "Không thể thực hiện cuộc gọi, vui lòng kiểm tra kết nối mạng.";
 // MARK: - Camera authorization
 /// Title of require camera access alert.
 "alert.title.camera" = "Máy ảnh";

@@ -58,14 +58,13 @@ public class Call: NSObject {
 
     var isMissed: Bool = false
 
-    private let connectionController: ConnectionController
+    public var isAccected: Bool = false
 
     init(sessionId: String, client: ErmisClient, callNodeClient: CallNodeClient, callDetails: CallDetails) {
         self.sessionId = sessionId
         self.client = client
         self.callNodeClient = callNodeClient
         self.details = callDetails
-        self.connectionController = client.connectionController()
         super.init()
         callNodeClient.delegate = self
         callNodeClient.call = self
@@ -112,20 +111,6 @@ public class Call: NSObject {
     }
 
     // MARK: - Life cycle
-    func connectionSocket() async throws {
-        guard client.connectionStatus != .connected else {
-            return
-        }
-        return try await withCheckedThrowingContinuation { continuation in
-            connectionController.connect(completion: { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            })
-        }
-    }
 
     func createCall() async throws {
         log.debug("TTTT CREATE CALL")
@@ -148,8 +133,8 @@ public class Call: NSObject {
         setState(.ended)
     }
 
-    func close() async throws {
-        try await callNodeClient.close()
+    func close() throws {
+        try  callNodeClient.close()
         setState(.ended)
     }
 
@@ -234,12 +219,10 @@ public class Call: NSObject {
 
     /// Toggle camera position.
     func toggleCameraPosition() {
-        Task(priority: .high) {
-            do {
-                try await callNodeClient.toggleCameraPosition()
-            } catch let error {
-                log.error("[WebRTC] Error when changing camera position: \(error)")
-            }
+        do {
+            try callNodeClient.toggleCameraPosition()
+        } catch let error {
+            log.error("[WebRTC] Error when changing camera position: \(error)")
         }
     }
 
@@ -248,7 +231,7 @@ public class Call: NSObject {
     ///  - Parameters:
     ///   - position: New camera position want to set.
     func setCameraPosition(_ position: CameraPosition) {
-        Task(priority: .high) {
+        Task(priority: .userInitiated) {
             do {
                 try await callNodeClient.setCameraPosition(position)
             } catch let error {
@@ -278,10 +261,8 @@ extension Call {
         switch details.state {
         case .idle, .ringing, .connecting:
             if !details.isIncoming {
-                Task(priority: .high) {
-                    isMissed = true
-                    try await CallManager.shared.endCall(self)
-                }
+                isMissed = true
+                try CallManager.shared.endCall(with: self.details.callId)
             }
         default:
             break
@@ -317,9 +298,7 @@ extension Call {
         if !callNodeClient.isCallNodeConnected() {
             connectionStatusPublisher.send(.yourConnectionIsBeingEstablished)
             DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: {
-                Task(priority: .high) {
-                    await CallManager.shared.endCall(self)
-                }
+                CallManager.shared.endCall(with: self.details.callId)
                 self.stopDurationTimer()
             })
             return

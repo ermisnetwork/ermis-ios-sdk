@@ -299,7 +299,7 @@ public class ErmisWalletAuthClient {
             }
             self.connectionState = .signed
             self.onUpdateState?(.signed)
-            Task(priority: .high, operation: { [weak self] in
+            Task(priority: .userInitiated, operation: { [weak self] in
                 if self?.isDeleteAccount == true {
                     await self?.deleteUser(signature: signature)
                 } else {

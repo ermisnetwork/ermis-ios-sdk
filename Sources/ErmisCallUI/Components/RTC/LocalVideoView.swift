@@ -23,7 +23,7 @@ public class LocalVideoView: VideoView {
         previewLayer?.frame = videoView.frame
     }
 
-    public func attach(with capturer: ErmisCapturer) {
+    public func attach(with capturer: ErmisVideoCapturer) {
         previewLayer = AVCaptureVideoPreviewLayer(session: capturer.videoCaptureSession)
         videoView.layer.addSublayer(previewLayer!)
         previewLayer!.videoGravity = .resizeAspectFill

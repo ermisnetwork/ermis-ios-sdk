@@ -83,7 +83,6 @@ public class ErmisCallAudioManager {
     }
 
     func updateAudioSessionConfigure() {
-        log.debug("[AudioManager] ⚠️ updateAudioSessionConfigure CALLED - Thread: \(Thread.current)")
     }
 
     @objc
@@ -93,17 +92,17 @@ public class ErmisCallAudioManager {
             return
         }
 
-        log.debug("[AudioManager] 🔔 routeChanged: \(changeReason.rawValue) - \(changeReasonDescription(changeReason))")
+//        log.debug("[AudioManager] 🔔 routeChanged: \(changeReason.rawValue) - \(changeReasonDescription(changeReason))")
 
         switch changeReason {
         case .newDeviceAvailable, .oldDeviceUnavailable:
-            log.debug("[AudioManager] → Handling device change")
+//            log.debug("[AudioManager] → Handling device change")
             allPort = getAllAudioPort()
             if isActive {
                 setDefaultPort()
             }
         case .categoryChange:
-            log.debug("[AudioManager] → Handling category change, re-applying preferred route: \(AVAudioSession.sharedInstance().categoryOptions)")
+//            log.debug("[AudioManager] → Handling category change, re-applying preferred route: \(AVAudioSession.sharedInstance().categoryOptions)")
             allPort = getAllAudioPort()
         default:
             break
@@ -150,7 +149,7 @@ public class ErmisCallAudioManager {
 
             let route = session.currentRoute
             for output in route.outputs {
-                print("TTTT Output:", output.portType.rawValue)
+                print("[AuidoManager]] Output:", output.portType.rawValue)
             }
 
             allPort = getAllAudioPort()
@@ -200,7 +199,7 @@ public class ErmisCallAudioManager {
             }
             let route = AVAudioSession.sharedInstance().currentRoute
             for output in route.outputs {
-                print("TTTT Output:", output.portType.rawValue)
+                print("[AudioManager] Output:", output.portType.rawValue)
             }
             log.debug("[AudioManager] set audio output port, isSpeaker: \(isSpeaker)")
         } catch {

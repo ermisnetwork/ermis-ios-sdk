@@ -13,7 +13,7 @@ public class ErmisPlayer: AppLifecycleObserver {
 
     // MARK: - State
     private var isPlaying = false
-    package var isReadyToPlay: Bool = false
+    package var isReadyToPlay: Bool = true
     private var hasSetupRenderer: Bool = false
 
     var onRequiredKeyframe: (() -> Void)?
@@ -83,16 +83,14 @@ public class ErmisPlayer: AppLifecycleObserver {
 
         if !hasSetupRenderer {
             hasSetupRenderer = true
-            if isEnable && isApplicationActive {
-                start()
-            }
         }
+        start()
     }
 
     // MARK: - Control
 
     private func start() {
-        guard isReadyToPlay, isApplicationActive, !isPlaying else {
+        guard isReadyToPlay, isApplicationActive else {
             log.debug("[Player] Cannot start: ready=\(isReadyToPlay), active=\(isApplicationActive), playing=\(isPlaying)")
             return
         }

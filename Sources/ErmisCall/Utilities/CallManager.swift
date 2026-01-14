@@ -18,15 +18,21 @@ public class CallManager: NSObject, CXProviderDelegate {
     
     public var sessionId = UUID().uuidString.lowercased()
     var client: ErmisClient!
+    var connectionController: ConnectionController!
     var callProvider :CXProvider
     let callController: CXCallController
     var calls: [Call] = []
     var callUUIDDictionary: [String: UUID] = [:]
     lazy var  eventsController = client.eventsController()
     public lazy var ioAccessManager = IOAccessManager()
+
     /// Return current active call.
     public var currentCall: Call? {
         return calls.last(where: { $0.details.state != .ended })
+    }
+
+    public var audioManager: ErmisCallAudioManager {
+        return ErmisCallAudioManager.shared
     }
 
     public weak var delegate: CallManagerDelegate?
@@ -45,20 +51,20 @@ public class CallManager: NSObject, CXProviderDelegate {
     }
 
     lazy var onCallEnded: ((Call?) -> Void) = { [weak self] call in
+        log.debug("[Call] On call ended callUUID: \(call?.details.uuid)", subsystems: .call)
         defer {
-            self?.calls.removeAll()
-            self?.callUUIDDictionary.removeAll()
+//            self?.callUUIDDictionary.removeAll()
             self?.endingCallUUIDs.removeAll()
-//            self?.calls.removeAll(where: { $0.details.callId == call.details.callId })
-//            self?.calls.removeAll(where: { $0.details.state == .ended })
+            self?.calls.removeAll(where: { $0.details.callId == call?.details.callId })
         }
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = false
         }
         guard let call else { return }
-        Task(priority: .high) { [weak call] in
-            await try call?.close()
+        if call.details.state != .ended {
+            call.details.state == .ended
         }
+        call.callNodeClient.close()
         self?.sendEndCallNotification(call)
         try? call.audioManager.didDeactivateAudioSession()
 
@@ -74,6 +80,13 @@ public class CallManager: NSObject, CXProviderDelegate {
 
         callProvider = CXProvider(configuration: providerConfig)
         callController = CXCallController()
+        
+//        let signaling = Signaler(client: client, cid: channel.cid)
+//        let relayUrls = ["https://iroh-relay.ermis.network:8443"]
+//        guard let callNodeClient = CallNodeClient(signaling: signaling, relayUrls: relayUrls) else {
+//            return nil
+//        }
+
         super.init()
         self.callProvider.setDelegate(self, queue: nil)
     }
@@ -82,6 +95,10 @@ public class CallManager: NSObject, CXProviderDelegate {
         self.client = client
         // Register push registry
         eventsController.delegate = self
+        guard let client else {
+            return
+        }
+        connectionController = client.connectionController()
     }
 
     // MARK: - Create call
@@ -111,6 +128,7 @@ public class CallManager: NSObject, CXProviderDelegate {
             
             return nil
         }
+
         addCall(call)
         log.debug("[Call] Create new call with uuid: \(uuid.uuidString)", subsystems: .call)
         return call
@@ -123,7 +141,7 @@ public class CallManager: NSObject, CXProviderDelegate {
     ///   - uuid: The `UUID` of the call that report to CallKit.
     ///
     /// - Returns: New incoming call.
-    public func createNewIncomingCall(from event: CallSignalEvent, uuid: UUID) {
+    public func createNewIncomingCall(from event: CallSignalEvent, uuid: UUID) -> Call? {
         guard let call = Call(sessionId: sessionId,
                         uuid: uuid,
                         callId: event.callId,
@@ -132,14 +150,22 @@ public class CallManager: NSObject, CXProviderDelegate {
                         isVideo: event.isVideo ?? false,
                               isIncoming: true) else {
             log.debug("[Call] Failed to create new incoming call with uuid: \(uuid.uuidString)", subsystems: .call)
-            forceEndcall()
-            return
+//            callNodeClient.close()
+            return nil
         }
-        call.callNodeClient.call?.callNodeClient.remoteAddress = event.metadata?.address
+
+        let signaling = Signaler(client: client, cid: event.cid)
+        let relayUrls = ["https://iroh-relay.ermis.network:8443"]
+        guard let callNodeClient = CallNodeClient(signaling: signaling, relayUrls: relayUrls) else {
+            return nil
+        }
+        call.callNodeClient.remoteAddress = event.metadata?.address
+
         pendingTasks.append(Task {
-            await try? call.connectionSocket()
+            await try? connectionSocket()
         })
         addCall(call)
+        return call
     }
 
     // MARK: - Call
@@ -191,22 +217,31 @@ public class CallManager: NSObject, CXProviderDelegate {
         self.calls.append(call)
     }
 
-    // Remove current call without send ending signal.
-    func removeCall(_ call: Call?, with reason: CXCallEndedReason) {
-        log.warning("[Call] Remove call: \(call?.details.callId), reason: \(reason)", subsystems: .call)
-        guard let call, endingCallUUIDs.isEmpty else {
-            return
-        }
-        endingCallUUIDs.insert(call.details.uuid)
-        DispatchQueue.main.async {
-            UIApplication.shared.isIdleTimerDisabled = false
-        }
+    public func removeCall(_ call: Call) {
+        log.debug("[Call] Remove call: \(call)")
+        sendStartEndingCallNotification(call)
+        sendEndCallNotification(call)
+        try? call.close()
+        calls.removeAll(where: { $0.details.callId == call.details.callId })
+    }
 
-        callProvider.reportCall(with: call.details.uuid, endedAt: Date(), reason: reason)
-        Task(priority: .high) { [weak self] in
-            try? await call.close()
-            onCallEnded(call)
-        }
+    // Remove current call without send ending signal.
+    public func clearCall(_ callId: String, with reason: CXCallEndedReason) {
+        endCall(with: callId)
+//        guard let call = call(with: callId), endingCallUUIDs.isEmpty else {
+//            return
+//        }
+//        log.warning("[Call] Clear call: \(call.details.callId), reason: \(reason)", subsystems: .call)
+//        endingCallUUIDs.insert(call.details.uuid)
+//        sendStartEndingCallNotification(call)
+//        DispatchQueue.main.async {
+//            UIApplication.shared.isIdleTimerDisabled = false
+//        }
+//        callProvider.reportCall(with: call.details.uuid, endedAt: Date(), reason: reason)
+//        Task(priority: .high) { [weak self] in
+//            try? await callNodeClient.close()
+//            onCallEnded(call)
+//        }
     }
 
     /// End the call with given identifier.
@@ -218,22 +253,20 @@ public class CallManager: NSObject, CXProviderDelegate {
             return
         }
         endingCallUUIDs.insert(call.details.uuid)
-        Task(priority: .high) { [weak self] in
-            guard let self else {
-                return
+        call.callNodeClient.close()
+        if Thread.isMainThread {
+            self.endCall(call)
+        } else {
+            DispatchQueue.main.async {
+                self.endCall(call)
             }
-            self.pendingTasks.forEach({ $0.cancel()})
-            await endCall(call)
         }
     }
 
-    func endCall(_ call: Call?) async {
-        DispatchQueue.main.async {
-            UIApplication.shared.isIdleTimerDisabled = true
-        }
-        guard let call else {
-            return
-        }
+    private func endCall(_ call: Call) {
+        UIApplication.shared.isIdleTimerDisabled = true
+        sendStartEndingCallNotification(call)
+        self.pendingTasks.forEach({ $0.cancel()})
         log.debug("[CallKit] endcall with UUID: \(call.details.uuid)", subsystems: .call)
         let endAction = CXEndCallAction(call: call.details.uuid)
 
@@ -241,23 +274,72 @@ public class CallManager: NSObject, CXProviderDelegate {
         transaction.addAction(endAction)
         requestTransaction(transaction, completion: { [weak self] error in
             if let error {
-                // Force ended call
-                self?.forceEndcall()
+                if let error = error as? CXErrorCodeRequestTransactionError {
+                    switch error.code {
+                    case .unknown:
+                        // Code 0 - Lỗi không xác định
+                        log.debug("[CallKit] Unknown error")
 
+                    case .unentitled:
+                        // Code 1 - App chưa có entitlement cho CallKit
+                        log.debug("[CallKit] App not entitled for CallKit")
+
+                    case .unknownCallProvider:
+                        // Code 2 - CXProvider không tồn tại hoặc đã bị invalidate
+                        log.debug("[CallKit] Unknown call provider - need to recreate provider")
+                    case .emptyTransaction:
+                        // Code 3 - Transaction không có action nào
+                        log.debug("[CallKit] Empty transaction")
+                    case .unknownCallUUID:
+                        // Code 4 - UUID không tồn tại trong hệ thống
+                        log.debug("[CallKit] Call UUID not found - call may already ended")
+                    case .callUUIDAlreadyExists:
+                        // Code 5 - UUID đã tồn tại (thường gặp khi start call, không phải end call)
+                        log.debug("[CallKit] Call UUID already exists")
+                    case .invalidAction:
+                        // Code 6 - Action không hợp lệ cho trạng thái hiện tại
+                        log.debug("[CallKit] Invalid action for current call state")
+                    case .maximumCallGroupsReached:
+                        // Code 7 - Đã đạt giới hạn số nhóm cuộc gọi
+                        log.debug("[CallKit] Maximum call groups reached")
+
+                    @unknown default:
+                        log.debug("[CallKit] New unhandled error: \(error.code.rawValue)")
+                    }
+                    // Call already ended.
+                    if error.code == .unknownCallUUID {
+
+                    } else {
+                        self?.forceEndcall(callUUID: call.details.uuid)
+                    }
+                } else {
+                    // Force ended call
+                    self?.forceEndcall(callUUID: call.details.uuid)
+                }
             }
         })
     }
 
-    func forceEndcall() {
-        guard let currentCall else {
-            return
-        }
-        self.callProvider.reportCall(with: currentCall.details.uuid, endedAt: Date(), reason: .failed)
-        onCallEnded(currentCall)
+    func forceEndcall(callUUID: UUID) {
+        log.debug("[CallManager] Force end call callUUID: \(callUUID)")
+        self.callProvider.reportCall(with: callUUID, endedAt: Date(), reason: .failed)
+        onCallEnded(call(with: callUUID))
     }
 
     func sendEndCallNotification(_ call: Call) {
+        log.debug("[CallManager] Send end call notification callUUID: \(call.details.uuid)")
         NotificationCenter.default.post(name: .callDidEnded,
+                                        object: self,
+                                        userInfo: [
+                                            "call_id": call.details.callId,
+                                            "cid": call.details.cid
+                                        ]
+        )
+    }
+
+    func sendStartEndingCallNotification(_ call: Call) {
+        log.debug("[CallManager] Send start ending call notification: \(call.details.uuid)")
+        NotificationCenter.default.post(name: .startEndingCall,
                                         object: self,
                                         userInfo: [
                                             "call_id": call.details.callId,
@@ -280,9 +362,30 @@ public class CallManager: NSObject, CXProviderDelegate {
                 do {
                     try await UNUserNotificationCenter.current().add(request)
                 } catch {
-                    log.error("[Ermis Call] Failed to send missed call notification: \(error)", subsystems: .call)
+                    log.error("[CallManager] Failed to send missed call notification: \(error)", subsystems: .call)
                 }
             }
+        }
+    }
+    ////
+    func connectionSocket() async throws {
+        return try await withCheckedThrowingContinuation { continuation in
+            guard let connectionController else {
+                continuation.resume(throwing: ClientError("[CallManager] Connection controller is nil."))
+                return
+            }
+            guard client.connectionStatus != .connected else {
+                continuation.resume()
+                return
+            }
+
+            connectionController.connect(completion: { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume()
+                }
+            })
         }
     }
     // MARK: - Report call events.
@@ -303,34 +406,70 @@ public class CallManager: NSObject, CXProviderDelegate {
         if let event, let call = call(with: event.callId) {
             callUUID = call.details.uuid
         } else if let event {
-            createNewIncomingCall(from: event, uuid: callUUID)
+            let call = createNewIncomingCall(from: event, uuid: callUUID)
         }
 
         callUpdate.remoteHandle = CXHandle(type: .generic, value: event?.cid.rawValue ?? callUUID.uuidString)
         callProvider.reportNewIncomingCall(with: callUUID, update: callUpdate, completion: { [unowned self] error in
+            /// Imediately end fake call.
+            if event == nil || currentCall == nil {
+                callProvider.reportCall(with: callUUID, endedAt: Date(), reason: .failed)
+                return
+            }
             if let error {
-                log.error("[PushKit] Failed to report incoming call: \(error.localizedDescription)", subsystems: .call)
+                log.error("[CallKit] Failed to report incoming call: \(error.localizedDescription)", subsystems: .call)
+                if let error = error as? CXErrorCodeIncomingCallError {
+                    switch error.code {
+                    case .unknown:
+                        log.debug("[CallKit] Failed to report incoming call: [.unknown]")
+                    case .unentitled:
+                        log.debug("[CallKit] Failed to report incoming call: [.unentitled]")
+                    case .callUUIDAlreadyExists:
+                        log.debug("[CallKit] Failed to report incoming call: [.callUUIDAlreadyExists]")
+                    case .filteredByDoNotDisturb:
+                        log.debug("[CallKit] Failed to report incoming call: [.filteredByDoNotDisturb]")
+                    case .filteredByBlockList:
+                        log.debug("[CallKit] Failed to report incoming call: [.filteredByBlockList]")
+                    case .filteredDuringRestrictedSharingMode:
+                        log.debug("[CallKit] Failed to report incoming call: [.filteredDuringRestrictedSharingMode]")
+                    case .callIsProtected:
+                        log.debug("[CallKit] Failed to report incoming call: [.callIsProtected]")
+                    case .filteredBySensitiveParticipants:
+                        log.debug("[CallKit] Failed to report incoming call: [.filteredBySensitiveParticipants]")
+                    @unknown default:
+                        log.debug("[CallKit] Failed to report incoming call: [.unknown default]")
+                    }
+                }
             } else {
                 ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true, isVideoCall: callUpdate.hasVideo)
                 currentCall?.setState(.ringing)
-                log.debug("[PushKit] Reported incoming call: \(callUUID.uuidString)", subsystems: .call)
+                log.debug("[CallKit] Reported incoming call: \(callUUID.uuidString)", subsystems: .call)
             }
             completion(error)
         })
     }
 
-    package func reportOutgoingCallStarted(_ call: Call) {
-        log.debug("[PushKit] Report outgoing call: \(call.details.uuid)", subsystems: .call)
+    package func reportOutgoingCallStarted(_ call: Call) async throws {
+        log.debug("[CallKit] Report outgoing call: \(call.details.uuid)", subsystems: .call)
         let handle = CXHandle(type: .generic, value: call.details.cid.rawValue)
         var startCallAction = CXStartCallAction(call: call.details.uuid, handle: handle)
         startCallAction.isVideo = call.details.isVideo
         let transaction = CXTransaction()
         transaction.addAction(startCallAction)
-        requestTransaction(transaction, completion: { _ in })
+        return try await withCheckedThrowingContinuation { continuation in
+            requestTransaction(transaction, completion: { error in
+                if let error {
+                    log.error("[CallKit] Failed to report outgoing call: \(call.details.uuid) with error: \(error)", subsystems: .call)
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume()
+            })
+        }
     }
 
     package func reportUpdateCall(for callUUID: UUID, localizedCallName: String? = nil, hasVideo: Bool? = nil) {
-        log.debug("[PushKit] Report call update: \(callUUID)", subsystems: .call)
+        log.debug("[CallKit] Report call update: \(callUUID)", subsystems: .call)
         let callUpdate = CXCallUpdate()
         if let hasVideo {
             callUpdate.hasVideo = hasVideo
@@ -420,27 +559,25 @@ public class CallManager: NSObject, CXProviderDelegate {
     }
 
     public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
-        log.debug("[CallKit] provider perform call start: \(action).", subsystems: .call)
+        log.debug("[CallKit] provider perform call start: \(action.callUUID).", subsystems: .call)
         ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: false, isVideoCall: currentCall?.details.isVideo ?? false)
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        log.debug("[CallKit] provider perform call answer: \(action).", subsystems: .call)
+        log.debug("[CallKit] provider perform call answer: \(action.callUUID).", subsystems: .call)
         let isMicrophoneAccessGranted = ioAccessManager.isMicrophoneAccessGranted
         guard isMicrophoneAccessGranted else {
             CallManager.needShowRequestMicrophoneAccessAlert = true
             if let currentCall {
-                Task(priority: .high) {
-                    await CallManager.shared.endCall(currentCall)
-                }
+                CallManager.shared.endCall(currentCall)
             }
             action.fulfill()
             return
         }
 //        ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true, isVideoCall: currentCall?.details.isVideo ?? false)
 
-        let task = Task { [weak self] in
+        let task = Task(priority: .high) { [weak self] in
             guard let self, !Task.isCancelled else {
                 action.fulfill()
                 return
@@ -449,7 +586,7 @@ public class CallManager: NSObject, CXProviderDelegate {
                 delegate?.callManager(self, didAccept: currentCall)
                 log.debug("[CallKit] Answering call")
                 log.debug("[CallKit] Connecting socket...")
-                try await currentCall?.connectionSocket()
+                try await connectionSocket()
                 log.debug("[CallKit] Connected socket")
                 log.debug("[CallKit] Send accepted call signal")
                 try await currentCall?.acceptCall()
@@ -468,82 +605,94 @@ public class CallManager: NSObject, CXProviderDelegate {
             } catch(let error) {
                 log.debug("[CallKit] provider perform call answer failed with erorr: \(error)", subsystems: .call)
                 action.fulfill()
-                if let currentCall {
-                    Task(priority: .high) {
-                        await endCall(currentCall)
-                    }
-                }
+                onCallEnded(call(with: action.callUUID))
             }
         }
         pendingTasks.append(task)
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        log.debug("[CallKit] provider perform end call: \(action).", subsystems: .call)
-        guard let currentCall = calls.first(where: { $0.details.uuid == action.callUUID}) else {
-            log.warning("[CallKit] provider perform end call: call not found", subsystems: .call)
+        log.debug("[CallKit] provider perform end call: \(action.callUUID).", subsystems: .call)
+        guard let call = call(with: action.callUUID) else {
+            log.warning("[CallKit] provider perform end call: call not found calls: \(calls)", subsystems: .call)
+            action.fulfill()
             return
         }
 
-        Task(priority: .high) { [weak self] in
+        if !endingCallUUIDs.contains(call.details.uuid) {
+            endingCallUUIDs.insert(call.details.uuid)
+            sendStartEndingCallNotification(call)
+        }
+
+
+        Task(priority: .userInitiated) { [weak self] in
             guard let self else {
                 return
             }
             do {
-                if currentCall.details.state.isConnected || currentCall.isMissed {
-                    try await currentCall.endCall()
-                    onCallEnded(currentCall)
+                if call.details.state.isConnected || call.isMissed {
+                    try await call.endCall()
+                    onCallEnded(call)
                     action.fulfill()
                 } else {
-                    log.debug("[Call] Reject call when Perform end call action \(currentCall.details.callId) - call counts: \(calls.count)", subsystems: .call)
-                    try await currentCall.rejectCall()
+                    log.debug("[Call] Reject call when Perform end call action \(call.details.callId) - call counts: \(calls.count)", subsystems: .call)
+                    try await call.rejectCall()
                     onCallEnded(currentCall)
                     action.fulfill()
                 }
             } catch let error {
-                onCallEnded(currentCall)
+                log.debug("[Call] Perform endcall action failed with error: \(error)")
+                onCallEnded(call)
                 action.fulfill()
             }
         }
     }
 
     public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
-        log.debug("[CallKit] provider did perform held call: \(action).", subsystems: .call)
+        log.debug("[CallKit] provider did perform held call: \(action.callUUID).", subsystems: .call)
     }
 
     public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
-        log.debug("[CallKit] provider did perform muted call: \(action).", subsystems: .call)
-        Task(priority: .high) {
-            do {
-                try await currentCall?.setMute(action.isMuted)
-                action.fulfill()
-            } catch let error {
-                action.fail()
-            }
+        log.debug("[CallKit] provider did perform muted call: \(action.callUUID).", subsystems: .call)
+        do {
+            try currentCall?.setMute(action.isMuted)
+            action.fulfill()
+        } catch let error {
+            action.fail()
         }
     }
     //
     public func provider(_ provider: CXProvider, perform action: CXSetGroupCallAction) {
-        log.debug("[CallKit] provider did perform set group call: \(action).", subsystems: .call)
+        log.debug("[CallKit] provider did perform set group call: \(action.callUUID).", subsystems: .call)
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXPlayDTMFCallAction) {
-        log.debug("[CallKit] provider did perform play dtmf call: \(action).", subsystems: .call)
+        log.debug("[CallKit] provider did perform play dtmf call: \(action.callUUID).", subsystems: .call)
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
         log.debug("[CallKit] provider did time out performing: \(action).", subsystems: .call)
-        Task {
-            do {
-                try await currentCall?.endCall()
-                onCallEnded(currentCall)
-                action.fulfill()
-            } catch let error {
-                action.fulfill()
+        if let action = action as? CXEndCallAction, let call = call(with: action.callUUID) {
+            if currentCall?.details.uuid == call.details.uuid {
+                callProvider.reportCall(with: action.callUUID, endedAt: Date(), reason: .failed)
             }
+            onCallEnded(call)
+        } else if let action = action as? CXStartCallAction, let call = call(with: action.callUUID) {
+            onCallEnded(call)
+        } else if let action = action as? CXAnswerCallAction, let call = call(with: action.callUUID) {
+            onCallEnded(call)
         }
+//        Task(priority: .high) { [weak self] in
+//            do {
+//                try await self?.callNodeClient.endCall()
+//                onCallEnded(currentCall)
+//                action.fulfill()
+//            } catch let error {
+//                action.fulfill()
+//            }
+//        }
     }
 
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
@@ -569,7 +718,7 @@ public class CallManager: NSObject, CXProviderDelegate {
 
     public func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
         guard type == .voIP else { return }
-        log.debug("[PushKit] Received incoming call with payload: \(payload.dictionaryPayload)", subsystems: .call)
+        log.debug("[CallKit] Received incoming call with payload: \(payload.dictionaryPayload)", subsystems: .call)
 
         guard let client else {
             reportIncommingCall(.none, completion: { _ in
@@ -600,18 +749,39 @@ public class CallManager: NSObject, CXProviderDelegate {
                         }
                     }
                     return
-                } else if !endingCallUUIDs.isEmpty {
-                    onCallEnded(currentCall)
                 }
+
+                while !endingCallUUIDs.isEmpty {
+                    Thread.sleep(forTimeInterval: 0.1)
+                }
+//                else if !endingCallUUIDs.isEmpty {
+//                    onCallEnded(currentCall)
+//                }
                 reportIncommingCall(callSignalEvent, completion: { _ in
                     completion()
                 })
             case .failure(let error):
-                log.error("[PushKit] Cannot handle pushkit payload: \(error)", subsystems: .call)
+                log.error("[CallKit] Cannot handle pushkit payload: \(error)", subsystems: .call)
                 reportIncommingCall(.none, completion: { _ in
                     completion()
                 })
                 completion()
+            }
+        }
+    }
+
+    // MARK: - Others
+    public func ensureWebsocketConnected() async -> Bool {
+        if client.connectionStatus == .connected {
+            return true
+        }
+        return await withCheckedContinuation { continuation in
+            self.connectionController.connect { [weak self] error in
+                if let error, self?.client.connectionStatus != .connected {
+                    continuation.resume(returning: false)
+                } else {
+                    continuation.resume(returning: true)
+                }
             }
         }
     }
@@ -626,10 +796,16 @@ extension CallManager: EventsControllerDelegate {
             let isCurrentCall = event.callId == currentCall?.details.callId
             log.debug("""
 [CallKit] Call manager received event: 
+- Event: CallAction: \(event.callAction)
 - UUID: \(callUUID)
 - Action: \(event.callAction)
 - Other: Is currentUser: \(isCurrentUser), isCurrentDevice: \(isCurrentDevice), is currentCall: \(isCurrentCall)
 """, subsystems: .call)
+
+            if isCurrentCall && isCurrentDevice {
+                log.debug("[CallNode] Receive call event from self, skip.")
+                return
+            }
             switch event.callAction {
             case .createCall:
                 if isCurrentCall, isCurrentDevice, let currentCall {
@@ -645,14 +821,18 @@ extension CallManager: EventsControllerDelegate {
                     guard !callUUIDDictionary.contains(where: { $0.key == event.callId }) else {
                         return
                     }
-                     reportIncommingCall(event, completion: { _ in })
+                    // If is ending other call, report later when receive incoming push.
+                    guard endingCallUUIDs.isEmpty else {
+                        return
+                    }
+                    reportIncommingCall(event, completion: { _ in })
                 }
             case .acceptCall:
                 // Call answer from other device.
-                if isCurrentUser, !isCurrentDevice {
+                if isCurrentUser, !isCurrentDevice, isCurrentCall {
                     // TODO: - Find other way to make call history
 //                    reportIncommingCall(event, completion: { _ in })
-                    removeCall(currentCall, with: .answeredElsewhere)
+                    clearCall(event.callId, with: .answeredElsewhere)
                 } else if !isCurrentUser, isCurrentCall {
                     if let currentCall, currentCall.isLocalId == true {
                         currentCall.setRemoteCallId(event.callId)
@@ -660,39 +840,20 @@ extension CallManager: EventsControllerDelegate {
                     reportOutgoingCallStartConnecting(event)
                 }
             case .signalCall:
-                // If revice call signal in not valid state --> Close
-                guard let currentCall else {
-                    return
-                }
-                switch event.signal?.type {
-                case .ice:
-                    if currentCall.details.state != .ringing,
-                       currentCall.details.state != .connecting,
-                       currentCall.details.state != .connected {
-                        removeCall(currentCall, with: .answeredElsewhere)
-                    }
-                case .offer, .answer:
-                    if currentCall.details.state != .ringing,
-                       currentCall.details.state != .connecting,
-                       currentCall.details.state != .connected {
-                        removeCall(currentCall, with: .answeredElsewhere)
-                    }
-                default:
-                    break
-                }
+                // TODO: - Remove unused webrtc signal.
+                break
             case .endCall:
                 if isCurrentCall {
-                    removeCall(currentCall, with: .remoteEnded)
+                    clearCall(event.callId, with: .remoteEnded)
                 }
-
             case .missCall:
-                if isCurrentCall {
-                    removeCall(currentCall, with: .unanswered)
-
-                    if !isCurrentUser {
-                        sendMissedCallNotification(event)
-                    }
+                if isCurrentCall, !isCurrentUser {
+                    endCall(with: event.callId)
+                    sendMissedCallNotification(event)
+                } else if isCurrentCall, isCurrentUser {
+                    clearCall(event.callId, with: .unanswered)
                 }
+
 //                if isCurrentUser {
 //                    removeCall(currentCall, with: .unanswered)
 //                    reportCallEnded(event, reason: .unanswered)
@@ -706,17 +867,16 @@ extension CallManager: EventsControllerDelegate {
 //                    sendMissedCallNotification(event)
 //                }
             case .rejectCall:
-                if isCurrentCall {
-                    if isCurrentUser {
-                        if isCurrentDevice {
-                            removeCall(currentCall, with: .unanswered)
-                        } else {
-                            removeCall(currentCall, with: .declinedElsewhere)
-                        }
+                if isCurrentCall, isCurrentUser {
+                    if isCurrentDevice {
+                        clearCall(event.callId, with: .unanswered)
                     } else {
-                        removeCall(currentCall, with: .remoteEnded)
+                        clearCall(event.callId, with: .declinedElsewhere)
                     }
+                } else if isCurrentCall, !isCurrentUser {
+                    clearCall(event.callId, with: .remoteEnded)
                 }
+  
 //                if isCurrentUser {
 //                    if isCurrentDevice {
 //                        reportCallEnded(event, reason: .unanswered)
