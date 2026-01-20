@@ -35,7 +35,6 @@ class CallController: NSObject {
         return call?.callNodeClient
     }
 
-
     public init(with channel: Channel, call: Call) {
         self.channel = channel
         self.call = call

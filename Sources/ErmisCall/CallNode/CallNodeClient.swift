@@ -71,7 +71,7 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private var isReadyToSendVideoFrame: Bool {
-//        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected) - \(hasSentVideoConfig)")
+        print("TTTT IS READY: \(callNodeConnection.isConnected), - \(call?.details.state == .connected) - \(hasSentVideoConfig)")
         guard callNodeConnection.isConnected else {
             return false
         }
@@ -458,8 +458,8 @@ class CallNodeClient: NSObject, ObservableObject {
     }
 
     private func connectedCallIfAvailable() {
-        guard callNodeConnection.isConnected, call?.isAccected == true else {
-            log.debug("[CallNode] Call not ready to connect, callNodeConnected: \(callNodeConnection.isConnected) - callAccepted: \(call?.isAccected ?? false)")
+        guard callNodeConnection.isConnected else {
+            log.debug("[CallNode] Call not ready to connect, callNodeConnected: \(callNodeConnection.isConnected)")
             return
         }
         Task(priority: .userInitiated) { [weak self] in
@@ -526,16 +526,22 @@ class CallNodeClient: NSObject, ObservableObject {
             let orientation = self.capturer.currentDeviceOrientation
             let rotation = self.previewRotationValue(for: orientation)
             config.orientation = Int(rotation)
-            sendingVideoConfig = true
+            DispatchQueue.main.async {
+                self.sendingVideoConfig = true
+            }
             Task(name: "call_node_send_config", priority: .high) {
                 do {
                     try await self.callNodeConnection.sendControlFrame(config.data)
-                    self.sendingVideoConfig = false
-                    self.hasSentVideoConfig = true
+                    DispatchQueue.main.async {
+                        self.sendingVideoConfig = false
+                        self.hasSentVideoConfig = true
+                    }
                     log.debug("[CallNode] Sent video config: \(config)")
                 } catch {
-                    self.sendingVideoConfig = false
-                    self.hasSentVideoConfig = false
+                    DispatchQueue.main.async {
+                        self.sendingVideoConfig = false
+                        self.hasSentVideoConfig = false
+                    }
                     log.debug("[CallNode] Sent video config failed: \(error)")
                 }
             }
@@ -770,6 +776,7 @@ class CallNodeClient: NSObject, ObservableObject {
             return
         }
         let metaData = Metadata(localAddress: localAddress)
+        log.debug("[CallNode] Sending create call signal.")
         let callSignalPayload = try await signaling.sendSignal(sessionId: sessionId,
                                                                callId: nil,
                                                                action: .createCall,
@@ -852,7 +859,6 @@ class CallNodeClient: NSObject, ObservableObject {
                                        signalType: nil,
                                        sdp: nil,
                                        metadata: nil)
-        call?.isAccected = true
 //        try await self.callNodeConnection.connect(to: remoteAddress)
     }
 
@@ -906,6 +912,7 @@ class CallNodeClient: NSObject, ObservableObject {
     /// Stop IO and close peerconnection.
     /// - Note: This will not send end call signal to other device
     public func close() {
+        self.remoteAddress = nil
         if call?.details.isIncoming == false {
             try? audioManager.didDeactivateAudioSession()
         }
@@ -950,12 +957,7 @@ class CallNodeClient: NSObject, ObservableObject {
             }
             self.remoteAddress = localAddress
         case .acceptCall:
-            if call?.details.state == .ringing {
-                DispatchQueue.main.async {
-                    self.call?.isAccected = true
-                }
-            }
-            self.connectedCallIfAvailable()
+            break
         case .rejectCall:
             call?.setState(.ended)
             CallManager.shared.clearCall(callSignal.callId, with: .remoteEnded)

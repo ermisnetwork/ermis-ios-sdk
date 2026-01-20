@@ -6,6 +6,7 @@ import Foundation
 import ErmisChat
 import AVFAudio
 import Combine
+import UIKit
 
 // Represent a call.
 
@@ -42,6 +43,10 @@ public class Call: NSObject {
     public var audioManager: ErmisCallAudioManager {
         return ErmisCallAudioManager.shared
     }
+
+    public var remoteVideoView: Any?
+
+    public var renderView = VideoRenderView()
     /// Timer for timeout when connecting call. If call not connected after timeout, the call will be ended automatically.
     var timeoutTimer: Timer?
     /// Timer for call connection time.
@@ -58,8 +63,6 @@ public class Call: NSObject {
 
     var isMissed: Bool = false
 
-    public var isAccected: Bool = false
-
     init(sessionId: String, client: ErmisClient, callNodeClient: CallNodeClient, callDetails: CallDetails) {
         self.sessionId = sessionId
         self.client = client
@@ -68,6 +71,9 @@ public class Call: NSObject {
         super.init()
         callNodeClient.delegate = self
         callNodeClient.call = self
+        renderView.attach(with: callNodeClient.player)
+        renderView.backgroundColor = .clear
+        renderView.translatesAutoresizingMaskIntoConstraints = false
     }
 
     convenience init?(sessionId: String, uuid: UUID, callId: String, cid: ChannelId, client: ErmisClient, isVideo: Bool, isIncoming: Bool) {
@@ -139,8 +145,14 @@ public class Call: NSObject {
     }
 
     func setRemoteCallId(_ callId: String) {
-        details.callId = callId
-        CallManager.shared.callUUIDDictionary[callId] = details.uuid
+        if Thread.isMainThread {
+            details.callId = callId
+        } else {
+            DispatchQueue.main.sync {
+                details.callId = callId
+            }
+        }
+            CallManager.shared.addToCallUUIDDictionary(callId: callId, uuid: self.details.uuid)
     }
     /// Set new state for current call.
     ///
@@ -311,7 +323,7 @@ extension Call {
 
         if !callNodeClient.isCallNodeConnected() {
             connectionStatusPublisher.send(.yourConnectionIsBeingEstablished)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: {
                 CallManager.shared.endCall(with: self.details.callId)
                 self.stopDurationTimer()
             })

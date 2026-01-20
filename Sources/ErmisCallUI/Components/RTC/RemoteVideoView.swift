@@ -7,17 +7,24 @@ import AVFoundation
 import ErmisCall
 
 public class RemoteVideoView: VideoView {
-    weak var previewLayer: AVSampleBufferDisplayLayer?
+    weak var renderView: VideoRenderView?
 
     public override func layoutSubviews() {
         super.layoutSubviews()
-        previewLayer?.frame = videoView.bounds
+        renderView?.previewLayer?.frame = videoView.bounds
     }
 
-    public func attach(with player: ErmisPlayer) {
-        self.previewLayer = player.videoLayer
-        videoView.layer.addSublayer(player.videoLayer)
-        previewLayer?.frame = videoView.bounds
+    public func attach(with renderView: VideoRenderView) {
+        if self.renderView != nil {
+            self.renderView?.removeFromSuperview()
+        }
+
+        if renderView.superview != nil {
+            self.renderView?.removeFromSuperview()
+        }
+        
+        self.renderView = renderView
+        videoView.embed(renderView)
     }
 }
 

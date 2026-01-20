@@ -407,7 +407,17 @@ open class _ViewController: UIViewController, BaseViewProtocol {
     override open func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
 
-        guard #available(iOS 12, *) else { return }
+        onTraitCollectionDidChange(previousTraitCollection)
+    }
+
+    override open func viewWillLayoutSubviews() {
+        onViewWillLayoutSubViews()
+        super.viewWillLayoutSubviews()
+    }
+}
+
+extension BaseViewProtocol where Self: UIViewController {
+    public func onTraitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         guard previousTraitCollection?.userInterfaceStyle != traitCollection.userInterfaceStyle || previousTraitCollection?.preferredContentSizeCategory != traitCollection.preferredContentSizeCategory else { return }
 
         TraitCollectionReloadStack.push {
@@ -416,14 +426,13 @@ open class _ViewController: UIViewController, BaseViewProtocol {
         }
     }
 
-    override open func viewWillLayoutSubviews() {
+    public func onViewWillLayoutSubViews() {
         TraitCollectionReloadStack.executePendingUpdates()
-        super.viewWillLayoutSubviews()
     }
 }
 
 /// Closure stack, used to reverse order of theme reloads on trait collection changes
-private enum TraitCollectionReloadStack {
+enum TraitCollectionReloadStack {
     private static var stack: [() -> Void] = []
 
     static func executePendingUpdates() {

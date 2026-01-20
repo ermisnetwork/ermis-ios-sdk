@@ -21,14 +21,53 @@ public class CallManager: NSObject, CXProviderDelegate {
     var connectionController: ConnectionController!
     var callProvider :CXProvider
     let callController: CXCallController
-    var calls: [Call] = []
-    var callUUIDDictionary: [String: UUID] = [:]
+    
+    package let callsQueue = DispatchQueue(label: "com.ermis.callmanager.calls")
+    private var _calls: [Call] = []
+    private var _callUUIDDictionary: [String: UUID] = [:]
+    private var _endingCallUUIDs = Set<UUID>()
+    
+    var calls: [Call] {
+        get {
+            callsQueue.sync { _calls }
+        }
+        set {
+            callsQueue.async(flags: .barrier) { [weak self] in
+                self?._calls = newValue
+            }
+        }
+    }
+    
+    var callUUIDDictionary: [String: UUID] {
+        get {
+            callsQueue.sync { _callUUIDDictionary }
+        }
+        set {
+            callsQueue.async(flags: .barrier) { [weak self] in
+                self?._callUUIDDictionary = newValue
+            }
+        }
+    }
+    
+    public var endingCallUUIDs: Set<UUID> {
+        get {
+            callsQueue.sync { _endingCallUUIDs }
+        }
+        set {
+            callsQueue.async(flags: .barrier) { [weak self] in
+                self?._endingCallUUIDs = newValue
+            }
+        }
+    }
+    
     lazy var  eventsController = client.eventsController()
     public lazy var ioAccessManager = IOAccessManager()
 
     /// Return current active call.
     public var currentCall: Call? {
-        return calls.last(where: { $0.details.state != .ended })
+        return callsQueue.sync {
+            _calls.last(where: { $0.details.state != .ended })
+        }
     }
 
     public var audioManager: ErmisCallAudioManager {
@@ -38,7 +77,68 @@ public class CallManager: NSObject, CXProviderDelegate {
     public weak var delegate: CallManagerDelegate?
 
     public var pendingTasks: [Task<Void, Never>] = []
-    public var endingCallUUIDs = Set<UUID>()
+    
+    public func addToCallUUIDDictionary(callId: String, uuid: UUID) {
+        callsQueue.async(flags: .barrier) { [weak self] in
+            self?._callUUIDDictionary[callId] = uuid
+        }
+    }
+    
+    private func removeFromCallUUIDDictionary(callId: String) {
+        callsQueue.async(flags: .barrier) { [weak self] in
+            self?._callUUIDDictionary.removeValue(forKey: callId)
+        }
+    }
+    
+    private func insertEndingCallUUID(_ uuid: UUID) {
+        callsQueue.async(flags: .barrier) { [weak self] in
+            self?._endingCallUUIDs.insert(uuid)
+        }
+    }
+    
+    private func removeEndingCallUUID(_ uuid: UUID) {
+        callsQueue.async(flags: .barrier) { [weak self] in
+            self?._endingCallUUIDs.remove(uuid)
+        }
+    }
+    
+    private func clearEndingCallUUIDs() {
+        callsQueue.async(flags: .barrier) { [weak self] in
+            self?._endingCallUUIDs.removeAll()
+        }
+    }
+    
+    public func isEndingCallUUIDsEmpty() -> Bool {
+        callsQueue.sync { _endingCallUUIDs.isEmpty }
+    }
+    
+    public func containsEndingCallUUID(_ uuid: UUID) -> Bool {
+        callsQueue.sync { _endingCallUUIDs.contains(uuid) }
+    }
+    
+    private func appendCall(_ call: Call) {
+        callsQueue.async(flags: .barrier) { [weak self] in
+            self?._calls.append(call)
+        }
+    }
+    
+    private func removeCall(withCallId callId: String) {
+        callsQueue.async(flags: .barrier) { [weak self] in
+            self?._calls.removeAll(where: { $0.details.callId == callId })
+        }
+    }
+    
+    private func findCall(withCallId callId: String) -> Call? {
+        callsQueue.sync {
+            _calls.first { $0.details.callId == callId }
+        }
+    }
+    
+    private func findCall(withUUID uuid: UUID) -> Call? {
+        callsQueue.sync {
+            _calls.first(where: { $0.details.uuid == uuid })
+        }
+    }
 
     public static var needShowRequestMicrophoneAccessAlert: Bool {
         get {
@@ -52,18 +152,12 @@ public class CallManager: NSObject, CXProviderDelegate {
 
     lazy var onCallEnded: ((Call?) -> Void) = { [weak self] call in
         log.debug("[Call] On call ended callUUID: \(call?.details.uuid)", subsystems: .call)
-//        defer {
-////            self?.callUUIDDictionary.removeAll()
-//            self?.endingCallUUIDs.removeAll()
-//            self?.calls.removeAll(where: { $0.details.callId == call?.details.callId })
-//        }
         DispatchQueue.main.async {
             UIApplication.shared.isIdleTimerDisabled = false
         }
         guard let call else { return }
         DispatchQueue.main.async {
             call.callNodeClient.stop()
-//            call.callNodeClient.close()
         }
         if call.details.state != .ended {
             call.details.state == .ended
@@ -73,15 +167,13 @@ public class CallManager: NSObject, CXProviderDelegate {
         if call.callNodeClient.isCallNodeConnected() {
             Task(priority: .high) { [weak self, weak call] in
                 await call?.callNodeClient.close()
-                self?.endingCallUUIDs.removeAll()
-                self?.calls.removeAll(where: { $0.details.callId == call?.details.callId })
+                self?.clearEndingCallUUIDs()
+                self?.removeCall(withCallId: call?.details.callId ?? "")
             }
         } else {
-            self?.endingCallUUIDs.removeAll()
-            self?.calls.removeAll(where: { $0.details.callId == call.details.callId })
+            self?.clearEndingCallUUIDs()
+            self?.removeCall(withCallId: call.details.callId)
         }
-//        call.callNodeClient.close()
-
     }
 
     override init() {
@@ -94,12 +186,6 @@ public class CallManager: NSObject, CXProviderDelegate {
 
         callProvider = CXProvider(configuration: providerConfig)
         callController = CXCallController()
-        
-//        let signaling = Signaler(client: client, cid: channel.cid)
-//        let relayUrls = ["https://iroh-relay.ermis.network:8443"]
-//        guard let callNodeClient = CallNodeClient(signaling: signaling, relayUrls: relayUrls) else {
-//            return nil
-//        }
 
         super.init()
         self.callProvider.setDelegate(self, queue: nil)
@@ -191,7 +277,9 @@ public class CallManager: NSObject, CXProviderDelegate {
     ///
     /// - Returns: The call in given channel. Return nil if not exist call in this channel.
     public func call(in cid: ChannelId) -> Call? {
-        return calls.first { $0.details.cid == cid && $0.details.state != .ended }
+        return callsQueue.sync {
+            _calls.first { $0.details.cid == cid && $0.details.state != .ended }
+        }
     }
 
     /// Get call with call identifier.
@@ -201,59 +289,75 @@ public class CallManager: NSObject, CXProviderDelegate {
     ///
     /// - Returns: The call with given identifier. Return nil if the call is not exist.
     public func call(with callId: String) -> Call? {
-        return calls.first { $0.details.callId == callId }
+        return findCall(withCallId: callId)
     }
 
 
     func call(with uuid: UUID) -> Call? {
-        return calls.first(where: { $0.details.uuid == uuid })
+        return findCall(withUUID: uuid)
     }
 
     func getCallUUID(for callId: String) -> UUID? {
-        return callUUIDDictionary[callId]
+        return callsQueue.sync {
+            _callUUIDDictionary[callId]
+        }
     }
 
     /// Add new call if not exist.
     func addCall(_ call: Call) {
-        if !call.isLocalId {
-            callUUIDDictionary[call.details.callId] = call.details.uuid
+        callsQueue.async(flags: .barrier) { [weak self] in
+            guard let self else { return }
+            
+            if !call.isLocalId {
+                self._callUUIDDictionary[call.details.callId] = call.details.uuid
+            }
+            
+            DispatchQueue.main.async {
+                UIApplication.shared.isIdleTimerDisabled = true
+            }
+            
+            guard self._calls.first(where: { $0.details.uuid == call.details.uuid }) == nil else {
+                return
+            }
+            
+            log.debug("callUUIDDictionary: \(self._callUUIDDictionary)", subsystems: .call)
+            log.debug("[Call] Current calls: \(self._calls.map(\.details.callId))", subsystems: .call)
+            log.debug("[Call] Add new call: \(call.details.callId)", subsystems: .call)
+            self._calls.append(call)
         }
-//        calls.removeAll(where: { $0.details.state == .ended })
-        DispatchQueue.main.async {
-            UIApplication.shared.isIdleTimerDisabled = true
-        }
-        guard self.call(with: call.details.uuid) == nil else {
-            return
-        }
-        log.debug("callUUIDDictionary: \(callUUIDDictionary)", subsystems: .call)
-        log.debug("[Call] Current calls: \(self.calls.map(\.details.callId))", subsystems: .call)
-        log.debug("[Call] Add new call: \(call.details.callId)", subsystems: .call)
-        self.calls.append(call)
     }
 
     public func removeCall(_ call: Call) {
         log.debug("[Call] Remove call: \(call)")
         sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
         sendEndCallNotification(call.details.callId, cid: call.details.cid)
-        try? call.close()
-        calls.removeAll(where: { $0.details.callId == call.details.callId })
+        if !call.isLocalId {
+            Task(priority: .high) { [weak self] in
+                try? await call.endCall()
+                try? call.close()
+                self?.removeCall(withCallId: call.details.callId)
+            }
+        } else {
+            try? call.close()
+            removeCall(withCallId: call.details.callId)
+        }
     }
 
     // Remove current call without send ending signal.
     public func clearCall(_ callId: String, with reason: CXCallEndedReason) {
-        guard let call = call(with: callId), endingCallUUIDs.isEmpty else {
+        guard let call = call(with: callId), isEndingCallUUIDsEmpty() else {
             return
         }
         log.warning("[Call] Clear call: \(call.details.callId), reason: \(reason)", subsystems: .call)
-        endingCallUUIDs.insert(call.details.uuid)
+        insertEndingCallUUID(call.details.uuid)
         call.callNodeClient.close()
         callProvider.reportCall(with: call.details.uuid, endedAt: Date(), reason: reason)
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
             UIApplication.shared.isIdleTimerDisabled = false
-            self.sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
-            self.pendingTasks.forEach({ $0.cancel()})
+            self?.sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
+            self?.pendingTasks.forEach({ $0.cancel()})
             call.setState(.ended)
-            self.onCallEnded(call)
+            self?.onCallEnded(call)
         }
     }
 
@@ -262,11 +366,12 @@ public class CallManager: NSObject, CXProviderDelegate {
     /// - Parameters:
     ///   - callId: The call identifier.
     public func endCall(with callId: String) {
-        guard let call = call(with: callId), endingCallUUIDs.isEmpty else {
-            log.debug("[CallKit] endCall guard failed - call: \(call(with: callId)), endingCallUUIDs: \(endingCallUUIDs)")
+        // Use thread-safe check
+        guard let call = call(with: callId), isEndingCallUUIDsEmpty() else {
+            log.debug("[CallKit] endCall guard failed - call: \(call(with: callId) != nil), endingCallUUIDs empty: \(isEndingCallUUIDsEmpty())")
             return
         }
-        endingCallUUIDs.insert(call.details.uuid)
+        insertEndingCallUUID(call.details.uuid)
         call.callNodeClient.close()
         if Thread.isMainThread {
             self.endCall(call)
@@ -638,8 +743,8 @@ public class CallManager: NSObject, CXProviderDelegate {
             return
         }
 
-        if !endingCallUUIDs.contains(call.details.uuid) {
-            endingCallUUIDs.insert(call.details.uuid)
+        if !containsEndingCallUUID(call.details.uuid) {
+            insertEndingCallUUID(call.details.uuid)
             sendStartEndingCallNotification(call.details.callId, cid: call.details.cid)
         }
 
@@ -770,15 +875,19 @@ public class CallManager: NSObject, CXProviderDelegate {
                     return
                 }
 
-                while !endingCallUUIDs.isEmpty {
-                    Thread.sleep(forTimeInterval: 0.1)
+                // Wait for ending calls to complete using proper async check
+                Task { [weak self] in
+                    guard let self else { return }
+                    var retryCount = 0
+                    while !self.isEndingCallUUIDsEmpty() && retryCount < 50 {
+                        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                        retryCount += 1
+                    }
+                    
+                    self.reportIncommingCall(callSignalEvent, completion: { _ in
+                        completion()
+                    })
                 }
-//                else if !endingCallUUIDs.isEmpty {
-//                    onCallEnded(currentCall)
-//                }
-                reportIncommingCall(callSignalEvent, completion: { _ in
-                    completion()
-                })
             case .failure(let error):
                 log.error("[CallKit] Cannot handle pushkit payload: \(error)", subsystems: .call)
                 reportIncommingCall(.none, completion: { _ in
@@ -840,10 +949,16 @@ extension CallManager: EventsControllerDelegate {
                     guard !callUUIDDictionary.contains(where: { $0.key == event.callId }) else {
                         return
                     }
-                    while !endingCallUUIDs.isEmpty {
-                        Thread.sleep(forTimeInterval: 0.1)
+                    // Wait for ending calls to complete using proper async check
+                    Task { [weak self] in
+                        guard let self else { return }
+                        var retryCount = 0
+                        while !self.isEndingCallUUIDsEmpty() && retryCount < 50 {
+                            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                            retryCount += 1
+                        }
+                        self.reportIncommingCall(event, completion: { _ in })
                     }
-                    reportIncommingCall(event, completion: { _ in })
                 }
             case .acceptCall:
                 // Call answer from other device.

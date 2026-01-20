@@ -123,7 +123,7 @@ public class ErmisPlayer: AppLifecycleObserver {
     ///   - sampleBuffer: The decoded video frame
     ///   - timestamp: The presentation timestamp (used for logging only in immediate mode)
     package func enqueueVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, timestamp: CMTime) {
-        guard isPlaying, isApplicationActive else {
+        guard isPlaying else {
             log.debug("[Player] Not playing because is not playing, or app is not active")
             return
         }
@@ -231,7 +231,7 @@ public class ErmisPlayer: AppLifecycleObserver {
 
     public func appDidEnterBackground() {
         log.debug("[Player] App entered background")
-        stop()
+//        stop()
     }
 }
 

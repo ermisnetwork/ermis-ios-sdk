@@ -10,6 +10,7 @@ import ErmisCall
 import ErmisChatUI
 import ErmisCallNode
 import AVFoundation
+import AVKit
 
 public protocol CallViewControllerDelegate: AnyObject {
     func callViewControllerWantsToMinize(_ callVC: CallViewController)
@@ -17,7 +18,6 @@ public protocol CallViewControllerDelegate: AnyObject {
 }
 /// Controller responsible for displaying auido/video call.
 open class CallViewController: _ViewController, UIProvider, CallComponentsProvider, CallControllerDelegate, CallControlViewDelegate {
-    
     /// The view for showing as a navigation title view.
     public private(set) lazy var titleView = callComponents
         .callTitleContainerView.init()
@@ -56,6 +56,13 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     private var hideControlsTimer: Timer?
     private var controlsBottomConstraint: NSLayoutConstraint?
 
+    private var localVideoCenterXConstraint: NSLayoutConstraint?
+    private var localVideoCenterYConstraint: NSLayoutConstraint?
+    private var localVideoInitialCenterX: CGFloat = 0
+    private var localVideoInitialCenterY: CGFloat = 0
+    private var localVideoPanGesture: UIPanGestureRecognizer!
+    private var localVideoPosition: CACornerMask = .layerMaxXMaxYCorner
+
     private var isEndingCall = false
     /// A boolean value, is `true` if call view controller is showing in PiP mode.
     private var isPiP: Bool = false
@@ -64,7 +71,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     /// A component for displaying alert messages.
     public private(set) lazy var alertRouter = components.alertsRouter.init(rootViewController: self)
     /// Controller for call.
-    public var controller: CallController!
+    public weak var controller: CallController!
     public weak var delegate: CallViewControllerDelegate?
 
     private lazy var timeFormater = {
@@ -80,19 +87,22 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     /// The class for access IO devices like: camera, mic...
     private let ioAccessManager = IOAccessManager()
 
-    @MainActor required public init(with controller: CallController,
+    // MARK: - Lifecyle + Setup
+    required public init(with controller: CallController,
                                     delegate: CallViewControllerDelegate) {
         self.controller = controller
         self.delegate = delegate
         super.init(nibName: nil, bundle: nil)
     }
     
-    @MainActor required public init?(coder: NSCoder) {
+    required public init?(coder: NSCoder) {
         super.init(coder: coder)
     }
 
     deinit {
         log.debug("TTTT CALL VIEW CONTROLLER DEINIT")
+        NotificationCenter.default.removeObserver(self, name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.removeObserver(self, name: UIApplication.willEnterForegroundNotification, object: nil)
     }
 
     // MARK: - Setup
@@ -100,11 +110,30 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         super.viewWillAppear(animated)
         self.updateSpeakerMenu()
         self.updateViewByCallIOState()
+        self.positionLocalVideoAtCorner(localVideoPosition)
 //        self.call.callNodeClient.sendRequestKeyframeEvent()
     }
 
+    open override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard let call, call.details.state != .ended, !CallManager.shared.containsEndingCallUUID(call.details.uuid) else {
+            close()
+            return
+        }
+    }
+
+    override open func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+
+        onTraitCollectionDidChange(previousTraitCollection)
+    }
+
+    override open func viewWillLayoutSubviews() {
+        onViewWillLayoutSubViews()
+        super.viewWillLayoutSubviews()
+    }
+
     open override func setUp() {
-        super.setUp()
         setupNavigation()
         /// If outgoing call is not going, start it.
         if let callDetails, !callDetails.isIncoming, callDetails.state == .idle {
@@ -118,18 +147,38 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         connectionStatusLabel.isHidden = true
 
         remoteVideoView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(onRemoteVideoDidTapped)))
-        /// Set default audio port.
-//        if callDetails.isVideo {
-//            controller.setAudioPort(.builtInSpeaker)
-//        } else {
-//            controller.setAudioPort(.builtInReceiver)
-//        }
-
         updateViewByCallIOState()
+        setupBackgroundObservers()
+        setupLocalVideoDragging()
+    }
+    
+    private func setupBackgroundObservers() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification,
+            object: nil
+        )
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+    }
+    
+    @objc private func appDidEnterBackground() {
+
+    }
+    
+    @objc private func appWillEnterForeground() {
+        // This can be used to restore the call UI if needed
+        // For now, we'll just log that we're coming back to foreground
+        log.debug("[Call] App will enter foreground, isPiP: \(isPiP)", subsystems: .call)
     }
 
     open override func setUpUI() {
-        super.setUpUI()
         self.view.addSubviews([
             remoteVideoView,
             remoteAvatarView,
@@ -162,14 +211,19 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         connectionStatusView.pin(anchors: [.centerX], to: view)
         connectionStatusView.pin(anchors: [.leading], to: view, contant: 16)
 
-        localVideoView.pin(anchors: [.trailing], to: view, contant: -16)
+//        localVideoView.pin(anchors: [.trailing], to: view, contant: -16)
         localVideoView.pin(anchors: [.width], to: 120)
         localVideoView.pin(anchors: [.height], to: 160)
+        localVideoCenterXConstraint = localVideoView.centerXAnchor.constraint(equalTo: view.leadingAnchor, constant: 0)
+        localVideoCenterYConstraint = localVideoView.centerYAnchor.constraint(equalTo: view.topAnchor, constant: 0)
+        localVideoCenterYConstraint?.priority = .defaultHigh
+        localVideoCenterXConstraint?.isActive = true
+        localVideoCenterYConstraint?.isActive = true
 
         localAvatarView.pin(anchors: [.centerX, .centerY], to: localVideoView)
         localAvatarView.pin(anchors: [.width, .height], to: 60)
 
-        controls.topAnchor.pin(equalTo: localVideoView.bottomAnchor, constant: 20).isActive = true
+        controls.topAnchor.pin(greaterThanOrEqualTo: localVideoView.bottomAnchor, constant: 20).isActive = true
         controls.pin(anchors: [.centerX], to: view)
         controls.pin(anchors: [.height], to: 56)
         controlsBottomConstraint = controls.bottomAnchor.pin(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40)
@@ -182,7 +236,6 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     open override func setUpTheme() {
-        super.setUpTheme()
         view.backgroundColor = theme.colors.surface
         titleLabel.textColor = theme.colors.white
         titleLabel.font = theme.fonts.title
@@ -206,16 +259,24 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         }
         DispatchQueue.main.async {
             self.localVideoView.attach(with: self.call!.callNodeClient.capturer)
-            self.remoteVideoView.attach(with: self.call!.callNodeClient.player)
+//            self.remoteVideoView.attach(with: self.call?.callNodeClient.player)
+//            if let renderView = self.call?.renderView {
+//                self.remoteVideoView.attach(with: renderView)
+//            }
         }
     }
 
+    private func setupLocalVideoDragging() {
+        localVideoPanGesture = UIPanGestureRecognizer(target: self, action: #selector(handleLocalVideoPan(_:)))
+        localVideoView.addGestureRecognizer(localVideoPanGesture)
+        localVideoView.isUserInteractionEnabled = true
+    }
+
     open override func contentDidChanged() {
-        super.contentDidChanged()
         navigationItem.title = callDetails?.isVideo == true ? L10n.Call.Title.videoCall : L10n.Call.Title.voiceCall
 
         if let membership = controller.channel.membership {
-            localVideoView.content = .init(with: membership, isMirror: true)
+            localVideoView.content = .init(with: membership, isMirror: false)
         }
 
         if let directMembership = controller.channel.directUserMembership {
@@ -293,14 +354,14 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
                 if let call = CallManager.shared.currentCall {
                     CallManager.shared.removeCall(call)
                 }
-                call?.callNodeClient.close()
+                //call?.callNodeClient.close()
                 // busy
                 if let clientError = error as? ClientError, clientError.ermisApiError?.type == .otherCallInProgress {
                     DispatchQueue.main.async {
                         self.presentAlert(title: L10n.Call.Message.receiverBusy,
                                           message: nil,
                                           okHandler: { [weak self] in
-                            self?.close()
+                            //self?.close()
                         })
                     }
                     return
@@ -309,7 +370,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
                     self.presentAlert(title: "Error when starting call",
                                       message: "Something went wrong",
                                       okHandler: { [weak self] in
-                        self?.close()
+                       // self?.close()
                     })
                 }
             }
@@ -377,6 +438,133 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             self.setControlsViewHidden(false)
         }
         startHideControlsTimer()
+    }
+
+    @objc private func handleLocalVideoPan(_ gesture: UIPanGestureRecognizer) {
+        let translation = gesture.translation(in: view)
+
+        switch gesture.state {
+        case .began:
+            localVideoInitialCenterX = localVideoCenterXConstraint?.constant ?? 0
+            localVideoInitialCenterY = localVideoCenterYConstraint?.constant ?? 0
+
+        case .changed:
+            localVideoCenterXConstraint?.constant = localVideoInitialCenterX + translation.x
+            localVideoCenterYConstraint?.constant = localVideoInitialCenterY + translation.y
+
+        case .ended, .cancelled:
+            let velocity = gesture.velocity(in: view)
+            snapLocalVideoToCorner(with: velocity)
+
+        default:
+            break
+        }
+    }
+
+    @discardableResult
+    private func snapLocalVideoToCorner(with velocity: CGPoint) -> CACornerMask {
+        let padding: CGFloat = 16
+        let safeArea = view.safeAreaInsets
+        let videoSize = CGSize(width: 120, height: 160)//localVideoView.bounds.size
+
+        let topY = safeArea.top + padding + videoSize.height / 2
+        let bottomY = view.bounds.height - safeArea.bottom - videoSize.height / 2 - 20
+        let leftX = padding + videoSize.width / 2
+        let rightX = view.bounds.width - padding - videoSize.width / 2
+
+        let corners: [(point: CGPoint, mask: CACornerMask)] = [
+            (CGPoint(x: leftX, y: topY), .layerMinXMinYCorner),      // Top-left
+            (CGPoint(x: rightX, y: topY), .layerMaxXMinYCorner),     // Top-right
+            (CGPoint(x: leftX, y: bottomY), .layerMinXMaxYCorner),   // Bottom-left
+            (CGPoint(x: rightX, y: bottomY), .layerMaxXMaxYCorner)   // Bottom-right
+        ]
+
+        let currentCenterX = localVideoCenterXConstraint?.constant ?? 0
+        let currentCenterY = localVideoCenterYConstraint?.constant ?? 0
+
+        let projectedCenter = CGPoint(
+            x: currentCenterX + velocity.x * 0.1,
+            y: currentCenterY + velocity.y * 0.1
+        )
+
+        var closestCorner = corners[0]
+        var minDistance = CGFloat.greatestFiniteMagnitude
+
+        for corner in corners {
+            let distance = hypot(projectedCenter.x - corner.point.x, projectedCenter.y - corner.point.y)
+            if distance < minDistance {
+                minDistance = distance
+                closestCorner = corner
+            }
+        }
+
+        // Animate constraint changes
+//        UIView.animate(
+//            withDuration: 0.4,
+//            delay: 0,
+//            usingSpringWithDamping: 0.7,
+//            initialSpringVelocity: 0.5,
+//            options: [.curveEaseOut],
+//            animations: {
+//                self.localVideoCenterXConstraint?.constant = closestCorner.point.x
+//                self.localVideoCenterYConstraint?.constant = closestCorner.point.y
+//                self.view.layoutIfNeeded()
+//            },
+//            completion: nil
+//        )
+        positionLocalVideoAtCorner(closestCorner.mask)
+        return closestCorner.mask
+    }
+
+    private func positionLocalVideoAtCorner(_ corner: CACornerMask, animated: Bool = true) {
+        let padding: CGFloat = 16
+        let safeArea = view.safeAreaInsets
+        let videoSize = CGSize(width: 120, height: 160)//localVideoView.bounds.size
+
+        log.debug("TTTT videosize: \(videoSize), safeArea: \(safeArea)")
+
+        let topY = safeArea.top + padding + videoSize.height / 2
+        let bottomY = view.bounds.height - safeArea.bottom - videoSize.height / 2 - 20
+
+        let leftX = padding + videoSize.width / 2
+        let rightX = view.bounds.width - padding - videoSize.width / 2
+
+        let targetX: CGFloat
+        let targetY: CGFloat
+
+        switch corner {
+        case .layerMinXMinYCorner: // top-left
+            targetX = leftX
+            targetY = topY
+        case .layerMaxXMinYCorner: // top-right
+            targetX = rightX
+            targetY = topY
+        case .layerMinXMaxYCorner: // bottom-left
+            targetX = leftX
+            targetY = bottomY
+        default: // bottom-right (.layerMaxXMaxYCorner)
+            targetX = rightX
+            targetY = bottomY
+        }
+
+        if animated {
+            UIView.animate(
+                withDuration: 0.4,
+                delay: 0,
+                usingSpringWithDamping: 0.7,
+                initialSpringVelocity: 0.5,
+                options: [.curveEaseOut],
+                animations: {
+                    self.localVideoCenterXConstraint?.constant = targetX
+                    self.localVideoCenterYConstraint?.constant = targetY
+                    self.view.layoutIfNeeded()
+                },
+                completion: nil
+            )
+        } else {
+            localVideoCenterXConstraint?.constant = targetX
+            localVideoCenterYConstraint?.constant = targetY
+        }
     }
     // MARK: - Private
 
@@ -484,6 +672,9 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     public func callDidEnd(_ notification: Notification) {
+        guard !isPiP else {
+            return
+        }
         guard let call else {
             self.close()
             return
@@ -512,7 +703,8 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     public func remoteVideoOrientationDidChanged(to orientation: VideoOrientation) {
-        guard let previewLayer = self.remoteVideoView.previewLayer else { return }
+        guard let renderView = self.remoteVideoView.renderView,
+              let previewLayer = renderView.previewLayer else { return }
 
         self.remoteVideoView.layoutIfNeeded()
 
@@ -599,6 +791,118 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
         onRemoteVideoDidTapped()
     }
+
+    // MARK: - AVPictureInPictureControllerDelegate
+//    private func onPiPStateDidChange() {
+//        UIView.animate(withDuration: 0.27, animations: {
+//            self.updateAvatarsVisibleState()
+//            self.updateVideoViewsState()
+//            self.updateTitleLabelVisibleState()
+//            self.updateStateLabelVisible()
+//            self.updateDurationLabelVisibleState()
+//            self.updateControlsState()
+//            self.navigationController?.setNavigationBarHidden(self.controls.isHidden, animated: true)
+//        })
+//    }
+//    open func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+//        isPiP = true
+//        stopHideControlsTimer()
+//    }
+//
+//    open func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+//        isPiP = true
+//        onPiPStateDidChange()
+//    }
+//
+//    open func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: any Error) {
+//
+//    }
+//
+//    open func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+//        log.debug("[PiP] Will stop PiP, isPiP: \(isPiP)")
+//        isPiP = false
+//        
+//        // Prepare the video view to receive content again
+//        remoteVideoView.isHidden = false
+//        log.debug("[PiP] Remote video view isHidden: \(remoteVideoView.isHidden)")
+//    }
+//
+//    open func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+//        log.debug("[PiP] Did stop PiP, isPiP: \(isPiP)")
+//        isPiP = false
+//        startHideControlsTimer()
+//        
+//        // Update all UI visibility
+//        onPiPStateDidChange()
+//        
+//        // Force layout update to prevent black screen
+//        DispatchQueue.main.async { [weak self] in
+//            guard let self = self else { return }
+//            
+//            log.debug("[PiP] Refreshing video view")
+//            
+//            // Force a complete UI update
+//            self.updateViewByCallIOState()
+//            
+//            // Force layout
+//            self.view.setNeedsLayout()
+//            self.view.layoutIfNeeded()
+//            
+//            log.debug("[PiP] Video view frame: \(self.remoteVideoView.frame)")
+//            log.debug("[PiP] Video view isHidden: \(self.remoteVideoView.isHidden)")
+//        }
+//    }
+//
+//    open func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping @Sendable (Bool) -> Void) {
+//        // This is called when user wants to restore from PiP (taps the PiP window)
+//        // This is called BEFORE pictureInPictureControllerWillStopPictureInPicture
+//        log.debug("[PiP] Restore UI requested, view.window: \(view.window != nil), isPiP: \(isPiP)")
+//        
+//        // Pre-emptively set isPiP to false so UI will be shown
+//        isPiP = false
+//        
+//        // Update UI to show everything again
+//        DispatchQueue.main.async { [weak self] in
+//            guard let self = self else {
+//                completionHandler(false)
+//                return
+//            }
+//            
+//            self.onPiPStateDidChange()
+//            
+//            // Check if we're already visible
+//            if self.view.window != nil {
+//                // Already in the window hierarchy, just complete
+//                log.debug("[PiP] Already visible, completing")
+//                completionHandler(true)
+//                return
+//            }
+//            
+//            // Need to present the view controller
+//            log.debug("[PiP] Not visible, presenting...")
+//            let viewControllerToPresent: UIViewController = self.navigationController ?? self
+//            viewControllerToPresent.modalPresentationStyle = .fullScreen
+//            
+//            // Find the top-most view controller to present from
+//            guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+//                  let window = scene.windows.first,
+//                  let rootVC = window.rootViewController else {
+//                log.debug("[PiP] Failed to find root VC")
+//                completionHandler(false)
+//                return
+//            }
+//            
+//            var topVC = rootVC
+//            while let presented = topVC.presentedViewController {
+//                topVC = presented
+//            }
+//            
+//            topVC.present(viewControllerToPresent, animated: true) {
+//                log.debug("[PiP] Presentation completed")
+//                completionHandler(true)
+//            }
+//        }
+//    }
 
     // MARK: - Create UI
     open func createBackBarButton() -> UIBarButtonItem {
@@ -739,7 +1043,7 @@ extension CallViewController {
                                              callTitle: callDetails?.title)
     }
 }
-// MARK: - PiPable
+//// MARK: - PiPable
 extension CallViewController: PiPable {
     public func willMinimizedPiP() {
         isPiP = true
@@ -753,12 +1057,18 @@ extension CallViewController: PiPable {
 
     public func willExpanedPiP() {
         isPiP = false
+        if let call {
+            remoteVideoOrientationDidChanged(to: call.callNodeClient.remoteVideoOrientationPublisher.value)
+        }
     }
 
     public func didExpanedPiP() {
         isPiP = false
         startHideControlsTimer()
         onPiPStateDidChange()
+        if let call {
+//            remoteVideoOrientationDidChanged(to: call.callNodeClient.remoteVideoOrientationPublisher.value)
+        }
     }
 
     private func onPiPStateDidChange() {
@@ -793,5 +1103,27 @@ extension CallViewController {
 
     public var duration: TimeInterval {
         return controller.duration
+    }
+}
+
+extension CallViewController: AVPictureInPictureSampleBufferPlaybackDelegate {
+    public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
+
+    }
+    
+    public func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
+        return CMTimeRange(start: .zero, end: .zero)
+    }
+    
+    public func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool {
+        return false
+    }
+    
+    public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, didTransitionToRenderSize newRenderSize: CMVideoDimensions) {
+
+    }
+    
+    public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime, completion completionHandler: @escaping @Sendable () -> Void) {
+        completionHandler()
     }
 }

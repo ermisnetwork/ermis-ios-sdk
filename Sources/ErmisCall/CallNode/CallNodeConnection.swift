@@ -49,7 +49,9 @@ public class CallNodeConnection {
         startReceivingData()
         try endpoint.connect(addr: address)
         log.debug("[CallNode] Connected.", subsystems: .call)
-        connectionPublisher.send(.connected)
+        DispatchQueue.main.async {
+            self.connectionPublisher.send(.connected)
+        }
     }
 
     public func acceptConnect() async throws {
@@ -58,7 +60,9 @@ public class CallNodeConnection {
         connectionPublisher.send(.conecting)
         try endpoint.acceptConnection()
         log.debug("[CallNode] Connected.", subsystems: .call)
-        connectionPublisher.send(.connected)
+        DispatchQueue.main.async {
+            self.connectionPublisher.send(.connected)
+        }
     }
 
     public func sendEvent(_ event: CallNodeEventProtocol) {

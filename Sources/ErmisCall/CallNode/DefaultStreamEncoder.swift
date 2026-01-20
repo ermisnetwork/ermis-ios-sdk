@@ -58,6 +58,7 @@ public class DefaultStreamEncoder: StreamEncoder {
 
     private let encoderQueue = DispatchQueue(label: "network.ermis.encoder-queue")
     private var isSessionValid = false
+    private var hasActive = false
 
     private lazy var sourceDescriptionFormat: AudioStreamBasicDescription = {
         return AudioStreamBasicDescription(
@@ -964,10 +965,14 @@ public class DefaultStreamEncoder: StreamEncoder {
     }
 
     public func appDidEnterBackground() {
-        invalidateSession()
+//        invalidateSession()
     }
 
     public func appDidBecomeActive() {
+        guard !hasActive else {
+            return
+        }
+        hasActive = true
         // Small delay to ensure camera is ready
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             self?.recreateSession()

@@ -52,6 +52,11 @@ public class ErmisVideoCapturer: NSObject, AppLifecycleObserver {
         }
 
         self.videoCaptureSession.sessionPreset = self.preset
+        if #available(iOS 16.0, *) {
+            self.videoCaptureSession.isMultitaskingCameraAccessEnabled = true
+        } else {
+            // Fallback on earlier versions
+        }
         // Setup video output
         self.videoOutput = AVCaptureVideoDataOutput()
         self.videoOutput?.videoSettings = [
