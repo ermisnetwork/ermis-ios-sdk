@@ -266,8 +266,11 @@ class APIClient {
                 return
             }
 
+            log.debug("[APIClient] Operation starting for \(endpoint.path), isRefreshingToken: \(self.isRefreshingToken), operationQueue.isSuspended: \(self.operationQueue.isSuspended)", subsystems: .httpRequests)
+            
             guard !self.isRefreshingToken || endpoint.path.isRefreshToken else {
                 // Requeue request
+                log.debug("[APIClient] Token is being refreshed, requeueing request for \(endpoint.path)", subsystems: .httpRequests)
                 self.request(endpoint: endpoint, completion: completion)
                 done(.continue)
                 return
@@ -384,7 +387,9 @@ class APIClient {
 //                subsystems: .httpRequests
 //            )
             
-            print("CURL: \(urlRequest.cURL())")
+//            print("CURL: \(urlRequest.cURL())")
+            
+            log.debug("[APIClient] Starting request: \(endpoint.method.rawValue) \(endpoint.path)", subsystems: .httpRequests)
 
             guard let self = self else {
                 log.warning("Callback called while self is nil", subsystems: .httpRequests)
@@ -393,14 +398,19 @@ class APIClient {
             }
             
             let task = self.session.dataTask(with: urlRequest) { [decoder = self.decoder] (data, response, error) in
+                log.debug("[APIClient] Request completed: \(endpoint.method.rawValue) \(endpoint.path), error: \(String(describing: error))", subsystems: .httpRequests)
+                
                 do {
                     let decodedResponse: Response = try decoder.decodeRequestResponse(
                         data: data,
                         response: response,
                         error: error
                     )
+                    log.debug("[APIClient] Successfully decoded response for \(endpoint.path)", subsystems: .httpRequests)
                     completion(.success(decodedResponse))
                 } catch {
+                    log.debug("[APIClient] Failed to decode response for \(endpoint.path): \(error)", subsystems: .httpRequests)
+                    
                     if error is ClientError.ExpiredToken == false {
                         completion(.failure(error))
                         return
@@ -409,6 +419,7 @@ class APIClient {
                     // If Refresh Token is expired, don't continue refresh
                     if case .refreshToken = endpoint.path {
                         completion(.failure(error))
+                        return
                     }
 
                     /// If the error is ExpiredToken, we need to refresh it. There are 2 possibilities here:
@@ -423,6 +434,7 @@ class APIClient {
                     }
                 }
             }
+            log.debug("[APIClient] Resuming task for \(endpoint.path)", subsystems: .httpRequests)
             task.resume()
         }
     }

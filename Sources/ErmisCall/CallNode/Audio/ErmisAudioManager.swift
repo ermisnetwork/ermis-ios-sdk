@@ -65,12 +65,18 @@ public class ErmisCallAudioManager {
     private func configureAudioSession(isActive: Bool) {
         do {
             let session = AVAudioSession.sharedInstance()
+            var categoryOptions: AVAudioSession.CategoryOptions =  isVideoCall ? [
+                .allowBluetooth,
+                .allowBluetoothA2DP,
+                .defaultToSpeaker
+            ] : [
+                .allowBluetooth,
+                .allowBluetoothA2DP
+            ]
+
             try session.setCategory(.playAndRecord,
                                     mode: .voiceChat,
-                                    options: [
-                                        .allowBluetooth,
-                                        .allowBluetoothA2DP
-                                    ])
+                                    options: categoryOptions)
             try session.setPreferredSampleRate(48_000)
             try session.setPreferredIOBufferDuration(0.02)
             if isActive {
@@ -132,10 +138,10 @@ public class ErmisCallAudioManager {
 
     // MARK: - Public
     func didActivateAudioSession() {
-        log.debug("[AudioManager] Did activated audio session.")
+        log.debug("[AudioManager] Did activated audio session.", subsystems: .call)
         do {
             let session = AVAudioSession.sharedInstance()
-
+//
 //            try session.setCategory(.playAndRecord,
 //                                    mode: .voiceChat,
 //                                    options: [
@@ -144,8 +150,8 @@ public class ErmisCallAudioManager {
 //                                    ])
 //            try session.setPreferredSampleRate(48_000)
 //            try session.setActive(true)
-            log.debug("[AudioManager] configure audio session, isIncoming call: \(isIncomingCall)")
-            log.debug("[AudioManager] Did activate session: \(session.sampleRate), \(session.mode), \(session.category), \(session.categoryOptions)")
+            log.debug("[AudioManager] configure audio session, isIncoming call: \(isIncomingCall)", subsystems: .call)
+            log.debug("[AudioManager] Did activate session: \(session.sampleRate), \(session.mode), \(session.category), \(session.categoryOptions)", subsystems: .call)
 
             let route = session.currentRoute
             for output in route.outputs {
@@ -156,12 +162,17 @@ public class ErmisCallAudioManager {
 
             isActive = true
             // Check if Bluetooth was already active before setting default
-            setDefaultPort()
+            log.debug("[AudioManager] Did activate audio session, defaultPort: \(defaultPortType)", subsystems: .call)
+            // TODO: - Find out why set output port not working
+//            Task.detached { @MainActor in
+//                try? await Task.sleep(200_000_000)
+                self.setDefaultPort()
+//            }
         } catch {
-            log.warning("[AudioManager] Config audio session failed: \(error)")
+            log.warning("[AudioManager] Config audio session failed: \(error)", subsystems: .call)
         }
 
-        log.debug("[AudioManager] DID ACTIVE AUDIO SESSION")
+        log.debug("[AudioManager] DID ACTIVE AUDIO SESSION", subsystems: .call)
     }
 
     func didDeactivateAudioSession() {
@@ -170,7 +181,7 @@ public class ErmisCallAudioManager {
 
     @objc package func changeAudioPort(to portType: AVAudioSession.Port) {
         guard let port = allPort.first(where: { $0.portType == portType}) else {
-            log.debug("[AudioManager] Change audio port failed, can not find expected port.")
+            log.debug("[AudioManager] Change audio port failed, can not find expected port.", subsystems: .call)
             return
         }
         changeAudioPort(to: port)
@@ -178,7 +189,7 @@ public class ErmisCallAudioManager {
     }
 
     func setDefaultPort() {
-        log.debug("[AudioManager] set default port")
+        log.debug("[AudioManager] set default port", subsystems: .call)
         if let wired = allPort.first(where: { $0.portType == .headphones}) {
             changeAudioPort(to: wired.portType)
         } else if let bluetooth = allPort.first(where: { $0.portType.isBlueTooth }) {
@@ -262,7 +273,7 @@ public class ErmisCallAudioManager {
         let isBuiltInReceiver = port.portType == .builtInReceiver
 
         guard isActive else {
-            log.warning("[AudioManager] Ignore changing audio port because session is not active")
+            log.warning("[AudioManager] Ignore changing audio port because session is not active", subsystems: .call)
             return
         }
 
@@ -283,6 +294,20 @@ public class ErmisCallAudioManager {
             } else {
                 // Default case: no override, remove preferred input
                 log.debug("[AudioManger] default, not override anythings", subsystems: .call)
+                var currentOptions = audioSession.categoryOptions
+
+                // If the flag is present, we have to remove it and re-set the category
+                if currentOptions.contains(.defaultToSpeaker) {
+                    currentOptions.remove(.defaultToSpeaker)
+                    do {
+                        try audioSession.setCategory(audioSession.category,
+                                                     mode: audioSession.mode,
+                                                     options: currentOptions)
+
+                    } catch {
+                        log.warning("[AudioManager] Failed to remove .defaultToSpeaker category options", subsystems: .call)
+                    }
+                }
                 try audioSession.setPreferredInput(nil)
                 try audioSession.overrideOutputAudioPort(.none)
             }
@@ -316,7 +341,6 @@ public class ErmisCallAudioManager {
         allPort = allPort.sorted { port1, port2 in
             return port1.portType.rawValue < port2.portType.rawValue
         }
-
         return allPort
     }
 }

@@ -25,6 +25,7 @@ public protocol StreamDecoder {
     func setAudioConfig(_ config: AudioConfig)
     func decodeVideoFrame(data: Data, timestamp: CMTime)
     func decodeAudioFrame(_ frame: AudioFrame)
+    func stop()
 }
 
 public class DefaultStreamDecoder: StreamDecoder {
@@ -42,6 +43,7 @@ public class DefaultStreamDecoder: StreamDecoder {
 
     public var audioBufferPublisher: PassthroughSubject<[Int16], Never> = .init()
     public var videoBufferPublisher: PassthroughSubject<(CMSampleBuffer, CMTime), Never> = .init()
+    private var isStopped = false
 
     private var cancelBags: Set<AnyCancellable> = []
 
@@ -167,6 +169,9 @@ public class DefaultStreamDecoder: StreamDecoder {
 
     // MARK: - Video frame
     public func decodeVideoFrame(data: Data, timestamp: CMTime) {
+        guard !isStopped else {
+            return
+        }
         guard let videoFormatDescription else {
             log.warning("[Decoder] Video format description not configured", subsystems: .call)
             return
@@ -237,6 +242,9 @@ public class DefaultStreamDecoder: StreamDecoder {
     // MARK: - Audio frame
 
     public func decodeAudioFrame(_ frame: AudioFrame) {
+        guard !isStopped else {
+            return
+        }
         guard let audioConfig, let formatDescription = audioFormatDescription else {
             log.warning("[Decoder] Audio config or formatdescripion not configured", subsystems: .call)
             return
@@ -468,6 +476,34 @@ public class DefaultStreamDecoder: StreamDecoder {
         }
         return data[0] == 0xFF && (data[1] & 0xF0) == 0xF0
     }
+    // MARK: -
+    public func stop() {
+        isStopped = true
+        log.debug("[Decoder] Stop decoder requested", subsystems: .call)
+
+        // 1. Cancel Combine pipelines
+        cancelBags.forEach { $0.cancel() }
+        cancelBags.removeAll()
+
+        // 2. Release audio decoders
+        opusDecoder = nil
+
+        if let converter = audioConverter {
+            converter.stop()          // if your AudioConverter has it
+            audioConverter = nil
+        }
+
+        // 3. Reset format descriptions
+        videoFormatDescription = nil
+        audioFormatDescription = nil
+
+        // 4. Reset configs
+        audioConfig = nil
+        videoConfig = nil
+
+        log.debug("[Decoder] Decoder fully stopped", subsystems: .call)
+    }
+
 }
 
 private final class AACInputContext {

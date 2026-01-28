@@ -71,7 +71,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     /// A component for displaying alert messages.
     public private(set) lazy var alertRouter = components.alertsRouter.init(rootViewController: self)
     /// Controller for call.
-    public weak var controller: CallController!
+    public weak var controller: CallController?
     public weak var delegate: CallViewControllerDelegate?
 
     private lazy var timeFormater = {
@@ -101,6 +101,8 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     deinit {
         log.debug("TTTT CALL VIEW CONTROLLER DEINIT")
+        stopHideControlsTimer()
+        controller?.delegate = nil
         NotificationCenter.default.removeObserver(self, name: UIApplication.didEnterBackgroundNotification, object: nil)
         NotificationCenter.default.removeObserver(self, name: UIApplication.willEnterForegroundNotification, object: nil)
     }
@@ -116,10 +118,22 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     open override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        guard let call, call.details.state != .ended, !CallManager.shared.containsEndingCallUUID(call.details.uuid) else {
-            close()
-            return
+        Task { @MainActor [weak self] in
+            guard let call, await call.details.state != .ended,
+                  await !CallManager.shared.containsEndingCallUUID(call.details.uuid) else {
+                close()
+                return
+            }
+            /// If outgoing call is not going, start it.
+            if let callDetails, !callDetails.isIncoming, callDetails.state == .idle {
+                startCall()
+            }
         }
+    }
+
+    open override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        log.debug("[CallVC] viewDidDisappear - isBeingDismissed: \(isBeingDismissed), isMovingFromParent: \(isMovingFromParent)")
     }
 
     override open func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
@@ -135,13 +149,10 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     open override func setUp() {
         setupNavigation()
-        /// If outgoing call is not going, start it.
-        if let callDetails, !callDetails.isIncoming, callDetails.state == .idle {
-            startCall()
-        }
 
-        controller.delegate = self
-        controller.startCallObservers()
+
+        controller?.delegate = self
+        controller?.startCallObservers()
 
         connectionStatusLabel.numberOfLines = 0
         connectionStatusLabel.isHidden = true
@@ -233,6 +244,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
         connectionStatusLabel.pin(anchors: [.leading, .trailing], to: view)
         connectionStatusLabel.topAnchor.pin(equalTo: view.topAnchor, constant: 200).isActive = true
+        self.setControlsViewHidden(true)
     }
 
     open override func setUpTheme() {
@@ -247,22 +259,23 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     private func setupCallNode() {
-        Task {
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
             if let callDetails, callDetails.isVideo {
                 let isCameraAvailable = await ioAccessManager.requestCameraAccessIfNeeded()
                 guard isCameraAvailable else {
-                    controller.setVideoEnabled(false)
+                    controller?.setVideoEnabled(false)
                     return
                 }
 
             }
-        }
-        DispatchQueue.main.async {
-            self.localVideoView.attach(with: self.call!.callNodeClient.capturer)
-//            self.remoteVideoView.attach(with: self.call?.callNodeClient.player)
-//            if let renderView = self.call?.renderView {
-//                self.remoteVideoView.attach(with: renderView)
-//            }
+            if let call {
+                self.localVideoView.attach(with: call.callNodeClient.capturer)
+            } else {
+                log.warning("[CallViewController] can't attach localvideo view because call is nil.")
+            }
         }
     }
 
@@ -273,32 +286,34 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     open override func contentDidChanged() {
-        navigationItem.title = callDetails?.isVideo == true ? L10n.Call.Title.videoCall : L10n.Call.Title.voiceCall
+        Task { @MainActor [weak self] in
+            navigationItem.title = callDetails?.isVideo == true ? L10n.Call.Title.videoCall : L10n.Call.Title.voiceCall
 
-        if let membership = controller.channel.membership {
-            localVideoView.content = .init(with: membership, isMirror: false)
+            if let membership = controller?.channel.membership {
+                localVideoView.content = .init(with: membership, isMirror: false)
+            }
+
+            if let directMembership = controller?.channel.directUserMembership {
+                remoteVideoView.content = .init(with: directMembership)
+            }
+
+            remoteAvatarView.loadImage(from: callDetails?.imageURL,
+                                       with: ImageLoaderOptions(
+                                        resize: .init(components.avatarThumbnailSize),
+                                        placeHolderString: callDetails?.title,
+                                        placeholder: nil
+                                       ))
+
+            localAvatarView.loadImage(from: callDetails?.currentUser?.imageURL,
+                                      with: ImageLoaderOptions(
+                                        resize: .init(components.avatarThumbnailSize),
+                                        placeHolderString: callDetails?.currentUser?.displayName,
+                                        placeholder: nil
+                                      ))
+
+            titleLabel.text = callDetails?.title
+            stateLabel.text = L10n.Call.Status.ringing
         }
-
-        if let directMembership = controller.channel.directUserMembership {
-            remoteVideoView.content = .init(with: directMembership)
-        }
-
-        remoteAvatarView.loadImage(from: callDetails?.imageURL,
-                                   with: ImageLoaderOptions(
-                                    resize: .init(components.avatarThumbnailSize),
-                                    placeHolderString: callDetails?.title,
-                                    placeholder: nil
-                                   ))
-
-        localAvatarView.loadImage(from: callDetails?.currentUser?.imageURL,
-                                   with: ImageLoaderOptions(
-                                    resize: .init(components.avatarThumbnailSize),
-                                    placeHolderString: callDetails?.currentUser?.displayName,
-                                    placeholder: nil
-                                   ))
-
-        titleLabel.text = callDetails?.title
-        stateLabel.text = L10n.Call.Status.ringing
     }
 
     private func setupNavigation() {
@@ -331,48 +346,15 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     /// Start current call.
     public func startCall() {
+        log.debug("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT")
         Task(priority: .userInitiated) { [weak self] in
             guard let self else {
                 return
             }
-
-            log.debug("[Call] Show call - ensure websocket connected")
-            // Ensure websocket is connected.
-            let isWebSocketConnect = await CallManager.shared.ensureWebsocketConnected()
-            guard isWebSocketConnect else {
-                self.presentAlert(title: L10n.Call.Message.canNotMakeCallBecauseNoConnection)
-                if let call = CallManager.shared.currentCall {
-                    CallManager.shared.removeCall(call)
-                }
-                return
-            }
-
             do {
-                try await controller.startCall()
+                try await controller?.startCall()
             } catch let error {
-                log.error("[ErmisCall] start call failed with error: \(error)", subsystems: .call)
-                if let call = CallManager.shared.currentCall {
-                    CallManager.shared.removeCall(call)
-                }
-                //call?.callNodeClient.close()
-                // busy
-                if let clientError = error as? ClientError, clientError.ermisApiError?.type == .otherCallInProgress {
-                    DispatchQueue.main.async {
-                        self.presentAlert(title: L10n.Call.Message.receiverBusy,
-                                          message: nil,
-                                          okHandler: { [weak self] in
-                            //self?.close()
-                        })
-                    }
-                    return
-                }
-                DispatchQueue.main.async {
-                    self.presentAlert(title: "Error when starting call",
-                                      message: "Something went wrong",
-                                      okHandler: { [weak self] in
-                       // self?.close()
-                    })
-                }
+
             }
         }
     }
@@ -381,32 +363,31 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     public func endCall() {
         isEndingCall = true
         updateViewForEnding()
-        do {
-            //close()
-            try controller.endCall()
-            if call == nil {
-                close()
+        Task { @MainActor [weak self] in
+            do {
+                try await controller?.endCall()
+            } catch let error {
+                //close()
+                log.error("[ErmisCall] end call failed with error: \(error)", subsystems: .call)
             }
-        } catch let error {
-            //close()
-            log.error("[ErmisCall] end call failed with error: \(error)", subsystems: .call)
         }
+
     }
 
     /// Update speaker menu button.
     func updateSpeakerMenu() {
         if let speakerButton = controls.getButton(of: .speaker) {
-            let currentPort = controller.getCurrentAudioPort()
+            let currentPort = controller?.getCurrentAudioPort()
             speakerButton.menu = UIMenu(children:
-                                            controller.getAllAudioPort().map({ port in
+                                            controller?.getAllAudioPort().map({ port in
                 return UIAction(title: port.name,
                                 state: port == currentPort ? .on : .off, handler: { [weak self] _ in
                     guard let self else {
                         return
                     }
-                    controller.setAudioPort(port.portType)
+                    controller?.setAudioPort(port.portType)
                 })
-            })
+            }) ?? []
             )
 
             speakerButton.showsMenuAsPrimaryAction = true
@@ -415,24 +396,41 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     /// Hide call screen. If current call is video call, video call will be shown in PiP mode.
     @objc private func back() {
-        if callDetails?.isVideo == true {
-            delegate?.callViewControllerWantsToMinize(self)
-        } else {
-            NotificationCenter.default.post(name: .callVCDidHidden,
-                                            object: self,
-                                            userInfo: [
-                                                "call_id": callDetails?.callId,
-                                                "cid": callDetails?.cid
-                                            ])
-            delegate?.callViewControllerWantsToDismiss(self)
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            if callDetails?.isVideo == true {
+                delegate?.callViewControllerWantsToMinize(self)
+            } else {
+                NotificationCenter.default.post(name: .callVCDidHidden,
+                                                object: self,
+                                                userInfo: [
+                                                    "call_id": callDetails?.callId,
+                                                    "cid": callDetails?.cid
+                                                ])
+                delegate?.callViewControllerWantsToDismiss(self)
+            }
         }
+
     }
 
     private func close() {
+        log.debug("[CallVC] close() called - presentingVC: \(presentingViewController != nil), navigationController: \(navigationController != nil)")
+        log.debug("[CallVC], closed, \(isPiP)]")
+//        if !isPiP {
+        while let presentedVC = self.presentedViewController {
+            presentedVC.dismiss(animated: false)
+        }
+        controller?.cleanUp()
         delegate?.callViewControllerWantsToDismiss(self)
+//        }
     }
 
     @objc public func onRemoteVideoDidTapped() {
+        guard let controller else {
+            return
+        }
         UIView.animate(withDuration: 0.35) {
             self.navigationController?.setNavigationBarHidden(false, animated: true)
             self.setControlsViewHidden(false)
@@ -597,17 +595,20 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     /// Update screen by call's IO State.
+    @MainActor
     private func updateViewByCallIOState() {
-        updateAvatarsVisibleState()
-        updateTitleLabelVisibleState()
-        updateDurationLabelVisibleState()
-        updateVideoViewsState()
-        updateControlsState()
+        Task { @MainActor in
+            updateAvatarsVisibleState()
+            updateTitleLabelVisibleState()
+            await updateDurationLabelVisibleState()
+            updateVideoViewsState()
+            updateControlsState()
+        }
     }
 
     private func startHideControlsTimer() {
         stopHideControlsTimer()
-        hideControlsTimer = Timer.scheduledTimer(timeInterval: 5,
+        hideControlsTimer = Timer.scheduledTimer(timeInterval: 8,
                                                  target: self,
                                                  selector: #selector(hideControlsTimerDidFire),
                                                  userInfo: nil,
@@ -628,13 +629,15 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     // MARK: - CallControllerDelegate
     open func callStateDidChange(to callState: CallState) {
-        updateViewByCallState()
-        updateDurationLabelVisibleState()
-        if callState == .connected {
-            startHideControlsTimer()
-        }
-        if callState == .ended {
-            //close()
+        Task {
+            updateViewByCallState()
+            await updateDurationLabelVisibleState()
+            if callState == .connected {
+                startHideControlsTimer()
+            }
+            if callState == .ended {
+                //close()
+            }
         }
     }
 
@@ -643,11 +646,13 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     open func callIOStateDidChange(to callIOState: ErmisCall.CallIOState) {
-        if let callDetails, !callDetails.isVideo, callIOState.isVideoEnabled || callIOState.isRemoteVideoEnabled {
-            call?.details.isVideo = true
-            CallManager.shared.reportUpdateCall(for: callDetails.uuid, hasVideo: true)
+        Task { @MainActor in
+            if let callDetails, !callDetails.isVideo, callIOState.isVideoEnabled || callIOState.isRemoteVideoEnabled {
+                await call?.setVideoEnabled(true)
+                await CallManager.shared.reportUpdateCall(for: callDetails.uuid, hasVideo: true)
+            }
+            updateViewByCallIOState()
         }
-        updateViewByCallIOState()
     }
 
     open func durationDidChange(to duration: TimeInterval) {
@@ -664,25 +669,55 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         }
     }
 
-    public func startEndingCall(_ notification: Notification) {
-        guard let callId = notification.userInfo?["call_id"] as? String,
-              callId == callDetails?.callId else { return }
-        isEndingCall = true
-        updateViewForEnding()
+    public func didReceiveCallManagerMessage(_ message: CallManagerMessage) {
+        log.debug("[CallViewController] Did receive call manager message: \(message)")
+        Task { @MainActor in
+            switch message {
+            case .startEndingCall(let uuid, let id, let cid):
+                guard callDetails?.uuid == uuid else {
+                    return
+                }
+                isEndingCall = true
+                updateViewForEnding()
+            case .endCall(let uuid, let id, let cid):
+                //self.close()
+                break
+            case .createOutgoingCallError(let uuid, let error):
+                guard callDetails?.uuid == uuid else {
+                    return
+                }
+                guard !isPiP else {
+                    return
+                }
+                if let clientError = error as? ClientError, clientError.ermisApiError?.type == .otherCallInProgress {
+                    self.presentAlert(title: L10n.Call.Message.receiverBusy,
+                                      message: nil,
+                                      okHandler: { [weak self] in
+                        self?.close()
+                    })
+                    return
+                }
+                self.presentAlert(title: "Error when starting call",
+                                  message: "Something went wrong",
+                                  okHandler: { [weak self] in
+                    self?.close()
+                })
+            }
+        }
     }
 
-    public func callDidEnd(_ notification: Notification) {
-        guard !isPiP else {
-            return
-        }
-        guard let call else {
-            self.close()
-            return
-        }
-        guard let callId = notification.userInfo?["call_id"] as? String,
-              callId == callDetails?.callId else { return }
-        self.close()
-    }
+//    public func callDidEnd(_ notification: Notification) {
+//        guard let call else {
+//            self.close()
+//            return
+//        }
+//        guard let callUUID = notification.userInfo?["call_uuid"] as? String,
+//              callUUID == callDetails?.uuid.uuidString else {
+//            log.warning("[Call] CallVC Received end call notification with wrong id")
+//            return
+//        }
+//        self.close()
+//    }
 
     public func callDidUpdateConnectionStats(status: ErmisCallNode.ConnectionStats) {
         var connectionType: String = ""
@@ -753,12 +788,12 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             break
         case .video:
             if ioAccessManager.isCameraAccessGranted {
-                controller.togleVideo()
+                controller?.togleVideo()
             } else {
                 Task {
                     let isCameraAccessGranted = await ioAccessManager.requestCameraAccessIfNeeded()
                     if isCameraAccessGranted {
-                        controller.togleVideo()
+                        controller?.togleVideo()
                     } else {
                         ioAccessManager.presentCameraPermissionDeniedAlert(from: self, showSettingAction: false, animated: true)
                         var content = view.content
@@ -768,7 +803,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
                 }
             }
         case .switchCamera:
-            controller.switchCamera()
+            controller?.switchCamera()
         case .mic:
             if !callIOState.isAudioEnabled {
                 if !ioAccessManager.isMicrophoneAccessGranted {
@@ -779,9 +814,11 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
                     return
                 }
             }
-            controller.toggleMute()
+            controller?.toggleMute()
         case .endCall:
             endCall()
+            let endCallButton = view.getButton(of: .endCall)
+            endCallButton?.isEnabled = false
         case .shareScreen:
             break
         case .custom(rawValue: let rawValue):
@@ -969,16 +1006,23 @@ extension CallViewController {
             remoteAvatarView.isHidden = true
             return
         }
-        localAvatarView.isHidden = callIOState.isVideoEnabled || !(callDetails?.isVideo ?? false)
-        remoteAvatarView.isHidden = callIOState.isRemoteVideoEnabled
+        Task { @MainActor in
+            let isVideo = await callDetails?.isVideo ?? false
+            localAvatarView.isHidden = callIOState.isVideoEnabled || !(isVideo)
+            remoteAvatarView.isHidden = callIOState.isRemoteVideoEnabled
+        }
     }
 
     /// Update user's video view/ other user's video view visble state.
     private func updateVideoViewsState() {
-        localVideoView.isHidden = isPiP || !(callDetails?.isVideo ?? false)
+        Task { @MainActor in
+            let isVideo = await callDetails?.isVideo ?? false
+            localVideoView.isHidden = isPiP || !(isVideo)
 
-        localVideoView.videoView.isHidden = !callIOState.isVideoEnabled
-        remoteVideoView.videoView.isHidden = !callIOState.isRemoteVideoEnabled
+            localVideoView.videoView.isHidden = !callIOState.isVideoEnabled
+            remoteVideoView.videoView.isHidden = !callIOState.isRemoteVideoEnabled
+        }
+
     }
 
     /// Update controls view.
@@ -986,9 +1030,11 @@ extension CallViewController {
         controls.isHidden = isPiP || isEndingCall
         controls.content = .init(isAudioEnable: callIOState.isAudioEnabled,
                                  isVideoEnable: callIOState.isVideoEnabled,
-                                 currentPort: controller.getCurrentAudioPort()?.portType ?? .builtInReceiver)
-        if let switchCamera = controls.getButton(of: .switchCamera) {
-            switchCamera.isHidden = !(callDetails?.isVideo ?? false)
+                                 currentPort: controller?.getCurrentAudioPort()?.portType ?? .builtInReceiver)
+        Task { @MainActor in
+            if let switchCamera = controls.getButton(of: .switchCamera) {
+                switchCamera.isHidden = !(callDetails?.isVideo ?? false)
+            }
         }
     }
 
@@ -1011,26 +1057,29 @@ extension CallViewController {
     }
     /// Update call duration label.
     private func updateDurationLabelVisibleState() {
-        guard !isPiP else {
-            durationLabel.isHidden = true
-            return
+        Task { @MainActor in
+            guard !isPiP else {
+                durationLabel.isHidden = true
+                return
+            }
+            durationLabel.isHidden = (callDetails?.isVideo ?? false) || callState != .connected
         }
-        durationLabel.isHidden = (callDetails?.isVideo ?? false) || callState != .connected
     }
 
-    
     private func updateNavigationBarTitleView() {
-        if let callDetails, !callDetails.isVideo {
-            titleView.content = .init(title: L10n.Call.Title.voiceCall)
-        } else {
-            switch callState {
-            case .idle, .ringing, .connecting:
-                titleView.content = .init(title: L10n.Call.Title.videoCall)
-            case .connected, .ended:
-                titleView.content = .init(title: callDetails?.title, subtitle: timeFormater.string(from: duration))
+        Task { @MainActor [weak self] in
+            if let callDetails, !callDetails.isVideo {
+                titleView.content = .init(title: L10n.Call.Title.voiceCall)
+            } else {
+                switch callState {
+                case .idle, .starting, .reported, .ringing, .connecting:
+                    titleView.content = .init(title: L10n.Call.Title.videoCall)
+                case .connected, .ending, .ended:
+                    titleView.content = .init(title: callDetails?.title, subtitle: timeFormater.string(from: duration))
+                }
             }
+            navigationItem.titleView = titleView
         }
-        navigationItem.titleView = titleView
     }
 
     private func setControlsViewHidden(_ isHidden: Bool) {
@@ -1039,8 +1088,10 @@ extension CallViewController {
     }
 
     private func updateConnectionStatusLabel(_ connectionStatus: CallConnectionStatus) {
-        connectionStatusView.content = .init(connectionStatus: connectionStatus,
-                                             callTitle: callDetails?.title)
+        Task { @MainActor [weak self] in
+            connectionStatusView.content = .init(connectionStatus: connectionStatus,
+                                                 callTitle: callDetails?.title)
+        }
     }
 }
 //// MARK: - PiPable
@@ -1086,23 +1137,29 @@ extension CallViewController: PiPable {
 // MARK: - Computed properties
 extension CallViewController {
     public var call: Call? {
-        return controller.call
+        return controller?.call
     }
 
     public var callDetails: CallDetails? {
-        return controller.callDetails
+        get async {
+            return await controller?.callDetails
+        }
     }
 
     public var callIOState: CallIOState {
-        return controller.callIOState
+        return controller?.callIOState ?? .init(isAudioEnabled: false,
+                                                isVideoEnabled: false,
+                                                isRemoteAudioEnabled: false,
+                                                isRemoteVideoEnabled: false,
+                                                cameraPosition: .front)
     }
 
     public var callState: CallState {
-        return controller.callState
+        return controller?.callState ?? .idle
     }
 
     public var duration: TimeInterval {
-        return controller.duration
+        return controller?.duration ?? 0
     }
 }
 

@@ -5,6 +5,7 @@
 import AVFoundation
 import UIKit
 
+@MainActor
 open class VideoRenderView: UIView {
     public weak var previewLayer: AVSampleBufferDisplayLayer?
 

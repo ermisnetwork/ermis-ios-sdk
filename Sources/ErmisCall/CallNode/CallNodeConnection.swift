@@ -117,8 +117,8 @@ public class CallNodeConnection {
     }
 
     public func close() {
-        endpoint.closeConnection()
         receivingTask?.cancel()
+        endpoint.closeConnection()
     }
 
     func sendAudioData(data: Data) async throws {

@@ -22,7 +22,9 @@ public class ErmisPlayer: AppLifecycleObserver {
         didSet {
             if isEnable {
                 log.debug("[Player] Enabling player")
-                start()
+                DispatchQueue.main.async {
+                    self.start()
+                }
             } else {
                 log.debug("[Player] Disabling player")
                 stop()
@@ -84,7 +86,9 @@ public class ErmisPlayer: AppLifecycleObserver {
         if !hasSetupRenderer {
             hasSetupRenderer = true
         }
-        start()
+        DispatchQueue.main.async {
+            self.start()
+        }
     }
 
     // MARK: - Control

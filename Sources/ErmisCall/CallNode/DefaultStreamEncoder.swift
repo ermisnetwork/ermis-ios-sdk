@@ -37,6 +37,7 @@ public protocol StreamEncoder: AppLifecycleObserver {
                            fps: Double) throws
     func encodeVideo(_ sampleBuffer: CMSampleBuffer, isKeyFrame: Bool)
     func encodeAudio(_ pcmSample: [Int16], timestamp: CMTime)
+    func stop()
 
 }
 
@@ -279,7 +280,7 @@ public class DefaultStreamEncoder: StreamEncoder {
         guard encoder.isReadyToEncodeVideo else {
             let videoConfig = encoder.videoConfigPublisher.value
             encoder.videoConfigPublisher.send(videoConfig)
-            log.debug("[Encoder] Video not ready to encode, send config only")
+//            log.debug("[Encoder] Video not ready to encode, send config only")
             return
         }
         // Extract encoded data
@@ -673,12 +674,12 @@ public class DefaultStreamEncoder: StreamEncoder {
                 if presentationTimeStamp != .zero {
                     audioBufferStartTimestamp = CMTimeAdd(audioBufferStartTimestamp, frameDuration)
                 }
-                log.debug("[Encoder] Failed to encoded audio frame")
+//                log.debug("[Encoder] Failed to encoded audio frame")
                 return
             }
 
             guard presentationTimeStamp != .zero else {
-                log.debug("[Encoder] Presentation timestamp is zero")
+//                log.debug("[Encoder] Presentation timestamp is zero")
                 return
             }
 
@@ -755,7 +756,7 @@ public class DefaultStreamEncoder: StreamEncoder {
         guard isReadyToEncodeAudio else {
             let audioConfig = audioConfigPublisher.value
             audioConfigPublisher.send(audioConfig)
-            log.warning("[Encoder] Not ready to encode audio")
+//            log.warning("[Encoder] Not ready to encode audio")
             return nil
         }
 
@@ -1019,6 +1020,49 @@ public class DefaultStreamEncoder: StreamEncoder {
             self.recreateSession()
         }
     }
+
+    public func stop() {
+        encoderQueue.async { [weak self] in
+            guard let self else { return }
+
+            log.debug("[Encoder] Stop encoder requested", subsystems: .call)
+
+            // 1. Stop encoding immediately
+            self.isReadyToEncodeVideo = false
+            self.isReadyToEncodeAudio = false
+            self.forceKeyFrame = true
+
+            // 2. Finish & invalidate video encoder
+            if let session = self.compressionSession {
+                VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid)
+                VTCompressionSessionInvalidate(session)
+                self.compressionSession = nil
+            }
+
+            // 3. Release audio encoders
+            if let converter = self.audioConverter {
+                AudioConverterDispose(converter)
+                self.audioConverter = nil
+            }
+
+            self.opusEncoder = nil
+
+            // 4. Reset buffers & timestamps
+            self.audioBuffer.removeAll()
+            self.audioBufferStartTimestamp = .zero
+            self.startTime = nil
+
+            // 5. Reset configs (important for next call)
+            self.audioConfigPublisher.send(nil)
+            self.videoConfigPublisher.send(nil)
+
+            self.isSessionValid = false
+            self.hasActive = false
+
+            log.debug("[Encoder] Encoder fully stopped", subsystems: .call)
+        }
+    }
+
 }
 
 fileprivate struct ConverterContext {

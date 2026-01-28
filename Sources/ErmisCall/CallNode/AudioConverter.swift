@@ -356,6 +356,26 @@ public class AudioConverter {
             AudioConverterReset(resampler)
         }
     }
+
+    public func stop() {
+        print("[AudioConverter] Stop requested")
+
+        if let converter = audioConverter {
+            AudioConverterDispose(converter)
+            audioConverter = nil
+        }
+
+        if let resampler = resamplerConverter {
+            AudioConverterDispose(resampler)
+            resamplerConverter = nil
+        }
+
+        inputBuffer.removeAll()
+        inputPacketDescriptions.removeAll()
+
+        print("[AudioConverter] Fully disposed")
+    }
+
 }
 
 // MARK: - Callback Contexts

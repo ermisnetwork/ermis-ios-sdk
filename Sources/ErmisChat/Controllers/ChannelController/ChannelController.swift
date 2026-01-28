@@ -1444,7 +1444,7 @@ private extension ChannelController {
             observer.onDidChange = { [weak self] changes in
                 self?.delegateCallback {
                     guard let self = self else { return }
-                    log.debug("didUpdateTopics: \(changes.map(\.debugDescription))")
+//                    log.debug("didUpdateTopics: \(changes.map(\.debugDescription))")
                     
                     $0.channelController(self, didUpdateTopic: changes)
                 }

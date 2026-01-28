@@ -16,8 +16,7 @@ protocol CallControllerDelegate: AnyObject {
     func callIOStateDidChange(to callIOState: CallIOState)
     func durationDidChange(to duration: TimeInterval)
     func audioPortChange(to port: AudioPort?)
-    func startEndingCall(_ notification: Notification)
-    func callDidEnd(_ notification: Notification)
+    func didReceiveCallManagerMessage(_ message: CallManagerMessage)
     func callDidUpdateConnectionStats(status: ConnectionStats)
     func remoteVideoOrientationDidChanged(to orientation: VideoOrientation)
 }
@@ -30,6 +29,23 @@ class CallController: NSObject {
     public weak var delegate: CallControllerDelegate?
 
     private var cancelBags: Set<AnyCancellable> = []
+    package var hasStartedCall: Bool {
+        get {
+            lock.withLock({ _hasStatedCall })
+        }
+        set {
+            lock.withLock {
+                debugPrint("TTTTTTT new value: \(newValue)")
+                _hasStatedCall = newValue
+            }
+        }
+    }
+
+    private var _hasStatedCall: Bool = false
+
+    private var didRegisterObservers = false
+
+    private var lock = NSLock()
 
     public var callNodeClient: CallNodeClient? {
         return call?.callNodeClient
@@ -41,11 +57,16 @@ class CallController: NSObject {
     }
 
     deinit {
-        log.debug("TTTT CALL CONTROLLER DEINIT")
+        cleanUp()
     }
     // MARK: - Observer
     /// Start observer call. You can handle all changes via `CallControllerDelegate`.
     package func startCallObservers() {
+
+        guard !didRegisterObservers else {
+            return
+        }
+        didRegisterObservers = true
         call?.callStatePublisher
             .receive(on: RunLoop.main)
             .sink { [weak self] callState in
@@ -98,21 +119,18 @@ class CallController: NSObject {
             }
         }
 
-        NotificationCenter.default
-            .publisher(for: .startEndingCall)
+        CallManager.shared.messagePublisher
             .receive(on: RunLoop.main)
-            .sink { [weak self] notification in
-                self?.delegate?.startEndingCall(notification)
+            .sink { [weak self] message in
+                self?.delegate?.didReceiveCallManagerMessage(message)
             }
             .store(in: &cancelBags)
+    }
 
-        NotificationCenter.default
-            .publisher(for: .callDidEnded)
-            .receive(on: RunLoop.main)
-            .sink { [weak self] notification in
-                self?.delegate?.callDidEnd(notification)
-            }
-            .store(in: &cancelBags)
+    package func cleanUp() {
+        cancelBags.forEach { $0.cancel() }
+        cancelBags.removeAll()
+        delegate = nil
     }
 
     // MARK: - Call action
@@ -120,22 +138,26 @@ class CallController: NSObject {
     /// Create and start new outgoing call.
     public func startCall() async throws {
         guard let call else {
+            log.error("[Call] Call controller can't start call, no call available")
             throw ClientError("[CallController] Can not start call, no call available.")
         }
-        try await call.createCall()
-        try await CallManager.shared.reportOutgoingCallStarted(call)
+        log.debug("[Call] REPORT OUT GOING CALL START")
+        await CallManager.shared.reportOutgoingCallStarted(call)
+        self.hasStartedCall = true
     }
 
     /// End current call.
-    public func endCall() throws {
-        try CallManager.shared.endCall(with: call?.details.callId ?? "")
+    public func endCall() async {
+        await CallManager.shared.endCall(with: call?.details.callId ?? "")
     }
 
     // MARK: - Control
 
     /// Switch camera position.
     public func switchCamera() {
-        call?.toggleCameraPosition()
+        Task { @MainActor in
+            await call?.toggleCameraPosition()
+        }
     }
 
     /// Set camera postion, throw error if failure.
@@ -143,12 +165,16 @@ class CallController: NSObject {
     ///  - Parameters:
     ///   - position: New camera position want to set.
     public func setCameraPosition(_ position: CameraPosition) {
-        call?.setCameraPosition(position)
+        Task { @MainActor in
+            await call?.setCameraPosition(position)
+        }
     }
 
     /// Turn on/off video.
     public func togleVideo() {
-        call?.toggleVideo()
+        Task { @MainActor in
+            await call?.toggleVideo()
+        }
     }
 
     /// Set video enable state
@@ -156,7 +182,9 @@ class CallController: NSObject {
     ///  - Parameters:
     ///   - isEnabled: The boolean value for video enable state. if `true` video will be enabled and otherwise.
     public func setVideoEnabled(_ isEnabled: Bool) {
-        call?.setVideoEnabled(isEnabled)
+        Task { @MainActor in
+            await call?.setVideoEnabled(isEnabled)
+        }
     }
 
     /// Set mic mute state
@@ -164,12 +192,16 @@ class CallController: NSObject {
     ///  - Parameters:
     ///   - isMute: The boolean value for mic mute state. if `true` mic will be muted and otherwise.
     public func setMute(_ isMute: Bool) {
-        call?.setMute(isMute)
+        Task { @MainActor in
+            await call?.setMute(isMute)
+        }
     }
 
     /// Mute/unmute.
     public func toggleMute() {
-        call?.toggleMute()
+        Task { @MainActor in
+            await call?.toggleMute()
+        }
     }
 
     /// Get all available audio port
@@ -195,7 +227,9 @@ class CallController: NSObject {
 // MARK: - Computed properties
 package extension CallController {
     public var callDetails: CallDetails? {
-        return call?.details
+        get async {
+            return await call?.details
+        }
     }
     /// Current `CallIO` state which contain infomations about state of local and remote audio/video,
     /// camera position ...

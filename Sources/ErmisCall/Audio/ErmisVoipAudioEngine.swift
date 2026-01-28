@@ -144,6 +144,7 @@ public final class ErmisVoIPAudioEngine {
     /// Stop the audio engine
     public func stop() {
         guard isRunning else { return }
+        isRunning = false
 
         if let au = audioUnit {
             AudioOutputUnitStop(au)
@@ -153,7 +154,6 @@ public final class ErmisVoIPAudioEngine {
         }
 
         speakerBuffer.clear()
-        isRunning = false
         isConfigured = false
 
         os_log("[AudioEngine] Stopped", log: log, type: .info)
@@ -463,9 +463,7 @@ public final class ErmisVoIPAudioEngine {
 
             // Send to callback on main thread
             if let callback = engine.onMicrophoneOutput {
-                DispatchQueue.main.async {
-                    callback(capturedSamples, timestamp)
-                }
+                callback(capturedSamples, timestamp)
             }
         }
 

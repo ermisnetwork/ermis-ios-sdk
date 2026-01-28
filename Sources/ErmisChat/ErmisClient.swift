@@ -735,21 +735,18 @@ public class ErmisClient {
                                          isVideo: isVideo,
                                          signal: signal,
                                          metadata: metadata)
-        return  try await self.callRepository.sendSignal(body: body)
+        return try await self.callRepository.sendSignal(body: body)
     }
 
-    public func handelPushKitPayload(_ payload: [AnyHashable: Any],
-                                     completion: (Result<CallSignalEvent, Error>) -> Void) {
+    public func handelPushKitPayload(_ payload: [AnyHashable: Any]) throws -> CallSignalEvent {
         guard let dataPayload = payload["data"] as? String,
               let data = try? dataPayload.data(using: .utf8),
               let callSignalEventDTO = try? EventDecoder().decode(from: data) as? CallSignalEventDTO else {
-            completion(.failure(ClientError.Unexpected()))
-            return
+            throw ClientError.Unexpected()
         }
 
         guard let channel = try? databaseContainer.backgroundReadOnlyContext.channel(cid: callSignalEventDTO.cid)?.asModel() else {
-            completion(.failure(ClientError.ChannelDoesNotExist(cid: callSignalEventDTO.cid)))
-            return
+            throw ClientError.ChannelDoesNotExist(cid: callSignalEventDTO.cid)
         }
 
         let callSignalEvent = CallSignalEvent(userId: callSignalEventDTO.userId,
@@ -761,7 +758,7 @@ public class ErmisClient {
                                               signal: callSignalEventDTO.signal,
                                               createdAt: callSignalEventDTO.createdAt,
                                               metadata: callSignalEventDTO.metadata)
-        completion(.success(callSignalEvent))
+        return callSignalEvent
     }
 }
 
