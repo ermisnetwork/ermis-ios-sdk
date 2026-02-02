@@ -598,9 +598,13 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     @MainActor
     private func updateViewByCallIOState() {
         Task { @MainActor in
+            let ioState = await callIOState
+            let details = await callDetails
+            let isVideo = (details?.isVideo ?? false) || ioState.isVideoEnabled || ioState.isRemoteVideoEnabled
+            let callState = await callState
             updateAvatarsVisibleState()
             updateTitleLabelVisibleState()
-            await updateDurationLabelVisibleState()
+            updateDurationLabelVisibleState(isVideo: isVideo, callState: callState)
             updateVideoViewsState()
             updateControlsState()
         }
@@ -629,9 +633,14 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
 
     // MARK: - CallControllerDelegate
     open func callStateDidChange(to callState: CallState) {
-        Task {
+        Task { @MainActor in
+            let ioState = await callIOState
+            let details = await callDetails
+            let isVideo = (details?.isVideo ?? false) || ioState.isVideoEnabled || ioState.isRemoteVideoEnabled
+            let callState = await callState
+            log.debug("TTTT CALL STATE: \(callState), isVideo: \(details?.isVideo ?? false)", subsystems: .call)
             updateViewByCallState()
-            await updateDurationLabelVisibleState()
+            await updateDurationLabelVisibleState(isVideo:isVideo,  callState: callState)
             if callState == .connected {
                 startHideControlsTimer()
             }
@@ -646,12 +655,18 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     }
 
     open func callIOStateDidChange(to callIOState: ErmisCall.CallIOState) {
+
         Task { @MainActor in
-            if let callDetails, !callDetails.isVideo, callIOState.isVideoEnabled || callIOState.isRemoteVideoEnabled {
+            let state = await callState
+            let details = await callDetails
+            let isVideo = (details?.isVideo ?? false) || callIOState.isVideoEnabled || callIOState.isRemoteVideoEnabled
+
+            if let callDetails, !callDetails.isVideo, callIOState.isVideoEnabled {
                 await call?.setVideoEnabled(true)
                 await CallManager.shared.reportUpdateCall(for: callDetails.uuid, hasVideo: true)
             }
             updateViewByCallIOState()
+            updateDurationLabelVisibleState(isVideo: isVideo, callState: state)
         }
     }
 
@@ -1056,14 +1071,12 @@ extension CallViewController {
         stateLabel.isHidden = stateLabel.text.isEmptyOrNil
     }
     /// Update call duration label.
-    private func updateDurationLabelVisibleState() {
-        Task { @MainActor in
-            guard !isPiP else {
-                durationLabel.isHidden = true
-                return
-            }
-            durationLabel.isHidden = (callDetails?.isVideo ?? false) || callState != .connected
+    public func updateDurationLabelVisibleState(isVideo: Bool, callState: CallState) {
+        guard !isPiP else {
+            durationLabel.isHidden = true
+            return
         }
+        durationLabel.isHidden = isVideo || callState != .connected
     }
 
     private func updateNavigationBarTitleView() {
@@ -1123,15 +1136,22 @@ extension CallViewController: PiPable {
     }
 
     private func onPiPStateDidChange() {
-        UIView.animate(withDuration: 0.27, animations: {
-            self.updateAvatarsVisibleState()
-            self.updateVideoViewsState()
-            self.updateTitleLabelVisibleState()
-            self.updateStateLabelVisible()
-            self.updateDurationLabelVisibleState()
-            self.updateControlsState()
-            self.navigationController?.setNavigationBarHidden(self.controls.isHidden, animated: true)
-        })
+        Task { @MainActor in
+            let ioState = await callIOState
+            let details = await callDetails
+            let isVideo = (details?.isVideo ?? false) || ioState.isVideoEnabled || ioState.isRemoteVideoEnabled
+            let callState = await callState
+            UIView.animate(withDuration: 0.27, animations: {
+                self.updateAvatarsVisibleState()
+                self.updateVideoViewsState()
+                self.updateTitleLabelVisibleState()
+                self.updateStateLabelVisible()
+                self.updateDurationLabelVisibleState(isVideo: isVideo, callState: callState)
+                self.updateControlsState()
+                self.navigationController?.setNavigationBarHidden(self.controls.isHidden, animated: true)
+            })
+        }
+
     }
 }
 // MARK: - Computed properties
@@ -1147,11 +1167,7 @@ extension CallViewController {
     }
 
     public var callIOState: CallIOState {
-        return controller?.callIOState ?? .init(isAudioEnabled: false,
-                                                isVideoEnabled: false,
-                                                isRemoteAudioEnabled: false,
-                                                isRemoteVideoEnabled: false,
-                                                cameraPosition: .front)
+        return controller?.callIOState ?? .init()
     }
 
     public var callState: CallState {

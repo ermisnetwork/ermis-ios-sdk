@@ -742,7 +742,7 @@ public class ErmisClient {
         guard let dataPayload = payload["data"] as? String,
               let data = try? dataPayload.data(using: .utf8),
               let callSignalEventDTO = try? EventDecoder().decode(from: data) as? CallSignalEventDTO else {
-            throw ClientError.Unexpected()
+            throw ClientError.Unexpected("Precondition failed")
         }
 
         guard let channel = try? databaseContainer.backgroundReadOnlyContext.channel(cid: callSignalEventDTO.cid)?.asModel() else {

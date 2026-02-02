@@ -221,7 +221,9 @@ public actor Call {
     }
 
     public func setIsVideo(_ isVideo: Bool) {
+        log.debug("TTTTTT SET IS VIDEO: \(isVideo)", subsystems: .call)
         details.isVideo = isVideo
+        callStatePublisher.send(callStatePublisher.value)
     }
 
     @MainActor
@@ -371,21 +373,20 @@ extension Call {
         durationTask?.cancel()
         durationTask = nil
         duration = 0
-        durationTimerPublisher.send(duration)
     }
 
     private func handleDurationTick() async {
         duration += 1
-//        log.debug("[Call] Duration timer tick for callId: \(details.callId), duration: \(duration)", subsystems: .call)
+        log.debug("[Call] Duration timer tick for callId: \(details.callId), duration: \(duration)", subsystems: .call)
         durationTimerPublisher.send(duration)
 
         if !callNodeClient.isCallNodeConnected() {
             connectionStatusPublisher.send(.yourConnectionIsBeingEstablished)
             
             // Schedule end call after 6 seconds of no connection
-            Task {
+            Task.detached {
                 try? await Task.sleep(nanoseconds: 6_000_000_000)
-                if !callNodeClient.isCallNodeConnected() {
+                if !self.callNodeClient.isCallNodeConnected() {
                     let callId = await self.details.callId
                     CallManager.shared.endCall(with: callId)
                     await self.stopDurationTimer()

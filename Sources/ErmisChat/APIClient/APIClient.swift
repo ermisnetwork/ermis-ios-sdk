@@ -387,8 +387,8 @@ class APIClient {
 //                subsystems: .httpRequests
 //            )
             
-//            print("CURL: \(urlRequest.cURL())")
-            
+            print("CURL: \(urlRequest.cURL())")
+
             log.debug("[APIClient] Starting request: \(endpoint.method.rawValue) \(endpoint.path)", subsystems: .httpRequests)
 
             guard let self = self else {

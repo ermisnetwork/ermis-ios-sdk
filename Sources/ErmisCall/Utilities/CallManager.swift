@@ -661,6 +661,7 @@ public class CallManager: NSObject, CXProviderDelegate, CXCallObserverDelegate, 
             callUUID = await currentCall.uuid
         } else if let event, currentCall == nil {
             let call = await createNewIncomingCall(from: event, uuid: callUUID)
+            await state.setCurrentCall(call)
         }
         callUpdate.remoteHandle = CXHandle(type: .generic, value: callUUID.uuidString)
         ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true, isVideoCall: callUpdate.hasVideo)
@@ -1128,7 +1129,6 @@ public class CallManager: NSObject, CXProviderDelegate, CXCallObserverDelegate, 
 
     @MainActor
     public func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType) async {
-        guard type == .voIP else { return }
         log.debug("[CallManager] pushRegistry(_:didReceiveIncomingPushWith:for:completion:) called with payload: \(payload.dictionaryPayload)", subsystems: .call)
         log.debug("[CallKit] Received incoming call with payload: \(payload.dictionaryPayload)", subsystems: .call)
 

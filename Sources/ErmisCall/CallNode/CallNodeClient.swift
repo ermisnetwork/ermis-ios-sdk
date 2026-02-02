@@ -593,7 +593,7 @@ class CallNodeClient: NSObject, ObservableObject {
             log.error("[CallNode] Failed to start VoIP manager: \(error)")
         }
         player.setupPlayerIfNeeded()
-        await capturer.startCapturer(call?.details.isVideo ?? false)
+        await capturer.startCapturer(call?.callNodeClient.callIOState.isVideoEnabled ?? false)
     }
 
     package func didActiveAudioSession() async {
@@ -628,6 +628,7 @@ class CallNodeClient: NSObject, ObservableObject {
     ///
     /// - Parameters:
     ///    - isEnable: The enable state of video want to set.
+    @MainActor
     public func setVideoEnabled(_ isEnable: Bool) async {
             log.debug("[CallNodeClient] Setting video enable: \(isEnable)")
             if !isEnable {
@@ -643,6 +644,10 @@ class CallNodeClient: NSObject, ObservableObject {
                 let isCameraAvailable = await ioAccessManager.requestCameraAccessIfNeeded()
                 guard isCameraAvailable else {
                     await setVideoEnabled(false)
+                    return
+                }
+                guard callIOState.isVideoEnabled == false else {
+                    log.warning("[CallNodeClient] Already enable video.")
                     return
                 }
                 do {
@@ -1034,7 +1039,7 @@ class CallNodeClient: NSObject, ObservableObject {
             case .signalCall:
                 break
             case .upgradeCall:
-                await call?.setVideoEnabled(true)
+                await call?.setIsVideo(true)
             }
         }
 
