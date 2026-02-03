@@ -273,6 +273,7 @@ public actor Call {
     public func setVideoEnabled(_ isEnabled: Bool) {
         Task { @MainActor in
             await callNodeClient.setVideoEnabled(isEnabled)
+            await setIsVideo(true)
         }
     }
 

@@ -601,7 +601,6 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             let ioState = await callIOState
             let details = await callDetails
             let isVideo = (details?.isVideo ?? false) || ioState.isVideoEnabled || ioState.isRemoteVideoEnabled
-            let callState = await callState
             updateAvatarsVisibleState()
             updateTitleLabelVisibleState()
             updateDurationLabelVisibleState(isVideo: isVideo, callState: callState)
@@ -657,7 +656,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
     open func callIOStateDidChange(to callIOState: ErmisCall.CallIOState) {
 
         Task { @MainActor in
-            let state = await callState
+            let state = callState
             let details = await callDetails
             let isVideo = (details?.isVideo ?? false) || callIOState.isVideoEnabled || callIOState.isRemoteVideoEnabled
 
@@ -1140,13 +1139,12 @@ extension CallViewController: PiPable {
             let ioState = await callIOState
             let details = await callDetails
             let isVideo = (details?.isVideo ?? false) || ioState.isVideoEnabled || ioState.isRemoteVideoEnabled
-            let callState = await callState
             UIView.animate(withDuration: 0.27, animations: {
                 self.updateAvatarsVisibleState()
                 self.updateVideoViewsState()
                 self.updateTitleLabelVisibleState()
                 self.updateStateLabelVisible()
-                self.updateDurationLabelVisibleState(isVideo: isVideo, callState: callState)
+                self.updateDurationLabelVisibleState(isVideo: isVideo, callState: self.callState)
                 self.updateControlsState()
                 self.navigationController?.setNavigationBarHidden(self.controls.isHidden, animated: true)
             })
