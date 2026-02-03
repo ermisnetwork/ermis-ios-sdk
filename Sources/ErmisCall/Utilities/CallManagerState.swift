@@ -14,10 +14,9 @@ public actor CallManagerState {
     // MARK: - State Properties
     
     private(set) var currentCall: Call?
-    
+
     private(set) var isIdle: Bool = true
     private(set) var isCallKitReady: Bool = true
-    private(set) var isCallKitReportedCall: Bool = false
     private(set) var lastCallEndedTime: Date?
     
     private(set) var callUUIDDictionary: [String: UUID] = [:]
@@ -144,10 +143,6 @@ public actor CallManagerState {
     
     // MARK: - CallKit State
     
-    func setCallKitReportedCall(_ value: Bool) {
-        isCallKitReportedCall = value
-    }
-    
     func setCallKitReady(_ value: Bool) {
         isCallKitReady = value
     }
@@ -163,16 +158,13 @@ public actor CallManagerState {
     /// Atomically reset all state
     func resetAllState() {
         log.warning("[CallManagerState] resetAllState() called", subsystems: .call)
-        log.debug("[CallManagerState] BEFORE reset: isIdle: \(isIdle), isCallKitReady: \(isCallKitReady), isCallKitReportedCall: \(isCallKitReportedCall), currentCall: \(currentCall != nil), endingCallUUIDs: \(endingCallUUIDs.count)", subsystems: .call)
+        log.debug("[CallManagerState] BEFORE reset: isIdle: \(isIdle), isCallKitReady: \(isCallKitReady), currentCall: \(currentCall != nil), endingCallUUIDs: \(endingCallUUIDs.count)", subsystems: .call)
         
         isIdle = true
         isCallKitReady = true
-        isCallKitReportedCall = false
         lastCallEndedTime = Date()
         callUUIDDictionary.removeAll()
         endingCallUUIDs.removeAll()
         currentCall = nil
-        
-        log.debug("[CallManagerState] AFTER reset: isIdle: \(isIdle), isCallKitReady: \(isCallKitReady), isCallKitReportedCall: \(isCallKitReportedCall), currentCall: \(currentCall != nil)", subsystems: .call)
     }
 }

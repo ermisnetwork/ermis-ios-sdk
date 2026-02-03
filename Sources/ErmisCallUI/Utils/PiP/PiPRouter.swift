@@ -335,6 +335,12 @@ public class PiPRouter: NSObject {
                     }
                     errorMessage = message
                     stopPip()
+                case .failedToConnect(let uuid):
+                    guard self.isInPip else {
+                        return
+                    }
+                    errorMessage = message
+                    stopPip()
                 case .startEndingCall:
                     break
                 }

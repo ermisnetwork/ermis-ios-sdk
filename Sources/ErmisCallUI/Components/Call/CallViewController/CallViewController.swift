@@ -161,6 +161,7 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
         updateViewByCallIOState()
         setupBackgroundObservers()
         setupLocalVideoDragging()
+        stateLabel.isHidden = true
     }
     
     private func setupBackgroundObservers() {
@@ -312,7 +313,6 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
                                       ))
 
             titleLabel.text = callDetails?.title
-            stateLabel.text = L10n.Call.Status.ringing
         }
     }
 
@@ -573,19 +573,25 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
             return
         }
         switch callState {
+        case .idle:
+            stateLabel.text = ""
+        case .starting:
+            stateLabel.text = ""
+        case .reported:
+            stateLabel.text = L10n.Call.Status.ringing
         case .ringing:
             stateLabel.text = L10n.Call.Status.ringing
         case .connecting:
             stateLabel.text = L10n.Call.Status.connecting
         case .connected:
             stateLabel.text = ""
+        case .ending:
+            stateLabel.text = L10n.Call.Status.ended
         case .ended:
             stateLabel.text = L10n.Call.Status.ended
-        default:
-            stateLabel.text = ""
         }
-        stateLabel.isHidden = stateLabel.text.isEmptyOrNil
 
+        updateStateLabelVisible()
         updateNavigationBarTitleView()
     }
 
@@ -712,6 +718,26 @@ open class CallViewController: _ViewController, UIProvider, CallComponentsProvid
                     return
                 }
                 self.presentAlert(title: "Error when starting call",
+                                  message: "Something went wrong",
+                                  okHandler: { [weak self] in
+                    self?.close()
+                })
+            case .failedToConnect(uuid: let uuid, error: let error):
+                guard callDetails?.uuid == uuid else {
+                    return
+                }
+                guard !isPiP else {
+                    return
+                }
+                if let clientError = error as? ClientError, clientError.ermisApiError?.type == .otherCallInProgress {
+                    self.presentAlert(title: L10n.Call.Message.receiverBusy,
+                                      message: nil,
+                                      okHandler: { [weak self] in
+                        self?.close()
+                    })
+                    return
+                }
+                self.presentAlert(title: "Error when connecting",
                                   message: "Something went wrong",
                                   okHandler: { [weak self] in
                     self?.close()
@@ -1143,7 +1169,7 @@ extension CallViewController: PiPable {
                 self.updateAvatarsVisibleState()
                 self.updateVideoViewsState()
                 self.updateTitleLabelVisibleState()
-                self.updateStateLabelVisible()
+                self.updateViewByCallState()
                 self.updateDurationLabelVisibleState(isVideo: isVideo, callState: self.callState)
                 self.updateControlsState()
                 self.navigationController?.setNavigationBarHidden(self.controls.isHidden, animated: true)

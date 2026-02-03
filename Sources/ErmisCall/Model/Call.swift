@@ -378,7 +378,7 @@ extension Call {
 
     private func handleDurationTick() async {
         duration += 1
-        log.debug("[Call] Duration timer tick for callId: \(details.callId), duration: \(duration)", subsystems: .call)
+//        log.debug("[Call] Duration timer tick for callId: \(details.callId), duration: \(duration)", subsystems: .call)
         durationTimerPublisher.send(duration)
 
         if !callNodeClient.isCallNodeConnected() {
