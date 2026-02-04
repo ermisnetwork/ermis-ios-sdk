@@ -605,7 +605,7 @@ extension Channel {
                 .load(
                     for: dto.cid,
                     limit: dto.managedObjectContext?.localCachingSettings?.channel.latestMessagesLimit ?? 25,
-                    deletedMessagesVisibility: dto.managedObjectContext?.deletedMessagesVisibility ?? .visibleForCurrentUser,
+                    deletedMessagesVisibility: dto.managedObjectContext?.deletedMessagesVisibility ?? .alwaysHidden,
                     shouldShowShadowedMessages: dto.managedObjectContext?.shouldShowShadowedMessages ?? false,
                     context: context
                 )

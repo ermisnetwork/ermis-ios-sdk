@@ -209,10 +209,10 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     override public func synchronize(_ completion: ((Error?) -> Void)? = nil) {
         startObserversIfNeeded()
 
-        messageUpdater.getMessage(cid: cid, messageId: messageId) { result in
+        messageUpdater.getMessage(cid: cid, messageId: messageId) { [weak self] result in
             let error = result.error
-            self.state = error == nil ? .remoteDataFetched : .remoteDataFetchFailed(ClientError(with: error))
-            self.callback { completion?(error) }
+            self?.state = error == nil ? .remoteDataFetched : .remoteDataFetchFailed(ClientError(with: error))
+            self?.callback { completion?(error) }
         }
     }
 
@@ -258,8 +258,8 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             attachments: attachments,
             mentionedUserIds: mentionedUserIds,
             mentionedAll: mentionedAll
-        ) { error in
-            self.callback {
+        ) { [weak self] error in
+            self?.callback {
                 completion?(error)
             }
         }
@@ -268,18 +268,19 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     /// Deletes the message this controller manages.
     ///
     /// - Parameters:
+    ///   - onlyForMe: The `Boolean` value, true if delete only for me, otherwhise delete for all users.
     ///   - completion: The completion. Will be called on a **callbackQueue** when the network request is finished.
     ///                 If request fails, the completion will be called with an error.
     ///
-    public func deleteMessage(completion: ((Error?) -> Void)? = nil) {
+    public func deleteMessage(onlyForMe: Bool, completion: ((Error?) -> Void)? = nil) {
         guard let message else {
             self.callback {
                 completion?(ClientError.MessageDoesNotExist(messageId: self.messageId))
             }
             return
         }
-        messageUpdater.deleteMessage(message: message, cid: cid) { error in
-            self.callback {
+        messageUpdater.deleteMessage(message: message, cid: cid, onlyForMe: onlyForMe) { [weak self] error in
+            self?.callback {
                 completion?(error)
             }
         }
@@ -324,11 +325,11 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             mentionedAll: mentionedAll,
             isSilent: isSilent,
             quotedMessageId: quotedMessageId
-        ) { result in
+        ) { [weak self] result in
             if let newMessage = try? result.get() {
-                self.client.eventNotificationCenter.process(NewMessagePendingEvent(message: newMessage))
+                self?.client.eventNotificationCenter.process(NewMessagePendingEvent(message: newMessage))
             }
-            self.callback {
+            self?.callback {
                 completion?(result.map(\.id))
             }
         }
@@ -369,7 +370,10 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             cid: cid,
             messageId: messageId,
             pagination: pagination
-        ) { result in
+        ) { [weak self] result in
+            guard let self else {
+                return
+            }
             switch result {
             case let .success(payload):
                 self.callback {
@@ -420,12 +424,12 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             cid: cid,
             messageId: messageId,
             pagination: pagination
-        ) { result in
+        ) { [weak self] result in
             switch result {
             case .success:
-                self.callback { completion?(nil) }
+                self?.callback { completion?(nil) }
             case let .failure(error):
-                self.callback { completion?(error) }
+                self?.callback { completion?(error) }
             }
         }
     }
@@ -460,12 +464,12 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             cid: cid,
             messageId: messageId,
             pagination: MessagesPagination(pageSize: pageSize, parameter: .greaterThan(replyId))
-        ) { result in
+        ) { [weak self] result in
             switch result {
             case .success:
-                self.callback { completion?(nil) }
+                self?.callback { completion?(nil) }
             case let .failure(error):
-                self.callback { completion?(error) }
+                self?.callback { completion?(error) }
             }
         }
     }
@@ -479,8 +483,8 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             cid: cid,
             messageId: messageId,
             pagination: MessagesPagination(pageSize: pageSize)
-        ) { result in
-            self.callback { completion?(result.error) }
+        ) { [weak self] result in
+            self?.callback { completion?(result.error) }
         }
     }
 
@@ -505,7 +509,10 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             cid: cid,
             messageId: messageId,
             pagination: Pagination(pageSize: limit, offset: reactions.count)
-        ) { result in
+        ) { [weak self] result in
+            guard let self else {
+                return
+            }
             switch result {
             case let .success(reactions):
                 let currentReactions = Set(self.reactions)
@@ -547,7 +554,10 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             cid: cid,
             messageId: messageId,
             pagination: Pagination(pageSize: limit, offset: offset)
-        ) { result in
+        ) { [weak self] result in
+            guard let self else {
+                return
+            }
             switch result {
             case let .success(reactions):
                 self.callback { completion(.success(reactions)) }
@@ -596,8 +606,8 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             type,
             cid: cid,
             messageId: messageId
-        ) { error in
-            self.callback {
+        ) { [weak self] error in
+            self?.callback {
                 completion?(error)
             }
         }
@@ -613,8 +623,8 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     ) {
         messageUpdater.deleteReaction(type,
                                       cid: cid,
-                                      messageId: messageId) { error in
-            self.callback {
+                                      messageId: messageId) { [weak self] error in
+            self?.callback {
                 completion?(error)
             }
         }
@@ -640,8 +650,8 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     /// - Parameter completion: The completion. Will be called on a **callbackQueue** when the database operation is finished.
     ///                         If operation fails, the completion will be called with an error.
     public func resendMessage(completion: ((Error?) -> Void)? = nil) {
-        messageUpdater.resendMessage(with: messageId) { error in
-            self.callback {
+        messageUpdater.resendMessage(with: messageId) { [weak self] error in
+            self?.callback {
                 completion?(error)
             }
         }
@@ -696,7 +706,7 @@ private extension MessageController {
     func setRepliesObserver() {
         let sortAscending = listOrdering == .topToBottom ? false : true
         let deletedMessageVisibility = client.databaseContainer.viewContext
-            .deletedMessagesVisibility ?? .visibleForCurrentUser
+            .deletedMessagesVisibility ?? .alwaysHidden
         let shouldShowShadowedMessages = client.databaseContainer.viewContext.shouldShowShadowedMessages ?? false
 
         let pageSize: Int = repliesPageSize

@@ -439,7 +439,7 @@ class MessageDTO: NSManagedObject {
         )
         request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.defaultSortingKey, ascending: false)]
         request.fetchOffset = 0
-        request.fetchLimit = 1
+        request.fetchLimit = 10
 
         return load(by: request, context: context).first
     }

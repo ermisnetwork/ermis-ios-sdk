@@ -105,12 +105,12 @@ class MessagePayload: Decodable {
         let container = try decoder.container(keyedBy: MessagePayloadsCodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         cid = try container.decodeIfPresent(ChannelId.self, forKey: .cid)
-        type = try container.decode(MessageType.self, forKey: .type)
+        type = try container.decodeIfPresent(MessageType.self, forKey: .type) ?? .regular
         user = try container.decode(UserPayload.self, forKey: .user)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
-        text = try container.decode(String.self, forKey: .text).trimmingCharacters(in: .whitespacesAndNewlines)
+        text = try container.decodeIfPresent(String.self, forKey: .text)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         oldTexts = try container.decodeIfPresent([MessageEditHistoryPayload].self, forKey: .oldTexts)
         isSilent = try container.decodeIfPresent(Bool.self, forKey: .isSilent) ?? false
         isShadowed = try container.decodeIfPresent(Bool.self, forKey: .shadowed) ?? false

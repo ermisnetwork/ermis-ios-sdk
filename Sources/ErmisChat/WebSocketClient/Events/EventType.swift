@@ -77,6 +77,8 @@ public extension EventType {
     static let messageUnpinned: Self = "message.unpinned"
     /// When a message was deleted.
     static let messageDeleted: Self = "message.deleted"
+    /// When a message was deleted for only current user.
+    static let messageDeletedForMe: Self = "message.deleted_for_me"
     /// When a channel was marked as read.
     static let messageRead: Self = "message.read"
 
@@ -184,6 +186,7 @@ extension EventType {
         case .messagePinned: return try MessagePinnedEventDTO(from: response)
         case .messageUnpinned: return try MessagePinnedEventDTO(from: response)
         case .messageDeleted: return try MessageDeletedEventDTO(from: response)
+        case .messageDeletedForMe: return try MessageDeletedForMeEventDTO(from: response)
         case .messageRead: return try MessageReadEventDTO(from: response)
 
         case .memberAdded: return try MemberAddedEventDTO(from: response)
