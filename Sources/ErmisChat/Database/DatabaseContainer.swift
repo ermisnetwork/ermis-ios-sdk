@@ -204,13 +204,13 @@ class DatabaseContainer: NSPersistentContainer {
                 }
 
                 if self.writableContext.hasChanges {
-                    log.debug("Context has changes. Saving.", subsystems: .database)
+//                    log.debug("Context has changes. Saving.", subsystems: .database)
                     try self.writableContext.save()
                 } else {
-                    log.debug("Context has no changes. Skipping save.", subsystems: .database)
+//                    log.debug("Context has no changes. Skipping save.", subsystems: .database)
                 }
 
-                log.debug("Database session succesfully saved.", subsystems: .database)
+//                log.debug("Database session succesfully saved.", subsystems: .database)
                 completion(nil)
 
             } catch {

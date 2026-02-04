@@ -2,8 +2,6 @@
 // Copyright 2025 Ermis Inc.
 //
 
-import StreamWebRTC
-
 // A type which represent RTCMediaTrack Type.
 struct TrackType: Codable, Hashable, RawRepresentable, ExpressibleByStringLiteral {
     let rawValue: String

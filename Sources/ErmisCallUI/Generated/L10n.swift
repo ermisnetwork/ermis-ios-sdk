@@ -50,6 +50,8 @@ public enum L10n {
       public static var yourConnectionUnstable: String { L10n.tr("Localizable", "call.connection.your-connection-unstable") }
     }
     public enum Message {
+      /// Unable to make the call. Please check your network connection
+      public static var canNotMakeCallBecauseNoConnection: String { L10n.tr("Localizable", "call.message.can-not-make-call-because-no-connection") }
       /// Receiver busy
       public static var receiverBusy: String { L10n.tr("Localizable", "call.message.receiver-busy") }
     }

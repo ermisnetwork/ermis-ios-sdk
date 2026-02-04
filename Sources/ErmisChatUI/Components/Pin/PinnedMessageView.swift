@@ -98,8 +98,8 @@ open class PinnedMessageView: _View, UIProvider, PreviewMessageProvider {
             }
         )
 
-        expandButton.configuration?.imageColorTransformer = UIConfigurationColorTransformer { [unowned self] _ in
-            return self.theme.colors.text
+        expandButton.configuration?.imageColorTransformer = UIConfigurationColorTransformer { [weak self] _ in
+            return self?.theme.colors.text ?? .clear
         }
 
         expandButton.configuration?.background.strokeColor = theme.colors.text

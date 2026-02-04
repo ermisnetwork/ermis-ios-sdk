@@ -2,11 +2,7 @@
 // Copyright 2025 Ermis Inc.
 //
 
-import StreamWebRTC
 import ErmisChat
-
-public
-typealias SDP = RTCSessionDescription
 
 /// A protocol that represent an object for send and receive signal message.
 public protocol SignalingProtocol: AnyObject {
@@ -29,7 +25,7 @@ public protocol SignalingProtocol: AnyObject {
                     action: CallAction,
                     isVideo: Bool,
                     signalType: SignalType?,
-                    sdp: String?) async throws -> CallSignalRequestPayload
+                    sdp: String?, metadata: Metadata?) async throws -> CallSignalRequestPayload
 }
 /// A class implementation of `SignalingProtocol` for send and handle WebRTC
 ///  signal message.
@@ -75,9 +71,10 @@ public class Signaler: SignalingProtocol {
                            action: CallAction,
                            isVideo: Bool,
                            signalType: SignalType?,
-                           sdp: String?) async throws -> CallSignalRequestPayload {
-        let payload = try await client.sendSignal(for: callId, sessionId: sessionId, cid: cid, action: action, isVideo: isVideo, signalType: signalType, sdp: sdp)
-        log.debug("[WebRTC] sendSignal for callID \(callId), action: \(action), signalType: \(signalType)")
+                           sdp: String?,
+                           metadata: Metadata?) async throws -> CallSignalRequestPayload {
+        let payload = try await client.sendSignal(for: callId, sessionId: sessionId, cid: cid, action: action, isVideo: isVideo, signalType: signalType, sdp: sdp, metadata: metadata)
+        log.debug("[CallNode] sendSignal for callID \(callId), action: \(action), signalType: \(signalType)")
         return payload
     }
 }

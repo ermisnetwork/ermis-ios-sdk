@@ -43,6 +43,17 @@ public struct PushNotificationContent {
     public var reactionType: MessageReactionType?
     public var event: Event?
     public var content: UNNotificationContent
+
+    public init(type: PushNotificationContentType = .addedToChannel, cid: ChannelId? = nil, message: ChatMessage? = nil, channel: Channel? = nil, user: ChatUser? = nil, reactionType: MessageReactionType? = nil, event: Event? = nil, content: UNNotificationContent) {
+        self.type = type
+        self.cid = cid
+        self.message = message
+        self.channel = channel
+        self.user = user
+        self.reactionType = reactionType
+        self.event = event
+        self.content = content
+    }
 }
 
 public enum PushNotificationContentType {
@@ -123,6 +134,14 @@ public class RemoteNotificationHandler {
         database = client.databaseContainer
         messageRepository = client.messageRepository
         extensionLifecycle = client.extensionLifecycle
+    }
+
+    public func handleNotification() async -> PushNotificationContent {
+        await withCheckedContinuation { continuation in
+            handleNotification { content in
+                continuation.resume(returning: content)
+            }
+        }
     }
 
     public func handleNotification(completion: @escaping (PushNotificationContent) -> Void) -> Bool {

@@ -45,6 +45,7 @@ enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
     case moderationDetails = "moderation_details"
     case messageTextUpdatedAt = "message_text_updated_at"
     case forwardCid = "forward_cid"
+    case forwardMessageId = "forward_message_id"
 }
 
 extension MessagePayload {
@@ -244,6 +245,7 @@ struct MessageRequestBody: Encodable {
     let mentionedAll: Bool
     let createdAt: Date?
     var forwardCid: String?
+    let forwardMessageId: String?
 
     init(
         id: String,
@@ -262,7 +264,8 @@ struct MessageRequestBody: Encodable {
         mentionedUserIds: [UserId] = [],
         mentionedAll: Bool = false,
         createdAt: Date? = nil,
-        forwardCid: String? = nil
+        forwardCid: String? = nil,
+        forwardMessageId: String? = nil
     ) {
         self.id = id
         self.user = user
@@ -281,6 +284,7 @@ struct MessageRequestBody: Encodable {
         self.mentionedUserIds = mentionedUserIds
         self.createdAt = createdAt
         self.forwardCid = forwardCid
+        self.forwardMessageId = forwardMessageId
     }
 
     init(with message: ChatMessage) {
@@ -309,6 +313,7 @@ struct MessageRequestBody: Encodable {
         self.mentionedUserIds = message.mentionedUsers.map(\.userId)
         self.createdAt = message.createdAt
         self.forwardCid = nil
+        self.forwardMessageId = nil
     }
 
     func encode(to encoder: Encoder) throws {
@@ -327,6 +332,7 @@ struct MessageRequestBody: Encodable {
         try container.encodeIfPresent(createdAt, forKey: .createdAt)
         try container.encodeIfPresent(forwardCid, forKey: .forwardCid)
         try container.encodeIfPresent(stickerUrl, forKey: .stickerUrl)
+        try container.encodeIfPresent(forwardMessageId, forKey: .forwardMessageId)
 
         if !attachments.isEmpty {
             try container.encode(attachments, forKey: .attachments)
@@ -354,7 +360,7 @@ struct MessageRequestBody: Encodable {
                 return MessageAttachmentPayload(type: attachment.type, payload: payload)
             }
             return nil
-        }), forwardCid: message.cid?.rawValue
+        }), forwardCid: message.cid?.rawValue, forwardMessageId: message.id
         )
     }
 }

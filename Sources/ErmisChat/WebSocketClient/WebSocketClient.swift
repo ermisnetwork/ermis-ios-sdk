@@ -189,7 +189,7 @@ extension WebSocketClient: WebSocketEngineDelegate {
     func webSocketDidReceiveMessage(_ message: String) {
         do {
             let messageData = Data(message.utf8)
-            log.debug("Event received:\n\(messageData.debugPrettyPrintedJSON)", subsystems: .webSocket)
+//            log.debug("Event received:\n\(messageData.debugPrettyPrintedJSON)", subsystems: .webSocket)
 
             let event = try eventDecoder.decode(from: messageData)
             if let healthCheckEvent = event as? HealthCheckEvent {

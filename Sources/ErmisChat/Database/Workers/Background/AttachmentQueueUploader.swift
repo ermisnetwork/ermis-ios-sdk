@@ -205,7 +205,7 @@ class AttachmentQueueUploader: Worker {
                             onCompletion(ClientError.AttachmentDoesNotExist(id: id))
                             return
                         }
-                        let imageData = image.jpegData(compressionQuality: 1.0)
+                        let imageData = image.jpegData(compressionQuality: 0.5)
                         do {
                             try imageData?.write(to: url)
                             attachment.localURL = url

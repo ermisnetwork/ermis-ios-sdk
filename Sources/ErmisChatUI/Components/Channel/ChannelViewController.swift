@@ -183,7 +183,7 @@ open class ChannelViewController: _ViewController,
 
     private lazy var attachmentSaver = channelController.client.attachmentSaver(presentingFrom: self)
 
-    private lazy var cancelBags: Set<AnyCancellable> = []
+    public lazy var cancelBags: Set<AnyCancellable> = []
 
     // MARK: - Setup
     override open func setUp() {
@@ -276,6 +276,7 @@ open class ChannelViewController: _ViewController,
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
                 self?.setOngoingCallViewHidden(true)
+                self?.ongoingCallViewDidTapped()
             }
             .store(in: &cancelBags)
 
@@ -287,6 +288,7 @@ open class ChannelViewController: _ViewController,
                     return
                 }
                 self?.setOngoingCallViewHidden(true)
+                self?.callDidEnded(callId)
             }
             .store(in: &cancelBags)
     }
@@ -623,6 +625,15 @@ open class ChannelViewController: _ViewController,
                 self?.topicClosedView.isEnable = true
             }
         }
+    }
+
+    // MARK: - Call
+    open func ongoingCallViewDidTapped() {
+
+    }
+
+    open func callDidEnded(_ callId: String) {
+
     }
 
     // MARK: - MessageListViewControllerDataSource

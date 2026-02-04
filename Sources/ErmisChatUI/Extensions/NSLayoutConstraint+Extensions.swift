@@ -16,7 +16,7 @@ extension UILayoutPriority {
     static let ermisLow = UILayoutPriority.defaultLow + 10
 }
 
-extension NSLayoutConstraint {
+public extension NSLayoutConstraint {
     /// Changes the priority of `self` to the provided one.
     /// - Parameter priority: The priority to be applied.
     /// - Returns: `self` with updated `priority`.

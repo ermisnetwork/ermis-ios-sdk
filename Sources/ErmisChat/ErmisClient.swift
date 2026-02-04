@@ -722,7 +722,8 @@ public class ErmisClient {
                     action: CallAction,
                     isVideo: Bool,
                     signalType: SignalType? = nil,
-                    sdp: String? = nil) async throws -> CallSignalRequestPayload {
+                    sdp: String? = nil,
+                    metadata: Metadata?) async throws -> CallSignalRequestPayload {
         var signal: CallSignal?
         if let signalType, let sdp {
             signal = CallSignal(type: signalType, sdp: sdp)
@@ -732,22 +733,20 @@ public class ErmisClient {
                                          cid: cid,
                                          action: action,
                                          isVideo: isVideo,
-                                         signal: signal)
-        return  try await self.callRepository.sendSignal(body: body)
+                                         signal: signal,
+                                         metadata: metadata)
+        return try await self.callRepository.sendSignal(body: body)
     }
 
-    public func handelPushKitPayload(_ payload: [AnyHashable: Any],
-                                     completion: (Result<CallSignalEvent, Error>) -> Void) {
+    public func handelPushKitPayload(_ payload: [AnyHashable: Any]) throws -> CallSignalEvent {
         guard let dataPayload = payload["data"] as? String,
               let data = try? dataPayload.data(using: .utf8),
               let callSignalEventDTO = try? EventDecoder().decode(from: data) as? CallSignalEventDTO else {
-            completion(.failure(ClientError.Unexpected()))
-            return
+            throw ClientError.Unexpected("Precondition failed")
         }
 
         guard let channel = try? databaseContainer.backgroundReadOnlyContext.channel(cid: callSignalEventDTO.cid)?.asModel() else {
-            completion(.failure(ClientError.ChannelDoesNotExist(cid: callSignalEventDTO.cid)))
-            return
+            throw ClientError.ChannelDoesNotExist(cid: callSignalEventDTO.cid)
         }
 
         let callSignalEvent = CallSignalEvent(userId: callSignalEventDTO.userId,
@@ -757,8 +756,9 @@ public class ErmisClient {
                                               callAction: callSignalEventDTO.callAction,
                                               isVideo: callSignalEventDTO.isVideo,
                                               signal: callSignalEventDTO.signal,
-                                              createdAt: callSignalEventDTO.createdAt)
-        completion(.success(callSignalEvent))
+                                              createdAt: callSignalEventDTO.createdAt,
+                                              metadata: callSignalEventDTO.metadata)
+        return callSignalEvent
     }
 }
 

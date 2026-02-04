@@ -175,7 +175,7 @@
 "message.call.receiver-busy" = "Người nhận bận";
 /// Show as a title in the call view when the outgoing audio/video call is end;
 "message.call.outgoing-audio-call" = "Cuộc gọi thoại đi";
-"message.call.outgoing-video-call" = "C uộc gọi video đi";
+"message.call.outgoing-video-call" = "Cuộc gọi video đi";
 /// Show as a title in the call view when the incoming audio/video call is end;
 "message.call.incoming-audio-call" = "Cuộc gọi thoại đến";
 "message.call.incoming-video-call" = "Cuộc gọi video đến";
