@@ -1480,7 +1480,7 @@ private extension ChannelController {
                     for: cid,
                     pageSize: pageSize,
                     sortAscending: sortAscending,
-                    deletedMessagesVisibility: deletedMessageVisibility ?? .visibleForCurrentUser,
+                    deletedMessagesVisibility: deletedMessageVisibility ?? .alwaysHidden,
                     shouldShowShadowedMessages: shouldShowShadowedMessages ?? false
                 ),
                 itemCreator: { try $0.asModel() as ChatMessage }

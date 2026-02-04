@@ -147,6 +147,10 @@ open class MessageActionsViewController: _ViewController, UIProvider {
                 actions.append(deleteActionItem())
             }
 
+            if canDeleteOwnMessage {
+                actions.append(deleteForMeActionItem())
+            }
+
             if let channelConfig = channelConfig,
                channelConfig.mutesEnabled && !message.isSentByCurrentUser {
                 let isMuted = currentUser.mutedUsers.map(\.id).contains(message.author.id)
@@ -198,7 +202,25 @@ open class MessageActionsViewController: _ViewController, UIProvider {
                 self.alertsRouter.showMessageDeletionConfirmationAlert { confirmed in
                     guard confirmed else { return }
 
-                    self.messageController.deleteMessage { _ in
+                    self.messageController.deleteMessage(onlyForMe: false) { _ in
+                        self.delegate?.messageActionsVCDidFinish(self)
+                    }
+                }
+            },
+            theme: theme
+        )
+    }
+
+    /// Returns `deleteForMeActionItem` for delete action
+    open func deleteForMeActionItem() -> MessageActionItem {
+        DeleteActionItem(
+            title: L10n.Message.Actions.deleteForMe,
+            action: { [weak self] _ in
+                guard let self = self else { return }
+                self.alertsRouter.showMessageDeletionConfirmationAlert { confirmed in
+                    guard confirmed else { return }
+
+                    self.messageController.deleteMessage(onlyForMe: true) { _ in
                         self.delegate?.messageActionsVCDidFinish(self)
                     }
                 }

@@ -522,6 +522,10 @@ extension DatabaseSession {
             delete(message: savedMessage)
         }
 
+        if payload.eventType == .messageDeletedForMe {
+            delete(message: savedMessage)
+        }
+
         let isNewMessage = payload.eventType == .messageNew || payload.eventType == .notificationMessageNew
         let isThreadReply = savedMessage.parentMessageId != nil
         if isNewMessage && isThreadReply {
@@ -550,7 +554,12 @@ extension DatabaseSession {
                 channelDTO.previewMessage = newPreview
                 channelDTO.lastMessageAt = updatedMessageCreatedAt.bridgeDate
             }
-        case .messageDeleted where channelDTO.previewMessage?.id == payload.message?.id:
+        case .messageDeleted where (channelDTO.previewMessage == nil || channelDTO.previewMessage?.id == payload.message?.id):
+            let newPreview = preview(for: cid)
+            channelDTO.previewMessage = newPreview
+            channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt
+
+        case .messageDeletedForMe where (channelDTO.previewMessage == nil || channelDTO.previewMessage?.id == payload.message?.id):
             let newPreview = preview(for: cid)
             channelDTO.previewMessage = newPreview
             channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt

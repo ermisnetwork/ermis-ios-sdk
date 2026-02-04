@@ -632,7 +632,7 @@ open class MessageListViewController: _ViewController,
             DeleteActionItem(
                 title: L10n.Message.Moderation.delete,
                 action: { _ in
-                    messageController.deleteMessage(completion: { [weak self] error in
+                    messageController.deleteMessage(onlyForMe: false, completion: { [weak self] error in
                         if let self = self, error == nil {
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: {
                                 self.listView.reloadData()

@@ -22,12 +22,16 @@ extension Endpoint {
     /// - Parameters:
     ///   - message: The `ChatMessage` instance to delete.
     ///   - cid: The channel identifier.
+    ///   - onlyForMe: The `Boolean` value, true if delete only for me, otherwhise delete for all users.
     /// - Returns: The endpoint to delete message in a channel.
-    static func deleteMessage(message: ChatMessage, cid: ChannelId) -> Endpoint<MessagePayload.Boxed> {
+    static func deleteMessage(message: ChatMessage, cid: ChannelId, onlyForMe: Bool) -> Endpoint<MessagePayload.Boxed> {
 
         .init(
             path: .deleteMessage(message.id, cid),
             method: .delete,
+            query: [
+                "for_me": onlyForMe ? "true" : "false"
+            ],
             body: UpdateMessageRequestBody(chatMessage: message)
         )
     }

@@ -833,15 +833,15 @@ func editMessage(
 To delete an existing message, you need to call `deleteMessage` function in `MessageController`:
 
 ```swift
-public func deleteMessage(hard: Bool = false, completion: ((Error?) -> Void)? = nil)
+public func deleteMessage(onlyForMe: Bool, completion: ((Error?) -> Void)? = nil)
 ```
 
 **Parameters:**
 
-|  **Name**  |      **Type**      | **Required** | **Description**                                                                                                |
-|:----------:|:------------------:|:------------:|----------------------------------------------------------------------------------------------------------------|
-|    hard    |       `Bool`       |     false    | A Boolean value to determine if the message will be delete permanently on the backend. By default it is false. |
-| completion | `(Error?) -> Void` |     false    | Called when the API call is finished. Called with `Error` if failed.                                           |
+|  **Name**    |      **Type**      | **Required** | **Description**                                                                               |
+|:----------:  |:------------------:|:------------:|-----------------------------------------------------------------------------------------------|
+|  onlyForMe   |       `Bool`       |     false    | A Boolean value to determine if the message will be delete for current user or for all users. |
+|  completion  | `(Error?) -> Void` |     false    | Called when the API call is finished. Called with `Error` if failed.                          |
 
 #### 5. Search messages
 
@@ -962,6 +962,7 @@ A full list of events is shown below. The next section of the documentation expl
 | `message.new` | when a new message is added on a channel | clients watching the channel
 | `message.read` | when a channel is marked as read | clients watching the channel
 | `message.deleted` | when a message is deleted | clients watching the channel
+| `message.deleted_for_me` | when a message is deleted for only current user. | only current user.
 | `message.updated` | when a message is updated | clients watching the channel
 | `typing.start` | when a user starts typing | clients watching the channel
 | `typing.stop` | when a user stops typing | clients watching the channel

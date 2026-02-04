@@ -246,6 +246,42 @@ class MessageDeletedEventDTO: EventDTO {
     }
 }
 
+class MessageDeletedForMeEventDTO: EventDTO {
+    let user: UserPayload?
+    let cid: ChannelId
+    let parentCid: ChannelId?
+    let message: MessagePayload
+    let createdAt: Date
+    let payload: EventPayload
+    let hardDelete: Bool
+
+    init(from response: EventPayload) throws {
+        user = try? response.value(at: \.user)
+        cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
+        message = try response.value(at: \.message)
+        createdAt = try response.value(at: \.createdAt)
+        payload = response
+        hardDelete = true
+    }
+
+    func toDomainEvent(session: DatabaseSession) -> Event? {
+        guard
+            let messageDTO = session.message(id: message.id),
+            let channelDTO = session.channel(cid: cid),
+            let userDTO = user.flatMap({ session.user(id: $0.id, projectId: cid.projectId) })
+        else { return nil }
+
+        return try? MessageDeletedEvent(
+            user: userDTO.asModel(),
+            channel: channelDTO.asModel(),
+            message: messageDTO.asModel(),
+            createdAt: createdAt,
+            isHardDelete: hardDelete
+        )
+    }
+}
+
 /// `ChannelReadEvent`, this event tells that User has mark read all messages in channel.
 public typealias ChannelReadEvent = MessageReadEvent
 

@@ -117,7 +117,9 @@
 /// Shown as a text in the popup when forwarding message failure.
 "message.actions.forward.failure-title" = "Unable to forward the message. Please try again.";
 /// Shown in the message actions popup for the delete message action.
-"message.actions.delete" = "Delete";
+"message.actions.delete" = "Delete Message";
+/// Shown in the message actions popup for the delete message for me action.
+"message.actions.delete-for-me" = "Delete Message For Me";
 /// Shown as a title in the confirmation popup when deleting a message.
 "message.actions.delete.confirmation-title" = "Delete Message";
 /// Shown as a text in the confirmation popup when deleting a message.

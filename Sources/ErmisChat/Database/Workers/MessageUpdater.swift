@@ -48,8 +48,9 @@ class MessageUpdater: Worker {
     ///
     /// - Parameters:
     ///   - messageId: The message identifier.
+    ///   - onlyForMe: The `Boolean` value, true if delete only for me, otherwhise delete for all users.
     ///   - completion: The completion. Will be called with an error if smth goes wrong, otherwise - will be called with `nil`.
-    func deleteMessage(message: ChatMessage, cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
+    func deleteMessage(message: ChatMessage, cid: ChannelId, onlyForMe: Bool, completion: ((Error?) -> Void)? = nil) {
         var shouldDeleteOnBackend = true
 
         database.write({ session in
@@ -83,7 +84,7 @@ class MessageUpdater: Worker {
                 completion?(error)
                 return
             }
-            apiClient?.request(endpoint: .deleteMessage(message: message, cid: cid)) { result in
+            apiClient?.request(endpoint: .deleteMessage(message: message, cid: cid, onlyForMe: onlyForMe)) { result in
                 switch result {
                 case let .success(response):
                     repository?.saveSuccessfullyDeletedMessage(message: response.message, completion: completion)

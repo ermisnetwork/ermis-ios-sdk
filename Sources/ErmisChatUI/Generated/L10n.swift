@@ -383,8 +383,10 @@ public enum L10n {
     public enum Actions {
       /// Copy
       public static var copy: String { L10n.tr("Localizable", "message.actions.copy") }
-      /// Delete
+      /// Delete Message
       public static var delete: String { L10n.tr("Localizable", "message.actions.delete") }
+      /// Delete Message For Me
+      public static var deleteForMe: String { L10n.tr("Localizable", "message.actions.delete-for-me") }
       /// Download
       public static var download: String { L10n.tr("Localizable", "message.actions.download") }
       /// Edit

@@ -139,7 +139,7 @@ public struct ErmisClientConfig {
 
     /// Specifies the visibility of deleted messages.
     /// By default, all deleted messages are visible with their content hidden.
-    public var deletedMessagesVisibility: DeletedMessageVisibility = .alwaysVisible
+    public var deletedMessagesVisibility: DeletedMessageVisibility = .alwaysHidden
 
     /// Specifies whether `shadowed` messages should be shown in Message list.
     public var shouldShowShadowedMessages = false

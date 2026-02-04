@@ -145,7 +145,9 @@ class MessageRepository {
 
     func saveSuccessfullyDeletedMessage(message: MessagePayload, completion: ((Error?) -> Void)? = nil) {
         database.write({ session in
-            guard let messageDTO = session.message(id: message.id), let cid = messageDTO.channel?.cid else { return }
+            guard let messageDTO = session.message(id: message.id), let cid = messageDTO.channel?.cid else {
+                return
+            }
             session.delete(message: messageDTO)
         }, completion: {
             completion?($0)
