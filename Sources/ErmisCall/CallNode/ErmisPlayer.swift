@@ -105,7 +105,7 @@ public class ErmisPlayer: AppLifecycleObserver {
     }
 
     func stop() {
-        isPlaying = false
+//        isPlaying = false
 
         videoQueue.async { [weak self] in
             guard let self = self else { return }

@@ -387,7 +387,7 @@ class APIClient {
 //                subsystems: .httpRequests
 //            )
             
-            print("CURL: \(urlRequest.cURL())")
+//            print("CURL: \(urlRequest.cURL())")
 
             log.debug("[APIClient] Starting request: \(endpoint.method.rawValue) \(endpoint.path)", subsystems: .httpRequests)
 
@@ -406,7 +406,7 @@ class APIClient {
                         response: response,
                         error: error
                     )
-                    log.debug("[APIClient] Successfully decoded response for \(endpoint.path)", subsystems: .httpRequests)
+//                    log.debug("[APIClient] Successfully decoded response for \(endpoint.path)", subsystems: .httpRequests)
                     completion(.success(decodedResponse))
                 } catch {
                     log.debug("[APIClient] Failed to decode response for \(endpoint.path): \(error)", subsystems: .httpRequests)
