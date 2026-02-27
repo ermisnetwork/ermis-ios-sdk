@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// Makes user-related calls to the backend and updates the local storage with the results.
 class UserUpdater: Worker {

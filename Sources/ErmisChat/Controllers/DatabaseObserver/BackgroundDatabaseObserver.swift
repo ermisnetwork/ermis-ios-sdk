@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 class BackgroundDatabaseObserver<Item, DTO: NSManagedObject> {
     /// Called with the aggregated changes after the internal `NSFetchResultsController` calls `controllerWillChangeContent`

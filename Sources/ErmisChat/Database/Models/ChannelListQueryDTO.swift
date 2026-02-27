@@ -3,6 +3,7 @@
 //
 
 import CoreData
+import ErmisShared
 
 @objc(ChannelListQueryDTO)
 class ChannelListQueryDTO: NSManagedObject {

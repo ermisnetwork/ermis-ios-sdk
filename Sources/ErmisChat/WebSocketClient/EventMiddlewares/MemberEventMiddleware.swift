@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// The middleware listens for `MemberEvent`s and updates `ChannelDTO`s accordingly.
 struct MemberEventMiddleware: EventMiddleware {

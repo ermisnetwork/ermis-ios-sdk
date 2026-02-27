@@ -90,7 +90,7 @@ public class MessageSearchController: DataController, DelegateCallable, DataStor
 
     private func setMessagesObserver() {
         let observer = ListDatabaseObserverWrapper(
-            isBackground: ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            isBackground: ErmisRuntimeCheck.isBackgroundMappingEnabled,
             database: client.databaseContainer,
             fetchRequest: MessageDTO.messagesFetchRequest(
                 for: lastQuery ?? query

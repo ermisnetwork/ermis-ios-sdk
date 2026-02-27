@@ -3,6 +3,7 @@
 //
 
 import CoreData
+import ErmisShared
 
 /// After creating new user it's not observed cause it's not linked to any UserListQuery.
 /// The only job of `NewUserQueryUpdater` is to find whether new user belongs to any of the exsisting queries

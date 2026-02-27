@@ -3,6 +3,7 @@
 //
 
 import CoreData
+import ErmisShared
 
 /// Makes a users query call to the backend and updates the local storage with the results.
 class UserListUpdater: Worker {

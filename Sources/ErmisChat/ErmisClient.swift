@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 /// The root object representing a Ermis Chat.
 ///
@@ -599,6 +600,11 @@ public class ErmisClient {
         }
     }
 
+    // MARK: - Signal
+    public func sendSignal(body: CallSignalRequestBody) async throws -> CallSignalRequestPayload {
+        try await callRepository.sendSignal(body: body)
+    }
+
     // TODO: - Break wallet to another target
     // MARK: - Wallet
 
@@ -721,19 +727,13 @@ public class ErmisClient {
                     cid: ChannelId,
                     action: CallAction,
                     isVideo: Bool,
-                    signalType: SignalType? = nil,
                     sdp: String? = nil,
                     metadata: Metadata?) async throws -> CallSignalRequestPayload {
-        var signal: CallSignal?
-        if let signalType, let sdp {
-            signal = CallSignal(type: signalType, sdp: sdp)
-        }
         let body = CallSignalRequestBody(sessionId: sessionId ?? "",
                                          callId: callId,
                                          cid: cid,
                                          action: action,
                                          isVideo: isVideo,
-                                         signal: signal,
                                          metadata: metadata)
         return try await self.callRepository.sendSignal(body: body)
     }
@@ -755,7 +755,6 @@ public class ErmisClient {
                                               channel: channel,
                                               callAction: callSignalEventDTO.callAction,
                                               isVideo: callSignalEventDTO.isVideo,
-                                              signal: callSignalEventDTO.signal,
                                               createdAt: callSignalEventDTO.createdAt,
                                               metadata: callSignalEventDTO.metadata)
         return callSignalEvent

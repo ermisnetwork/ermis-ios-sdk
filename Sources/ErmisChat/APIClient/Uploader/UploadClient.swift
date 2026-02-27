@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// An uploaded file model.
 public struct UploadedFile: Decodable {

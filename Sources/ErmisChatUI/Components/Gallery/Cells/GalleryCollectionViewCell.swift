@@ -4,9 +4,10 @@
 
 import ErmisChat
 import UIKit
+import ErmisSharedUI
 
 /// `UICollectionViewCell` for a gallery item.
-open class GalleryCollectionViewCell: _CollectionViewCell, UIScrollViewDelegate, ComponentsProvider {
+open class GalleryCollectionViewCell: _CollectionViewCell, UIScrollViewDelegate, SharedComponentsProvider, ComponentsProvider {
     /// Triggered when the scroll view is single tapped.
     open var didTapOnce: (() -> Void)?
 

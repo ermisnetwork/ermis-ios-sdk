@@ -4,6 +4,7 @@
 
 import UIKit
 import Combine
+import ErmisSharedUI
 
 public enum AvatarStyle {
     case circular
@@ -11,8 +12,7 @@ public enum AvatarStyle {
 }
 
 /// A view that displays the avatar image. By default a circular image.
-open class AvatarView: _ImageView, ComponentsProvider, RemoteImageDisplayable {
-
+open class AvatarView: _ImageView, SharedComponentsProvider, RemoteImageDisplayable {
     public var imageView: UIImageView {
         return self
     }

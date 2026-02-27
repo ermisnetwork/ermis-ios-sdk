@@ -3,6 +3,7 @@
 //
 
 import ErmisChat
+import ErmisSharedUI
 import UIKit
 
 /// `UICollectionViewCell` for an image item.

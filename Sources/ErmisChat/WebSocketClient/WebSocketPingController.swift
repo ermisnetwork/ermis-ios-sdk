@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// A delegate to control `WebSocketClient` connection by `WebSocketPingController`.
 protocol WebSocketPingControllerDelegate: AnyObject {

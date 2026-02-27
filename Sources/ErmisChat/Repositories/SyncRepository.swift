@@ -3,7 +3,7 @@
 //
 
 import Foundation
-
+import ErmisShared
 
 
 /// This class is in charge of the synchronization of our local storage with the remote.

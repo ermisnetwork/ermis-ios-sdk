@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// The protocol which creating a `URLRequest`, and encoding all required and `Endpoint` specific data to it.
 protocol RequestEncoder {

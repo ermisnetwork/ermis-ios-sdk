@@ -4,6 +4,7 @@
 
 import AVFoundation
 import Foundation
+import ErmisShared
 
 /// A protocol describing an object that can be manage the playback of an audio file or stream.
 public protocol AudioPlaying: AnyObject {

@@ -5,6 +5,7 @@
 import Foundation
 import Combine
 import EventSource
+import ErmisShared
 
 
 /// An object which making api request to Ermis Chat servers.

@@ -3,6 +3,7 @@
 //
 
 import CoreData
+import ErmisShared
 
 /// Makes a channels query call to the backend and updates the local storage with the results.
 class ChannelListUpdater: Worker {

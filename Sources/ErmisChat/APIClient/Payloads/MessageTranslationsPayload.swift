@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 public struct MessageTranslationsPayload: Decodable {
     private static let translatedSuffix = "_text"

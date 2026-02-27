@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 public extension ErmisClient {
     /// Creates a new `EventsController` that can be used for event listening.

@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 /// Makes it possible to lazily evaluate properties of `NSManagedObject`s.
 ///
@@ -34,7 +35,7 @@ class CoreDataLazy<T> {
     var wrappedValue: T {
         /// When background mapping is enabled, there is no need to use the `_cached`, as this one adds performance degradation
         /// due to the lock mechanism it internally uses.
-        if ErmisRuntimeCheck._isBackgroundMappingEnabled, let value = value {
+        if ErmisRuntimeCheck.isBackgroundMappingEnabled, let value = value {
             return value
         }
 
@@ -85,7 +86,7 @@ class CoreDataLazy<T> {
         set {
             computeValue = newValue.0
             context = newValue.1
-            if ErmisRuntimeCheck._isBackgroundMappingEnabled {
+            if ErmisRuntimeCheck.isBackgroundMappingEnabled {
                 value = computeValue()
             } else {
                 persistentStoreIdentifier = context?.persistentStoreCoordinator?.persistentStores.first?.identifier

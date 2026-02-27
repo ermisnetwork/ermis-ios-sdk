@@ -3,7 +3,7 @@
 //
 
 import Foundation
-
+import ErmisShared
 /// A configuration object used to configure a `ErmisClient` instance.
 ///
 /// The default configuration can be changed the following way:

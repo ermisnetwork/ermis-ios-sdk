@@ -4,6 +4,7 @@
 
 import Foundation
 import UIKit
+import ErmisShared
 
 class ConnectionRepository {
     private let connectionQueue: DispatchQueue = DispatchQueue(label: "network.ermis.connection-repository", attributes: .concurrent)

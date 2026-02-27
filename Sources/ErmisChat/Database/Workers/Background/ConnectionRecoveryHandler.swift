@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 /// The type that keeps track of active chat components and asks them to reconnect when it's needed
 protocol ConnectionRecoveryHandler: ConnectionStateDelegate {}

@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// A factory component to help build all `ErmisClient` dependencies.
 class ErmisClientFactory {

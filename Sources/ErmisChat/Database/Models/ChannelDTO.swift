@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 @objc(ChannelDTO)
 class ChannelDTO: NSManagedObject {
@@ -561,7 +562,7 @@ extension ChannelDTO {
 extension Channel {
     /// Create a ChannelModel struct from its DTO
     fileprivate static func create(fromDTO dto: ChannelDTO, depth: Int) throws -> Channel {
-        guard ErmisRuntimeCheck._canFetchRelationship(currentDepth: depth) else {
+        guard ErmisRuntimeCheck.canFetchRelationship(currentDepth: depth) else {
             throw RecursionLimitError()
         }
         guard let cid = try? ChannelId(cid: dto.cid), let context = dto.managedObjectContext else {

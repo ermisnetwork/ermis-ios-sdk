@@ -98,7 +98,7 @@ extension MessageGalleryView {
                 loadingIndicator.isVisible = false
             } else {
                 loadingIndicator.isVisible = true
-                imageTask = components.imageLoader.loadImage(
+                imageTask = sharedComponents.imageLoader.loadImage(
                     into: imageView,
                     from: attachment?.payload,
                     maxResolutionInPixels: components.imageAttachmentMaxPixels

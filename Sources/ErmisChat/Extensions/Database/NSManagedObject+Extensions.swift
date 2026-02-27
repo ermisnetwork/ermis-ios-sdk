@@ -3,6 +3,7 @@
 //
 
 import CoreData
+import ErmisShared
 
 extension NSManagedObject {
     @objc class var entityName: String {

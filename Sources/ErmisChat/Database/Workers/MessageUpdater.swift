@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 /// The type provides the API for getting/editing/deleting a message
 class MessageUpdater: Worker {

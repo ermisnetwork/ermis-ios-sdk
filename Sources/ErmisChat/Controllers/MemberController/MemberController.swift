@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 public extension ErmisClient {
     /// Creates a new `ChannelMemberController` for the user with the provided `userId` and `cid`.
@@ -129,7 +130,7 @@ public class ChannelMemberController: DataController, DelegateCallable, DataStor
 
     private func createMemberObserver() -> EntityDatabaseObserverWrapper<ChannelMember, MemberDTO> {
         environment.memberObserverBuilder(
-            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            ErmisRuntimeCheck.isBackgroundMappingEnabled,
             client.databaseContainer,
             MemberDTO.member(userId, in: cid),
             { try $0.asModel() },

@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// The protocol which decoding incoming URL request response.
 protocol RequestDecoder {

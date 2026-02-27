@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 @objc(ChannelReadDTO)
 class ChannelReadDTO: NSManagedObject {

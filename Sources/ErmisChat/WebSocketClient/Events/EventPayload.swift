@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 // MARK: - Temporary
 
@@ -78,7 +79,6 @@ class EventPayload: Decodable {
     let sessionId: String?
     let callId: String?
     let isVideo: Bool?
-    let signal: CallSignal?
     let callAction: CallAction?
     let metadata: Metadata?
     init(
@@ -114,7 +114,6 @@ class EventPayload: Decodable {
         sessionId: String? = nil,
         callId: String? = nil,
         isVideo: Bool? = nil,
-        signal: CallSignal? = nil,
         callAction: CallAction? = nil,
         metadata: Metadata? = nil
     ) {
@@ -148,7 +147,6 @@ class EventPayload: Decodable {
         self.sessionId = sessionId
         self.callId = callId
         self.isVideo = isVideo
-        self.signal = signal
         self.callAction = callAction
         self.channelType = channelType
         self.channelId = channelId
@@ -187,7 +185,6 @@ class EventPayload: Decodable {
         sessionId = try container.decodeIfPresent(String.self, forKey: .sessionId)
         callId = try container.decodeIfPresent(String.self, forKey: .callId)
         isVideo = try container.decodeIfPresent(Bool.self, forKey: .isVideo)
-        signal = try container.decodeIfPresent(CallSignal.self, forKey: .signal)
         callAction = try container.decodeIfPresent(CallAction.self, forKey: .callAction)
         parentCid = try container.decodeIfPresent(ChannelId.self, forKey: .parentCid)
         topicCids = try container.decodeIfPresent([ChannelId].self, forKey: .topicCids)
@@ -229,7 +226,6 @@ private extension PartialKeyPath where Root == EventPayload {
         case \EventPayload.parentId: return "parentId"
         case \EventPayload.hardDelete: return "hardDelete"
         case \EventPayload.shadow: return "shadow"
-        case \EventPayload.signal: return "signal"
         case \EventPayload.callAction: return "action"
         default: return String(describing: self)
         }

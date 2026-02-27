@@ -3,6 +3,7 @@
 //
 
 import CoreData
+import ErmisShared
 
 @objc(UserListQueryDTO)
 class UserListQueryDTO: NSManagedObject {

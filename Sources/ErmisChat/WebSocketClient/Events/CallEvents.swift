@@ -3,47 +3,6 @@
 //
 
 import Foundation
-
-public
-class CallSignalEventDTO: EventDTO {
-    public let userId:String?
-    public let sessionId: String
-    public let callId: String
-    public let cid: ChannelId
-    public let callAction: CallAction
-    public let isVideo: Bool?
-    public let signal: CallSignal?
-    public let createdAt: Date
-    public let metadata: Metadata?
-    let payload: EventPayload
-
-    init(from response: EventPayload) throws {
-        userId = try? response.value(at: \.userId)
-        sessionId = try response.value(at: \.sessionId)
-        callId = try response.value(at: \.callId)
-        cid = try response.value(at: \.cid)
-        callAction = try response.value(at: \.callAction)
-        isVideo = try? response.value(at: \.isVideo)
-        signal = try? response.value(at: \.signal)
-        createdAt = try response.value(at: \.createdAt)
-        metadata = try? response.value(at: \.metadata)
-        payload = response
-    }
-
-    func toDomainEvent(session: any DatabaseSession) -> (any Event)? {
-        guard let channelDTO = session.channel(cid: cid) else { return nil }
-        return try? CallSignalEvent(userId: userId,
-                                    sessionId: sessionId,
-                                    callId: callId,
-                                    channel: channelDTO.asModel(),
-                                    callAction: callAction,
-                                    isVideo: isVideo,
-                                    signal: signal,
-                                    createdAt: createdAt, metadata: metadata)
-    }
-}
-
-
 /// Triggered when a received a call signal.
 public struct CallSignalEvent: Event, Encodable {
     public let userId: String?
@@ -59,12 +18,21 @@ public struct CallSignalEvent: Event, Encodable {
     public let callAction: CallAction
     /// The type of the call. `true` is call is Video call.
     public let isVideo: Bool?
-    /// The call signal of the event.
-    public let signal: CallSignal?
     /// The event timestamp.
     public let createdAt: Date
 
     public let metadata: Metadata?
+
+    public init(userId: String?, sessionId: String, callId: String, channel: Channel, callAction: CallAction, isVideo: Bool?, createdAt: Date, metadata: Metadata?) {
+        self.userId = userId
+        self.sessionId = sessionId
+        self.callId = callId
+        self.channel = channel
+        self.callAction = callAction
+        self.isVideo = isVideo
+        self.createdAt = createdAt
+        self.metadata = metadata
+    }
 
     public func encode(to encoder: any Encoder) throws {
         typealias CodingKeys = EventPayload.CodingKeys
@@ -74,7 +42,6 @@ public struct CallSignalEvent: Event, Encodable {
         try container.encode(cid, forKey: .cid)
         try container.encode(callAction, forKey: .callAction)
         try container.encode(isVideo, forKey: .isVideo)
-        try container.encode(signal, forKey: .signal)
         try container.encode(createdAt, forKey: .createdAt)
         try container.encode("signal", forKey: .eventType)
         try container.encode(metadata, forKey: .metadata)

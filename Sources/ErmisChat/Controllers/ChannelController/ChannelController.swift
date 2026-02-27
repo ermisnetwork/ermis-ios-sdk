@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 /// `ChannelController` is a controller class which allows mutating and observing changes of a specific channel.
 ///
@@ -1399,7 +1400,7 @@ private extension ChannelController {
             }
             
             let observer = EntityDatabaseObserverWrapper(
-                isBackground: ErmisRuntimeCheck._isBackgroundMappingEnabled,
+                isBackground: ErmisRuntimeCheck.isBackgroundMappingEnabled,
                 database: self.client.databaseContainer,
                 fetchRequest: ChannelDTO.fetchRequest(for: cid),
                 itemCreator: { try $0.asModel() as Channel }
@@ -1435,7 +1436,7 @@ private extension ChannelController {
             guard let cid = self.cid else { return nil }
             
             let observer = ListDatabaseObserverWrapper(
-                isBackground: ErmisRuntimeCheck._isBackgroundMappingEnabled,
+                isBackground: ErmisRuntimeCheck.isBackgroundMappingEnabled,
                 database: self.client.databaseContainer,
                 fetchRequest: ChannelDTO.fetchTopicRequest(for: cid),
                 itemCreator: { try $0.asModel() as Channel }
@@ -1474,7 +1475,7 @@ private extension ChannelController {
             
             let pageSize = channelQuery.pagination?.pageSize ?? .messagesPageSize
             let observer = ListDatabaseObserverWrapper(
-                isBackground: ErmisRuntimeCheck._isBackgroundMappingEnabled,
+                isBackground: ErmisRuntimeCheck.isBackgroundMappingEnabled,
                 database: client.databaseContainer,
                 fetchRequest: MessageDTO.messagesFetchRequest(
                     for: cid,
