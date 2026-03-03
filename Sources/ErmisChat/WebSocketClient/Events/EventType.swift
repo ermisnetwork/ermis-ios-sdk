@@ -48,6 +48,10 @@ public extension EventType {
     static let channelHidden: Self = "channel.hidden"
     /// When a channel is visible.
     static let channelVisible: Self = "channel.visible"
+    /// When a direct channel messages was deleted for me.
+    static let directChannelDeletedForMe: Self = "chat_dm.deleted_for_me"
+    /// When a direct channel messages was deleted.
+    static let directChannelDeleted: Self = "chat_dm.deleted_for_everyone"
     /// When a channel was truncated.
     static let channelTruncated: Self = "channel.truncate"
     /// When a channel was pinned
@@ -171,6 +175,8 @@ extension EventType {
         case .channelUpdated: return try ChannelUpdatedEventDTO(from: response)
         case .channelDeleted: return try ChannelDeletedEventDTO(from: response)
         case .channelHidden: return try ChannelHiddenEventDTO(from: response)
+        case .directChannelDeletedForMe: return try ChannelTruncatedEventDTO(from: response)
+        case .directChannelDeleted: return try ChannelTruncatedEventDTO(from: response)
         case .channelTruncated: return try ChannelTruncatedEventDTO(from: response)
         case .channelVisible: return try ChannelVisibleEventDTO(from: response)
         case .channelPinned: return try ChannelPinnedEventDTO(from: response)

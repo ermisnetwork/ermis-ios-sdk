@@ -934,10 +934,8 @@ open class ChannelViewController: _ViewController,
             let messageId = newMessageErrorEvent.messageId
             let error = newMessageErrorEvent.error
             guard let message = channelController.dataStore.message(id: messageId) else {
-                debugPrint("New Message Error: \(error) MessageId: \(messageId)")
                 return
             }
-            debugPrint("New Message Error: \(error) Message: \(message)")
         }
     }
 

@@ -152,8 +152,8 @@ class ChannelUpdater: Worker {
     /// - Parameters:
     ///   - cid: The channel identifier.
     ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
-    func deleteChannelMessages(cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
-        apiClient.request(endpoint: .truncatedChannel(cid: cid)) { [weak self] result in
+    func deleteChannelMessages(cid: ChannelId, forMe: Bool, completion: ((Error?) -> Void)? = nil) {
+        apiClient.request(endpoint: .truncatedChannel(cid: cid, forMe: forMe)) { [weak self] result in
             switch result {
             case .success:
                 self?.database.write {

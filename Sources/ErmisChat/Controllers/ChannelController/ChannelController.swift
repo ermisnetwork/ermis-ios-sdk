@@ -362,14 +362,14 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     /// - Parameters:
     ///   - completion: The completion. Will be called on a **callbackQueue** when the network request is finished.
     ///                 If request fails, the completion will be called with an error.
-    public func deleteChannelMessages(completion: ((Error?) -> Void)? = nil) {
+    public func deleteChannelMessages(forMe: Bool, completion: ((Error?) -> Void)? = nil) {
         /// Perform action only if channel is already created on backend side and have a valid `cid`.
         guard let cid = cid, isChannelAlreadyCreated else {
             channelModificationFailed(completion)
             return
         }
 
-        updater.deleteChannelMessages(cid: cid) { [weak self] error in
+        updater.deleteChannelMessages(cid: cid, forMe: forMe) { [weak self] error in
             self?.callback {
                 completion?(error)
             }

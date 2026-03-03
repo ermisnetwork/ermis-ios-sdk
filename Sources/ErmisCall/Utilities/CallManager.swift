@@ -672,8 +672,8 @@ public class CallManager: NSObject, CXProviderDelegate, CXCallObserverDelegate, 
         callUpdate.localizedCallerName = event.channel.name ??
         event.channel.directUserMembership?.name ??
         event.channel.cid.rawValue ?? "Unknown"
-        callUpdate.remoteHandle = CXHandle(type: .generic, value: callUUID.uuidString)
-        
+        callUpdate.remoteHandle = CXHandle(type: .generic, value: event.cid.rawValue)
+
         // Configure audio session BEFORE reporting (this is fast and synchronous)
         ErmisCallAudioManager.shared.configureAudioSession(isIncomingCall: true, isVideoCall: callUpdate.hasVideo)
         
@@ -709,11 +709,12 @@ public class CallManager: NSObject, CXProviderDelegate, CXCallObserverDelegate, 
         log.debug("[CallManager] reportOutgoingCallStarted(_:) called for callId: \(details.callId), uuid: \(details.uuid)", subsystems: .call)
 
         await call.setState(.starting)
-        
-        let uuid = await call.details.uuid
-        let isVideo = await call.details.isVideo
-        let title = await call.details.title
-        
+
+        let uuid = details.uuid
+        let isVideo = details.isVideo
+        let title = details.title
+        let cid = details.cid
+
         log.debug("[CallKit] Reporting outgoing call: \(uuid)", subsystems: .call)
         log.debug("[CallKit] Current call: \(callController.callObserver.calls)")
 
@@ -724,7 +725,7 @@ public class CallManager: NSObject, CXProviderDelegate, CXCallObserverDelegate, 
         }
         callKitState = .requestingStartCall
 
-        let handle = CXHandle(type: .generic, value: uuid.uuidString)
+        let handle = CXHandle(type: .generic, value: cid.rawValue)
         var startCallAction = CXStartCallAction(call: uuid, handle: handle)
         startCallAction.isVideo = isVideo
         startCallAction.contactIdentifier = title

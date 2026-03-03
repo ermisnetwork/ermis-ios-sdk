@@ -313,12 +313,15 @@ open class ChannelListViewController: _ViewController,
 
         isReloadingChannelList = true
         let newChannels = Array(controller.channels)
+        
         var snapshot = buildSnapshot(from: newChannels)
         snapshot.reconfigureItems(snapshot.itemIdentifiers)
+        
         dataSource?.apply(snapshot, animatingDifferences: true) { [weak self] in
             guard let self else {
                 return
             }
+            
             self.isReloadingChannelList = false
 
             if hasPendingReloadChannels {
@@ -584,6 +587,7 @@ open class ChannelListViewController: _ViewController,
             }
             return
         }
+        
         handleStateChanges(controller.state)
     }
 
@@ -685,7 +689,8 @@ extension Channel: Differentiable, Hashable, Equatable {
         cooldownDuration == source.cooldownDuration &&
         previewMessage == source.previewMessage &&
         composerUnsentContent == source.composerUnsentContent &&
-        topics == source.topics
+        topics == source.topics &&
+        topicsUnreadCount == source.topicsUnreadCount
     }
 
     public var differenceIdentifier: Int {

@@ -89,6 +89,19 @@ public struct LazyCachedMapCollection<Element>: RandomAccessCollection {
         self = LazyCachedMapCollection(self)
         cache.values.append(element)
     }
+
+    /// Invalidates the cache at the specified indices, forcing the elements to be regenerated on next access.
+    /// - Parameter indices: The indices of cached elements to invalidate.
+    public mutating func invalidateCache(at indices: [Index]) {
+        for index in indices where index >= 0 && index < cache.values.count {
+            cache.values[index] = nil
+        }
+    }
+
+    /// Invalidates the entire cache, forcing all elements to be regenerated on next access.
+    public mutating func invalidateAllCache() {
+        cache.values = ContiguousArray(repeating: nil, count: cache.values.count)
+    }
 }
 
 extension LazyCachedMapCollection: ExpressibleByArrayLiteral {

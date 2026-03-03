@@ -99,6 +99,8 @@ class ChannelDeletedEventDTO: EventDTO {
     }
 }
 
+
+
 /// Triggered when a channel is truncated.
 public struct ChannelTruncatedEvent: ChannelSpecificEvent {
     /// The identifier of truncated channel.
