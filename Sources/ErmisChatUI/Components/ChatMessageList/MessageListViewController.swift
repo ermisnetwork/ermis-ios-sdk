@@ -104,7 +104,7 @@ open class MessageListViewController: _ViewController,
         }
 
         guard let firstUnreadIndexPath = jumpToUnreadMessageIndexPath else {
-            return unreadCount.messages > 0
+            return unreadCount.messages > 0 && dataSource.numberOfMessages(in: self) > 0
         }
         return !isMessageVisible(at: firstUnreadIndexPath)
     }

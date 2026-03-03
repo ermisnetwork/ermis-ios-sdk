@@ -31,7 +31,7 @@ class APIClient {
     let downloader: Downloader
 
     /// Event source for SSE request.
-    lazy var eventSource = EventSource(timeoutInterval: 60)
+    lazy var eventSource = EventSource(mode: .default, timeoutIntervalForRequest: 60, timeoutIntervalForResource: 60)
 
     /// The `OperationQueue` which handling incoming requests
     private let operationQueue: OperationQueue = {
@@ -387,7 +387,7 @@ class APIClient {
 //                subsystems: .httpRequests
 //            )
             
-//            print("CURL: \(urlRequest.cURL())")
+            print("CURL: \(urlRequest.cURL())")
 
             log.debug("[APIClient] Starting request: \(endpoint.method.rawValue) \(endpoint.path)", subsystems: .httpRequests)
 

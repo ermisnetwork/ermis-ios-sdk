@@ -168,7 +168,7 @@ enum EndpointPath: Codable {
         case .deleteChannel(let payloadPath):
             return "channels/\(payloadPath)"
         case .truncatedChannel(channelId: let channelId):
-            return "channels/\(channelId.apiPath)/truncate"
+            return "channels/\(channelId.apiPath)/chat"
         case .channelUpdate(let payloadPath):
             return "channels/\(payloadPath)"
         case .muteChannel(let channelId):

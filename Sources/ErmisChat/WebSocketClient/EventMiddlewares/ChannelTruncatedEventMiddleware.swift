@@ -21,7 +21,17 @@ struct ChannelTruncatedEventMiddleware: EventMiddleware {
 
             channelDTO.truncatedAt = truncatedEvent.createdAt.bridgeDate
 
-            // Until BE returns valid values for user's read after truncation, we are clearing them.
+            // Clear all messages except local-only ones
+            channelDTO.cleanAllMessagesExcludingLocalOnly()
+
+            // Clear all read states for all users in this channel
+            channelDTO.reads.forEach { read in
+                read.lastReadMessageId = nil
+                read.lastReadAt = truncatedEvent.createdAt.bridgeDate ?? DBDate()
+                read.unreadMessageCount = 0
+            }
+            
+            // Also ensure the current user's read state is cleared
             if let userId = truncatedEvent.user?.id, let read = session.loadChannelRead(cid: cid, userId: userId) {
                 read.lastReadMessageId = nil
                 read.lastReadAt = truncatedEvent.createdAt.bridgeDate ?? DBDate()
@@ -30,7 +40,6 @@ struct ChannelTruncatedEventMiddleware: EventMiddleware {
         } catch {
             log.error("Failed to write the `truncatedAt` field update in the database, error: \(error)")
         }
-
         return event
     }
 }

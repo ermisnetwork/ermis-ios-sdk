@@ -569,7 +569,7 @@ extension DatabaseSession {
             channelDTO.previewMessage = newPreview
             channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt
 
-        case .channelTruncated:
+        case .directChannelDeleted, .directChannelDeletedForMe, .channelTruncated:
             // We're not using `preview(for: cid)` here because the channel
             // with updated `truncatedAt` is not saved to persistent store yet.
             //
@@ -586,6 +586,6 @@ extension DatabaseSession {
 
 private extension EventType {
     var shouldCreateMessageInDatabase: Bool {
-        [.channelUpdated, .messageNew, .notificationMessageNew, .channelTruncated].contains(self)
+        [.channelUpdated, .messageNew, .notificationMessageNew, .directChannelDeletedForMe, .directChannelDeleted, .channelTruncated].contains(self)
     }
 }

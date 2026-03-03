@@ -163,13 +163,31 @@ class ListDatabaseObserver<Item, DTO: NSManagedObject> {
     /// on its delegate.
     var onChange: (([ListChange<Item>]) -> Void)? {
         didSet {
-            changeAggregator.onDidChange = { [weak self] in
+            changeAggregator.onDidChange = { [weak self] changes in
                 // Ideally, this should rather be `unowned`, however, `deinit` is not always called on the same thread as this
                 // callback which can cause a race condition when the object is already being deinited on a different thread.
                 guard let self = self else { return }
 
+//                // Collect indices of items that were updated
+//                let updatedIndices = changes.compactMap { change -> Int? in
+//                    guard case .update(_, let indexPath) = change else { return nil }
+//                    return indexPath.row
+//                }
+//
+//                // If there are any updates, invalidate only those specific cache entries
+//                // Otherwise, reset the entire cache for insertions/deletions/moves
+//                if !updatedIndices.isEmpty && changes.allSatisfy({ $0.isUpdate }) {
+//                    // Only updates, invalidate specific cache entries
+//                    var items = self.items
+//                    items.invalidateCache(at: updatedIndices)
+//                    self._items.computeValue = { items }
+//                } else {
+//                    // Has insertions, deletions, or moves - need to rebuild the collection
+//                    self._items.reset()
+//                }
                 self._items.reset()
-                self.onChange?($0)
+
+                self.onChange?(changes)
             }
         }
     }

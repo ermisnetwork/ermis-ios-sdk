@@ -49,7 +49,22 @@ class ListDatabaseObserverWrapper<Item, DTO: NSManagedObject> {
     var onDidChange: (([ListChange<Item>]) -> Void)? {
         didSet {
             if isBackground {
-                background?.onDidChange = onDidChange
+                background?.onDidChange = { [weak self] changes in
+                    guard let self = self, let background = self.background else { return }
+                    
+                    // Check if changes contain only updates
+                    let hasOnlyUpdates = changes.allSatisfy { $0.isUpdate }
+                    
+                    if hasOnlyUpdates {
+                        // Only updates - invalidate specific cache entries
+                        background.invalidateCacheForUpdates(changes)
+                    } else {
+                        // Has insertions, deletions, or moves - reset entire cache
+                        background.resetCache()
+                    }
+                    
+                    self.onDidChange?(changes)
+                }
             } else {
                 foreground?.onChange = onDidChange
             }
@@ -96,8 +111,33 @@ class ListDatabaseObserverWrapper<Item, DTO: NSManagedObject> {
 }
 
 class BackgroundListDatabaseObserver<Item, DTO: NSManagedObject>: BackgroundDatabaseObserver<Item, DTO> {
+    private var cachedCollection: LazyCachedMapCollection<Item>?
+
     var items: LazyCachedMapCollection<Item> {
-        LazyCachedMapCollection(source: rawItems, map: { $0 }, context: nil)
+        if let cached = cachedCollection {
+            return cached
+        }
+        let collection = LazyCachedMapCollection(source: rawItems, map: { $0 }, context: nil)
+        cachedCollection = collection
+        return collection
+    }
+
+    /// Invalidates specific indices in the cached collection when items are updated
+    func invalidateCacheForUpdates(_ changes: [ListChange<Item>]) {
+        let updatedIndices = changes.compactMap { change -> Int? in
+            guard case .update(_, let indexPath) = change else { return nil }
+            return indexPath.row
+        }
+
+        if !updatedIndices.isEmpty, var collection = cachedCollection {
+            collection.invalidateCache(at: updatedIndices)
+            cachedCollection = collection
+        }
+    }
+
+    /// Clears the entire cached collection, forcing it to be rebuilt on next access
+    func resetCache() {
+        cachedCollection = nil
     }
 
     override init(

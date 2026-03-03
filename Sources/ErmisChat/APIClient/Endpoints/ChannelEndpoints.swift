@@ -89,9 +89,12 @@ extension Endpoint {
     /// - Parameters:
     ///   - cid: The identifier of channel.
     /// - Returns: The endpoint to delete  all messages of the channel.
-    static func truncatedChannel(cid: ChannelId) -> Endpoint<EmptyResponse> {
+    static func truncatedChannel(cid: ChannelId, forMe: Bool) -> Endpoint<EmptyResponse> {
         .init(path: .truncatedChannel(channelId: cid),
               method: .delete,
+              query: [
+                "for_me": forMe ? "true" : "false"
+              ],
               body: nil)
     }
 
