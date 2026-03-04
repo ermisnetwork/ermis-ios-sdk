@@ -164,6 +164,13 @@ public class RemoteNotificationHandler {
             return
         }
 
+        // If the main app is active and connected via WebSocket, it will receive and process this event
+        // through the WebSocket pipeline. No need to process event again, only get and show notification content.
+        if extensionLifecycle.isAppReceivingWebSocketEvents {
+            getContent(from: event, completion: completion)
+            return
+        }
+
         client.eventNotificationCenter.process(event) {
             getContent(from: event, completion: completion)
         }
