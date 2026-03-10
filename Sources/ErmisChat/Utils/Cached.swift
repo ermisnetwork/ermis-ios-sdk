@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// Works like a lazy variable but can be reset and the value is recomputed.
 ///

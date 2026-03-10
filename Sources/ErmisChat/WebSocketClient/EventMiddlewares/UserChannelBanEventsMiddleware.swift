@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// The middleware listens for `UserChannelBanEventMiddleware` events and updates `MemberDTO` accordingly.
 struct UserChannelBanEventsMiddleware: EventMiddleware {

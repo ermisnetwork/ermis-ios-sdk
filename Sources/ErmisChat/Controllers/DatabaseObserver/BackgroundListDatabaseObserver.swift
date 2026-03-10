@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 class ListDatabaseObserverWrapper<Item, DTO: NSManagedObject> {
     private var foreground: ListDatabaseObserver<Item, DTO>?

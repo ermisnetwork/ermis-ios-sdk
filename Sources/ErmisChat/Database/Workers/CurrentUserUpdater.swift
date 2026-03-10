@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 /// Updates current user data to the backend and updates local storage.
 class CurrentUserUpdater: Worker {

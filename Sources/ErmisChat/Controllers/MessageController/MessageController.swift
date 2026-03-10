@@ -711,7 +711,7 @@ private extension MessageController {
 
         let pageSize: Int = repliesPageSize
         let observer = environment.repliesObserverBuilder(
-            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            ErmisRuntimeCheck.isBackgroundMappingEnabled,
             client.databaseContainer,
             MessageDTO.repliesFetchRequest(
                 for: messageId,

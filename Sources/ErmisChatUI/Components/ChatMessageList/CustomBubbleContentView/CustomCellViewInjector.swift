@@ -4,20 +4,8 @@
 
 import Foundation
 import ErmisChat
+import ErmisSharedUI
 import UIKit
-
-public protocol CustomCellViewInjectorProtocol {
-    /// A customView will be add to `bubbleContentContainer`
-    var customView: UIView? { get }
-    /// Called after `contentView.prepareForReuse` is called.
-    func contentViewDidPrepareForReuse()
-
-    /// Called after the `contentView` finished its `layout(options:)` methods.
-    func contentViewDidLayout(options: MessageLayoutOptions)
-
-    /// Called after `contentView.updateContent` is called.
-    func contentViewDidcontentDidChanged()
-}
 
 /// An object used for injecting custom content views into `MessageContentView`. The injector is also
 /// responsible for updating the content of the injected views.

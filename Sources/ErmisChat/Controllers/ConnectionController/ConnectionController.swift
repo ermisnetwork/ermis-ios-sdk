@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 public extension ErmisClient {
     /// Creates a new `ConnectionController` instance.

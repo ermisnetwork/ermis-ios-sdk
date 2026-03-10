@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 /// The type is designed to pre-process some incoming `Event` via middlewares before being published
 class EventNotificationCenter: NotificationCenter {

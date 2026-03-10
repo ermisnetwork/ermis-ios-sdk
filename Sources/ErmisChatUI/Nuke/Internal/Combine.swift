@@ -7,7 +7,7 @@ import Combine
 
 final class DataPublisher {
     let id: String
-    private let _sink: (@escaping ((PublisherCompletion) -> Void), @escaping ((Data) -> Void)) -> Cancellable
+    private let _sink: (@escaping ((PublisherCompletion) -> Void), @escaping ((Data) -> Void)) -> Combine.Cancellable
 
     @available(tvOS 13.0, watchOS 6.0, macOS 10.15, *)
     init<P: Publisher>(id: String, _ publisher: P) where P.Output == Data {
@@ -25,12 +25,12 @@ final class DataPublisher {
         }
     }
 
-    func sink(receiveCompletion: @escaping ((PublisherCompletion) -> Void), receiveValue: @escaping ((Data) -> Void)) -> Cancellable {
+    func sink(receiveCompletion: @escaping ((PublisherCompletion) -> Void), receiveValue: @escaping ((Data) -> Void)) -> Combine.Cancellable {
         _sink(receiveCompletion, receiveValue)
     }
 }
 
-private final class AnyCancellable: Cancellable {
+private final class AnyCancellable: Combine.Cancellable {
     let closure: () -> Void
 
     init(_ closure: @escaping () -> Void) {

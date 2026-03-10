@@ -4,6 +4,7 @@
 
 import Foundation
 import Network
+import ErmisShared
 
 extension Notification.Name {
     /// Posted when any the Internet connection update is detected (including quality updates).

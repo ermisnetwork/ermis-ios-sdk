@@ -62,7 +62,7 @@ public class ChatUserListController: DataController, DelegateCallable, DataStore
         let request = UserDTO.userListFetchRequest(query: self.query)
 
         let observer = self.environment.createUserListDabaseObserver(
-            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            ErmisRuntimeCheck.isBackgroundMappingEnabled,
             client.databaseContainer,
             request,
             { try $0.asModel() }

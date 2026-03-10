@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 class NotificationExtensionLifecycle {
     private lazy var userDefaults = appGroupIdentifier.flatMap(UserDefaults.init(suiteName:))

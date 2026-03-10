@@ -32,7 +32,7 @@ public class StickerController: DataController, DelegateCallable, DataStoreProvi
     /// The observer used to track the user changes in the database.
     private(set) lazy var stickerObserver: ListDatabaseObserverWrapper<StickerPack, StickerPackDTO> = {
         let observer = environment.createStickerPackListDatabaseObserver(
-            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            ErmisRuntimeCheck.isBackgroundMappingEnabled,
             client.databaseContainer,
             StickerPackDTO.allStickerPack(),
             { try $0.asModel() },

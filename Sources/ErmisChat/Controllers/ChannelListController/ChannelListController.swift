@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 extension ErmisClient {
     /// Creates a new `ChannelListController` with the provided channel query.
@@ -99,7 +100,7 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
         }
 
         let observer = self.environment.createChannelListDatabaseObserver(
-            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            ErmisRuntimeCheck.isBackgroundMappingEnabled,
             client.databaseContainer,
             request,
             { try $0.asModel() },

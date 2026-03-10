@@ -1060,7 +1060,7 @@ extension MessageDTO {
 
 private extension ChatMessage {
     init(fromDTO dto: MessageDTO, depth: Int) throws {
-        guard ErmisRuntimeCheck._canFetchRelationship(currentDepth: depth) else {
+        guard ErmisRuntimeCheck.canFetchRelationship(currentDepth: depth) else {
             throw RecursionLimitError()
         }
         guard let context = dto.managedObjectContext else {

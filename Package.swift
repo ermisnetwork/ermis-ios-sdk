@@ -18,58 +18,35 @@ let package = Package(
             name: "ErmisChatUI",
             targets: ["ErmisChatUI"]
         ),
-        .library(
-            name: "ErmisCall",
-            targets: ["ErmisCall"]
-        ),
-        .library(
-            name: "ErmisCallUI",
-            targets: ["ErmisCallUI"]
-        ),
         .library(name: "ErmisWalletAuth",
                  targets: ["ErmisWalletAuth"])
     ],
     dependencies: [
-        .package(url: "https://github.com/Recouse/EventSource.git", from: "0.1.4"),
+        .package(url: "https://github.com/Recouse/EventSource.git", from: "0.1.7"),
         .package(url: "https://github.com/reown-com/reown-swift", from: "1.6.0"),
         .package(url: "https://github.com/Boilertalk/Web3.swift.git", from: "0.6.0"),
         .package(url: "https://github.com/daltoniam/Starscream.git", from: "3.1.2"),
         .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2"),
-//        .package(url: "https://github.com/ermisnetwork/call-node-ios", from: "0.0.1"),
-//        .package(url: "https://github.com/ermisnetwork/ErmisOpus", from: "0.0.1")
-        .package(path: "../ErmisCallNode"),
-        .package(path: "../ErmisOpus")
+        .package(path: "../ErmisShared"),
     ],
     targets: [
         .target(
             name: "ErmisChat",
-            dependencies: [.product(name: "EventSource", package: "EventSource"),],
-            exclude: ["Info.plist"],
-            resources: [.copy("Database/ErmisChatModel.xcdatamodeld")]
-        ),
-        .target(
-            name: "ErmisCall",
             dependencies: [
-                "ErmisChat",
-                .product(name: "ErmisCallNode", package: "ErmisCallNode"),
-//                .product(name: "ErmisCallNode", package: "call-node-ios"),
-                .product(name: "ErmisOpus", package: "ErmisOpus")
+                "ErmisShared",
+                .product(name: "EventSource", package: "EventSource"),
             ],
             exclude: ["Info.plist"],
-            resources: [.process("Resources")]
+            resources: [.copy("Database/ErmisChatModel.xcdatamodeld")]
         ),
         .target(
             name: "ErmisChatUI",
             dependencies: [
                 "ErmisChat",
+                .product(name: "ErmisShared", package: "ErmisShared"),
+                .product(name: "ErmisSharedUI", package: "ErmisShared"),
                 .product(name: "Lottie", package: "lottie-spm")
             ],
-            exclude: ["Info.plist", "Generated/L10n_template.stencil"],
-            resources: [.process("Resources")]
-        ),
-        .target(
-            name: "ErmisCallUI",
-            dependencies: ["ErmisChat", "ErmisCall", "ErmisChatUI"],
             exclude: ["Info.plist", "Generated/L10n_template.stencil"],
             resources: [.process("Resources")]
         ),
@@ -77,6 +54,7 @@ let package = Package(
             name: "ErmisWalletAuth",
             dependencies: [
                 "ErmisChat",
+                .product(name: "ErmisShared", package: "ErmisShared"),
                 .product(name: "ReownAppKit", package: "reown-swift"),
                 .product(name: "WalletConnect", package: "reown-swift"),
                 .product(name: "Web3", package: "Web3.swift"),

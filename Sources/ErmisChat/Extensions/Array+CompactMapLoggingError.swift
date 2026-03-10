@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 extension Collection {
     @inlinable

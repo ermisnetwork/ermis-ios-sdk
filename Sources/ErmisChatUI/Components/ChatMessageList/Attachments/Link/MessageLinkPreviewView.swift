@@ -3,6 +3,7 @@
 //
 
 import ErmisChat
+import ErmisShared
 import UIKit
 
 open class MessageLinkPreviewView: _Control, UIProvider, RemoteImageDisplayable, MessageBubbleProvidable {

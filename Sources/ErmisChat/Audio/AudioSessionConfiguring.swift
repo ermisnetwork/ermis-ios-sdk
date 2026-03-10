@@ -3,6 +3,7 @@
 //
 
 import AVFoundation
+import ErmisShared
 
 // MARK: - Protocol
 

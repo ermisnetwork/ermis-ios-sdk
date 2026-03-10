@@ -3,11 +3,12 @@
 //
 
 import ErmisChat
+import ErmisSharedUI
 import UIKit
 
 // MARK: - Protocols
 
-public protocol UIProvider: ComponentsProvider, ThemeProvider, FormattersProvider {}
+public protocol UIProvider: ComponentsProvider, SharedComponentsProvider, ThemeProvider, FormattersProvider {}
 
 public protocol ComponentsProvider: AnyObject {
     /// Theme object to change components and component types from which the default SDK views are build

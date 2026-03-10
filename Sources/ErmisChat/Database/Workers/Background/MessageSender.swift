@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 /// Observers the storage for messages pending send and sends them.
 ///

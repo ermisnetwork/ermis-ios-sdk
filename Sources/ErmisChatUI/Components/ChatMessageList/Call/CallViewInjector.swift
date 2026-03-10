@@ -37,4 +37,3 @@ open class CallViewInjector: CustomCellViewInjector {
         callView.content = nil
     }
 }
-

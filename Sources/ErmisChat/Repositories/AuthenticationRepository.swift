@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 public typealias TokenProvider = (@escaping (Result<Token, Error>) -> Void) -> Void
 

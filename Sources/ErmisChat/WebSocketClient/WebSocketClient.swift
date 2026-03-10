@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 class WebSocketClient {
     let rootProjectId: String

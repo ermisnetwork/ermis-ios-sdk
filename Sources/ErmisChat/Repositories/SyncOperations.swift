@@ -7,6 +7,7 @@ import zlib
 import ImageIO
 import UIKit
 import MobileCoreServices
+import ErmisShared
 
 /// A final class that holds the context for the ongoing operations during the sync process
 final class SyncContext {

@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import ErmisShared
 
 extension ErmisClient {
     /// Creates a new `ChannelWatcherListController` with the provided query.
@@ -102,7 +103,7 @@ public class ChannelWatcherListController: DataController, DelegateCallable, Dat
 
     private func createWatchersObserver() -> ListDatabaseObserverWrapper<ChatUser, UserDTO> {
         let observer = environment.watcherListObserverBuilder(
-            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            ErmisRuntimeCheck.isBackgroundMappingEnabled,
             client.databaseContainer,
             UserDTO.watcherFetchRequest(cid: query.cid),
             { try $0.asModel() as ChatUser },

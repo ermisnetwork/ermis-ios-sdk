@@ -101,17 +101,8 @@ public struct Components {
     /// The view that shows a loading indicator.
     public var loadingIndicator: LoadingIndicator.Type = LoadingIndicator.self
 
-    /// Object which is responsible for loading images
-    public var imageLoader: ImageLoading = NukeImageLoader()
-
-    /// Object responsible for providing resizing operations for `UIImage`
-    public var imageProcessor: ImageProcessor = NukeImageProcessor()
-
     /// The object responsible for loading video attachments.
     public var videoLoader: VideoLoading = ErmisVideoLoader()
-
-    /// Object with set of function for handling images from CDN
-    public var imageCDN: ImageCDN = ErmisImageCDN()
 
     // The view that displays a banner to show the count of messages
     public var messagesCountDecorationView: MessagesCountDecorationView.Type = MessagesCountDecorationView.self

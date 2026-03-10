@@ -59,7 +59,7 @@ public struct LazyCachedMapCollection<Element>: RandomAccessCollection {
         }
 
         /// This is just an internal test to see how we behave when the DB models are immediately mapped instead of being lazily mapped
-        if !ErmisRuntimeCheck._isBackgroundMappingEnabled {
+        if !ErmisRuntimeCheck.isBackgroundMappingEnabled {
             cache = .init(capacity: source.count)
         } else {
             if Thread.isMainThread {

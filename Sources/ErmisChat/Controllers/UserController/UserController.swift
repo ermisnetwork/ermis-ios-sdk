@@ -118,7 +118,7 @@ public class ChatUserController: DataController, DelegateCallable, DataStoreProv
 
     private func createUserObserver() -> EntityDatabaseObserverWrapper<ChatUser, UserDTO> {
         environment.userObserverBuilder(
-            ErmisRuntimeCheck._isBackgroundMappingEnabled,
+            ErmisRuntimeCheck.isBackgroundMappingEnabled,
             client.databaseContainer,
             UserDTO.user(withID: userId, projectId: projectId),
             { try $0.asModel() },

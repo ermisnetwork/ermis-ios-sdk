@@ -2,8 +2,6 @@
 // Copyright 2025 Ermis Inc.
 //
 
-import ErmisChat
-
 public
 extension ChatUser {
     var mentionString: String {

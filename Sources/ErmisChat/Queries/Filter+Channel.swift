@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 extension Filter where Scope == ChannelListFilterScope {
     /// If a valueMapper was provided, then here we will try to transform the value

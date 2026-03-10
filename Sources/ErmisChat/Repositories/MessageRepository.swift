@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import ErmisShared
 
 enum MessageRepositoryError: LocalizedError {
     case messageDoesNotExist

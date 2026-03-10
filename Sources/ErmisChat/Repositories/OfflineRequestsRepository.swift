@@ -3,6 +3,8 @@
 //
 
 import Foundation
+import ErmisShared
+import ErmisShared
 
 typealias QueueOfflineRequestBlock = (DataEndpoint) -> Void
 typealias DataEndpoint = Endpoint<Data>
