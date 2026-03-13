@@ -224,6 +224,9 @@
 /// Can appear if you haven't properly configured your custom attachments.
 "message.unsupported-attachment" = "Unsupported Attachment";
 
+// Encryption
+"message.encrypted-message" = "Encrypted message";
+
 // System message
 
 /// Show when channel name updated.
@@ -323,6 +326,8 @@
 "alert.title.error" = "Error";
 /// Generic title text in the popups.
 "alert.title.info" = "Info";
+/// Generic title text in the popups.
+"alert.title.enable" = "Enable";
 
 "alert.title.permission-required" = "Permission required";
 /// Message of require camera access alert.

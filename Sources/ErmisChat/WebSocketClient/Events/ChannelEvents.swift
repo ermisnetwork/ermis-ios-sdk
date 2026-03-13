@@ -543,3 +543,50 @@ public struct ChannelTopicReopenedEvent: TopicSpecificEvent {
     /// The date a channel was hidden.
     public let createdAt: Date
 }
+
+public struct MLSEvent: ChannelSpecificEvent {
+    /// The identifier of updated channel.
+    public let cid: ChannelId
+
+    /// The identifier of updated parrent channel
+    public let parentCid: ChannelId?
+
+    /// The user who updated the channel.
+    public let user: ChatUser?
+
+    /// The message which updated the channel.
+    public let mlsProtocol: MLSProtocolMessagePayload
+
+    /// The event timestamp.
+    public let createdAt: Date
+}
+
+class MLSEventDTO: EventDTO {
+    let cid: ChannelId
+    let parentCid: ChannelId?
+    let user: UserPayload?
+    let mlsProtocol: MLSProtocolMessagePayload
+    let createdAt: Date
+    let payload: EventPayload
+
+    init(from response: EventPayload) throws {
+        cid = try response.value(at: \.cid)
+        parentCid = try? response.value(at: \.parentCid)
+        user = try? response.value(at: \.user)
+        mlsProtocol = try response.value(at: \.mlsProtocol)
+        createdAt = try response.value(at: \.createdAt)
+        payload = response
+    }
+
+    func toDomainEvent(session: DatabaseSession) -> Event? {
+        let userDTO = user.flatMap { session.user(id: $0.id, projectId: cid.projectId) }
+
+        return MLSEvent(
+            cid: cid,
+            parentCid: parentCid,
+            user: try? userDTO?.asModel(),
+            mlsProtocol: mlsProtocol,
+            createdAt: createdAt
+        )
+    }
+}

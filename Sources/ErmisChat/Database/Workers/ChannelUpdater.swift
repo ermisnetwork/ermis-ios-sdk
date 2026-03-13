@@ -9,17 +9,20 @@ import ErmisShared
 class ChannelUpdater: Worker {
     private let channelRepository: ChannelRepository
     private let callRepository: CallRepository
+    private let e2eRepository: E2eRepository
     private let paginationStateHandler: MessagesPaginationStateHandling
 
     init(
         channelRepository: ChannelRepository,
         callRepository: CallRepository,
+        e2eRepository: E2eRepository,
         paginationStateHandler: MessagesPaginationStateHandling,
         database: DatabaseContainer,
         apiClient: APIClient
     ) {
         self.channelRepository = channelRepository
         self.callRepository = callRepository
+        self.e2eRepository = e2eRepository
         self.paginationStateHandler = paginationStateHandler
         super.init(database: database, apiClient: apiClient)
     }
@@ -233,17 +236,69 @@ class ChannelUpdater: Worker {
     ///   - currentUserId: the id of the current user.
     ///   - cid: The Id of the channel where you want to add the users.
     ///   - userIds: User ids to add to the channel.
+    ///   - mlsEnabled: True if the channel with cid has mls enable.
     ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
     func addMembers(
         currentUserId: UserId? = nil,
         cid: ChannelId,
+        isMlsEnabled: Bool,
         userIds: Set<UserId>,
         completion: ((Error?) -> Void)? = nil
     ) {
+        if isMlsEnabled {
+            e2eRepository.consumeKeyPackagesBatch(targetUserIds: Array(userIds), completion: { [weak self] result in
+                guard let self else {
+                    return
+                }
+                switch result {
+                case .success(let keyPackages):
+                    do {
+                        let (commitBundle, ratchetTree, groupInfo, epoch) = try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
+                        // Enable e2e
+                        let body = AddMembersRequestBody(addMembers: Array(userIds),
+                                                         commit: commitBundle.commit,
+                                                         welcome: commitBundle.welcome ?? Data(),
+                                                         ratchetTree: ratchetTree.toBytes(),
+                                                         epoch: epoch,
+                                                         groupInfo: groupInfo)
+                        apiClient.request(endpoint: .addMembers(cid: cid, userIds: userIds, mlsBody: body)) { [weak self] result in
+                            guard let self else {
+                                return
+                            }
+                            switch result {
+                            case .success:
+                                do {
+                                    try e2eRepository.mergePendingCommit(in: cid)
+                                    completion?(nil)
+                                } catch {
+                                    completion?(error)
+                                }
+                            case .failure(let error):
+                                do {
+                                    try e2eRepository.clearPendingCommit(in: cid)
+                                    completion?(error)
+                                } catch {
+                                    completion?(error)
+                                }
+                            }
+                        }
+                    } catch let error {
+                        log.error("Failed to add member to group", subsystems: .mls)
+                        completion?(error)
+                    }
+                case .failure(let error):
+                    log.error("Consume channel's keypackage failed: \(error)", subsystems: .mls)
+                    completion?(error)
+                }
+            })
+            return
+        }
+
         apiClient.request(
             endpoint: .addMembers(
                 cid: cid,
-                userIds: userIds
+                userIds: userIds,
+                mlsBody: nil
             )
         ) {
             completion?($0.error)
@@ -259,9 +314,45 @@ class ChannelUpdater: Worker {
     func removeMembers(
         currentUserId: UserId? = nil,
         cid: ChannelId,
+        isMlsEnabled: Bool,
         userIds: Set<UserId>,
         completion: ((Error?) -> Void)? = nil
     ) {
+        if isMlsEnabled {
+            do {
+                let (commitBunddle, groupInfo, epoch) = try e2eRepository.removeMembers(Array(userIds), in: cid)
+                let body = RemoveMembersRequestBody(removeMembers: Array(userIds),
+                                                    commit: commitBunddle.commit,
+                                                    epoch: epoch,
+                                                    groupInfo: groupInfo)
+                apiClient.request(endpoint: .removeMembers(cid: cid, userIds: userIds, mlsBody: body)) { [weak self] result in
+                    guard let self else {
+                        return
+                    }
+                    switch result {
+                    case .success:
+                        do {
+                            try e2eRepository.mergePendingCommit(in: cid)
+                            completion?(nil)
+                        } catch {
+                            completion?(error)
+                        }
+                    case .failure(let error):
+                        do {
+                            try e2eRepository.clearPendingCommit(in: cid)
+                            completion?(error)
+                        } catch {
+                            completion?(error)
+                        }
+                    }
+                }
+            } catch (let error) {
+                log.error("Failed to remove member of group: error: \(error)", subsystems: .mls)
+                completion?(error)
+            }
+            return
+        }
+
         apiClient.request(
             endpoint: .removeMembers(
                 cid: cid,
@@ -568,6 +659,63 @@ class ChannelUpdater: Worker {
             try session.updateComposerUnsentContent(in: cid, content: content)
         }
     }
+
+    func enableEncryption(in cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
+        e2eRepository.consumeKeyPackages(in: cid, targetUserIds: [], completion: { [weak self] result in
+            guard let self else {
+                return
+            }
+            switch result {
+            case .success(let keyPackages):
+                do {
+                    let (commitBundle, ratchetTree, groupInfo, epoch) = try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
+                    // Enable e2e
+                    let body = EnableEncryptionRequestBody(commit: commitBundle.commit,
+                                                           welcome: commitBundle.welcome ?? Data(),
+                                                           ratchetTree: ratchetTree.toBytes(),
+                                                           epoch: 0,
+                                                           groupInfo: groupInfo)
+                    channelRepository.enableEncryption(cid: cid, body: body) { [weak self] result in
+                        guard let self else {
+                            return
+                        }
+                        switch result {
+                        case .success:
+                            do {
+                                try e2eRepository.mergePendingCommit(in: cid)
+                                self.database.write { (session) in
+                                    if let channel = session.channel(cid: cid) {
+                                        channel.mlsEnabled = true
+                                        channel.mlsEnabledAt = Date().bridgeDate
+                                        channel.mlsEpoch = 1
+                                    }
+                                } completion: { error in
+                                    completion?(nil)
+                                }
+                                completion?(nil)
+                            } catch {
+                                completion?(error)
+                            }
+                        case .failure(let error):
+                            do {
+                                try e2eRepository.clearPendingCommit(in: cid)
+                                completion?(error)
+                            } catch {
+                                completion?(error)
+                            }
+                        }
+                    }
+                } catch let error {
+                    log.error("Failed to add member to group", subsystems: .mls)
+                    completion?(error)
+                }
+            case .failure(let error):
+                log.error("Consume channel's keypackage failed: \(error)", subsystems: .mls)
+                completion?(error)
+            }
+        })
+    }
+
     // MARK: - private
     
     private func messagePayload(text: String?, currentUserId: UserId?) -> MessageRequestBody? {

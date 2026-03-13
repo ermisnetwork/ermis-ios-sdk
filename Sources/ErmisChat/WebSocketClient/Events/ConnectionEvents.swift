@@ -11,6 +11,7 @@ public protocol ConnectionEvent: Event {
 public class HealthCheckEvent: ConnectionEvent, EventDTO {
     public let connectionId: String
     public let projectId: String?
+    let keyPackagesRemaining: Int?
     var currentUser: CurrentUserPayload?
     let payload: EventPayload
 
@@ -23,12 +24,14 @@ public class HealthCheckEvent: ConnectionEvent, EventDTO {
         self.connectionId = UUID().uuidString
         self.currentUser = eventResponse.currentUser
         self.projectId = eventResponse.projectId
+        self.keyPackagesRemaining = eventResponse.currentUser?.keyPackagesRemaining
         payload = eventResponse
     }
 
     init(connectionId: String) {
         self.connectionId = connectionId
         self.projectId = nil
+        self.keyPackagesRemaining = nil
         payload = EventPayload(
             eventType: .healthCheck,
             connectionId: connectionId,
@@ -43,7 +46,7 @@ public class HealthCheckEvent: ConnectionEvent, EventDTO {
             try? session.saveCurrentUser(payload: currentUser,
                                          projectId: projectId ?? currentUser.projectId)
         }
-        return nil
+        return self
     }
 }
 

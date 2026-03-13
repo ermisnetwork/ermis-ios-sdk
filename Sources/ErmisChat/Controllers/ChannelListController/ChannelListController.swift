@@ -74,7 +74,8 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     private lazy var worker: ChannelListUpdater = self.environment
         .channelQueryUpdaterBuilder(
             client.databaseContainer,
-            client.apiClient
+            client.apiClient,
+            client.e2eRepository
         )
 
     /// A Boolean value that returns whether pagination is finished
@@ -389,7 +390,8 @@ extension ChannelListController {
     struct Environment {
         var channelQueryUpdaterBuilder: (
             _ database: DatabaseContainer,
-            _ apiClient: APIClient
+            _ apiClient: APIClient,
+            _ e2eRepository: E2eRepository?
         ) -> ChannelListUpdater = ChannelListUpdater.init
 
         var createChannelListDatabaseObserver: (

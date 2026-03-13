@@ -224,6 +224,9 @@
 /// Can appear if you haven't properly configured your custom attachments.
 "message.unsupported-attachment" = "Tệp tin không được hỗ trợ";
 
+// Encryption
+"message.encrypted-message" = "Tin nhắn được mã hóa";
+
 // System message
 
 /// Show when channel name updated.
@@ -323,6 +326,8 @@
 "alert.title.error" = "Lỗi";
 /// Generic title text in the popups.
 "alert.title.info" = "Thông tin";
+/// Generic title text in the popups.
+"alert.title.enable" = "Bật";
 
 "alert.title.permission-required" = "Yêu cầu quyền truy cập";
 /// Message of require camera access alert.
@@ -421,6 +426,12 @@
 
 /// Share
 "share.send-to" = "Gửi đến";
+
+/// Encryption
+"encryption.e2e-message-encrytion" = "Mã hóa đầu cuối tin nhắn";
+"encryption.enable-e2e-alert.title" = "Bạn có muốn mã hóa cuộc trò chuyện này với %@ không?";
+"encryption.enable-group-e2e-alert.title" = "Bạn có muốn mã hóa cuộc trò chuyện trong nhóm %@ không?";
+"encryption.enable-e2e-alert.message" = "Mã hóa đầu cuối bảo vệ dữ liệu của bạn bằng cách mã hóa nó từ người gửi đến người nhận, cho phép chỉ người nhận dự định giải mã nó.";
 
 /// Shown in the gallery preview, indicating which image is currently presented.
 /// The first placeholder is the number of the selected image.

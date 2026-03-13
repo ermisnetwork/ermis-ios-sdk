@@ -9,16 +9,19 @@ enum MessageRepositoryError: LocalizedError {
     case messageDoesNotExist
     case messageNotPendingSend
     case messageDoesNotHaveValidChannel
+    case failedToEncryptedMessage(Error)
     case failedToSendMessage(Error)
 }
 
 class MessageRepository {
     let database: DatabaseContainer
     let apiClient: APIClient
+    let e2eRepository: E2eRepository
 
-    init(database: DatabaseContainer, apiClient: APIClient) {
+    init(database: DatabaseContainer, apiClient: APIClient, e2eRepository: E2eRepository) {
         self.database = database
         self.apiClient = apiClient
+        self.e2eRepository = e2eRepository
     }
 
     func sendMessage(
@@ -27,7 +30,11 @@ class MessageRepository {
     ) {
         // Check the message with the given id is still in the DB.
         database.backgroundReadOnlyContext.perform { [weak self] in
-            guard let dto = self?.database.backgroundReadOnlyContext.message(id: messageId) else {
+            guard let self else {
+                return
+            }
+
+            guard let dto = self.database.backgroundReadOnlyContext.message(id: messageId) else {
                 log.error("Trying to send a message with id \(messageId) but the message was deleted.")
                 completion(.failure(.messageDoesNotExist))
                 return
@@ -46,16 +53,40 @@ class MessageRepository {
                 return
             }
 
-            let requestBody = dto.asRequestBody() as MessageRequestBody
+            var requestBody = dto.asRequestBody() as MessageRequestBody
+
+            let isEncrypted = dto.channel?.mlsEnabled == true
+            // Encrypted message
+            if isEncrypted {
+                let e2ePayload = E2ePayload(text: requestBody.text,
+                                            attachments: requestBody.attachments,
+                                            stickerUrl: requestBody.stickerUrl)
+                do {
+                    let (encryptedData, epoch) = try e2eRepository.encryptedMessage(e2ePayload, in: cid)
+                    requestBody.encryptedData = encryptedData
+                    requestBody.mlsEpoch = epoch
+                    requestBody.text = ""
+                    requestBody.attachments = []
+                    requestBody.stickerUrl = nil
+                    // Persist the plaintext payload so decryptedMessage is available
+                    // immediately on the outgoing message without needing a decrypt round-trip.
+                    database.write { session in
+                        try session.saveMessageDecrypt(payload: e2ePayload, messageId: messageId)
+                    }
+                } catch (let error) {
+                    completion(.failure(.failedToEncryptedMessage(error)))
+                    return
+                }
+            }
 
             // Change the message state to `.sending` and the proceed with the actual sending
-            self?.database.write({
+            self.database.write({
                 let messageDTO = $0.message(id: messageId)
                 messageDTO?.localMessageState = .sending
             }, completion: { error in
                 if let error = error {
                     log.error("Error changing localMessageState message with id \(messageId) to `sending`: \(error)")
-                    self?.markMessageAsFailedToSend(id: messageId) {
+                    self.markMessageAsFailedToSend(id: messageId) {
                         completion(.failure(.failedToSendMessage(error)))
                     }
                     return
@@ -65,10 +96,10 @@ class MessageRepository {
                     cid: cid,
                     messagePayload: requestBody
                 )
-                self?.apiClient.request(endpoint: endpoint) {
+                self.apiClient.request(endpoint: endpoint) {
                     switch $0 {
                     case let .success(payload):
-                        self?.saveSuccessfullySentMessage(cid: cid, message: payload.message) { result in
+                        self.saveSuccessfullySentMessage(cid: cid, message: payload.message) { result in
                             switch result {
                             case let .success(message):
                                 completion(.success(message))
@@ -78,7 +109,7 @@ class MessageRepository {
                         }
 
                     case let .failure(error):
-                        self?.handleSendingMessageError(error, messageId: messageId, completion: completion)
+                        self.handleSendingMessageError(error, messageId: messageId, completion: completion)
                     }
                 }
             })
@@ -104,6 +135,7 @@ class MessageRepository {
                 completion(.failure(error))
             }
         })
+        enqueueDecryptIfNeeded(messageId: message.id, payload: message, cid: cid)
     }
 
     private func handleSendingMessageError(
@@ -182,6 +214,7 @@ class MessageRepository {
                         completion?(.failure(error))
                     }
                 })
+                self.enqueueDecryptIfNeeded(messageId: boxed.message.id, payload: boxed.message, cid: cid)
             case let .failure(error):
                 completion?(.failure(error))
             }
@@ -232,5 +265,18 @@ class MessageRepository {
             }
             completion?()
         }
+    }
+
+    // MARK: - Decrypt helper
+
+    /// Enqueues a decrypt operation if the message payload carries encrypted data.
+    /// Safe to call unconditionally — it is a no-op for plain-text messages.
+    private func enqueueDecryptIfNeeded(messageId: MessageId, payload: MessagePayload, cid: ChannelId) {
+        guard let encryptedBytes = payload.encryptedData else { return }
+        e2eRepository.decryptMessagePayload(
+            messageId: messageId,
+            encryptedData: Data(encryptedBytes),
+            cid: cid
+        )
     }
 }

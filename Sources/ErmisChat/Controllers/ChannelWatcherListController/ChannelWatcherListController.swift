@@ -65,6 +65,7 @@ public class ChannelWatcherListController: DataController, DelegateCallable, Dat
     private lazy var updater: ChannelUpdater = self.environment.channelUpdaterBuilder(
         client.channelRepository,
         client.callRepository,
+        client.e2eRepository,
         client.makeMessagesPaginationStateHandler(),
         client.databaseContainer,
         client.apiClient
@@ -143,6 +144,7 @@ extension ChannelWatcherListController {
             (
                 _ channelRepository: ChannelRepository,
                 _ callRepository: CallRepository,
+                _ e2eRepository: E2eRepository,
                 _ paginationStateHandler: MessagesPaginationStateHandling,
                 _ database: DatabaseContainer,
                 _ apiClient: APIClient

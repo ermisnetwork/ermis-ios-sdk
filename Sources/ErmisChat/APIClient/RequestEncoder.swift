@@ -133,9 +133,19 @@ class DefaultRequestEncoder: RequestEncoder {
             case let .success(requestWithAuth):
                 self.addConnectionIdIfNeeded(
                     request: requestWithAuth,
-                    endpoint: endpoint,
-                    completion: completion
-                )
+                    endpoint: endpoint
+                ) {
+                    switch $0 {
+                    case let .success(requestWithConnectionId):
+                        self.addDeviceIdIfNeeded(
+                            request: requestWithConnectionId,
+                            endpoint: endpoint,
+                            completion: completion
+                        )
+                    case let .failure(error):
+                        completion(.failure(error))
+                    }
+                }
             case let .failure(error):
                 completion(.failure(error))
             }
@@ -228,6 +238,23 @@ class DefaultRequestEncoder: RequestEncoder {
             }
         }
     }
+    /// Add `X-Device-ID` header to request if `needDeviceId` = true
+    private func addDeviceIdIfNeeded<T: Decodable>(
+        request: URLRequest,
+        endpoint: Endpoint<T>,
+        completion: @escaping (Result<URLRequest, Error>) -> Void
+    ) {
+        guard endpoint.needDeviceId else {
+            completion(.success(request))
+            return
+        }
+        var updatedRequest = request
+        if let deviceId = UserDefaults.standard.string(forKey: "ermis_mls_device_id") {
+            updatedRequest.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        }
+        completion(.success(updatedRequest))
+    }
+
     /// Create request URL from endpoint.
     private func encodeRequestURL<T: Decodable>(for endpoint: Endpoint<T>) throws -> URL {
         var urlComponents = URLComponents()

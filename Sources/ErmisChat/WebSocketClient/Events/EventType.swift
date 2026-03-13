@@ -68,6 +68,8 @@ public extension EventType {
     static let channelTopicClosed: Self = "channel.topic.closed"
     /// When a channel topic was reopened.
     static let channelTopicReopen: Self = "channel.topic.reopen"
+    /// When a channel receive mls protocol message.
+    static let mlsProtocol: Self = "protocol"
 
     // MARK: Message Events
 
@@ -186,6 +188,7 @@ extension EventType {
         case .channelTopicCreated: return try ChannelTopicCreatedEventDTO(from: response)
         case .channelTopicClosed: return try ChannelTopicClosedEventDTO(from: response)
         case .channelTopicReopen: return try ChannelTopicReopenedEventDTO(from: response)
+        case .mlsProtocol: return try MLSEventDTO(from: response)
 
         case .messageNew: return try MessageNewEventDTO(from: response)
         case .messageUpdated: return try MessageUpdatedEventDTO(from: response)

@@ -14,7 +14,7 @@ open class CustomCellViewCatalog {
     open class func customCellViewInjectorClassFor(
         message: ChatMessage,
         components: Components
-    ) -> CustomCellViewInjector.Type? {
+    ) -> CustomCellViewInjector.Type? { 
         if message.type == .signal {
             return components.callViewInjector
         }

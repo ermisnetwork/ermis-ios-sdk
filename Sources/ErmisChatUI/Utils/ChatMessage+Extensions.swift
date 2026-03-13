@@ -49,7 +49,15 @@ public extension ChatMessage {
             return nil
         }
 
-        return isDeleted ? L10n.Message.deletedMessagePlaceholder : text
+        guard !isDeleted else {
+            return L10n.Message.deletedMessagePlaceholder
+        }
+
+        guard !isEncrypted else {
+            return "Message is encrypted"
+        }
+
+        return text
     }
 
     /// Returns last active thread participant.

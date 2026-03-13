@@ -151,9 +151,10 @@ extension ErmisClient {
 
         var messageRepositoryBuilder: (
             _ database: DatabaseContainer,
-            _ apiClient: APIClient
+            _ apiClient: APIClient,
+            _ e2eRepository: E2eRepository
         ) -> MessageRepository = {
-            MessageRepository(database: $0, apiClient: $1)
+            MessageRepository(database: $0, apiClient: $1, e2eRepository: $2)
         }
 
         var walletRepositoryBuilder: (
@@ -164,6 +165,18 @@ extension ErmisClient {
             WalletRepository(database: $0,
                              apiClient: $1,
                              apiKey: $2)
+        }
+
+        var e2eRepositoryBuilder: (
+            _ database: DatabaseContainer,
+            _ eventNotificationCenter: EventNotificationCenter,
+            _ mlsClient: MlsClient,
+            _ apiClient: APIClient
+        ) -> E2eRepository = {
+            E2eRepository(database: $0,
+                          eventNotificationCenter: $1,
+                          mlsClient: $2,
+                          apiClient: $3)
         }
 
         var offlineRequestsRepositoryBuilder: (

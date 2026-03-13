@@ -220,6 +220,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         updater = self.environment.channelUpdaterBuilder(
             client.channelRepository,
             client.callRepository,
+            client.e2eRepository,
             client.makeMessagesPaginationStateHandler(),
             client.databaseContainer,
             client.apiClient
@@ -685,6 +686,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         updater.addMembers(
             currentUserId: client.currentUserId,
             cid: cid,
+            isMlsEnabled: channel?.mlsEnabled ?? false,
             userIds: userIds
         ) { [weak self] error in
             self?.callback {
@@ -713,6 +715,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         updater.removeMembers(
             currentUserId: client.currentUserId,
             cid: cid,
+            isMlsEnabled: channel?.mlsEnabled ?? false,
             userIds: userIds
         ) { [weak self] error in
             self?.callback {
@@ -1157,6 +1160,18 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         }
         updater.saveComposerUnsentContent(in: cid, content: content)
     }
+
+    public func enableEncryption(completion: ((Error?) -> Void)? = nil) {
+        guard let cid else {
+            return
+        }
+        updater.enableEncryption(in: cid, completion: { [weak self] error in
+            self?.callback {
+                completion?(error)
+            }
+        })
+    }
+
     // MARK: - Internal
     
     func recoverWatchedChannel(completion: @escaping (Error?) -> Void) {
@@ -1236,6 +1251,7 @@ extension ChannelController {
         var channelUpdaterBuilder: (
             _ channelRepository: ChannelRepository,
             _ callRepository: CallRepository,
+            _ e2eRepository: E2eRepository,
             _ paginationStateHandler: MessagesPaginationStateHandling,
             _ database: DatabaseContainer,
             _ apiClient: APIClient

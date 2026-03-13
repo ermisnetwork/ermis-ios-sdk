@@ -385,6 +385,11 @@ protocol StickerDataBaseSession {
     func getSticker(id: String) throws -> StickerDTO?
 }
 
+protocol E2eDatabaseSession {
+    @discardableResult
+    func saveMessageDecrypt(payload: E2ePayload, messageId: String) throws -> MessageDecryptDTO
+}
+
 protocol DatabaseSession: UserDatabaseSession,
     CurrentUserDatabaseSession,
     MessageDatabaseSession,
@@ -395,7 +400,8 @@ protocol DatabaseSession: UserDatabaseSession,
     MemberListQueryDatabaseSession,
     AttachmentDatabaseSession,
     QueuedRequestDatabaseSession,
-    StickerDataBaseSession {}
+    StickerDataBaseSession,
+    E2eDatabaseSession {}
 
 extension DatabaseSession {
     
@@ -538,12 +544,17 @@ extension DatabaseSession {
 
         switch payload.eventType {
         case .messageNew, .notificationMessageNew:
-            let newPreview = preview(for: cid)
-            let newPreviewCreatedAt = newPreview?.createdAt.bridgeDate ?? .distantFuture
+            // Look up the new message directly by its ID instead of using preview(for:),
+            // because preview(for:) sorts by `defaultSortingKey` which is only populated
+            // in willSave() — after the current write transaction — so the newly inserted
+            // message would have a nil key and sort below the previous message, causing
+            // the channel list to show the second-to-last message as the preview.
+            let incomingMessage = payload.message.flatMap { message(id: $0.id) }
+            let incomingCreatedAt = incomingMessage?.createdAt.bridgeDate ?? .distantPast
             let currentPreviewCreatedAt = channelDTO.previewMessage?.createdAt.bridgeDate ?? .distantPast
-            if newPreviewCreatedAt > currentPreviewCreatedAt {
-                channelDTO.previewMessage = newPreview
-                channelDTO.lastMessageAt = newPreviewCreatedAt.bridgeDate
+            if incomingCreatedAt > currentPreviewCreatedAt, let incomingMessage {
+                channelDTO.previewMessage = incomingMessage
+                channelDTO.lastMessageAt = incomingCreatedAt.bridgeDate
             }
         case .messageUpdated:
             let currentPreviewAt = channelDTO.previewMessage?.textUpdatedAt?.bridgeDate ?? channelDTO.previewMessage?.createdAt.bridgeDate ?? .distantPast

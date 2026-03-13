@@ -101,6 +101,10 @@ class AuthenticationRepository {
     private let timerType: Timer.Type
     public var projectId: String
 
+    var currentDeviceId: String {
+        return UserDefaults.standard.string(forKey: "ermis_mls_device_id") ?? ""
+    }
+
     init(
         apiClient: APIClient,
         databaseContainer: DatabaseContainer,
@@ -117,15 +121,24 @@ class AuthenticationRepository {
         self.projectId = projectId
         fetchCurrentUser(of: projectId)
 
+        generateDeviceIdIfNeeded()
+
         if let currentUserId = currentUserId {
-            connectionRepository.updateWebSocketEndpoint(with: currentUserId)
+            connectionRepository.updateWebSocketEndpoint(with: currentUserId, deviceId: currentDeviceId)
+        }
+    }
+
+    private func generateDeviceIdIfNeeded() {
+        if UserDefaults.standard.string(forKey: "ermis_mls_device_id") == nil {
+            let deviceId = "ios-" + UUID().uuidString
+            UserDefaults.standard.set(deviceId, forKey: "ermis_mls_device_id")
         }
     }
 
     func update(token: Token, userInfo: UserInfo) {
         if currentUserId == nil {
             currentUserId = token.userId
-            connectionRepository.updateWebSocketEndpoint(with: token, userInfo: userInfo)
+            connectionRepository.updateWebSocketEndpoint(with: token, userInfo: userInfo, deviceId: currentDeviceId)
             setToken(token: token, completeTokenWaiters: true)
             delegate?.didFinishSettingUpAuthenticationEnvironment(for: .firstConnection)
         }
@@ -144,7 +157,7 @@ class AuthenticationRepository {
             }
         }
         if self.currentUserId == nil, let currentUserId {
-            connectionRepository.updateWebSocketEndpoint(with: currentUserId)
+            connectionRepository.updateWebSocketEndpoint(with: currentUserId, deviceId: currentDeviceId)
         }
         self.currentUserId = currentUserId
     }
@@ -312,13 +325,13 @@ class AuthenticationRepository {
 
         switch state {
         case .firstConnection, .newToken:
-            connectionRepository.updateWebSocketEndpoint(with: newToken, userInfo: userInfo)
+            connectionRepository.updateWebSocketEndpoint(with: newToken, userInfo: userInfo, deviceId: currentDeviceId)
             setToken(token: newToken, completeTokenWaiters: true)
             delegate?.didFinishSettingUpAuthenticationEnvironment(for: state)
 
         case .newUser:
             completeTokenWaiters(token: nil)
-            connectionRepository.updateWebSocketEndpoint(with: newToken, userInfo: userInfo)
+            connectionRepository.updateWebSocketEndpoint(with: newToken, userInfo: userInfo, deviceId: currentDeviceId)
             setToken(token: newToken, completeTokenWaiters: false)
             delegate?.didFinishSettingUpAuthenticationEnvironment(for: state)
         }

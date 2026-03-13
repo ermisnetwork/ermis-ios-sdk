@@ -179,6 +179,11 @@ public struct Channel {
 
     /// The topic channels of current channel.
     public var topics: [Channel]? { _topics }
+    
+    public var mlsEnabled: Bool
+    public var mlsEnabledAt: Date?
+    public var mlsEpoch: Int
+
     // "Move to async?"
     @CoreDataLazy private var _topics: [Channel]?
 
@@ -239,6 +244,9 @@ public struct Channel {
         latestMessages: @escaping (() -> [ChatMessage]) = { [] },
         parent: @escaping(() -> Channel?) = { nil },
         topics: @escaping (() -> [Channel]?) = { nil },
+        mlsEnabled: Bool = false,
+        mlsEnabledAt: Date? = nil,
+        mlsEpoch: Int = 0,
         lastMessageFromCurrentUser: @escaping (() -> ChatMessage?) = { nil },
         pinnedMessages: @escaping (() -> [ChatMessage]) = { [] },
         previewMessage: @escaping () -> ChatMessage?,
@@ -279,6 +287,9 @@ public struct Channel {
         })
         self.cooldownDuration = cooldownDuration
         self.composerUnsentContent = composerUnsentContent
+        self.mlsEnabled = mlsEnabled
+        self.mlsEnabledAt = mlsEnabledAt
+        self.mlsEpoch = mlsEpoch
         $_unreadCount = (unreadCount, underlyingContext)
         $_latestMessages = (latestMessages, underlyingContext)
         $_lastMessageFromCurrentUser = (lastMessageFromCurrentUser, underlyingContext)

@@ -109,10 +109,12 @@ extension Endpoint {
         let body: [String: AnyEncodable] = [
             "message": AnyEncodable(messagePayload),
         ]
+        let endpointPath: EndpointPath = messagePayload.encryptedData == nil ? .sendMessage(cid) : .sendE2eMessage(cid)
         return .init(
-            path: .sendMessage(cid),
+            path: endpointPath,
             method: .post,
-            body: body
+            body: body,
+            needDeviceId: messagePayload.encryptedData != nil
         )
     }
 
@@ -121,18 +123,25 @@ extension Endpoint {
     /// - Parameters:
     ///   - cid: The channel identifier.
     ///   - userIds: The list of user identifier to add.
+    ///   - mlsBody: Optional MLS commit bundle. When non-nil the endpoint uses the structured
+    ///     body (which already contains `add_members`) instead of the plain dictionary form.
     /// - Returns: The endpoint to add members to channel.
     static func addMembers(
         cid: ChannelId,
-        userIds: Set<UserId>
+        userIds: Set<UserId>,
+        mlsBody: AddMembersRequestBody? = nil
     ) -> Endpoint<EmptyResponse> {
-        var body: [String: AnyEncodable] = [
-            "add_members": AnyEncodable(userIds),
-        ]
+        let body: AnyEncodable
+        if let mlsBody {
+            body = AnyEncodable(mlsBody)
+        } else {
+            body = AnyEncodable(["add_members": AnyEncodable(userIds)])
+        }
         return .init(
             path: .channelUpdate(cid.apiPath),
             method: .post,
-            body: body
+            body: body,
+            needDeviceId: true
         )
     }
 
@@ -141,18 +150,29 @@ extension Endpoint {
     /// - Parameters:
     ///   - cid: The channel identifier.
     ///   - userIds: The list of user identifier to remove.
+    ///   - mlsBody: Optional MLS commit payload (commit bytes, epoch, group_info) for E2EE channels.
     /// - Returns: The endpoint to remove channel members.
     static func removeMembers(
         cid: ChannelId,
-        userIds: Set<UserId>
+        userIds: Set<UserId>,
+        mlsBody: RemoveMembersRequestBody? = nil
     ) -> Endpoint<EmptyResponse> {
+        if let mlsBody {
+            return .init(
+                path: .channelUpdate(cid.apiPath),
+                method: .post,
+                body: mlsBody,
+                needDeviceId: true
+            )
+        }
         let body = [
             "remove_members": AnyEncodable(userIds)
         ]
         return .init(
             path: .channelUpdate(cid.apiPath),
             method: .post,
-            body: body
+            body: body,
+            needDeviceId: true
         )
     }
 

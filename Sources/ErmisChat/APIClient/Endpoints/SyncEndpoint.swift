@@ -16,4 +16,13 @@ extension Endpoint {
             needToken: true
         )
     }
+
+    static func syncMls(cid: ChannelId) -> Endpoint<MlsSyncPayload> {
+        .init(
+            path: .syncMls(cid),
+            method: .get,
+            needConnectionId: false,
+            needToken: true
+        )
+    }
 }

@@ -118,13 +118,13 @@ class ConnectionRepository {
     }
 
     /// Updates the WebSocket endpoint to use the passed token and user information for the connection
-    func updateWebSocketEndpoint(with token: Token, userInfo: UserInfo?) {
-        webSocketClient?.connectEndpoint = .webSocketConnect(userInfo: userInfo ?? .init(id: token.userId), token: token, apiKey: apiKey)
+    func updateWebSocketEndpoint(with token: Token, userInfo: UserInfo?, deviceId: String) {
+        webSocketClient?.connectEndpoint = .webSocketConnect(userInfo: userInfo ?? .init(id: token.userId), token: token, deviceId: deviceId, apiKey: apiKey)
     }
 
     /// Updates the WebSocket endpoint to use the passed user id
-    func updateWebSocketEndpoint(with currentUserId: UserId) {
-        webSocketClient?.connectEndpoint = .webSocketConnect(userInfo: UserInfo(id: currentUserId), token: nil, apiKey: apiKey)
+    func updateWebSocketEndpoint(with currentUserId: UserId, deviceId: String) {
+        webSocketClient?.connectEndpoint = .webSocketConnect(userInfo: UserInfo(id: currentUserId), token: nil, deviceId: deviceId, apiKey: apiKey)
     }
 
     func handleConnectionUpdate(

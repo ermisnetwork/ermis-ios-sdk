@@ -1,0 +1,700 @@
+//
+// Copyright 2025 Ermis Inc.
+//
+
+import Foundation
+import open_mls_ios
+
+class E2eRepository: EventsControllerDelegate {
+    let database: DatabaseContainer
+    let eventNotificationCenter: EventNotificationCenter
+    let mlsClient: MlsClient
+    let apiClient: APIClient
+
+    let eventController: EventsController
+
+    private let keyPackageAmount = 50
+
+    private static let loginTimeKey = "ermis_mls_login_time"
+
+    /// The timestamp when the current user session started on this device.
+    /// Stored in UserDefaults so it survives app restarts but is device-local.
+    var loginTime: Date? {
+        get { UserDefaults.standard.object(forKey: Self.loginTimeKey) as? Date }
+        set { UserDefaults.standard.set(newValue, forKey: Self.loginTimeKey) }
+    }
+
+    /// Serial queue that serializes all MLS decrypt operations.
+    /// All sources (WebSocket, API, NSE via shared DB) funnel through here,
+    /// so MLS `processMessage` is never called concurrently for the same group.
+    private let decryptQueue: OperationQueue = {
+        let q = OperationQueue()
+        q.maxConcurrentOperationCount = 1
+        q.name = "io.ermis.e2e.decrypt"
+        return q
+    }()
+
+    init(database: DatabaseContainer,
+         eventNotificationCenter: EventNotificationCenter,
+         mlsClient: MlsClient,
+         apiClient: APIClient) {
+        self.database = database
+        self.apiClient = apiClient
+        self.mlsClient = mlsClient
+        self.eventNotificationCenter = eventNotificationCenter
+        self.eventController = EventsController(notificationCenter: eventNotificationCenter)
+        eventController.delegate = self
+    }
+
+    func eventsController(_ controller: EventsController, didReceiveEvent event: any Event) {
+        if let event = event as? HealthCheckEvent {
+            handleHealthCheckEvent(event)
+        } else if let event = event as? MessageNewEvent {
+            decryptNewMessageEventIfNeeded(message: event.message, cid: event.cid)
+        } else if let event = event as? NotificationMessageNewEvent {
+            decryptNewMessageEventIfNeeded(message: event.message, cid: event.cid)
+        } else if let event = event as? MLSEvent {
+            handleMlsEvent(event)
+        } else if let event = event as? NotificationInviteRespondBackEvent {
+            switch event.respondBackType {
+            case .accept:
+                handleNotificationInviteAcceptedEvent(event)
+            case .reject:
+                handleNotificationInviteRejectedEvent(event)
+            case .skip:
+                handleNotificationInviteSkippedEvent(event)
+            case .messagingReject:
+                break
+            }
+        }
+    }
+
+    private func handleNotificationInviteAcceptedEvent(_ event: NotificationInviteRespondBackEvent) {
+        guard event.mlsEnabled else { return }
+        performE2eChannelSync(cid: event.cid)
+    }
+
+    private func handleNotificationInviteRejectedEvent(_ event: NotificationInviteRespondBackEvent) {
+        guard event.mlsEnabled else { return }
+        performE2eChannelSync(cid: event.cid)
+    }
+
+    private func handleNotificationInviteSkippedEvent(_ event: NotificationInviteRespondBackEvent) {
+        guard event.mlsEnabled else { return }
+        performE2eChannelSync(cid: event.cid)
+    }
+
+    private func handleMlsEvent(_ mlsEvent: MLSEvent) {
+        let mlsProtocol = mlsEvent.mlsProtocol
+        let cid = mlsEvent.cid.rawValue
+        if let deviceId = mlsProtocol.deviceId, let currentDeviceId = mlsClient.currentDeviceId, deviceId == currentDeviceId {
+            log.debug("[MLS] ignored event from self", subsystems: .mls)
+            return
+        }
+        decryptQueue.addOperation { [weak self] in
+            guard let self else { return }
+            do {
+                switch mlsEvent.mlsProtocol.type {
+                case .commit:
+                    guard let commit = mlsProtocol.commit else {
+                        return
+                    }
+                    let group = try self.mlsClient.loadGroup(with: cid)
+                    guard Int(group.epoch()) == mlsProtocol.epoch - 1 else {
+                        log.debug("[MLS] Skipping commit: local epoch \(group.epoch()) != expected \(mlsProtocol.epoch - 1)", subsystems: .mls)
+                        return
+                    }
+                    log.debug("[MLS] Processing commit message", subsystems: .mls)
+                    try self.mlsClient.processMessage(data: commit.data, in: cid)
+                case .externalCommit:
+                    guard let commit = mlsProtocol.commit else {
+                        return
+                    }
+                    let group = try self.mlsClient.loadGroup(with: cid)
+                    guard group.epoch() == mlsProtocol.epoch - 1 else {
+                        log.debug("[MLS] Skipping commit: local epoch \(group.epoch()) != expected \(mlsProtocol.epoch - 1)", subsystems: .mls)
+                        return
+                    }
+                    try self.mlsClient.processMessage(data: commit.data, in: cid)
+                case .welcome:
+                    if let targetUserIds = mlsProtocol.targetUserIds,
+                       let currentUserId = mlsClient.userId,
+                       !targetUserIds.contains(currentUserId) {
+                        log.debug("[E2eSync] Skipping welcome not targeted at current user", subsystems: .mls)
+                        return
+                    }
+                    guard let welcome = mlsProtocol.welcome,
+                          let ratchetTreeData = mlsProtocol.ratchetTree?.data,
+                          let ratchetTree = try? RatchetTree.fromBytes(data: ratchetTreeData) else {
+                        return
+                    }
+                    try self.mlsClient.joinWithWelcome(cid: mlsEvent.cid.rawValue, welcome: welcome.data, ratchetTree: ratchetTree)
+                    self.saveMlsGroupJoinedAt(cidString: mlsEvent.cid.rawValue)
+                case .proposal:
+                    break
+                }
+            } catch {
+                log.error("[MLS] Failed to process event: \(mlsEvent)", subsystems: .mls)
+            }
+        }
+    }
+
+    private func decryptNewMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
+        log.debug("[MLS] Decrypt message with epoch: \(message.mlsEpoch)")
+        guard let encryptedData = message.encryptedData else { return }
+        decryptMessagePayload(messageId: message.id, encryptedData: encryptedData, cid: cid)
+    }
+
+    private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
+        defer {
+            // Catch up on any E2EE events missed while disconnected.
+            performE2eSync()
+        }
+        // Send mising keypackages to BE
+        guard let keyPackagesRemaining = event.keyPackagesRemaining else {
+            return
+        }
+        let amountOfKeyPackagesMissing = keyPackageAmount - keyPackagesRemaining
+        guard amountOfKeyPackagesMissing > 0 , amountOfKeyPackagesMissing <= keyPackageAmount else {
+            return
+        }
+        let keyPackages = mlsClient.getKeyPackage(count: amountOfKeyPackagesMissing).map { $0.uint8Array }
+        apiClient.request(endpoint: .uploadKeyPackages(keyPackages: keyPackages)) { result in
+            log.debug(result)
+        }
+    }
+
+    // MARK: - E2EE Sync
+
+    /// Fetches all missed E2EE events for every MLS-enabled channel since the last known cursor,
+    /// applying protocol messages and decrypting application messages in order.
+    /// Called automatically on every WebSocket connect / reconnect via `handleHealthCheckEvent`.
+    func performE2eSync() {
+        var cursors: [String: Int64] = [:]
+        let deviceLoginTime = loginTime
+        database.viewContext.performAndWait {
+            let channels = ChannelDTO.fetchAllMlsEnabled(context: self.database.viewContext)
+            for ch in channels {
+                // 1. If this device already has a sync cursor or has joined the group, use that.
+                if let anchor = ch.e2eSyncCursor ?? ch.mlsGroupJoinedAt {
+                    cursors[ch.cid] = Int64(anchor.timeIntervalSince1970 * 1000)
+                    continue
+                }
+                // 2. If the user joined the channel on another device after this device logged in
+                //    (membershipCreatedAt > loginTime), sync from membershipCreatedAt.
+                if let loginTime = deviceLoginTime,
+                   let memberCreatedAt = ch.membership?.memberCreatedAt?.bridgeDate,
+                   memberCreatedAt > loginTime {
+                    cursors[ch.cid] = Int64(loginTime.timeIntervalSince1970 * 1000)
+                }
+            }
+        }
+        guard !cursors.isEmpty else { return }
+        log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
+        syncPage(cursors: cursors)
+    }
+
+    /// Called after a channel list API response is saved to the database.
+    /// For each MLS-enabled channel whose local MLS group does not yet exist,
+    /// performs an external join so the device can decrypt messages in that channel.
+    ///
+    /// - Parameter cids: The MLS-enabled channel IDs from the saved channel list payload.
+    func handleNewEncryptedChannels(_ cids: [ChannelId]) {
+        for cid in cids {
+            guard !mlsClient.isGroupLoaded(cid: cid.rawValue) else { continue }
+            log.debug("[E2E] No local group for \(cid), performing external join", subsystems: .mls)
+            externalJoinChannel(cid: cid) { error in
+                if let error {
+                    log.error("[E2E] externalJoinChannel failed for \(cid): \(error)", subsystems: .mls)
+                }
+            }
+        }
+    }
+
+    /// Fetches missed E2EE events for a single channel since its last known cursor,
+    /// applying protocol messages and decrypting application messages in order.
+    ///
+    /// Uses the same `e2eSyncCursor` / `mlsGroupJoinedAt` anchor as `performE2eSync`.
+    /// Automatically paginates if `has_more` is `true` in the response.
+    ///
+    /// - Parameter cid: The channel to sync.
+    func performE2eChannelSync(cid: ChannelId) {
+        var since: Int64?
+        let deviceLoginTime = loginTime
+        database.viewContext.performAndWait {
+            guard let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) else { return }
+            // 1. Prefer existing sync cursor or device group join time.
+            if let anchor = dto.e2eSyncCursor ?? dto.mlsGroupJoinedAt {
+                since = Int64(anchor.timeIntervalSince1970 * 1000)
+                return
+            }
+            // 2. If the user joined on another device after this device logged in, use membershipCreatedAt.
+            if let loginTime = deviceLoginTime,
+               let memberCreatedAt = dto.membership?.memberCreatedAt?.bridgeDate,
+               memberCreatedAt > loginTime {
+                since = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
+            }
+        }
+        guard let since else {
+            log.debug("[E2eSync] Skipping sync for \(cid): device has not joined the MLS group yet", subsystems: .mls)
+            return
+        }
+        log.debug("[E2eSync] Starting single-channel sync for \(cid) since \(since)", subsystems: .mls)
+        syncChannelPage(cid: cid, since: since)
+    }
+
+    private func syncChannelPage(cid: ChannelId, since: Int64) {
+        apiClient.request(endpoint: .e2eChannelSync(cid: cid, since: since)) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                log.error("[E2eSync] Single-channel request failed for \(cid): \(error)", subsystems: .mls)
+            case .success(let payload):
+                guard !payload.events.isEmpty else { return }
+
+                self.processE2eSyncEvents(payload.events, cid: cid, cidString: cid.rawValue)
+
+                // Advance cursor to last event's created_at.
+                if let lastEvent = payload.events.last {
+                    let nextCursor = Int64(lastEvent.createdAt.timeIntervalSince1970 * 1000)
+                    self.saveSyncCursors([cid.rawValue: nextCursor])
+
+                    if payload.hasMore {
+                        log.debug("[E2eSync] Paginating single-channel sync for \(cid)", subsystems: .mls)
+                        self.syncChannelPage(cid: cid, since: nextCursor)
+                    }
+                }
+            }
+        }
+    }
+
+    private func syncPage(cursors: [String: Int64]) {
+        let body = E2eSyncRequestBody(cursors: cursors)
+        apiClient.request(endpoint: .e2eSync(body: body)) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                log.error("[E2eSync] Request failed: \(error)", subsystems: .mls)
+            case .success(let payload):
+                var nextCursors: [String: Int64] = [:]
+
+                for (cidString, channelPayload) in payload.channels {
+                    guard !channelPayload.events.isEmpty else { continue }
+
+                    guard let cid = try? ChannelId(cid: cidString) else {
+                        log.warning("[E2eSync] Skipping unknown cid '\(cidString)'", subsystems: .mls)
+                        continue
+                    }
+
+                    // Process all events for this channel in order on the serial decryptQueue.
+                    self.processE2eSyncEvents(channelPayload.events, cid: cid, cidString: cidString)
+
+                    // Advance the cursor to the last event's created_at.
+                    if let lastEvent = channelPayload.events.last {
+                        nextCursors[cidString] = Int64(lastEvent.createdAt.timeIntervalSince1970 * 1000)
+                    }
+
+                    // If more pages remain, carry the old cursor so we don't lose it.
+                    if channelPayload.hasMore, nextCursors[cidString] == nil {
+                        nextCursors[cidString] = cursors[cidString]
+                    }
+                }
+
+                // Persist updated cursors to the DB.
+                if !nextCursors.isEmpty {
+                    self.saveSyncCursors(nextCursors)
+                }
+
+                // Paginate for channels that still have more events.
+                var remaining: [String: Int64] = [:]
+                for (cid, ch) in payload.channels where ch.hasMore {
+                    remaining[cid] = nextCursors[cid] ?? cursors[cid] ?? 0
+                }
+                if !remaining.isEmpty {
+                    log.debug("[E2eSync] Paginating for \(remaining.count) channel(s)", subsystems: .mls)
+                    self.syncPage(cursors: remaining)
+                }
+            }
+        }
+    }
+
+    /// Enqueues all events for one channel onto the serial `decryptQueue` so that
+    /// protocol messages are applied before the application messages that follow them.
+    private func processE2eSyncEvents(_ events: [E2eSyncEventPayload], cid: ChannelId, cidString: String) {
+        decryptQueue.addOperation { [weak self] in
+            guard let self else { return }
+            for event in events {
+                switch event {
+                case .protocol(let data):
+                    self.applyE2eSyncProtocolEvent(data, cidString: cidString)
+                case .application(let data):
+                    // Call the synchronous body directly — we are already on decryptQueue,
+                    // so we must NOT re-enqueue via decryptMessagePayload (that would deadlock
+                    // the serial queue waiting on itself).
+                    self.decryptMessagePayloadSync(
+                        messageId: data.id,
+                        encryptedData: Data(data.mlsCiphertext),
+                        cid: cid
+                    )
+                }
+            }
+        }
+    }
+
+    /// Synchronous decryption body. Must only be called from within a `decryptQueue` operation.
+    /// External callers should use `decryptMessagePayload` which enqueues this onto the queue.
+    private func decryptMessagePayloadSync(
+        messageId: MessageId,
+        encryptedData: Data,
+        cid: ChannelId,
+        completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
+    ) {
+        // Re-check the DB cache — a prior operation may have populated it.
+        var cachedPayload: E2ePayload?
+        database.viewContext.performAndWait {
+            if let dto = MessageDecryptDTO.load(messageId: messageId, context: self.database.viewContext) {
+                cachedPayload = try? dto.asPayload()
+            }
+        }
+
+        if let cached = cachedPayload {
+            completion?(.success(cached))
+            return
+        }
+
+        // No cache — run MLS decrypt.
+        do {
+            let group = try mlsClient.loadGroup(with: cid.rawValue)
+            log.debug("[MLS] Current group epoch: \(group.epoch())", subsystems: .mls)
+            let payload = try mlsClient.decrypt(data: encryptedData, in: group)
+
+            database.write { session in
+                try session.saveMessageDecrypt(payload: payload, messageId: messageId)
+                // Also update MessageDTO.text directly so the channel list preview
+                // (ChannelDTO.previewMessage → MessageDTO.text) reflects the decrypted content.
+                session.message(id: messageId)?.text = payload.text
+            } completion: { error in
+                if let error {
+                    log.error("Failed to save decrypted message cache for \(messageId): \(error)")
+                }
+            }
+
+            completion?(.success(payload))
+        } catch {
+            log.error("Failed to decrypt message \(messageId): \(error)")
+            completion?(.failure(error))
+        }
+    }
+
+    private func applyE2eSyncProtocolEvent(_ data: E2eSyncProtocolData, cidString: String) {
+        do {
+            switch data.type {
+            case .commit, .externalCommit:
+                let group = try self.mlsClient.loadGroup(with: cidString)
+                guard group.epoch() == data.epoch - 1 else {
+                    log.debug("[MLS] Skipping commit: local epoch \(group.epoch()) != expected \(data.epoch - 1)", subsystems: .mls)
+                    return
+                }
+                
+                if let bytes = data.commit {
+                    log.debug("[MLS] Processing commit message", subsystems: .mls)
+                    try mlsClient.processMessage(data: Data(bytes), in: cidString)
+                }
+            case .welcome:
+                if let targetUserIds = data.targetUserIds,
+                   let currentUserId = mlsClient.userId,
+                   !targetUserIds.contains(currentUserId) {
+                    log.debug("[E2eSync] Skipping welcome not targeted at current user", subsystems: .mls)
+                    return
+                }
+                if let welcome = data.welcome, let tree = data.ratchetTree,
+                   let ratchetTree = try? RatchetTree.fromBytes(data: Data(tree)) {
+                    try mlsClient.joinWithWelcome(cid: cidString, welcome: Data(welcome), ratchetTree: ratchetTree)
+                    saveMlsGroupJoinedAt(cidString: cidString)
+                }
+            case .proposal:
+                break
+//                if let proposal = data.proposal {
+//                    try mlsClient.processMessage(data: Data(proposal), in: cidString)
+//                }
+            }
+        } catch {
+            log.error("[E2eSync] Failed to apply protocol event (type=\(data.type)): \(error)", subsystems: .mls)
+        }
+    }
+
+    private func saveSyncCursors(_ cursors: [String: Int64]) {
+        database.write { session in
+            for (cidString, ms) in cursors {
+                guard let cid = try? ChannelId(cid: cidString),
+                      let dto = session.channel(cid: cid) else { continue }
+                dto.e2eSyncCursor = Date(timeIntervalSince1970: Double(ms) / 1000).bridgeDate
+            }
+        } completion: { error in
+            if let error {
+                log.error("[E2eSync] Failed to save cursors: \(error)", subsystems: .mls)
+            }
+        }
+    }
+
+    /// Records the current timestamp as the moment this device joined the MLS group for the given channel.
+    /// Called after a successful external join or welcome-based join.
+    private func saveMlsGroupJoinedAt(cidString: String) {
+        database.write { session in
+            guard let cid = try? ChannelId(cid: cidString),
+                  let dto = session.channel(cid: cid) else { return }
+            dto.mlsGroupJoinedAt = Date().bridgeDate
+        } completion: { error in
+            if let error {
+                log.error("[E2eSync] Failed to save mlsGroupJoinedAt for \(cidString): \(error)", subsystems: .mls)
+            }
+        }
+    }
+
+    func consumeKeyPackages(in cid: ChannelId, targetUserIds: [String], completion: @escaping (Result<[KeyPackage], Error>) -> Void) {
+        apiClient.request(endpoint: .consumeKeyPackages(cid: cid, targetUserIds: targetUserIds), completion: { result in
+            switch result {
+            case .success(let payload):
+                let memberKeyPackages = payload.members.reduce(into: [[UInt8]]()) { result, memberPackage in
+                    let keyPackages = memberPackage.keyPackages.map({ $0.keyPackage})
+                    result.append(contentsOf: keyPackages)
+                }
+
+                do {
+                    let keyPackages = try memberKeyPackages.map { bytes in
+                        try KeyPackage.fromBytes(data: Data(bytes))
+                    }
+                    completion(.success(keyPackages))
+                } catch {
+                    completion(.failure(error))
+                }
+            case .failure(let error):
+                log.error("Failed to comsume key in channel: \(cid) with error: \(error)")
+                completion(.failure(error))
+            }
+        })
+    }
+
+    func consumeKeyPackagesBatch(targetUserIds: [String], completion: @escaping (Result<[KeyPackage], Error>) -> Void) {
+        apiClient.request(endpoint: .consumeKeyPackagesBatch(userIds: targetUserIds), completion: { result in
+            switch result {
+            case .success(let payload):
+                let memberKeyPackages = payload.members.reduce(into: [[UInt8]]()) { result, memberPackage in
+                    let keyPackages = memberPackage.keyPackages.map({ $0.keyPackage})
+                    result.append(contentsOf: keyPackages)
+                }
+
+                do {
+                    let keyPackages = try memberKeyPackages.map { bytes in
+                        try KeyPackage.fromBytes(data: Data(bytes))
+                    }
+                    completion(.success(keyPackages))
+                } catch {
+                    completion(.failure(error))
+                }
+            case .failure(let error):
+                log.error("Failed to comsume key package of user: \(targetUserIds) with error: \(error)")
+                completion(.failure(error))
+            }
+        })
+    }
+
+    func addMember(to cid: ChannelId, memberKeypackages: [KeyPackage]) throws -> (CommitBundle, RatchetTree, Data, Int) {
+        let group = try mlsClient.loadOrCreateGroup(with: cid.rawValue)
+        let commitBundle = try mlsClient.addMember(to: group, memberKeyPackages: memberKeypackages)
+        
+        let ratchetTree = group.exportRatchetTree()
+        
+        guard let groupInfo = commitBundle.groupInfo else {
+            throw ClientError("[MLS] add member failed, no group info in commit bundle")
+        }
+        let epoch = Int(group.epoch())
+        log.debug("TTTTTTTT ADD MEMBER CURRENT EPOCH: \(epoch)")
+        return (commitBundle, ratchetTree, groupInfo, epoch)
+    }
+
+    func removeMembers(_ userIds: [String], in cid: ChannelId) throws -> (CommitBundle, Data, Int) {
+        let group = try mlsClient.loadGroup(with: cid.rawValue)
+        let commitBunddle = try mlsClient.removeMembers(userIds, in: group)
+        guard let groupInfo = commitBunddle.groupInfo else {
+            throw ClientError("[MLS] Remove member failed, no group info in commit bundle")
+        }//try mlsClient.exportGroupInfo(of: group)
+        let epoch = Int(group.epoch())
+        log.debug("TTTTTTTT REMOVE MEMBER CURRENT EPOCH: \(epoch)")
+        return (commitBunddle, groupInfo, epoch)
+    }
+
+    func externalJoinChannel(cid: ChannelId, completion: @escaping (Error?) -> Void) {
+        apiClient.request(endpoint: .getGroupInfo(cid: cid)) { [weak self] result in
+            guard let self else {
+                return
+            }
+            switch result {
+            case .success(let groupInfo):
+                guard !groupInfo.isStale else {
+                    completion(ClientError("Group info is stable, retry later."))
+                    return
+                }
+                do {
+                    let externalJoinResult = try mlsClient.externalJoin(groupInfo: groupInfo.groupInfo.data)
+                    log.debug("External join group with cid: \(cid) info: \(externalJoinResult.group.epoch())", subsystems: .mls)
+                    requestExternalJoin(to: cid, externalJoinResult: externalJoinResult, completion: completion)
+                } catch (let error) {
+                    completion(ClientError("Group info is stable, retry later."))
+                    return
+                }
+            case .failure(let error):
+                completion(error)
+            }
+        }
+    }
+
+    private func requestExternalJoin(to cid: ChannelId, externalJoinResult: ExternalJoinResult, completion: @escaping (Error?) -> Void) {
+        let body = ExternalJoinRequestBody(commit: externalJoinResult.commit,
+                                           epoch: Int(externalJoinResult.group.epoch()))
+        apiClient.request(endpoint: .externalJoin(cid: cid, body: body)) { [weak self] result in
+            guard let self else {
+                return
+            }
+            switch result {
+            case .success(let payload):
+                do {
+                    try mlsClient.mergePendingCommit(in: cid)
+                    saveMlsGroupJoinedAt(cidString: cid.rawValue)
+                    let group = externalJoinResult.group
+                    let groupInfo = try mlsClient.exportGroupInfo(of: group)
+                    let epoch = group.epoch()
+                    uploadGroupInfo(in: cid, groupInfo: groupInfo, epoch: Int(epoch), completion: completion)
+                } catch (let error) {
+                    completion(error)
+                }
+            case .failure(let error):
+                try? mlsClient.clearPendingCommit(in: cid)
+                completion(error)
+            }
+        }
+    }
+
+    private func uploadGroupInfo(in cid: ChannelId, groupInfo: Data, epoch: Int, completion: @escaping (Error?) -> Void) {
+        let body = UploadGroupInfoRequestBody(groupInfo: groupInfo,
+                                              epoch: epoch)
+        apiClient.request(endpoint: .uploadGroupInfo(cid: cid, body: body)) { [weak self] result in
+            switch result {
+            case .success:
+                completion(nil)
+            case .failure(let error):
+                completion(error)
+            }
+        }
+    }
+
+    func encryptedMessage(_ message: E2ePayload, in cid: ChannelId) throws -> ([UInt8], Int) {
+        let group = try mlsClient.loadGroup(with: cid.rawValue)
+        let data = try JSONEncoder().encode(message)
+        let encryptedData = try mlsClient.encrypt(inputData: data, in: group)
+        let epoch = Int(group.epoch())
+        return (encryptedData.uint8Array, epoch)
+    }
+
+    func mergePendingCommit(in cid: ChannelId) throws {
+        try mlsClient.mergePendingCommit(in: cid)
+    }
+
+    func clearPendingCommit(in cid: ChannelId) throws {
+        try mlsClient.clearPendingCommit(in: cid)
+    }
+
+    func commitPendingProposal(in cid: ChannelId) throws {
+        try mlsClient.commitPendingProposal(in: cid)
+    }
+
+    func clearPendingProposal(in cid: ChannelId) throws {
+        try mlsClient.clearPendingProposal(in: cid)
+    }
+
+    public func reset() {
+        loginTime = nil
+        do {
+            try mlsClient.reset()
+        } catch (let error) {
+            log.error("[MLS] Failed to reset MLS: \(error)", subsystems: .mls)
+        }
+    }
+
+    // MARK: - Decryption
+
+    /// The single decryption gate for all message sources (WebSocket, API, NSE).
+    ///
+    /// Enqueues work onto the serial `decryptQueue` so MLS `processMessage` is
+    /// never called concurrently. Inside the queue the database is consulted first;
+    /// if another operation has already written the cache the MLS call is skipped.
+    ///
+    /// - Parameters:
+    ///   - messageId: The ID of the message to decrypt.
+    ///   - encryptedData: The raw MLS ciphertext bytes stored on the message.
+    ///   - cid: The channel the message belongs to (used to look up the MLS group).
+    ///   - completion: Called with the decrypted `E2ePayload` or an error.
+    ///                 Always invoked, even on cache hits.
+    func decryptMessagePayload(
+        messageId: MessageId,
+        encryptedData: Data,
+        cid: ChannelId,
+        completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
+    ) {
+        decryptQueue.addOperation { [weak self] in
+            guard let self else { return }
+            self.decryptMessagePayloadSync(
+                messageId: messageId,
+                encryptedData: encryptedData,
+                cid: cid,
+                completion: completion
+            )
+        }
+    }
+
+    /// Decrypts an encrypted `ChatMessage`, using the cached decrypted payload when available.
+    ///
+    /// Routes through `decryptMessagePayload` so the serial queue is always respected,
+    /// regardless of which source triggered the call.
+    ///
+    /// - Parameters:
+    ///   - message: The `ChatMessage` to decrypt. Must have `encryptedData` set.
+    ///   - completion: Called with the updated `ChatMessage` or an error.
+    func decryptMessage(
+        _ message: ChatMessage,
+        completion: @escaping (Result<ChatMessage, Error>) -> Void
+    ) {
+
+        log.debug("[MLS] Current message epoch: \(message.mlsEpoch)", subsystems: .mls)
+        // Fast path: already cached on the model (loaded from DB at fetch time).
+        if let cached = message.decryptedMessage {
+            var updated = message
+            updated.text = cached.text
+            updated.stickerUrl = cached.stickerUrl
+            completion(.success(updated))
+            return
+        }
+
+        guard let encryptedData = message.encryptedData else {
+            completion(.failure(ClientError.Unexpected("Message has no encrypted data.")))
+            return
+        }
+        guard let cid = message.cid else {
+            completion(.failure(ClientError.Unexpected("Message has no channel id for decryption.")))
+            return
+        }
+
+        decryptMessagePayload(messageId: message.id, encryptedData: encryptedData, cid: cid) { result in
+            switch result {
+            case .success(let payload):
+                var updated = message
+                updated.text = payload.text
+                updated.stickerUrl = payload.stickerUrl
+                updated.decryptedMessage = payload
+                completion(.success(updated))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+}

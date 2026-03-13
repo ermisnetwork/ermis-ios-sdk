@@ -4,6 +4,7 @@
 
 import ErmisChat
 import UIKit
+import ErmisSharedUI
 
 // MARK: - Protocol
 

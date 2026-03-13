@@ -44,6 +44,7 @@ struct WebSocketConnectJsonPayload: Encodable {
         userId = userInfo.id
         userDetails = UserWebSocketPayload(userInfo: userInfo, apiKey: apiKey)
         serverDeterminesConnectionId = true
+        
     }
 }
 

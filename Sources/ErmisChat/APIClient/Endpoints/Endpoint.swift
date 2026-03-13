@@ -15,6 +15,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
     let method: EndpointMethod
     let query: Encodable?
     let needConnectionId: Bool
+    let needDeviceId: Bool
     let needToken: Bool
     let urlType: URLType
     let body: Encodable?
@@ -25,6 +26,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         query: Encodable? = nil,
         body: Encodable? = nil,
         needConnectionId: Bool = false,
+        needDeviceId: Bool = false,
         needToken: Bool = true,
         urlType: URLType = .normal
     ) {
@@ -33,6 +35,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         self.query = query
         self.body = body
         self.needConnectionId = needConnectionId
+        self.needDeviceId = needDeviceId
         self.needToken = needToken
         self.urlType = urlType
     }
@@ -44,6 +47,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         case method
         case queryItems
         case requiresConnectionId
+        case requiresDeviceId
         case requiresToken
         case body
         case urlType
@@ -55,6 +59,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         method = try container.decode(EndpointMethod.self, forKey: .method)
         query = try container.decodeIfPresent(Data.self, forKey: .queryItems)
         needConnectionId = try container.decode(Bool.self, forKey: .requiresConnectionId)
+        needDeviceId = try container.decodeIfPresent(Bool.self, forKey: .requiresDeviceId) ?? false
         needToken = try container.decode(Bool.self, forKey: .requiresToken)
         body = try container.decodeIfPresent(Data.self, forKey: .body)
         urlType = try container.decode(URLType.self, forKey: .urlType)
@@ -68,6 +73,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
             try container.encode(queryItemsData, forKey: .queryItems)
         }
         try container.encode(needConnectionId, forKey: .requiresConnectionId)
+        try container.encode(needDeviceId, forKey: .requiresDeviceId)
         try container.encode(needToken, forKey: .requiresToken)
         if let body = try body?.encodedAsData() {
             try container.encode(body, forKey: .body)

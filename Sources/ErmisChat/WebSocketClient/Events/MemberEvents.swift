@@ -19,6 +19,8 @@ public struct MemberAddedEvent: MemberEvent, ChannelSpecificEvent {
     /// The memeber that was added to a channel.
     public let member: ChannelMember?
 
+    public let mlsEnable: Bool
+
     /// The event timestamp.
     public let createdAt: Date
 }
@@ -28,6 +30,7 @@ class MemberAddedEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
     let member: MemberPayload
+    let mlsEnable: Bool
     let createdAt: Date
     let payload: EventPayload
 
@@ -36,6 +39,7 @@ class MemberAddedEventDTO: EventDTO {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
         member = try response.value(at: \.memberContainer?.member)
+        mlsEnable = try response.mlsEnabled ?? false
         createdAt = try response.value(at: \.createdAt)
         payload = response
     }
@@ -52,6 +56,7 @@ class MemberAddedEventDTO: EventDTO {
             cid: cid,
             parentCid: parentCid,
             member: memberDTO?.asModel(),
+            mlsEnable: mlsEnable,
             createdAt: createdAt
         )
     }

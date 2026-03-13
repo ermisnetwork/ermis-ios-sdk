@@ -10,6 +10,8 @@ enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
     case cid
     case type
     case user
+    case encryptedData = "mls_ciphertext"
+    case mlsEpoch = "mls_epoch"
     case createdAt = "created_at"
     case updatedAt = "updated_at"
     case deletedAt = "deleted_at"
@@ -73,6 +75,8 @@ class MessagePayload: Decodable {
     let deletedAt: Date?
     let messageTextUpdatedAt: Date?
     let text: String
+    let encryptedData: [UInt8]?
+    let mlsEpoch: Int?
     let oldTexts: [MessageEditHistoryPayload]?
     let command: String?
     let args: String?
@@ -111,6 +115,8 @@ class MessagePayload: Decodable {
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
         text = try container.decodeIfPresent(String.self, forKey: .text)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        encryptedData = try container.decodeIfPresent([UInt8].self, forKey: .encryptedData)
+        mlsEpoch = try container.decodeIfPresent(Int.self, forKey: .mlsEpoch)
         oldTexts = try container.decodeIfPresent([MessageEditHistoryPayload].self, forKey: .oldTexts)
         isSilent = try container.decodeIfPresent(Bool.self, forKey: .isSilent) ?? false
         isShadowed = try container.decodeIfPresent(Bool.self, forKey: .shadowed) ?? false
@@ -158,6 +164,8 @@ class MessagePayload: Decodable {
         updatedAt: Date,
         deletedAt: Date? = nil,
         text: String,
+        encryptedData: [UInt8]? = nil,
+        mlsEpoch: Int? = nil,
         oldTexts: [MessageEditHistoryPayload],
         command: String? = nil,
         args: String? = nil,
@@ -194,6 +202,8 @@ class MessagePayload: Decodable {
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
         self.text = text
+        self.encryptedData = encryptedData
+        self.mlsEpoch = mlsEpoch
         self.oldTexts = oldTexts
         self.command = command
         self.args = args
@@ -230,7 +240,9 @@ class MessagePayload: Decodable {
 struct MessageRequestBody: Encodable {
     var id: String
     let user: UserRequestBody
-    let text: String
+    var text: String
+    var encryptedData: [UInt8]?
+    var mlsEpoch: Int?
     let type: MessageType?
     let oldTexts: [MessageEditHistoryPayload]?
     let cid: ChannelId?
@@ -239,8 +251,8 @@ struct MessageRequestBody: Encodable {
     let parentId: String?
     let isSilent: Bool
     let quotedMessageId: String?
-    let attachments: [MessageAttachmentPayload]
-    let stickerUrl: URL?
+    var attachments: [MessageAttachmentPayload]
+    var stickerUrl: URL?
     let mentionedUserIds: [UserId]
     let mentionedAll: Bool
     let createdAt: Date?
@@ -251,6 +263,8 @@ struct MessageRequestBody: Encodable {
         id: String,
         user: UserRequestBody,
         text: String,
+        encryptedData: [UInt8]? = nil,
+        mslEpoch: Int? = nil,
         oldTexts: [MessageEditHistoryPayload]? = nil,
         type: MessageType? = nil,
         cid: ChannelId? = nil,
@@ -270,6 +284,8 @@ struct MessageRequestBody: Encodable {
         self.id = id
         self.user = user
         self.text = text
+        self.encryptedData = encryptedData
+        self.mlsEpoch = mslEpoch
         self.oldTexts = oldTexts
         self.type = type
         self.cid = cid
@@ -291,6 +307,8 @@ struct MessageRequestBody: Encodable {
         self.id = message.id
         self.user = UserRequestBody(from: message.author)
         self.text = message.text
+        self.encryptedData = message.encryptedData != nil ? message.encryptedData!.uint8Array : nil
+        self.mlsEpoch = message.mlsEpoch
         self.oldTexts = message.oldTexts?.map {
             MessageEditHistoryPayload(text: $0.text, createdAt: $0.createdAt)
         }
@@ -321,6 +339,8 @@ struct MessageRequestBody: Encodable {
         try container.encode(id, forKey: .id)
         try container.encodeIfPresent(user, forKey: .user)
         try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(encryptedData, forKey: .encryptedData)
+        try container.encodeIfPresent(mlsEpoch, forKey: .mlsEpoch)
         try container.encodeIfPresent(oldTexts, forKey: .oldTexts)
         try container.encodeIfPresent(type, forKey: .type)
         try container.encodeIfPresent(cid, forKey: .cid)

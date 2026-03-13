@@ -7,6 +7,13 @@ import ErmisShared
 
 /// Makes a channels query call to the backend and updates the local storage with the results.
 class ChannelListUpdater: Worker {
+    private weak var e2eRepository: E2eRepository?
+
+    init(database: DatabaseContainer, apiClient: APIClient, e2eRepository: E2eRepository?) {
+        self.e2eRepository = e2eRepository
+        super.init(database: database, apiClient: apiClient)
+    }
+
     /// Makes a channels query call to the backend and updates the local storage with the results.
     ///
     /// - Parameters:
@@ -246,11 +253,29 @@ private extension ChannelListUpdater {
         database.write { session in
             initialActions?(session)
             channels = session.saveChannelList(payload: payload, query: query).compactMap { try? $0.asModel() }
-        } completion: { error in
+        } completion: { [weak self] error in
             if let error = error {
                 log.error("Failed to save `ChannelListPayload` to the database. Error: \(error)")
                 completion?(.failure(error))
             } else {
+                // Only external-join channels the user was already a member of
+                // before this device logged in (membershipCreatedAt < loginTime).
+                // Channels joined after login will be handled via welcome or
+                // invite events instead.
+                let loginTime = self?.e2eRepository?.loginTime
+                let mlsCids = payload.channels
+                    .filter { channelPayload in
+                        guard channelPayload.channel.mlsEnabled else { return false }
+                        guard let loginTime,
+                              let memberCreatedAt = channelPayload.membership?.createdAt else {
+                            return false
+                        }
+                        return memberCreatedAt < loginTime
+                    }
+                    .map { $0.channel.cid }
+                if !mlsCids.isEmpty {
+                    self?.e2eRepository?.handleNewEncryptedChannels(mlsCids)
+                }
                 completion?(.success(channels))
             }
         }

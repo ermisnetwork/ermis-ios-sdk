@@ -190,7 +190,7 @@ extension WebSocketClient: WebSocketEngineDelegate {
     func webSocketDidReceiveMessage(_ message: String) {
         do {
             let messageData = Data(message.utf8)
-//            log.debug("Event received:\n\(messageData.debugPrettyPrintedJSON)", subsystems: .webSocket)
+            log.debug("Event received:\n\(messageData.debugPrettyPrintedJSON)", subsystems: .webSocket)
 
             let event = try eventDecoder.decode(from: messageData)
             if let healthCheckEvent = event as? HealthCheckEvent {
@@ -198,7 +198,7 @@ extension WebSocketClient: WebSocketEngineDelegate {
                     self?.pingController.pongReceived()
                     self?.connectionState = .connected(connectionId: healthCheckEvent.connectionId)
                 }
-                eventNotificationCenter.process(healthCheckEvent, postNotification: false)
+                eventNotificationCenter.process(healthCheckEvent, postNotification: true)
             } else {
                 eventsBatcher.append(event)
             }

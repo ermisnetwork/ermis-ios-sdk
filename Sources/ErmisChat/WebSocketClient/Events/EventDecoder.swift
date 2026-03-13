@@ -14,6 +14,9 @@ public struct EventDecoder {
         let decoder = JSONDecoder.default
         do {
             let response = try decoder.decode(EventPayload.self, from: data)
+            if response.eventType == "protocol" || (response.eventType != "health.check" && response.eventType != "user.watching.start") {
+                log.debug("TTTT")
+            }
             return try response.event()
         } catch is ClientError.UnknownChannelEvent {
             return try decoder.decode(UnknownChannelEvent.self, from: data)

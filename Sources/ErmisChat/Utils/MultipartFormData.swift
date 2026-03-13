@@ -120,6 +120,9 @@ class MultipartInputStream: InputStream {
         _streamStatus = .closed
     }
 
+    override func property(forKey key: Stream.PropertyKey) -> Any? { nil }
+    override func setProperty(_ property: Any?, forKey key: Stream.PropertyKey) -> Bool { false }
+
     override func schedule(in aRunLoop: RunLoop, forMode mode: RunLoop.Mode) {}
     override func remove(from aRunLoop: RunLoop, forMode mode: RunLoop.Mode) {}
 

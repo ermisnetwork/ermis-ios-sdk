@@ -30,6 +30,7 @@ enum UserPayloadsCodingKeys: String, CodingKey, CaseIterable {
     case aboutMe = "about_me"
     case phone
     case email
+    case keyPackagesRemaining = "key_packages_remaining"
 }
 
 // MARK: - GET users

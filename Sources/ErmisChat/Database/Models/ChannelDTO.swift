@@ -71,6 +71,18 @@ class ChannelDTO: NSManagedObject {
     @NSManaged var parent: ChannelDTO?
     @NSManaged var topics: Set<ChannelDTO>?
 
+    // E2e
+    @NSManaged var mlsEnabled: Bool
+    @NSManaged var mlsEnabledAt: DBDate?
+    @NSManaged var mlsEpoch: Int
+    /// The `created_at` of the last successfully processed E2EE sync event for this channel.
+    /// Used as a cursor for POST /v1/e2ee/sync. Falls back to `mlsGroupJoinedAt` when nil.
+    @NSManaged var e2eSyncCursor: DBDate?
+    /// The timestamp when *this device* joined the MLS group for the channel
+    /// (via external join or welcome message). Used as the fallback cursor for E2E sync
+    /// when `e2eSyncCursor` is nil, so only events after the device joined are fetched.
+    @NSManaged var mlsGroupJoinedAt: DBDate?
+
     var projectId: String? {
         guard let channelId = try? ChannelId(cid: cid) else {
             return nil
@@ -164,6 +176,14 @@ class ChannelDTO: NSManagedObject {
         return load(by: request, context: context)
     }
 
+    /// Fetches all channels that have MLS encryption enabled.
+    /// Used by E2eRepository to build the cursor map for POST /v1/e2ee/sync.
+    static func fetchAllMlsEnabled(context: NSManagedObjectContext) -> [ChannelDTO] {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+        request.predicate = NSPredicate(format: "mlsEnabled == YES")
+        return (try? context.fetch(request)) ?? []
+    }
+
     static func loadOrCreate(cid: ChannelId, context: NSManagedObjectContext, cache: PreWarmedCache?) -> ChannelDTO {
         if let cachedObject = cache?.model(for: cid.rawValue, context: context, type: ChannelDTO.self) {
             return cachedObject
@@ -218,7 +238,7 @@ extension NSManagedObjectContext {
         cache: PreWarmedCache?
     ) throws -> ChannelDTO {
         let dto = ChannelDTO.loadOrCreate(cid: payload.cid, context: self, cache: cache)
-        
+
         if let name = payload.name {
             dto.name = name
         }
@@ -273,7 +293,7 @@ extension NSManagedObjectContext {
         if dto.defaultSortingAt == nil {
             dto.defaultSortingAt = dto.createdAt
         }
-        
+
         if let lastMessageAt = payload.lastMessageAt {
             dto.lastMessageAt = payload.lastMessageAt?.bridgeDate
 
@@ -322,11 +342,20 @@ extension NSManagedObjectContext {
             let member = try saveMember(payload: memberPayload, channelId: payload.cid, query: nil, cache: cache)
             dto.members.insert(member)
         }
-        
+
 
         if let query = query {
             let queryDTO = saveQuery(query: query)
             queryDTO.channels.insert(dto)
+        }
+
+        dto.mlsEnabled = payload.mlsEnabled
+        if let mlsEnabledAt = payload.mlsEnabledAt {
+            dto.mlsEnabledAt = mlsEnabledAt.bridgeDate
+        }
+
+        if let mlsEpoch = payload.mlsEpoch {
+            dto.mlsEpoch = mlsEpoch
         }
 
         return dto
@@ -691,6 +720,9 @@ extension Channel {
             latestMessages: { fetchMessages() },
             parent: { try? dto.parent?.relationshipAsModel(depth: depth)},
             topics: { fetchTopic() },
+            mlsEnabled: dto.mlsEnabled,
+            mlsEnabledAt: dto.mlsEnabledAt?.bridgeDate,
+            mlsEpoch: dto.mlsEpoch,
             lastMessageFromCurrentUser: { fetchLatestMessageFromUser() },
             pinnedMessages: {
                 dto.pinnedMessages.compactMap {

@@ -445,6 +445,8 @@ public struct NotificationInviteRespondBackEvent: MemberEvent, ChannelSpecificEv
     /// The channel the current user has become a member of.
     public let channel: Channel
 
+    public let mlsEnabled: Bool
+
     /// The membership information of the current user.
     public let member: ChannelMember
 
@@ -457,6 +459,7 @@ public struct NotificationInviteRespondBackEvent: MemberEvent, ChannelSpecificEv
 
 class NotificationInviteAcceptedEventDTO: EventDTO {
     let cid: ChannelId
+    let mlsEnabled: Bool
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -464,6 +467,7 @@ class NotificationInviteAcceptedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -477,6 +481,7 @@ class NotificationInviteAcceptedEventDTO: EventDTO {
 
         return try? NotificationInviteRespondBackEvent(
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .accept,
             createdAt: createdAt
@@ -486,6 +491,7 @@ class NotificationInviteAcceptedEventDTO: EventDTO {
 
 class NotificationInviteSkippedEventDTO: EventDTO {
     let cid: ChannelId
+    let mlsEnabled: Bool
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -493,6 +499,7 @@ class NotificationInviteSkippedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -506,6 +513,7 @@ class NotificationInviteSkippedEventDTO: EventDTO {
 
         return try? NotificationInviteRespondBackEvent(
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .skip,
             createdAt: createdAt
@@ -515,6 +523,7 @@ class NotificationInviteSkippedEventDTO: EventDTO {
 
 class NotificationInviteRejectedEventDTO: EventDTO {
     let cid: ChannelId
+    let mlsEnabled: Bool
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let topicCids: [ChannelId]?
@@ -523,6 +532,7 @@ class NotificationInviteRejectedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
         topicCids = try? response.value(at: \.topicCids)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
@@ -537,6 +547,7 @@ class NotificationInviteRejectedEventDTO: EventDTO {
 
         return try? NotificationInviteRespondBackEvent(
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .reject,
             createdAt: createdAt
@@ -547,6 +558,7 @@ class NotificationInviteRejectedEventDTO: EventDTO {
 class NotificationInviteMessagingRejectedEventDTO: EventDTO {
     //    let user: UserPayload
     let cid: ChannelId
+    let mlsEnabled: Bool
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -554,6 +566,7 @@ class NotificationInviteMessagingRejectedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -567,6 +580,7 @@ class NotificationInviteMessagingRejectedEventDTO: EventDTO {
 
         return try? NotificationInviteRespondBackEvent(
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .messagingReject,
             createdAt: createdAt

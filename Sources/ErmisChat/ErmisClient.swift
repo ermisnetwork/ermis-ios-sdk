@@ -86,6 +86,10 @@ public class ErmisClient {
 
     let walletRepository: WalletRepository
 
+    let e2eRepository: E2eRepository
+
+    let mlsClient: MlsClient
+
     func makeMessagesPaginationStateHandler() -> MessagesPaginationStateHandling {
         MessagesPaginationStateHandler()
     }
@@ -160,6 +164,7 @@ public class ErmisClient {
         self.rootProjectid = rootProjectId
         self.chainId = chainId
         self.environment = environment
+        let mlsClient = MlsClient()
 
         urlSessionConfiguration = factory.makeUrlSessionConfiguration()
         var apiClientEncoder = factory.makeApiClientRequestEncoder()
@@ -175,9 +180,18 @@ public class ErmisClient {
                 nil
             }
         )
+
+        let e2eRepository = environment.e2eRepositoryBuilder(
+            databaseContainer,
+            eventNotificationCenter,
+            mlsClient,
+            apiClient
+        )
+        
         let messageRepository = environment.messageRepositoryBuilder(
             databaseContainer,
-            apiClient
+            apiClient,
+            e2eRepository
         )
         let offlineRequestsRepository = environment.offlineRequestsRepositoryBuilder(
             messageRepository,
@@ -229,7 +243,9 @@ public class ErmisClient {
         self.messageRepository = messageRepository
         self.syncRepository = syncRepository
         self.walletRepository = walletRepository
+        self.e2eRepository = e2eRepository
         self.notificationTokenProvider = notificationTokenProvider
+        self.mlsClient = mlsClient
         authenticationRepository = authRepository
         extensionLifecycle = environment.extensionLifecycleBuilder(config.applicationGroupIdentifier)
         callRepository = environment.callRepositoryBuilder(apiClient)
@@ -246,6 +262,14 @@ public class ErmisClient {
         setupTokenRefresher()
         setupOfflineRequestQueue()
         setupConnectionRecoveryHandler(with: environment)
+
+        if let userId = currentUserId {
+            do {
+                try mlsClient.setup(with: userId)
+            } catch {
+                log.error("Failed to initialize MLS: \(error)")
+            }
+        }
     }
 
     deinit {
@@ -301,6 +325,11 @@ public class ErmisClient {
         self.chainId = token.chainId
         self.setProjecId(token.projectId)
         authenticationRepository.update(token: token, userInfo: userInfo)
+            do {
+                try mlsClient.setup(with: token.userId)
+            } catch {
+                log.error("Failed to initialize MLS: \(error)")
+            }
     }
 
     public func setProjecId(_ projectId: String) {
@@ -394,7 +423,7 @@ public class ErmisClient {
     /// Disconnects the chat client form the chat servers and removes all the local data related.
     public func logout(completion: @escaping () -> Void) {
         authenticationRepository.logOutUser()
-
+        e2eRepository.reset()
         // Stop tracking active components
         activeChannelControllers.removeAllObjects()
         activeChannelListControllers.removeAllObjects()
@@ -719,6 +748,7 @@ public class ErmisClient {
             completion(result.error)
         }
     }
+    // MARK: - E2E
     // MARK: - Call
     @discardableResult
     package
@@ -769,8 +799,14 @@ extension ErmisClient: AuthenticationRepositoryDelegate {
     func didFinishSettingUpAuthenticationEnvironment(for state: EnvironmentState) {
         switch state {
         case .firstConnection, .newUser:
+            e2eRepository.loginTime = Date()
             createBackgroundWorkers()
         case .newToken:
+            // After reinstall UserDefaults is cleared but Keychain token persists,
+            // so the state is .newToken with a nil loginTime. Restore it here.
+            if e2eRepository.loginTime == nil {
+                e2eRepository.loginTime = Date()
+            }
             if backgroundWorkers.isEmpty {
                 createBackgroundWorkers()
             }

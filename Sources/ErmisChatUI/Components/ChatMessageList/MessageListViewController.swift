@@ -297,8 +297,8 @@ open class MessageListViewController: _ViewController,
         guard let message = dataSource?.messageListVC(self, messageAt: indexPath) else {
             return nil
         }
-
-        if message.isDeleted || message.shouldRenderAsSystemMessage {
+        
+        if message.isDeleted || message.shouldRenderAsSystemMessage || message.isEncrypted {
             return nil
         }
 

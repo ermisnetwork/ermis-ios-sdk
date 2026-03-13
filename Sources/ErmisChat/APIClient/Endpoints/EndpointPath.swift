@@ -58,6 +58,7 @@ enum EndpointPath: Codable {
     case reopenTopic(channelId: ChannelId)
 
     case sendMessage(ChannelId)
+    case sendE2eMessage(ChannelId)
     case message(MessageId)
     case editMessage(MessageId, ChannelId)
     case deleteMessage(MessageId, ChannelId)
@@ -101,6 +102,18 @@ enum EndpointPath: Codable {
     case joinProject
     // Call
     case signal
+    // KeyPackage
+    case uploadKeyPackages
+    case keyPackagesCount
+    case consumeKeyPackages(ChannelId)
+    case consumeKeyPackagesBatch
+    case syncMls(ChannelId)
+    case enableEncryption(ChannelId)
+    case uploadGroupInfo(ChannelId)
+    case getGroupInfo(ChannelId)
+    case externalJoin(ChannelId)
+    case e2eSync
+    case e2eChannelSync(ChannelId)
 
     var value: String {
         switch self {
@@ -201,6 +214,8 @@ enum EndpointPath: Codable {
             return "channels/\(channelId.apiPath)/\(type)"
         case .sendMessage(let channelId):
             return "channels/\(channelId.apiPath)/message"
+        case .sendE2eMessage(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/message"
         case .message(let messageId):
             return "messages/\(messageId)"
         case .editMessage(let (messageId, cid)):
@@ -270,6 +285,28 @@ enum EndpointPath: Codable {
             return "uss/v1/users/join"
         case .signal:
             return "signal"
+        case .uploadKeyPackages:
+            return "v1/e2ee/key_packages"
+        case .keyPackagesCount:
+            return "v1/e2ee/key_packages/count"
+        case .consumeKeyPackages(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/key_packages"
+        case .consumeKeyPackagesBatch:
+            return "v1/e2ee/key_packages/batch"
+        case .syncMls(let channelId):
+            return "channels/\(channelId.apiPath)/sync"
+        case .enableEncryption(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/enable"
+        case .uploadGroupInfo(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/group_info"
+        case .getGroupInfo(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/group_info"
+        case .externalJoin(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/external_join"
+        case .e2eSync:
+            return "v1/e2ee/sync"
+        case .e2eChannelSync(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/sync"
         case .enableTopics(let channelId):
             return "channels/\(channelId.apiPath)/topics/enable"
         case .disableTopics(let channelId):

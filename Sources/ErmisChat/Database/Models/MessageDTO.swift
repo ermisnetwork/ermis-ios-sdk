@@ -24,6 +24,8 @@ class MessageDTO: NSManagedObject {
     @NSManaged var id: String
     @NSManaged var cid: String?
     @NSManaged var text: String
+    @NSManaged var encryptedData: Data?
+    @NSManaged var mlsEpoch: Int16
     @NSManaged var type: String
     @NSManaged var command: String?
     @NSManaged var createdAt: DBDate
@@ -46,6 +48,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var translations: [String: String]?
     @NSManaged var originalLanguage: String?
     
+    @NSManaged var decryptedMessage: MessageDecryptDTO?
     @NSManaged var moderationDetails: MessageModerationDetailsDTO?
     var isBounced: Bool {
         moderationDetails?.action == MessageModerationAction.bounce.rawValue
@@ -664,6 +667,10 @@ extension NSManagedObjectContext: MessageDatabaseSession {
 
         dto.cid = payload.cid?.rawValue
         dto.text = payload.text
+        if let encryptedData = payload.encryptedData {
+            dto.encryptedData = Data(encryptedData)
+        }
+        dto.mlsEpoch = Int16(payload.mlsEpoch ?? 0)
         dto.createdAt = payload.createdAt.bridgeDate
         dto.updatedAt = payload.updatedAt.bridgeDate
         if payload.deletedAt != nil {
@@ -794,6 +801,15 @@ extension NSManagedObjectContext: MessageDatabaseSession {
                     $0.lastReadAt?.bridgeDate ?? Date() >= payload.createdAt && $0.user.userId != payload.user.id
                 }
             )
+        }
+
+        // Re-link any previously cached decrypted payload that may have been orphaned
+        // when messages were cleared on first-page load (cascade delete removes the
+        // MessageDecryptDTO together with its parent MessageDTO). If the new DTO has no
+        // decryptedMessage yet but encrypted data is present, look up the orphaned
+        // MessageDecryptDTO by message ID and re-attach it.
+        if dto.decryptedMessage == nil, dto.encryptedData != nil {
+            dto.decryptedMessage = MessageDecryptDTO.load(messageId: payload.id, context: self)
         }
 
         // Refetch channel preview if the current preview has changed.
@@ -1074,6 +1090,8 @@ private extension ChatMessage {
         id = dto.id
         cid = try? dto.cid.map { try ChannelId(cid: $0) }
         text = dto.text
+        encryptedData = dto.encryptedData
+        mlsEpoch = Int(dto.mlsEpoch)
         type = MessageType(rawValue: dto.type) ?? .regular
         oldTexts = dto.oldTexts?.map { $0.asModel() }
         stickerUrl = dto.stickerUrl
@@ -1101,6 +1119,13 @@ private extension ChatMessage {
                 originalText: $0.originalText,
                 action: MessageModerationAction(rawValue: $0.action)
             )
+        }
+        decryptedMessage = try? dto.decryptedMessage?.asPayload()
+        // If decrypted content is available, override the encrypted placeholders so callers
+        // never need to check decryptedMessage separately for display.
+        if let payload = decryptedMessage {
+            text = payload.text
+            stickerUrl = payload.stickerUrl
         }
         textUpdatedAt = dto.textUpdatedAt?.bridgeDate
         mentionedAll = dto.mentionedAll
@@ -1153,11 +1178,26 @@ private extension ChatMessage {
 
         let user = try dto.user.asModel()
         $_author = ({ user }, nil)
-        $_attachments = ({
-            dto.attachments
-                .compactMap { $0.asAnyModel() }
-                .sorted { $0.id.index < $1.id.index }
-        }, dto.managedObjectContext)
+        if let decryptedPayload = decryptedMessage, !decryptedPayload.attachments.isEmpty, let cid {
+            let messageId = dto.id
+            let decryptedAttachments = decryptedPayload.attachments.enumerated().compactMap { index, attachment -> AnyMessageAttachment? in
+                // Encode only the RawJSON payload, matching what AttachmentDTO.saveAttachment stores in `data`.
+                guard let data = try? JSONEncoder.default.encode(attachment.payload) else { return nil }
+                let attachmentId = AttachmentId(
+                    cid: cid,
+                    messageId: messageId,
+                    index: index
+                )
+                return AnyMessageAttachment(id: attachmentId, type: attachment.type, payload: data, thumbnailData: nil, uploadingState: nil)
+            }
+            $_attachments = ({ decryptedAttachments }, nil)
+        } else {
+            $_attachments = ({
+                dto.attachments
+                    .compactMap { $0.asAnyModel() }
+                    .sorted { $0.id.index < $1.id.index }
+            }, dto.managedObjectContext)
+        }
 
         if dto.replies.isEmpty {
             $_latestReplies = ({ [] }, nil)

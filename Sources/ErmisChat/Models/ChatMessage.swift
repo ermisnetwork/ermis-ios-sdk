@@ -19,7 +19,11 @@ public struct ChatMessage {
     public let cid: ChannelId?
 
     /// The text of the message.
-    public let text: String
+    public var text: String
+
+    public var encryptedData: Data?
+
+    public var mlsEpoch: Int?
 
     public let oldTexts: [MessageEditHistory]?
 
@@ -186,6 +190,30 @@ public struct ChatMessage {
     /// The moderation details in case the message was moderated.
     public let moderationDetails: MessageModerationDetails?
 
+    /// The cached decrypted content of this message, if the message has been successfully decrypted.
+    /// `nil` for non-encrypted messages or messages not yet decrypted.
+    public var decryptedMessage: E2ePayload? {
+        didSet {
+            guard let payload = decryptedMessage, let cid else { return }
+            text = payload.text
+            stickerUrl = payload.stickerUrl
+            if !payload.attachments.isEmpty {
+                let messageId = id
+                let decryptedAttachments = payload.attachments.enumerated().compactMap { index, attachment -> AnyMessageAttachment? in
+                    // Encode only the RawJSON payload, matching what AttachmentDTO.saveAttachment stores in `data`.
+                    guard let data = try? JSONEncoder.default.encode(attachment.payload) else { return nil }
+                    let attachmentId = AttachmentId(
+                        cid: cid,
+                        messageId: messageId,
+                        index: index
+                    )
+                    return AnyMessageAttachment(id: attachmentId, type: attachment.type, payload: data, thumbnailData: nil, uploadingState: nil)
+                }
+                $_attachments = ({ decryptedAttachments }, nil)
+            }
+        }
+    }
+
     /// If the message is authored by the current user this field contains the list of channel members
     /// who read this message (excluding the current user).
     ///
@@ -208,6 +236,8 @@ public struct ChatMessage {
         id: MessageId,
         cid: ChannelId,
         text: String,
+        encryptedData: Data?,
+        mlsEpoch: Int?,
         oldTexts: [MessageEditHistory]?,
         type: MessageType,
         command: String?,
@@ -242,6 +272,7 @@ public struct ChatMessage {
         translations: [TranslationLanguage: String]?,
         originalLanguage: TranslationLanguage?,
         moderationDetails: MessageModerationDetails?,
+        decryptedMessage: E2ePayload?,
         readBy: @escaping () -> Set<ChatUser>,
         readByCount: @escaping () -> Int,
         underlyingContext: NSManagedObjectContext?,
@@ -250,6 +281,8 @@ public struct ChatMessage {
         self.id = id
         self.cid = cid
         self.text = text
+        self.encryptedData = encryptedData
+        self.mlsEpoch = mlsEpoch
         self.type = type
         self.oldTexts = oldTexts
         self.command = command
@@ -273,6 +306,7 @@ public struct ChatMessage {
         self.translations = translations
         self.originalLanguage = originalLanguage
         self.moderationDetails = moderationDetails
+        self.decryptedMessage = decryptedMessage
         self.textUpdatedAt = textUpdatedAt
         self.mentionedAll = mentionedAll
 
@@ -418,6 +452,11 @@ public extension ChatMessage {
         
         return type == .ephemeral || type == .error
     }
+
+    public var isEncrypted: Bool {
+        return encryptedData != nil && text.isEmpty && allAttachments.isEmpty && stickerUrl == nil && decryptedMessage == nil
+    }
+
 }
 
 extension ChatMessage: Hashable {

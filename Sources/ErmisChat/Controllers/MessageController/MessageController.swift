@@ -656,6 +656,29 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
             }
         }
     }
+
+    /// Decrypts the message represented by this controller.
+    ///
+    /// If the message already has a cached decrypted payload (i.e. `decryptedMessage` is non-nil),
+    /// the result is returned immediately without performing any MLS operation.
+    /// Otherwise the raw encrypted bytes are decrypted via MLS, the result is persisted to the
+    /// local database, and the updated `ChatMessage` is returned.
+    ///
+    /// - Parameter completion: Called on the **callbackQueue** with the decrypted `ChatMessage`,
+    ///                         or an error if decryption fails.
+    public func decryptMessage(completion: @escaping (Result<ChatMessage, Error>) -> Void) {
+        guard let message else {
+            callback {
+                completion(.failure(ClientError.MessageDoesNotExist(messageId: self.messageId)))
+            }
+            return
+        }
+        client.e2eRepository.decryptMessage(message) { [weak self] result in
+            self?.callback {
+                completion(result)
+            }
+        }
+    }
 }
 
 // MARK: - Environment

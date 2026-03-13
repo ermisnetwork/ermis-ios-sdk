@@ -37,6 +37,8 @@ public enum L10n {
       }
     }
     public enum Title {
+      /// Enable
+      public static var enable: String { L10n.tr("Localizable", "alert.title.enable") }
       /// Error
       public static var error: String { L10n.tr("Localizable", "alert.title.error") }
       /// Info
@@ -320,6 +322,25 @@ public enum L10n {
     public static var timeAgoWeeksSingular: String { L10n.tr("Localizable", "dates.time-ago-weeks-singular") }
   }
 
+  public enum Encryption {
+    /// End-to-end message encryption
+    public static var e2eMessageEncrytion: String { L10n.tr("Localizable", "encryption.e2e-message-encrytion") }
+    public enum EnableE2eAlert {
+      /// End-to-end encryption protects your data by encrypting it from the sender to the recipient, allowing only the intended recipient to decrypt it
+      public static var message: String { L10n.tr("Localizable", "encryption.enable-e2e-alert.message") }
+      /// Do you want to encrypt this conversation with %@?
+      public static func title(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "encryption.enable-e2e-alert.title", String(describing: p1))
+      }
+    }
+    public enum EnableGroupE2eAlert {
+      /// Do you want to encrypt the conversation in group %@?
+      public static func title(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "encryption.enable-group-e2e-alert.title", String(describing: p1))
+      }
+    }
+  }
+
   public enum Forward {
     /// Forwarding to
     public static var title: String { L10n.tr("Localizable", "forward.title") }
@@ -366,6 +387,8 @@ public enum L10n {
     public static var deletedMessagePlaceholder: String { L10n.tr("Localizable", "message.deleted-message-placeholder") }
     /// Edited
     public static var edited: String { L10n.tr("Localizable", "message.edited") }
+    /// Encrypted message
+    public static var encryptedMessage: String { L10n.tr("Localizable", "message.encrypted-message") }
     /// Forwarded from %@
     public static func forwardedFromOther(_ p1: Any) -> String {
       return L10n.tr("Localizable", "message.forwarded-from-other", String(describing: p1))
