@@ -633,7 +633,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     override open func contentDidChanged() {
         super.contentDidChanged()
         defer {
-            customCellViewInjector?.contentViewDidcontentDidChanged()
+            customCellViewInjector?.contentViewContentDidChanged()
             setNeedsLayout()
         }
 

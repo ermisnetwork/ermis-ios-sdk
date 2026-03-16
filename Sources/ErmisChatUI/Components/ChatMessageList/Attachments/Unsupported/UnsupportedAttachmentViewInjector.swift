@@ -32,7 +32,7 @@ public class UnsupportedAttachmentViewInjector: CustomCellViewInjector {
         filesAttachmentInjector.fileAttachmentView.didTapOnAttachment = nil
     }
 
-    override open func contentViewDidcontentDidChanged() {
+    override open func contentViewContentDidChanged() {
         let unsupportedAttachments = contentView.content?.unsupportedAttachments ?? []
         let unsupportedFileAttachments = unsupportedAttachments.map {
             MessageFileAttachment(

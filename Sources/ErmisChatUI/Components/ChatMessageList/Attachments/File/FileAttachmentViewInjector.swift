@@ -46,7 +46,7 @@ public class FilesAttachmentViewInjector: CustomCellViewInjector {
         super.contentViewDidLayout(options: options)
     }
 
-    override open func contentViewDidcontentDidChanged() {
+    override open func contentViewContentDidChanged() {
         fileAttachmentView.content = fileAttachments
     }
 

@@ -67,8 +67,8 @@ open class MixedAttachmentViewInjector: CustomCellViewInjector {
         injectors.forEach { $0.contentViewDidLayout(options: options) }
     }
 
-    override open func contentViewDidcontentDidChanged() {
-        injectors.forEach { $0.contentViewDidcontentDidChanged() }
+    override open func contentViewContentDidChanged() {
+        injectors.forEach { $0.contentViewContentDidChanged() }
     }
 
     override open func contentViewDidPrepareForReuse() {

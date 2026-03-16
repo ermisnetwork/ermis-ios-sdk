@@ -62,8 +62,8 @@ open class GalleryAttachmentViewInjector: CustomCellViewInjector {
         galleryViewSizeRatioConstraint?.isActive = true
     }
 
-    open override func contentViewDidcontentDidChanged() {
-        super.contentViewDidcontentDidChanged()
+    open override func contentViewContentDidChanged() {
+        super.contentViewContentDidChanged()
         let videos = attachments(payloadType: VideoAttachmentPayload.self)
         let images = attachments(payloadType: ImageAttachmentPayload.self)
         if videos.count + images.count == 1, let image = images.first {

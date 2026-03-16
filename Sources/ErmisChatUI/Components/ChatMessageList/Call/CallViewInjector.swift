@@ -28,7 +28,7 @@ open class CallViewInjector: CustomCellViewInjector {
         contentView.bubbleContentContainer.insertArrangedSubview(callView, at: 0)
     }
 
-    open override func contentViewDidcontentDidChanged() {
+    open override func contentViewContentDidChanged() {
         callView.content = .init(chatMessage: contentView.content)
         contentView.bubbleView?.backgroundColor = contentView.theme.colors.incommingBubbleMessageBackground
     }

@@ -34,7 +34,7 @@ open class LinkAttachmentViewInjector: CustomCellViewInjector {
         linkPreviewView.addTarget(self, action: #selector(handleTapOnAttachment), for: .touchUpInside)
     }
 
-    override open func contentViewDidcontentDidChanged() {
+    override open func contentViewContentDidChanged() {
         linkPreviewView.content = contentView.content?.linkAttachments.first
     }
 

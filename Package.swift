@@ -27,13 +27,13 @@ let package = Package(
         .package(url: "https://github.com/Boilertalk/Web3.swift.git", from: "0.6.0"),
         .package(url: "https://github.com/daltoniam/Starscream.git", from: "3.1.2"),
         .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2"),
-        .package(path: "../ErmisShared"),
+        .package(path: "../ermis-shared-ios"),
     ],
     targets: [
         .target(
             name: "ErmisChat",
             dependencies: [
-                "ErmisShared",
+                .product(name: "ErmisShared", package: "ermis-shared-ios"),
                 .product(name: "EventSource", package: "EventSource"),
             ],
             exclude: ["Info.plist"],
@@ -43,8 +43,8 @@ let package = Package(
             name: "ErmisChatUI",
             dependencies: [
                 "ErmisChat",
-                .product(name: "ErmisShared", package: "ErmisShared"),
-                .product(name: "ErmisSharedUI", package: "ErmisShared"),
+                .product(name: "ErmisShared", package: "ermis-shared-ios"),
+                .product(name: "ErmisSharedUI", package: "ermis-shared-ios"),
                 .product(name: "Lottie", package: "lottie-spm")
             ],
             exclude: ["Info.plist", "Generated/L10n_template.stencil"],
@@ -54,7 +54,7 @@ let package = Package(
             name: "ErmisWalletAuth",
             dependencies: [
                 "ErmisChat",
-                .product(name: "ErmisShared", package: "ErmisShared"),
+                .product(name: "ErmisShared", package: "ermis-shared-ios"),
                 .product(name: "ReownAppKit", package: "reown-swift"),
                 .product(name: "WalletConnect", package: "reown-swift"),
                 .product(name: "Web3", package: "Web3.swift"),

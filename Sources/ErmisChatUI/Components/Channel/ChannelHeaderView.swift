@@ -123,7 +123,7 @@ open class ChannelHeaderView: _View, UIProvider, ChannelControllerDelegate {
         if channel.isDirectMessageChannel {
             guard let member = channel
                 .lastActiveMembers
-                .first(where: { $0.id != currentUserId })
+                .first(where: { $0.userId != currentUserId })
             else {
                 return nil
             }

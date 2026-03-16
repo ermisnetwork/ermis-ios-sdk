@@ -75,6 +75,13 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
             presenceAvatarView.isHidden = false
             combinedAvatarView.isHidden = true
             loadChannelAvatar(from: channelAvatarUrl)
+            if content.isDirectChannel {
+                let lastActiveMembers = self.lastActiveMembers()
+                guard !lastActiveMembers.isEmpty , let otherMember = lastActiveMembers.first else {
+                    return
+                }
+                presenceAvatarView.isOnlineIndicatorVisible = (content.isDirectChannel ?? false) && otherMember.isOnline
+            }
             return
         }
         // Use the appropriate method to load avatar based on channel type
@@ -108,7 +115,7 @@ open class ChannelAvatarView: _View, UIProvider, SwiftUIRepresentable {
         let lastActiveMembers = self.lastActiveMembers()
 
         // If there are no members other than the current user in the channel, load a placeholder
-        guard !lastActiveMembers.isEmpty, let otherMember = lastActiveMembers.first else {
+        guard !lastActiveMembers.isEmpty , let otherMember = lastActiveMembers.first(where: { $0.userId !=  content?.currentUserId}) else {
             presenceAvatarView.isOnlineIndicatorVisible = false
             loadIntoAvatarImageView(from: nil, placeHolderString: content?.lastActiveMembers.first?.displayName)
             return

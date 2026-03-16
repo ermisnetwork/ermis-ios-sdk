@@ -39,7 +39,7 @@ open class CustomCellViewInjector: CustomCellViewInjectorProtocol {
     open func contentViewDidPrepareForReuse() {}
 
     /// Called after `contentView.updateContent` is called.
-    open func contentViewDidcontentDidChanged() {}
+    open func contentViewContentDidChanged() {}
 
     open func contentViewDidLayout(options: MessageLayoutOptions) {
         guard let customView else { return }

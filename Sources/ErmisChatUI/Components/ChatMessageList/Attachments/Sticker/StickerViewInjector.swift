@@ -29,7 +29,7 @@ public class StickerViewInjector: CustomCellViewInjector {
         stickerView.pin(anchors: [.width, .height], to: 150)
     }
 
-    override open func contentViewDidcontentDidChanged() {
+    override open func contentViewContentDidChanged() {
         stickerView.content = contentView.content?.stickerUrl
     }
 
