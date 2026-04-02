@@ -101,11 +101,72 @@ class ChannelUpdater: Worker {
                     .updateChannel(query: channelQuery)
             }
         }()
+        
+        if isChannelCreate, channelQuery.mlsEnabled == true {
 
-        if isInRecoveryMode {
-            apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
+            let userIds = channelQuery.channelPayload?.members ?? []
+            
+            guard let cid = channelQuery.cid else {
+                completion(.failure(ClientError.Unexpected("CID nil when creating channel")))
+                return
+            }
+            
+            e2eRepository.consumeKeyPackagesBatch(targetUserIds: Array(userIds), completion: { [weak self] result in
+                guard let self else {
+                    return
+                }
+                switch result {
+                case .success(let keyPackages):
+                    do {
+                        let (commitBundle, ratchetTree, groupInfo, epoch) = try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
+
+                        var updatedQuery = channelQuery
+                        updatedQuery.channelPayload?.commit = commitBundle.commit.uint8Array
+                        updatedQuery.channelPayload?.welcome = (commitBundle.welcome ?? Data()).uint8Array
+                        updatedQuery.channelPayload?.epoch = epoch
+                        updatedQuery.channelPayload?.ratchetTree = ratchetTree.toBytes().uint8Array
+                        updatedQuery.channelPayload?.groupInfo = groupInfo.uint8Array
+                        updatedQuery.channelPayload?.mlsEnabled = channelQuery.mlsEnabled
+
+                        let e2eEndpoint: Endpoint<ChannelPayload> = .createChannel(query: updatedQuery)
+
+                        apiClient.request(endpoint: e2eEndpoint) { [weak self] result in
+                            guard let self else {
+                                return
+                            }
+                            switch result {
+                            case .success:
+                                do {
+                                    try e2eRepository.mergePendingCommit(in: cid)
+                                    completion(result)
+                                } catch {
+                                    completion(.failure(error))
+                                }
+                            case .failure(let error):
+                                do {
+                                    try e2eRepository.clearPendingCommit(in: cid)
+                                } catch (let e) {
+                                
+                                }
+                                completion(.failure(error))
+
+                            }
+                        }
+                    } catch let error {
+                        log.error("Failed to add member to group", subsystems: .mls)
+                        completion(.failure(error))
+                    }
+                case .failure(let error):
+                    log.error("Consume channel's keypackage failed: \(error)", subsystems: .mls)
+                    completion(.failure(error))
+                }
+            })
         } else {
-            apiClient.request(endpoint: endpoint, completion: completion)
+            if isInRecoveryMode {
+                apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
+            } else {
+                apiClient.request(endpoint: endpoint, completion: completion)
+            }
         }
     }
 

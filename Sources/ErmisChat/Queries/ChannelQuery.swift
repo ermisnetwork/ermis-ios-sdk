@@ -14,7 +14,6 @@ public struct ChannelQuery: Encodable {
         case projectId = "project_id"
         case parentCid = "parent_cid"
         case topicCid = "topic_cid"
-        case mlsEnabled = "mls_enabled"
     }
 
     /// Channel id this query handles.
@@ -28,7 +27,7 @@ public struct ChannelQuery: Encodable {
     /// A number of watchers for the channel to be retrieved.
     public let watchersLimit: Int?
     /// ChannelCreatePayload that is needed only when creating channel
-    let channelPayload: ChannelEditDetailPayload?
+    var channelPayload: ChannelEditDetailPayload?
 
     /// The project id this query handles.
     let projectId: String
@@ -130,9 +129,6 @@ public struct ChannelQuery: Encodable {
             try container.encode(topicCid.rawValue, forKey: .topicCid)
         }
 
-        if let mlsEnabled {
-            try container.encode(mlsEnabled, forKey: .mlsEnabled)
-        }
     }
 }
 

@@ -212,9 +212,9 @@ open class ChannelViewController: _ViewController,
         }
 
         channelController.delegate = self
-        channelController.synchronize { [weak self] error in
-            self?.didFinishSynchronizing(with: error)
-        }
+//        channelController.synchronize { [weak self] error in
+//            self?.didFinishSynchronizing(with: error)
+//        }
 
         if channelController.channelQuery.pagination?.parameter == nil {
             // Load initial messages from cache if loading the first page

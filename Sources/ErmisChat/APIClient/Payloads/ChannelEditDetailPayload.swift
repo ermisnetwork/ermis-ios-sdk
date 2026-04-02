@@ -18,6 +18,19 @@ struct ChannelEditDetailPayload: Encodable {
     let coolDownDuration: Int?
     let filterWords: [String]?
 
+    /// TLS-serialized commit bytes for MLS channel creation.
+    var commit: [UInt8]?
+    /// TLS-serialized welcome bytes for MLS channel creation.
+    var welcome: [UInt8]?
+    /// MLS group epoch after the commit.
+    var epoch: Int?
+    /// TLS-serialized ratchet tree bytes for MLS channel creation.
+    var ratchetTree: [UInt8]?
+    /// TLS-serialized GroupInfo bytes for MLS channel creation.
+    var groupInfo: [UInt8]?
+    /// Whether MLS encryption is enabled for this channel.
+    var mlsEnabled: Bool?
+
     init(
         cid: ChannelId,
         name: String?,
@@ -91,6 +104,12 @@ struct ChannelEditDetailPayload: Encodable {
         try container.encodeIfPresent(isPublic, forKey: .isPublic)
         try container.encodeIfPresent(coolDownDuration, forKey: .cooldownDuration)
         try container.encodeIfPresent(filterWords, forKey: .filterWords)
+        try container.encodeIfPresent(commit, forKey: .commit)
+        try container.encodeIfPresent(welcome, forKey: .welcome)
+        try container.encodeIfPresent(epoch, forKey: .epoch)
+        try container.encodeIfPresent(ratchetTree, forKey: .ratchetTree)
+        try container.encodeIfPresent(groupInfo, forKey: .groupInfo)
+        try container.encodeIfPresent(mlsEnabled, forKey: .mlsEnabled)
     }
 }
 
