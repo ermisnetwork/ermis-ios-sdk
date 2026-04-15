@@ -28,7 +28,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     /// In this case `cid` on `channelQuery `will be valid but all channel modifications will
     /// fail because channel with provided `id` will be missing on backend side.
     /// That is why we need to check both flag and valid `cid` before modifications.
-    private var isChannelAlreadyCreated: Bool
+    public var isChannelAlreadyCreated: Bool
     
     /// The identifier of a channel this controller observes.
     /// Will be `nil` when we want to create direct message channel and `id`
@@ -1151,7 +1151,11 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
                                                                searchTerm: term,
                                                                limit: limit,
                                                                offset: offset)
-        updater.search(payload: searchRequestPayload, completion: completion)
+        if channel?.mlsEnabled == true {
+            updater.searchLocal(payload: searchRequestPayload, completion: completion)
+        } else {
+            updater.search(payload: searchRequestPayload, completion: completion)
+        }
     }
     
     public func saveComposerUnsentContent(_ content: ComposerContent?) {

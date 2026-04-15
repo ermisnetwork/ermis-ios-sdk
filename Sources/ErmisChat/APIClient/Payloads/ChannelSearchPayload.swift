@@ -75,4 +75,12 @@ struct ChannelSearchMessagePayload: Decodable {
         self.userId = try container.decode(String.self, forKey: .userId)
         self.createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
+
+    public
+    init(id: String, text: String, userId: String, createdAt: Date) {
+        self.id = id
+        self.text = text
+        self.userId = userId
+        self.createdAt = createdAt
+    }
 }

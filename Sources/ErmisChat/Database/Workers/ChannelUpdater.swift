@@ -2,6 +2,7 @@
 // Copyright 2025 Ermis Inc.
 //
 
+import CoreData
 import Foundation
 import ErmisShared
 
@@ -713,6 +714,59 @@ class ChannelUpdater: Worker {
                 completion(.failure(error))
             }
         })
+    }
+
+    /// Searches messages locally from CoreData for a given channel.
+    /// - Parameters:
+    ///   - payload: The search request payload containing cid, searchTerm, limit, and offset.
+    ///   - completion: Called with the search results from the local database.
+    func searchLocal(payload: ChannelSearchRequestPayload, completion: @escaping (Result<ChannelSearchPayload, Error>) -> Void) {
+        database.backgroundReadOnlyContext.perform {
+            do {
+                let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+
+                let cidPredicate = NSPredicate(format: "cid == %@", payload.cid)
+                // Search in both the plain text field and the decrypted text (for E2E messages)
+                let textPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+                    NSPredicate(format: "text CONTAINS[cd] %@", payload.searchTerm),
+                    NSPredicate(format: "decryptedMessage.text CONTAINS[cd] %@", payload.searchTerm)
+                ])
+
+                request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                    cidPredicate,
+                    textPredicate
+                ])
+
+                request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: false)]
+
+                let totalResults = try self.database.backgroundReadOnlyContext.count(for: request)
+
+                request.fetchOffset = payload.offset
+                request.fetchLimit = payload.limit
+
+                let messageDTOs = try self.database.backgroundReadOnlyContext.fetch(request)
+
+                let messages: [ChannelSearchMessagePayload] = messageDTOs.map { dto in
+                    let displayText = dto.decryptedMessage?.text ?? dto.text
+                    return ChannelSearchMessagePayload(
+                        id: dto.id,
+                        text: displayText,
+                        userId: dto.user.userId,
+                        createdAt: dto.createdAt.bridgeDate
+                    )
+                }
+
+                var result = ChannelSearchPayload()
+                result.messages = messages
+                result.limit = payload.limit
+                result.offset = payload.offset
+                result.total = totalResults
+
+                completion(.success(result))
+            } catch {
+                completion(.failure(error))
+            }
+        }
     }
 
     func saveComposerUnsentContent(in cid: ChannelId, content: ComposerContent?) {
