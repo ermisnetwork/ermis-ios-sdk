@@ -248,6 +248,8 @@ class AuthenticationRepository {
     ///   - userInfo:       The user information that will be created OR updated if it exists.
     ///   - tokenProvider:  The block to be used to get a token.
     func connectUser(userInfo: UserInfo, tokenProvider: @escaping TokenProvider, completion: @escaping (Error?) -> Void) {
+        generateDeviceIdIfNeeded()
+
         var logOutFirst: Bool {
             if let currentUserId = currentUserId, currentUserId.isGuest {
                 return true

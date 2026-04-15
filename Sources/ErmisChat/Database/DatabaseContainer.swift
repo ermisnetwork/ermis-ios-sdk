@@ -234,6 +234,9 @@ class DatabaseContainer: NSPersistentContainer {
             let entityNames = self?.managedObjectModel.entities.compactMap(\.name)
             var deleteError: Error?
             entityNames?.forEach { [weak self] entityName in
+                // Preserve decrypted message cache so E2E messages remain readable after re-login
+                guard entityName != MessageDecryptDTO.entityName else { return }
+
                 let deleteFetch = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
                 let deleteRequest = NSBatchDeleteRequest(fetchRequest: deleteFetch)
                 do {
