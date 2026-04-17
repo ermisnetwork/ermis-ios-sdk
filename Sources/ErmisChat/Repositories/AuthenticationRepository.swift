@@ -102,7 +102,9 @@ class AuthenticationRepository {
     public var projectId: String
 
     var currentDeviceId: String {
-        return UserDefaults.standard.string(forKey: "ermis_mls_device_id") ?? ""
+        guard let userId = currentUserId else { return "" }
+        let dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String]
+        return dict?[userId] ?? ""
     }
 
     init(
@@ -121,17 +123,18 @@ class AuthenticationRepository {
         self.projectId = projectId
         fetchCurrentUser(of: projectId)
 
-        generateDeviceIdIfNeeded()
-
         if let currentUserId = currentUserId {
+            generateDeviceIdIfNeeded(for: currentUserId)
             connectionRepository.updateWebSocketEndpoint(with: currentUserId, deviceId: currentDeviceId)
         }
     }
 
-    private func generateDeviceIdIfNeeded() {
-        if UserDefaults.standard.string(forKey: "ermis_mls_device_id") == nil {
+    private func generateDeviceIdIfNeeded(for userId: String) {
+        var dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String] ?? [:]
+        if dict[userId] == nil {
             let deviceId = "ios-" + UUID().uuidString
-            UserDefaults.standard.set(deviceId, forKey: "ermis_mls_device_id")
+            dict[userId] = deviceId
+            UserDefaults.standard.set(dict, forKey: MlsClient.deviceIdKey)
         }
     }
 
@@ -248,7 +251,7 @@ class AuthenticationRepository {
     ///   - userInfo:       The user information that will be created OR updated if it exists.
     ///   - tokenProvider:  The block to be used to get a token.
     func connectUser(userInfo: UserInfo, tokenProvider: @escaping TokenProvider, completion: @escaping (Error?) -> Void) {
-        generateDeviceIdIfNeeded()
+        generateDeviceIdIfNeeded(for: userInfo.id)
 
         var logOutFirst: Bool {
             if let currentUserId = currentUserId, currentUserId.isGuest {

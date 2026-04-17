@@ -7,35 +7,48 @@ import ErmisShared
 import open_mls_ios
 
 public class MlsClient {
+    public static let deviceIdKey = "ermis_mls_device_id"
+    public static let cursorKey = "ermis_e2e_sync_cursor"
+
     var provider: Provider?
     var identity: Identity?
     var userId: UserId?
     var hasSetup: Bool = false
 
+    /// Returns the device ID for the current userId, or nil if not available.
     var currentDeviceId: String? {
-        return UserDefaults.standard.value(forKey: "ermis_mls_device_id") as? String
+        guard let userId else { return nil }
+        let dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String]
+        return dict?[userId]
     }
 
     init() {
         initLogger()
-        generateDeviceIdIfNeeded()
     }
 
     public func reset() throws {
-        guard let provider else {
-            throw ClientError.MlsNoProviderError()
-        }
-        try provider.deleteAllGroups()
-        try provider.deleteIdentity()
+//        guard let provider else {
+//            throw ClientError.MlsNoProviderError()
+//        }
+//        try provider.deleteAllGroups()
+//        try provider.deleteIdentity()
 
     }
 
     public func setup(with userId: String) throws {
+//        guard self.userId != userId || !hasSetup else {
+//            generateDeviceIdIfNeeded(for: userId)
+//            return
+//        }
+        
+        
         guard let documentDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             return
         }
         self.userId = userId
-        let dbPath = documentDir.appendingPathComponent("ermis_mls.db").path
+        generateDeviceIdIfNeeded(for: userId)
+        let dbName = "ermis_mls_" + userId + ".db"
+        let dbPath = documentDir.appendingPathComponent(dbName).path
         let provider = try Provider.newWithPath(dbPath: dbPath)
 
         if let identityBytes = try? provider.loadIdentity() {
@@ -274,10 +287,16 @@ public class MlsClient {
         return externalJoinResult
     }
 
-    private func generateDeviceIdIfNeeded() {
-        if UserDefaults.standard.string(forKey: "ermis_mls_device_id") == nil {
+    func generateDeviceIdIfNeeded(for userId: String) {
+        var dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String] ?? [:]
+        
+        if let deviceId = dict[userId] as? String {
+            log.debug("[MLSClient] has deviceID: \(dict[userId])")
+        } else {
             let deviceId = "ios-" + UUID().uuidString
-            UserDefaults.standard.set(deviceId, forKey: "ermis_mls_device_id")
+            dict[userId] = deviceId
+            UserDefaults.standard.set(dict, forKey: MlsClient.deviceIdKey)
+            log.debug("[MLSClient] generate new deviceID: \(deviceId)")
         }
     }
 }

@@ -249,7 +249,11 @@ class DefaultRequestEncoder: RequestEncoder {
             return
         }
         var updatedRequest = request
-        if let deviceId = UserDefaults.standard.string(forKey: "ermis_mls_device_id") {
+        if let url = request.url,
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let userId = components.queryItems?.first(where: { $0.name == "user_id" })?.value,
+           let dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String],
+           let deviceId = dict[userId] {
             updatedRequest.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
         }
         completion(.success(updatedRequest))

@@ -231,22 +231,54 @@ class DatabaseContainer: NSPersistentContainer {
         }
 
         writableContext.performAndWait { [weak self] in
-            let entityNames = self?.managedObjectModel.entities.compactMap(\.name)
+            guard let self else {
+                completion?(nil)
+                return
+            }
+
+            let entityNames = self.managedObjectModel.entities.compactMap(\.name)
             var deleteError: Error?
-            entityNames?.forEach { [weak self] entityName in
+
+            // First, nullify the MessageDecryptDTO.message relationship so
+            // batch-deleting MessageDTO won't leave dangling pointers.
+            let decryptFetch = NSFetchRequest<MessageDecryptDTO>(entityName: MessageDecryptDTO.entityName)
+            if let decrypts = try? self.writableContext.fetch(decryptFetch) {
+                for decrypt in decrypts {
+                    decrypt.message = nil
+                }
+            }
+
+            for entityName in entityNames {
                 // Preserve decrypted message cache so E2E messages remain readable after re-login
-                guard entityName != MessageDecryptDTO.entityName else { return }
+                guard entityName != MessageDecryptDTO.entityName else { continue }
 
                 let deleteFetch = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
                 let deleteRequest = NSBatchDeleteRequest(fetchRequest: deleteFetch)
+                deleteRequest.resultType = .resultTypeObjectIDs
                 do {
-                    try self?.writableContext.execute(deleteRequest)
-                    try self?.writableContext.save()
+                    let result = try self.writableContext.execute(deleteRequest) as? NSBatchDeleteResult
+                    // Merge batch delete changes into the context so in-memory objects
+                    // are updated and relationship faults don't point to deleted rows.
+                    if let objectIDs = result?.result as? [NSManagedObjectID], !objectIDs.isEmpty {
+                        let changes: [AnyHashable: Any] = [NSDeletedObjectsKey: objectIDs]
+                        NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: self.allContext)
+                    }
                 } catch {
                     log.error("Batch delete request failed with error \(error)")
                     deleteError = error
                 }
             }
+
+            do {
+                if self.writableContext.hasChanges {
+                    try self.writableContext.save()
+                }
+            } catch {
+                log.error("Save after batch delete failed with error \(error)")
+                deleteError = error
+            }
+
+            self.writableContext.reset()
             completion?(deleteError)
         }
     }

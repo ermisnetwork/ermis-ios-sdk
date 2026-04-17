@@ -24,6 +24,27 @@ class E2eRepository: EventsControllerDelegate {
         set { UserDefaults.standard.set(newValue, forKey: Self.loginTimeKey) }
     }
 
+    /// Returns the e2eSyncCursor value (milliseconds since epoch) for a given channel ID, or nil if not set.
+    /// Scoped by the current userId so cursors from different users don't interfere.
+    private func e2eSyncCursor(for channelId: String) -> Int64? {
+        guard let userId = mlsClient.userId else { return nil }
+        let allUsers = UserDefaults.standard.dictionary(forKey: MlsClient.cursorKey) as? [String: [String: NSNumber]]
+        return allUsers?[userId]?[channelId]?.int64Value
+    }
+
+    /// Saves e2eSyncCursor values (milliseconds since epoch) for the given channel IDs into UserDefaults.
+    /// Scoped by the current userId so cursors from different users don't interfere.
+    private func saveE2eSyncCursorsToUserDefaults(_ cursors: [String: Int64]) {
+        guard let userId = mlsClient.userId else { return }
+        var allUsers = UserDefaults.standard.dictionary(forKey: MlsClient.cursorKey) as? [String: [String: NSNumber]] ?? [:]
+        var userCursors = allUsers[userId] ?? [:]
+        for (cid, ms) in cursors {
+            userCursors[cid] = NSNumber(value: ms)
+        }
+        allUsers[userId] = userCursors
+        UserDefaults.standard.set(allUsers, forKey: MlsClient.cursorKey)
+    }
+
     /// Serial queue that serializes all MLS decrypt operations.
     /// All sources (WebSocket, API, NSE via shared DB) funnel through here,
     /// so MLS `processMessage` is never called concurrently for the same group.
@@ -117,6 +138,10 @@ class E2eRepository: EventsControllerDelegate {
                     }
                     try self.mlsClient.processMessage(data: commit.data, in: cid)
                 case .welcome:
+                    guard !self.mlsClient.isGroupLoaded(cid: cid) else {
+                        log.debug("[MLS] Skipping welcome: group already exists for \(cid)", subsystems: .mls)
+                        return
+                    }
                     if let targetUserIds = mlsProtocol.targetUserIds,
                        let currentUserId = mlsClient.userId,
                        !targetUserIds.contains(currentUserId) {
@@ -160,7 +185,7 @@ class E2eRepository: EventsControllerDelegate {
         }
         let keyPackages = mlsClient.getKeyPackage(count: amountOfKeyPackagesMissing).map { $0.uint8Array }
         apiClient.request(endpoint: .uploadKeyPackages(keyPackages: keyPackages)) { result in
-            log.debug(result)
+            log.debug("[MLS] Upload missing \(amountOfKeyPackagesMissing) keypackages result: \(result)", subsystems: .mls)
         }
     }
 
@@ -175,12 +200,20 @@ class E2eRepository: EventsControllerDelegate {
         database.viewContext.performAndWait {
             let channels = ChannelDTO.fetchAllMlsEnabled(context: self.database.viewContext)
             for ch in channels {
-                // 1. If this device already has a sync cursor or has joined the group, use that.
-                if let anchor = ch.e2eSyncCursor ?? ch.mlsGroupJoinedAt {
+//                if ch.membership?.channelRoleRaw == MemberRole.pending.rawValue || ch.membership?.channelRoleRaw == MemberRole.skipped.rawValue || ch.membership?.channelRoleRaw == MemberRole.rejected.rawValue {
+//                    continue
+//                }
+                // 1. Check UserDefaults for an existing sync cursor for this channel.
+                if let savedCursor = self.e2eSyncCursor(for: ch.cid) {
+                    cursors[ch.cid] = savedCursor
+                    continue
+                }
+                // 2. Fall back to mlsGroupJoinedAt from Core Data.
+                if let anchor = ch.mlsGroupJoinedAt {
                     cursors[ch.cid] = Int64(anchor.timeIntervalSince1970 * 1000)
                     continue
                 }
-                // 2. If the user joined the channel on another device after this device logged in
+                // 3. If the user joined the channel on another device after this device logged in
                 //    (membershipCreatedAt > loginTime), sync from membershipCreatedAt.
                 if let loginTime = deviceLoginTime,
                    let memberCreatedAt = ch.membership?.memberCreatedAt?.bridgeDate,
@@ -197,17 +230,36 @@ class E2eRepository: EventsControllerDelegate {
     /// Called after a channel list API response is saved to the database.
     /// For each MLS-enabled channel whose local MLS group does not yet exist,
     /// performs an external join so the device can decrypt messages in that channel.
+    /// For channels whose group already exists locally (e.g. MLS DB survived logout),
+    /// ensures `mlsGroupJoinedAt` is set so E2E sync has a valid cursor.
     ///
     /// - Parameter cids: The MLS-enabled channel IDs from the saved channel list payload.
     func handleNewEncryptedChannels(_ cids: [ChannelId]) {
+        var needsSync = false
         for cid in cids {
-            guard !mlsClient.isGroupLoaded(cid: cid.rawValue) else { continue }
+            if mlsClient.isGroupLoaded(cid: cid.rawValue) {
+                // Group already exists locally (MLS DB was preserved across logout).
+                // Ensure mlsGroupJoinedAt is set so performE2eSync has a cursor.
+                log.debug("[E2E] already has group, no need external join", subsystems: .mls)
+                database.write { session in
+                    guard let dto = session.channel(cid: cid),
+                          dto.mlsGroupJoinedAt == nil else { return }
+                    dto.mlsGroupJoinedAt = Date().bridgeDate
+                }
+                needsSync = true
+                continue
+            }
             log.debug("[E2E] No local group for \(cid), performing external join", subsystems: .mls)
             externalJoinChannel(cid: cid) { error in
                 if let error {
                     log.error("[E2E] externalJoinChannel failed for \(cid): \(error)", subsystems: .mls)
                 }
             }
+        }
+        // If any channel already had a local group, trigger sync now
+        // (the initial health-check sync ran before the channel list was loaded).
+        if needsSync {
+            performE2eSync()
         }
     }
 
@@ -221,18 +273,23 @@ class E2eRepository: EventsControllerDelegate {
     func performE2eChannelSync(cid: ChannelId) {
         var since: Int64?
         let deviceLoginTime = loginTime
-        database.viewContext.performAndWait {
-            guard let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) else { return }
-            // 1. Prefer existing sync cursor or device group join time.
-            if let anchor = dto.e2eSyncCursor ?? dto.mlsGroupJoinedAt {
-                since = Int64(anchor.timeIntervalSince1970 * 1000)
-                return
-            }
-            // 2. If the user joined on another device after this device logged in, use membershipCreatedAt.
-            if let loginTime = deviceLoginTime,
-               let memberCreatedAt = dto.membership?.memberCreatedAt?.bridgeDate,
-               memberCreatedAt > loginTime {
-                since = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
+        let group = try? mlsClient.loadGroup(with: cid.rawValue)
+        if let savedCursor = e2eSyncCursor(for: cid.rawValue), group != nil {
+            since = savedCursor
+        } else {
+            database.viewContext.performAndWait {
+                guard let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) else { return }
+                // 2. Fall back to mlsGroupJoinedAt from Core Data.
+                if let anchor = dto.mlsGroupJoinedAt {
+                    since = Int64(anchor.timeIntervalSince1970 * 1000)
+                    return
+                }
+                // 3. If the user joined on another device after this device logged in, use membershipCreatedAt.
+                if let loginTime = deviceLoginTime,
+                   let memberCreatedAt = dto.membership?.memberCreatedAt?.bridgeDate,
+                   memberCreatedAt > loginTime {
+                    since = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
+                }
             }
         }
         guard let since else {
@@ -401,6 +458,10 @@ class E2eRepository: EventsControllerDelegate {
                     try mlsClient.processMessage(data: Data(bytes), in: cidString)
                 }
             case .welcome:
+                guard !self.mlsClient.isGroupLoaded(cid: cidString) else {
+                    log.debug("[MLS] Skipping welcome: group already exists for \(cidString)", subsystems: .mls)
+                    return
+                }
                 if let targetUserIds = data.targetUserIds,
                    let currentUserId = mlsClient.userId,
                    !targetUserIds.contains(currentUserId) {
@@ -424,17 +485,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func saveSyncCursors(_ cursors: [String: Int64]) {
-        database.write { session in
-            for (cidString, ms) in cursors {
-                guard let cid = try? ChannelId(cid: cidString),
-                      let dto = session.channel(cid: cid) else { continue }
-                dto.e2eSyncCursor = Date(timeIntervalSince1970: Double(ms) / 1000).bridgeDate
-            }
-        } completion: { error in
-            if let error {
-                log.error("[E2eSync] Failed to save cursors: \(error)", subsystems: .mls)
-            }
-        }
+        saveE2eSyncCursorsToUserDefaults(cursors)
     }
 
     /// Records the current timestamp as the moment this device joined the MLS group for the given channel.
@@ -551,7 +602,8 @@ class E2eRepository: EventsControllerDelegate {
 
     private func requestExternalJoin(to cid: ChannelId, externalJoinResult: ExternalJoinResult, completion: @escaping (Error?) -> Void) {
         let body = ExternalJoinRequestBody(commit: externalJoinResult.commit,
-                                           epoch: Int(externalJoinResult.group.epoch()))
+                                           epoch: Int(externalJoinResult.group.epoch()),
+                                           projectId: cid.projectId)
         apiClient.request(endpoint: .externalJoin(cid: cid, body: body)) { [weak self] result in
             guard let self else {
                 return
@@ -677,10 +729,12 @@ class E2eRepository: EventsControllerDelegate {
 
         guard let encryptedData = message.encryptedData else {
             completion(.failure(ClientError.Unexpected("Message has no encrypted data.")))
+            log.error("Failed to decrypted message: no encrypted data", subsystems: .mls)
             return
         }
         guard let cid = message.cid else {
             completion(.failure(ClientError.Unexpected("Message has no channel id for decryption.")))
+            log.error("Failed to decrypted message: no channel id", subsystems: .mls)
             return
         }
 
@@ -694,6 +748,7 @@ class E2eRepository: EventsControllerDelegate {
                 completion(.success(updated))
             case .failure(let error):
                 completion(.failure(error))
+                log.error("Failed to decrypted message: \(error)", subsystems: .mls)
             }
         }
     }

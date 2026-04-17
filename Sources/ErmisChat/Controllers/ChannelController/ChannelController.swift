@@ -1188,9 +1188,19 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     
     deinit {
         guard self.isJumpingToMessage, let cid = self.cid else { return }
+        // When other active controllers for the same CID exist, only reset the
+        // pagination boundaries so their message predicates are not incorrectly
+        // constrained. Skip deleting messages to avoid wiping data they observe.
+        let hasOtherActiveControllers = client.activeChannelControllers.allObjects.contains {
+            $0.cid == cid
+        }
         dataStore.database.write { session in
-            let channelDTO = session.channel(cid: cid)
-            channelDTO?.cleanAllMessagesExcludingLocalOnly()
+            guard let channelDTO = session.channel(cid: cid) else { return }
+            if !hasOtherActiveControllers {
+                channelDTO.cleanAllMessagesExcludingLocalOnly()
+            }
+            channelDTO.newestMessageAt = nil
+            channelDTO.oldestMessageAt = nil
         }
     }
 }
