@@ -76,6 +76,8 @@ class E2eRepository: EventsControllerDelegate {
             decryptNewMessageEventIfNeeded(message: event.message, cid: event.cid)
         } else if let event = event as? MLSEvent {
             handleMlsEvent(event)
+        } else if let event = event as? MemberRemovedEvent {
+            handleNotificationMemberRemoveEvent(event)
         } else if let event = event as? NotificationInviteRespondBackEvent {
             switch event.respondBackType {
             case .accept:
@@ -102,6 +104,10 @@ class E2eRepository: EventsControllerDelegate {
 
     private func handleNotificationInviteSkippedEvent(_ event: NotificationInviteRespondBackEvent) {
         guard event.mlsEnabled else { return }
+        performE2eChannelSync(cid: event.cid)
+    }
+    
+    private func handleNotificationMemberRemoveEvent(_ event: MemberRemovedEvent) {
         performE2eChannelSync(cid: event.cid)
     }
 
@@ -206,10 +212,19 @@ class E2eRepository: EventsControllerDelegate {
                 // 1. Check UserDefaults for an existing sync cursor for this channel.
                 if let savedCursor = self.e2eSyncCursor(for: ch.cid) {
                     cursors[ch.cid] = savedCursor
+                    if let memberCreatedAt = ch.membership?.memberCreatedAt?.bridgeDate,
+                       savedCursor < Int64(memberCreatedAt.timeIntervalSince1970 * 1000) {
+                        do {
+                            cursors[ch.cid] = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
+                            try mlsClient.deleteGroup(cid: ch.cid)
+                        } catch {
+                            log.error("[MLS] Failed to remove deleted group: \(error)", subsystems: .mls)
+                        }
+                    }
                     continue
                 }
                 // 2. Fall back to mlsGroupJoinedAt from Core Data.
-                if let anchor = ch.mlsGroupJoinedAt {
+                if let anchor = ch.membership?.memberCreatedAt {
                     cursors[ch.cid] = Int64(anchor.timeIntervalSince1970 * 1000)
                     continue
                 }
@@ -275,7 +290,22 @@ class E2eRepository: EventsControllerDelegate {
         let deviceLoginTime = loginTime
         let group = try? mlsClient.loadGroup(with: cid.rawValue)
         if let savedCursor = e2eSyncCursor(for: cid.rawValue), group != nil {
-            since = savedCursor
+            database.viewContext.performAndWait {
+                // 1. Check if user has been remove from channel before.
+                if let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext),
+                   let memberCreatedAt = dto.membership?.memberCreatedAt?.bridgeDate,
+                   let group = group,
+                   savedCursor < Int64(memberCreatedAt.timeIntervalSince1970 * 1000) {
+                    do {
+                        since = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
+                        try mlsClient.deleteGroup(cid: cid.rawValue)
+                    } catch {
+                        log.error("[MLS] Failed to remove deleted group: \(error)", subsystems: .mls)
+                    }
+                } else {
+                    since = savedCursor
+                }
+            }
         } else {
             database.viewContext.performAndWait {
                 guard let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) else { return }
@@ -292,6 +322,7 @@ class E2eRepository: EventsControllerDelegate {
                 }
             }
         }
+        
         guard let since else {
             log.debug("[E2eSync] Skipping sync for \(cid): device has not joined the MLS group yet", subsystems: .mls)
             return

@@ -299,6 +299,13 @@ public class MlsClient {
             log.debug("[MLSClient] generate new deviceID: \(deviceId)")
         }
     }
+    
+    func deleteGroup(cid: String) throws {
+        guard let provider else {
+            throw ClientError.MlsNoProviderError()
+        }
+        try provider.deleteGroup(cid: cid)
+    }
 }
 
 public extension ClientError {
