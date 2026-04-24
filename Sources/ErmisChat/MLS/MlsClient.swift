@@ -63,6 +63,7 @@ public class MlsClient {
         self.provider = provider
         hasSetup = true
     }
+    
 
     private func createGroup(with cid: String) throws -> Group {
         guard let provider else {
@@ -105,6 +106,16 @@ public class MlsClient {
             }
         }
     }
+    
+    func getStoredGroupIdList() throws -> [String] {
+        guard let provider else {
+            throw ClientError.MlsNoProviderError()
+        }
+        
+        return try provider.storedGroupIds()
+    }
+    
+    
 
     func addMember(to group: Group, memberKeyPackages: [KeyPackage]) throws -> CommitBundle {
         guard let provider else {
@@ -268,6 +279,7 @@ public class MlsClient {
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
+        log.debug("[MLS] Join with welcome", subsystems: .mls)
 //        do {
             try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
 //        } catch {

@@ -183,6 +183,23 @@ class ChannelDTO: NSManagedObject {
         request.predicate = NSPredicate(format: "mlsEnabled == YES")
         return (try? context.fetch(request)) ?? []
     }
+    
+    /// Fetches all channels that have MLS encryption enabled and user joined.
+    /// Used by E2eRepository to build the cursor map for POST /v1/e2ee/sync.
+    static func fetchAllJoinedMlsEnabled(context: NSManagedObjectContext) -> [ChannelDTO] {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+        let joinedRoles = [
+            MemberRole.owner.rawValue,
+            MemberRole.admin.rawValue,
+            MemberRole.moderator.rawValue,
+            MemberRole.member.rawValue
+        ]
+        request.predicate = NSPredicate(
+            format: "mlsEnabled == YES AND membership != nil AND membership.channelRoleRaw IN %@",
+            joinedRoles
+        )
+        return (try? context.fetch(request)) ?? []
+    }
 
     static func loadOrCreate(cid: ChannelId, context: NSManagedObjectContext, cache: PreWarmedCache?) -> ChannelDTO {
         if let cachedObject = cache?.model(for: cid.rawValue, context: context, type: ChannelDTO.self) {

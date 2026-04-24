@@ -262,6 +262,10 @@ private extension ChannelListUpdater {
                 // before this device logged in (membershipCreatedAt < loginTime).
                 // Channels joined after login will be handled via welcome or
                 // invite events instead.
+                // Clean up local MLS groups for channels the user is no longer part of.
+                
+                self?.e2eRepository?.cleanupOrphanedMlsGroups()
+
                 let loginTime = self?.e2eRepository?.loginTime
                 let mlsCids = payload.channels
                     .filter { channelPayload in
@@ -275,7 +279,12 @@ private extension ChannelListUpdater {
                     .map { $0.channel.cid }
                 if !mlsCids.isEmpty {
                     self?.e2eRepository?.handleNewEncryptedChannels(mlsCids)
+                } else {
+                    // No new encrypted channels to join, but still sync
+                    // missed E2EE events for existing channels.
                 }
+                
+                self?.e2eRepository?.performE2eSync()
                 completion?(.success(channels))
             }
         }

@@ -45,6 +45,17 @@ class E2eRepository: EventsControllerDelegate {
         UserDefaults.standard.set(allUsers, forKey: MlsClient.cursorKey)
     }
 
+    /// Removes the e2eSyncCursor for a given channel ID from UserDefaults.
+    /// Called when an MLS group is deleted so the stale cursor doesn't persist.
+    private func removeE2eSyncCursor(for channelId: String) {
+        guard let userId = mlsClient.userId else { return }
+        var allUsers = UserDefaults.standard.dictionary(forKey: MlsClient.cursorKey) as? [String: [String: NSNumber]] ?? [:]
+        var userCursors = allUsers[userId] ?? [:]
+        userCursors.removeValue(forKey: channelId)
+        allUsers[userId] = userCursors
+        UserDefaults.standard.set(allUsers, forKey: MlsClient.cursorKey)
+    }
+
     /// Serial queue that serializes all MLS decrypt operations.
     /// All sources (WebSocket, API, NSE via shared DB) funnel through here,
     /// so MLS `processMessage` is never called concurrently for the same group.
@@ -54,6 +65,11 @@ class E2eRepository: EventsControllerDelegate {
         q.name = "io.ermis.e2e.decrypt"
         return q
     }()
+
+    /// Guards against multiple concurrent syncPage tasks.
+    /// Only one sync (from either `performE2eSync` or `performE2eChannelSync`) can run at a time.
+    private let syncLock = NSLock()
+    private var isSyncing = false
 
     init(database: DatabaseContainer,
          eventNotificationCenter: EventNotificationCenter,
@@ -108,7 +124,18 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     private func handleNotificationMemberRemoveEvent(_ event: MemberRemovedEvent) {
-        performE2eChannelSync(cid: event.cid)
+//        guard event.member.userId == mlsClient.userId else {
+//            return
+//        }
+//        guard mlsClient.isGroupLoaded(cid: event.cid.rawValue) else {
+//            return
+//        }
+//        do {
+//            log.debug("[MLS] Current user removed from channel, deleting MLS group for \(event.cid)", subsystems: .mls)
+//            try deleteGroup(cid: event.cid.rawValue)
+//        } catch {
+//            log.error("[MLS] Failed to delete MLS group after removal: \(error)", subsystems: .mls)
+//        }
     }
 
     private func handleMlsEvent(_ mlsEvent: MLSEvent) {
@@ -144,7 +171,8 @@ class E2eRepository: EventsControllerDelegate {
                     }
                     try self.mlsClient.processMessage(data: commit.data, in: cid)
                 case .welcome:
-                    guard !self.mlsClient.isGroupLoaded(cid: cid) else {
+//                    break
+                    guard !self.shouldSkipWelcome(cid: cid) else {
                         log.debug("[MLS] Skipping welcome: group already exists for \(cid)", subsystems: .mls)
                         return
                     }
@@ -177,10 +205,6 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
-        defer {
-            // Catch up on any E2EE events missed while disconnected.
-            performE2eSync()
-        }
         // Send mising keypackages to BE
         guard let keyPackagesRemaining = event.keyPackagesRemaining else {
             return
@@ -197,47 +221,78 @@ class E2eRepository: EventsControllerDelegate {
 
     // MARK: - E2EE Sync
 
+    /// Resolves the sync cursor (milliseconds since epoch) for a single channel.
+    ///
+    /// The resolution order is:
+    /// 1. Saved cursor in UserDefaults (from a previous sync).
+    /// 2. `memberCreatedAt` from Core Data.
+    /// 3. `loginTime` if the membership was created after this device logged in.
+    ///
+    /// Returns `nil` when no cursor can be determined (e.g. the device hasn't joined the MLS group yet).
+    private func resolveSyncCursor(cidString: String, mlsJoinedAt: NSDate?, memberCreatedAt: NSDate?, deviceLoginTime: Date?) -> Int64? {
+        // 1. Check UserDefaults for an existing sync cursor.
+        if let savedCursor = e2eSyncCursor(for: cidString) {
+            if let memberCreatedAt,
+               Int64(memberCreatedAt.timeIntervalSince1970 * 1000) > savedCursor {
+                if let group = try? mlsClient.loadGroup(with: cidString) {
+                    do {
+                        try mlsClient.deleteGroup(cid: cidString)
+                    } catch {
+                        log.error("[MLS] Remove group: \(cidString) that user has been kick failed with error \(error)", subsystems: .mls)
+                    }
+                }
+                return Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
+            }
+            return savedCursor
+        }
+//        // 2. Fall back to memberCreatedAt from Core Data.
+        if let anchor = mlsJoinedAt {
+            return Int64(anchor.timeIntervalSince1970 * 1000)
+        }
+        // 3. If the user joined on another device after this device logged in, use loginTime.
+        if let loginTime = deviceLoginTime,
+           let memberCreatedAt = memberCreatedAt as? Date,
+           memberCreatedAt > loginTime {
+            return Int64(loginTime.timeIntervalSince1970 * 1000)
+        }
+        
+        if let memberCreatedAt {
+            return Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
+        }
+        return nil
+    }
+
     /// Fetches all missed E2EE events for every MLS-enabled channel since the last known cursor,
     /// applying protocol messages and decrypting application messages in order.
-    /// Called automatically on every WebSocket connect / reconnect via `handleHealthCheckEvent`.
     func performE2eSync() {
+        syncLock.lock()
+        guard !isSyncing else {
+            syncLock.unlock()
+            log.debug("[E2eSync] Skipping sync — another sync is already in progress", subsystems: .mls)
+            return
+        }
+        isSyncing = true
+        syncLock.unlock()
+
         var cursors: [String: Int64] = [:]
         let deviceLoginTime = loginTime
         database.viewContext.performAndWait {
-            let channels = ChannelDTO.fetchAllMlsEnabled(context: self.database.viewContext)
+            let channels = ChannelDTO.fetchAllJoinedMlsEnabled(context: self.database.viewContext)
             for ch in channels {
-//                if ch.membership?.channelRoleRaw == MemberRole.pending.rawValue || ch.membership?.channelRoleRaw == MemberRole.skipped.rawValue || ch.membership?.channelRoleRaw == MemberRole.rejected.rawValue {
-//                    continue
-//                }
-                // 1. Check UserDefaults for an existing sync cursor for this channel.
-                if let savedCursor = self.e2eSyncCursor(for: ch.cid) {
-                    cursors[ch.cid] = savedCursor
-                    if let memberCreatedAt = ch.membership?.memberCreatedAt?.bridgeDate,
-                       savedCursor < Int64(memberCreatedAt.timeIntervalSince1970 * 1000) {
-                        do {
-                            cursors[ch.cid] = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
-                            try mlsClient.deleteGroup(cid: ch.cid)
-                        } catch {
-                            log.error("[MLS] Failed to remove deleted group: \(error)", subsystems: .mls)
-                        }
-                    }
-                    continue
-                }
-                // 2. Fall back to mlsGroupJoinedAt from Core Data.
-                if let anchor = ch.membership?.memberCreatedAt {
-                    cursors[ch.cid] = Int64(anchor.timeIntervalSince1970 * 1000)
-                    continue
-                }
-                // 3. If the user joined the channel on another device after this device logged in
-                //    (membershipCreatedAt > loginTime), sync from membershipCreatedAt.
-                if let loginTime = deviceLoginTime,
-                   let memberCreatedAt = ch.membership?.memberCreatedAt?.bridgeDate,
-                   memberCreatedAt > loginTime {
-                    cursors[ch.cid] = Int64(loginTime.timeIntervalSince1970 * 1000)
+                if let cursor = self.resolveSyncCursor(
+                    cidString: ch.cid,
+                    mlsJoinedAt: ch.mlsGroupJoinedAt,
+                    memberCreatedAt: ch.membership?.memberCreatedAt,
+                    deviceLoginTime: deviceLoginTime
+                ) {
+                    cursors[ch.cid] = cursor
                 }
             }
         }
-        guard !cursors.isEmpty else { return }
+        guard !cursors.isEmpty else {
+            finishSync()
+            return
+        }
         log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
         syncPage(cursors: cursors)
     }
@@ -278,6 +333,30 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
+    /// Deletes local MLS groups that are no longer in the active channel list.
+    /// Compares all MLS-enabled channels stored in the database against the channel CIDs
+    /// returned by the latest channel list API response. Any local MLS group whose CID is
+    /// NOT in `activeChannelCids` is deleted along with its sync cursor.
+    ///
+    func cleanupOrphanedMlsGroups() {
+//        database.viewContext.performAndWait {
+//            let mlsJoinedChannels = ChannelDTO.fetchAllJoinedMlsEnabled(context: self.database.viewContext)
+//        
+//            let mlsCIds = Set(mlsJoinedChannels.map { $0.cid })
+//            do {
+//                let mlsGroupIds = try mlsClient.getStoredGroupIdList()
+//                let orphanedGroupIds = Set(mlsGroupIds).subtracting(mlsCIds)
+//                for orphanedGroupId in orphanedGroupIds {
+//                    log.debug("[MLS] Deleting orphaned MLS group for \(orphanedGroupId)", subsystems: .mls)
+//                    try deleteGroup(cid: orphanedGroupId)
+//                    log.debug("[MLS] Deleted orphaned MLS group for \(orphanedGroupId)", subsystems: .mls)
+//                }
+//            } catch {
+//                log.error("[MLS] Cleanup orphaned MlsGroups failed: \(error)", subsystems: .mls)
+//            }
+//        }
+    }
+
     /// Fetches missed E2EE events for a single channel since its last known cursor,
     /// applying protocol messages and decrypting application messages in order.
     ///
@@ -286,44 +365,29 @@ class E2eRepository: EventsControllerDelegate {
     ///
     /// - Parameter cid: The channel to sync.
     func performE2eChannelSync(cid: ChannelId) {
+        syncLock.lock()
+        guard !isSyncing else {
+            syncLock.unlock()
+            log.debug("[E2eSync] Skipping single-channel sync for \(cid) — another sync is already in progress", subsystems: .mls)
+            return
+        }
+        isSyncing = true
+        syncLock.unlock()
+
         var since: Int64?
         let deviceLoginTime = loginTime
-        let group = try? mlsClient.loadGroup(with: cid.rawValue)
-        if let savedCursor = e2eSyncCursor(for: cid.rawValue), group != nil {
-            database.viewContext.performAndWait {
-                // 1. Check if user has been remove from channel before.
-                if let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext),
-                   let memberCreatedAt = dto.membership?.memberCreatedAt?.bridgeDate,
-                   let group = group,
-                   savedCursor < Int64(memberCreatedAt.timeIntervalSince1970 * 1000) {
-                    do {
-                        since = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
-                        try mlsClient.deleteGroup(cid: cid.rawValue)
-                    } catch {
-                        log.error("[MLS] Failed to remove deleted group: \(error)", subsystems: .mls)
-                    }
-                } else {
-                    since = savedCursor
-                }
-            }
-        } else {
-            database.viewContext.performAndWait {
-                guard let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) else { return }
-                // 2. Fall back to mlsGroupJoinedAt from Core Data.
-                if let anchor = dto.mlsGroupJoinedAt {
-                    since = Int64(anchor.timeIntervalSince1970 * 1000)
-                    return
-                }
-                // 3. If the user joined on another device after this device logged in, use membershipCreatedAt.
-                if let loginTime = deviceLoginTime,
-                   let memberCreatedAt = dto.membership?.memberCreatedAt?.bridgeDate,
-                   memberCreatedAt > loginTime {
-                    since = Int64(memberCreatedAt.timeIntervalSince1970 * 1000)
-                }
-            }
+        database.viewContext.performAndWait {
+            guard let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) else { return }
+            since = self.resolveSyncCursor(
+                cidString: cid.rawValue,
+                mlsJoinedAt: dto.mlsGroupJoinedAt,
+                memberCreatedAt: dto.membership?.memberCreatedAt,
+                deviceLoginTime: deviceLoginTime
+            )
         }
-        
+
         guard let since else {
+            finishSync()
             log.debug("[E2eSync] Skipping sync for \(cid): device has not joined the MLS group yet", subsystems: .mls)
             return
         }
@@ -332,28 +396,10 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func syncChannelPage(cid: ChannelId, since: Int64) {
-        apiClient.request(endpoint: .e2eChannelSync(cid: cid, since: since)) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .failure(let error):
-                log.error("[E2eSync] Single-channel request failed for \(cid): \(error)", subsystems: .mls)
-            case .success(let payload):
-                guard !payload.events.isEmpty else { return }
-
-                self.processE2eSyncEvents(payload.events, cid: cid, cidString: cid.rawValue)
-
-                // Advance cursor to last event's created_at.
-                if let lastEvent = payload.events.last {
-                    let nextCursor = Int64(lastEvent.createdAt.timeIntervalSince1970 * 1000)
-                    self.saveSyncCursors([cid.rawValue: nextCursor])
-
-                    if payload.hasMore {
-                        log.debug("[E2eSync] Paginating single-channel sync for \(cid)", subsystems: .mls)
-                        self.syncChannelPage(cid: cid, since: nextCursor)
-                    }
-                }
-            }
-        }
+        // Delegate to the full sync which handles all channels including this one.
+        // The sync lock is already held (set by performE2eChannelSync), so we build
+        // cursors for just this channel and run through syncPage.
+        syncPage(cursors: [cid.rawValue: since])
     }
 
     private func syncPage(cursors: [String: Int64]) {
@@ -363,6 +409,7 @@ class E2eRepository: EventsControllerDelegate {
             switch result {
             case .failure(let error):
                 log.error("[E2eSync] Request failed: \(error)", subsystems: .mls)
+                self.finishSync()
             case .success(let payload):
                 var nextCursors: [String: Int64] = [:]
 
@@ -374,11 +421,20 @@ class E2eRepository: EventsControllerDelegate {
                         continue
                     }
 
-                    // Process all events for this channel in order on the serial decryptQueue.
-                    self.processE2eSyncEvents(channelPayload.events, cid: cid, cidString: cidString)
+                    // Only process events whose createdAt is strictly after the cursor
+                    // to avoid reprocessing boundary events.
+                    let cursorMs = cursors[cidString] ?? 0
+                    let newEvents = channelPayload.events.filter { event in
+                        Int64(event.createdAt.timeIntervalSince1970 * 1000) > cursorMs
+                    }
+
+                    guard !newEvents.isEmpty else { continue }
+
+                    // Process filtered events for this channel in order on the serial decryptQueue.
+                    self.processE2eSyncEvents(newEvents, cid: cid, cidString: cidString)
 
                     // Advance the cursor to the last event's created_at.
-                    if let lastEvent = channelPayload.events.last {
+                    if let lastEvent = newEvents.last {
                         nextCursors[cidString] = Int64(lastEvent.createdAt.timeIntervalSince1970 * 1000)
                     }
 
@@ -401,9 +457,18 @@ class E2eRepository: EventsControllerDelegate {
                 if !remaining.isEmpty {
                     log.debug("[E2eSync] Paginating for \(remaining.count) channel(s)", subsystems: .mls)
                     self.syncPage(cursors: remaining)
+                } else {
+                    self.finishSync()
                 }
             }
         }
+    }
+
+    /// Marks the current sync operation as finished so a new one can start.
+    private func finishSync() {
+        syncLock.lock()
+        isSyncing = false
+        syncLock.unlock()
     }
 
     /// Enqueues all events for one channel onto the serial `decryptQueue` so that
@@ -489,7 +554,8 @@ class E2eRepository: EventsControllerDelegate {
                     try mlsClient.processMessage(data: Data(bytes), in: cidString)
                 }
             case .welcome:
-                guard !self.mlsClient.isGroupLoaded(cid: cidString) else {
+                
+                guard !self.shouldSkipWelcome(cid: cidString) else {
                     log.debug("[MLS] Skipping welcome: group already exists for \(cidString)", subsystems: .mls)
                     return
                 }
@@ -499,6 +565,7 @@ class E2eRepository: EventsControllerDelegate {
                     log.debug("[E2eSync] Skipping welcome not targeted at current user", subsystems: .mls)
                     return
                 }
+                log.debug("[MLS] Handle welcome event of cid: \(cidString)", subsystems: .mls)
                 if let welcome = data.welcome, let tree = data.ratchetTree,
                    let ratchetTree = try? RatchetTree.fromBytes(data: Data(tree)) {
                     try mlsClient.joinWithWelcome(cid: cidString, welcome: Data(welcome), ratchetTree: ratchetTree)
@@ -691,17 +758,40 @@ class E2eRepository: EventsControllerDelegate {
         try mlsClient.commitPendingProposal(in: cid)
     }
 
+    /// Returns `true` when we should skip a welcome message for the given channel.
+    /// A welcome is skipped only when the group already exists locally **and** the
+    /// current user is an active member (i.e. the channel exists in the DB with a
+    /// role that is NOT `pending` or `rejected`).
+    ///
+    /// Returns `false` (= process the welcome) when:
+    /// - The group is not loaded yet, OR
+    /// - The group is loaded but the channel doesn't exist in the DB, OR
+    /// - The group is loaded, the channel exists, but the member role is `pending` or `rejected`
+    ///   (user was kicked and re-added — the old MLS group is stale).
+    private func shouldSkipWelcome(cid cidString: String) -> Bool {
+        guard mlsClient.isGroupLoaded(cid: cidString) else {
+            return false
+        }
+        return true
+    }
+
     func clearPendingProposal(in cid: ChannelId) throws {
         try mlsClient.clearPendingProposal(in: cid)
     }
 
     public func reset() {
         loginTime = nil
+        finishSync()
         do {
             try mlsClient.reset()
         } catch (let error) {
             log.error("[MLS] Failed to reset MLS: \(error)", subsystems: .mls)
         }
+    }
+    
+    public func deleteGroup(cid: String) throws {
+        try mlsClient.deleteGroup(cid: cid)
+        removeE2eSyncCursor(for: cid)
     }
 
     // MARK: - Decryption
