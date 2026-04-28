@@ -121,6 +121,7 @@ public enum PaginationParameter: Encodable, Hashable {
         case lessThan = "id_lt"
         case lessThanOrEqual = "id_lte"
         case around = "id_around"
+        case backfillLimit = "backfill_limit"
     }
 
     /// Filter on ids greater than the given value.
@@ -183,6 +184,7 @@ public enum PaginationParameter: Encodable, Hashable {
             try container.encode(id, forKey: .lessThanOrEqual)
         case let .around(id):
             try container.encode(id, forKey: .around)
+            try container.encode(true, forKey: .backfillLimit)
         }
     }
 
