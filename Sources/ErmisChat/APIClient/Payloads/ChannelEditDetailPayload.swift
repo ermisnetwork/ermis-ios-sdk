@@ -6,7 +6,7 @@ import Foundation
 
 struct ChannelEditDetailPayload: Encodable {
     let id: String?
-    let cid: ChannelId?
+    var cid: ChannelId?
     let name: String?
     let description: String?
     let imageURL: String?
@@ -96,7 +96,7 @@ struct ChannelEditDetailPayload: Encodable {
         if !allMembers.isEmpty {
             try container.encode(allMembers, forKey: .members)
         }
-
+        try container.encodeIfPresent(cid?.id, forKey: .channelId)
         try container.encodeIfPresent(name, forKey: .name)
         try container.encodeIfPresent(description, forKey: .cDescription)
         try container.encodeIfPresent(imageURL, forKey: .imageURL)

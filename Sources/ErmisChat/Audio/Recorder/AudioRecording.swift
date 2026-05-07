@@ -254,6 +254,8 @@ open class ErmisAudioRecorder: NSObject, AudioRecording, AVAudioRecorderDelegate
     }
 
     open func stopRecording() {
+        let wasActive = context.state != .stopped
+
         /// If we are recording, we are going to stop
         if audioRecorder?.isRecording == true {
             audioRecorder?.stop()
@@ -262,12 +264,20 @@ open class ErmisAudioRecorder: NSObject, AudioRecording, AVAudioRecorderDelegate
         /// Stop the active observers
         stopObservers()
 
-        do {
-            /// We will try to deactivate recording from the `AudioSession`
-            try audioSessionConfigurator.deactivateRecordingSession()
-        } catch {
-            multicastDelegate.invoke {
-                $0.audioRecorder(self, didFailWithError: error)
+        if wasActive {
+            context = .init(
+                state: .stopped,
+                duration: context.duration,
+                averagePower: context.averagePower
+            )
+
+            do {
+                /// We will try to deactivate recording from the `AudioSession`
+                try audioSessionConfigurator.deactivateRecordingSession()
+            } catch {
+                multicastDelegate.invoke {
+                    $0.audioRecorder(self, didFailWithError: error)
+                }
             }
         }
     }

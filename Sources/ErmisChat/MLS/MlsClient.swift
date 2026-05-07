@@ -64,6 +64,9 @@ public class MlsClient {
         hasSetup = true
     }
     
+    func getChannelId(projectId: String, userIds: [String]) -> String {
+        hashChannelId(projectId: projectId, userIds: userIds)
+    }
 
     private func createGroup(with cid: String) throws -> Group {
         guard let provider else {

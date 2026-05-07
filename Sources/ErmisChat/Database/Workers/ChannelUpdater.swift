@@ -102,17 +102,21 @@ class ChannelUpdater: Worker {
                     .updateChannel(query: channelQuery)
             }
         }()
-        
+        var cid: ChannelId
         if isChannelCreate, channelQuery.mlsEnabled == true {
-
-            let userIds = channelQuery.channelPayload?.members ?? []
+            let userIds = Array(channelQuery.channelPayload?.members ?? [])
             
-            guard let cid = channelQuery.cid else {
+            if channelQuery.channelPayload?.type == .messaging {
+                let channelId = e2eRepository.hashChannelId(projectId: channelQuery.projectId, userIds: userIds)
+                cid = channelId
+            } else if let channelId = channelQuery.cid {
+                cid = channelId
+            } else {
                 completion(.failure(ClientError.Unexpected("CID nil when creating channel")))
                 return
             }
-            
-            e2eRepository.consumeKeyPackagesBatch(targetUserIds: Array(userIds), completion: { [weak self] result in
+                        
+            e2eRepository.consumeKeyPackagesBatch(targetUserIds: userIds, completion: { [weak self, cid] result in
                 guard let self else {
                     return
                 }
@@ -122,6 +126,7 @@ class ChannelUpdater: Worker {
                         let (commitBundle, ratchetTree, groupInfo, epoch) = try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
 
                         var updatedQuery = channelQuery
+                        updatedQuery.channelPayload?.cid = cid
                         updatedQuery.channelPayload?.commit = commitBundle.commit.uint8Array
                         updatedQuery.channelPayload?.welcome = (commitBundle.welcome ?? Data()).uint8Array
                         updatedQuery.channelPayload?.epoch = epoch

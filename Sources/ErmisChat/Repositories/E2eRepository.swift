@@ -4,6 +4,7 @@
 
 import Foundation
 import open_mls_ios
+import CoreData
 
 class E2eRepository: EventsControllerDelegate {
     let database: DatabaseContainer
@@ -90,6 +91,8 @@ class E2eRepository: EventsControllerDelegate {
             decryptNewMessageEventIfNeeded(message: event.message, cid: event.cid)
         } else if let event = event as? NotificationMessageNewEvent {
             decryptNewMessageEventIfNeeded(message: event.message, cid: event.cid)
+        } else if let event = event as? MessageUpdatedEvent {
+            decryptUpdatedMessageEventIfNeeded(message: event.message, cid: event.cid)
         } else if let event = event as? MLSEvent {
             handleMlsEvent(event)
         } else if let event = event as? MemberRemovedEvent {
@@ -204,6 +207,24 @@ class E2eRepository: EventsControllerDelegate {
         decryptMessagePayload(messageId: message.id, encryptedData: encryptedData, cid: cid)
     }
 
+    private func decryptUpdatedMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
+        guard let encryptedData = message.encryptedData else { return }
+        // Skip re-decryption for the current user's own edits — the local
+        // MessageDecryptDTO was already updated in MessageUpdater.editMessage().
+        // MLS cannot decrypt ciphertext produced by the same device.
+        if message.isSentByCurrentUser { return }
+        log.debug("[MLS] Re-decrypt updated message \(message.id) with epoch: \(message.mlsEpoch)")
+        // Invalidate the cached decrypted payload so decryptMessagePayloadSync
+        // performs a fresh MLS decrypt with the new ciphertext.
+        database.write { session in
+            if let existing = MessageDecryptDTO.load(messageId: message.id, context: session as! NSManagedObjectContext) {
+                (session as! NSManagedObjectContext).delete(existing)
+            }
+        } completion: { [weak self] _ in
+            self?.decryptMessagePayload(messageId: message.id, encryptedData: encryptedData, cid: cid)
+        }
+    }
+
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
         // Send mising keypackages to BE
         guard let keyPackagesRemaining = event.keyPackagesRemaining else {
@@ -217,6 +238,11 @@ class E2eRepository: EventsControllerDelegate {
         apiClient.request(endpoint: .uploadKeyPackages(keyPackages: keyPackages)) { result in
             log.debug("[MLS] Upload missing \(amountOfKeyPackagesMissing) keypackages result: \(result)", subsystems: .mls)
         }
+    }
+    
+    func hashChannelId(projectId: String, userIds: [String]) -> ChannelId {
+        let cidString = mlsClient.getChannelId(projectId: projectId, userIds: userIds)
+        return ChannelId(type: .messaging, id: cidString)
     }
 
     // MARK: - E2EE Sync
@@ -481,17 +507,37 @@ class E2eRepository: EventsControllerDelegate {
                 case .protocol(let data):
                     self.applyE2eSyncProtocolEvent(data, cidString: cidString)
                 case .application(let data):
-                    // Call the synchronous body directly — we are already on decryptQueue,
-                    // so we must NOT re-enqueue via decryptMessagePayload (that would deadlock
-                    // the serial queue waiting on itself).
-                    self.decryptMessagePayloadSync(
-                        messageId: data.id,
-                        encryptedData: Data(data.mlsCiphertext),
-                        cid: cid
-                    )
+                    if data.isSystemMessage {
+                        self.handleSystemMessage(data, cid: cid)
+                    } else {
+                        // Call the synchronous body directly — we are already on decryptQueue,
+                        // so we must NOT re-enqueue via decryptMessagePayload (that would deadlock
+                        // the serial queue waiting on itself).
+                        guard let mlsCiphertext = data.mlsCiphertext else {
+                            log.error("Missing mls_ciphertext for regular application message \(data.id)")
+                            continue
+                        }
+                        self.decryptMessagePayloadSync(
+                            messageId: data.id,
+                            encryptedData: Data(mlsCiphertext),
+                            cid: cid
+                        )
+                    }
                 }
             }
         }
+    }
+
+    // MARK: - System Message Handling
+
+    /// Handles a system message received during E2EE sync.
+    /// Called on `decryptQueue`. System messages are plain-text and do not require MLS decryption.
+    /// - Parameters:
+    ///   - data: The application event data with `type == .system`.
+    ///   - cid: The channel this message belongs to.
+    private func handleSystemMessage(_ data: E2eSyncApplicationData, cid: ChannelId) {
+        // TODO: Implement system message handling (e.g. persist to DB, update UI).
+        log.debug("[E2E] Received system message \(data.id) in \(cid): \(data.text ?? "")", subsystems: .mls)
     }
 
     /// Synchronous decryption body. Must only be called from within a `decryptQueue` operation.

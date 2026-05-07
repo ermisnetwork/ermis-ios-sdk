@@ -24,14 +24,16 @@ class MessageEditor: Worker {
 
     private let observer: ListDatabaseObserver<MessageDTO, MessageDTO>
     private let messageRepository: MessageRepository
+    private let e2eRepository: E2eRepository?
 
-    init(messageRepository: MessageRepository, database: DatabaseContainer, apiClient: APIClient) {
+    init(messageRepository: MessageRepository, e2eRepository: E2eRepository? = nil, database: DatabaseContainer, apiClient: APIClient) {
         observer = .init(
             context: database.backgroundReadOnlyContext,
             fetchRequest: MessageDTO.messagesPendingSyncFetchRequest(),
             itemCreator: { $0 }
         )
         self.messageRepository = messageRepository
+        self.e2eRepository = e2eRepository
         super.init(database: database, apiClient: apiClient)
 
         startObserving()
@@ -65,7 +67,7 @@ class MessageEditor: Worker {
     }
 
     private func processNextMessage() {
-        database.write { [weak self, weak messageRepository] session in
+        database.write { [weak self, weak messageRepository, weak e2eRepository] session in
             guard let messageId = self?.pendingMessageIDs.first else { return }
 
             guard
@@ -78,7 +80,32 @@ class MessageEditor: Worker {
                 return
             }
 
-            let requestBody = dto.asRequestBody() as MessageRequestBody
+            var requestBody = dto.asRequestBody() as MessageRequestBody
+            let isEncrypted = dto.channel?.mlsEnabled == true
+
+            // Encrypt the edited message for E2E channels
+            if isEncrypted, let e2eRepository {
+                let e2ePayload = E2ePayload(
+                    text: requestBody.text,
+                    attachments: requestBody.attachments,
+                    stickerUrl: requestBody.stickerUrl
+                )
+                do {
+                    let (encryptedData, epoch) = try e2eRepository.encryptedMessage(e2ePayload, in: cid)
+                    requestBody.encryptedData = encryptedData
+                    requestBody.mlsEpoch = epoch
+                    requestBody.text = ""
+                    requestBody.attachments = []
+                    requestBody.stickerUrl = nil
+                } catch {
+                    log.error("Failed to encrypt edited message \(messageId): \(error)")
+                    messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
+                        self?.removeMessageIDAndContinue(messageId)
+                    }
+                    return
+                }
+            }
+
             messageRepository?.updateMessage(withID: messageId, localState: .syncing) {
                 self?.apiClient.request(endpoint: .editMessage(payload: requestBody,
                                                                oldMessage: nil,

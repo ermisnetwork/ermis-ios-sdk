@@ -888,6 +888,10 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
     open func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
         if textView == timestampTextView {
+            // Don't show edit history when encryption is enable.
+            guard channel?.mlsEnabled != true else {
+                return false
+            }
             delegate?.messageContentViewDidTapAtShowEditedHistory(indexPath?())
             return true
         }

@@ -72,4 +72,5 @@ public enum ChannelCodingKeys: String, CodingKey, CaseIterable {
     case epoch
     case ratchetTree = "ratchet_tree"
     case groupInfo = "group_info"
+    case channelId = "channel_id"
 }

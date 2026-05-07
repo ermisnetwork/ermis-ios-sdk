@@ -469,7 +469,7 @@ public class ErmisClient {
                 apiClient: apiClient
             ),
             NewUserQueryUpdater(database: databaseContainer, apiClient: apiClient),
-            MessageEditor(messageRepository: messageRepository, database: databaseContainer, apiClient: apiClient),
+            MessageEditor(messageRepository: messageRepository, e2eRepository: e2eRepository, database: databaseContainer, apiClient: apiClient),
             AttachmentQueueUploader(
                 database: databaseContainer,
                 apiClient: apiClient,
@@ -727,8 +727,12 @@ public class ErmisClient {
     }
 
     public func getUser(with id: String) -> ChatUser? {
-        let userDTO = databaseContainer.viewContext.user(id: id, projectId: projectId)
-        return try? userDTO?.asModel()
+        var result: ChatUser?
+        databaseContainer.viewContext.performAndWait {
+            let userDTO = databaseContainer.viewContext.user(id: id, projectId: projectId)
+            result = try? userDTO?.asModel()
+        }
+        return result
     }
     // MARK: - Invite
     public func acceptInvite(cid: ChannelId, completion: @escaping ((Error?) -> Void)) {
@@ -797,7 +801,14 @@ public class ErmisClient {
             throw ClientError.Unexpected("Precondition failed")
         }
 
-        guard let channel = try? databaseContainer.backgroundReadOnlyContext.channel(cid: callSignalEventDTO.cid)?.asModel() else {
+        // backgroundReadOnlyContext is a private-queue context. All Core Data
+        // access must happen on its queue via performAndWait to avoid crashes.
+//        var channel: Channel?
+//        databaseContainer.viewContext.performAndWait {
+//            channel = try? databaseContainer.backgroundReadOnlyContext.channel(cid: callSignalEventDTO.cid)?.asModel()
+//        }
+
+        guard let channel = try? databaseContainer.viewContext.channel(cid: callSignalEventDTO.cid)?.asModel() else {
             throw ClientError.ChannelDoesNotExist(cid: callSignalEventDTO.cid)
         }
 

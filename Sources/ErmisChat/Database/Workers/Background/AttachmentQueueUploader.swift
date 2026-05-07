@@ -168,9 +168,9 @@ class AttachmentQueueUploader: Worker {
             guard let attachment = session.attachment(id: id) else { return }
 
             let onCompletion: (Error?) -> Void = { error in
-                DispatchQueue.main.async {
-                    let model = attachment.asAnyModel()
-                    completion(attachment.asAnyModel(), error)
+                let model = attachment.asAnyModel()
+                DispatchQueue.main.async { 
+                    completion(model, error)
                 }
             }
 

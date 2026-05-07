@@ -224,22 +224,54 @@ public struct E2eSyncProtocolData: Decodable {
     }
 }
 
+/// Message type inside an application sync event.
+public enum E2eSyncApplicationMessageType: String, Decodable {
+    /// A regular encrypted application message.
+    case regular
+    /// A system-generated message (e.g. member join/leave notifications).
+    case system
+}
+
 /// The `data` payload for an `application` sync event.
 public struct E2eSyncApplicationData: Decodable {
     public let id: String
-    /// Plain-text content; always empty for E2EE messages.
+    public let cid: String?
+    let user: UserPayload?
+    /// The message type — `regular` (encrypted) or `system` (plain-text).
+    public let type: E2eSyncApplicationMessageType
+    /// Plain-text content; populated for system messages, empty for E2EE messages.
     public let text: String?
-    /// TLS-serialized MLS ciphertext bytes.
-    public let mlsCiphertext: [UInt8]
+    /// TLS-serialized MLS ciphertext bytes. Present only for regular (encrypted) messages.
+    public let mlsCiphertext: [UInt8]?
     public let contentType: String
     public let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
         case id
+        case cid
+        case user
+        case type
         case text
         case mlsCiphertext = "mls_ciphertext"
         case contentType = "content_type"
         case createdAt = "created_at"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        cid = try container.decodeIfPresent(String.self, forKey: .cid)
+        user = try container.decodeIfPresent(UserPayload.self, forKey: .user)
+        type = try container.decodeIfPresent(E2eSyncApplicationMessageType.self, forKey: .type) ?? .regular
+        text = try container.decodeIfPresent(String.self, forKey: .text)
+        mlsCiphertext = try container.decodeIfPresent([UInt8].self, forKey: .mlsCiphertext)
+        contentType = try container.decode(String.self, forKey: .contentType)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    /// Whether this is a system message rather than an encrypted application message.
+    public var isSystemMessage: Bool {
+        type == .system
     }
 }
 

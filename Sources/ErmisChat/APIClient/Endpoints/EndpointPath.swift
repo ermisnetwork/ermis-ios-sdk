@@ -61,6 +61,7 @@ enum EndpointPath: Codable {
     case sendE2eMessage(ChannelId)
     case message(MessageId)
     case editMessage(MessageId, ChannelId)
+    case editE2eMessage(MessageId, ChannelId)
     case deleteMessage(MessageId, ChannelId)
     case pinMessage(MessageId, ChannelId)
     case unPinMessage(MessageId, ChannelId)
@@ -220,6 +221,8 @@ enum EndpointPath: Codable {
             return "messages/\(messageId)"
         case .editMessage(let (messageId, cid)):
             return "messages/\(cid.apiPath)/\(messageId)"
+        case .editE2eMessage(let messageId, let cid):
+            return "v1/e2ee/channels/\(cid.apiPath)/\(messageId)"
         case .deleteMessage(let (messageId, cid)):
             return "messages/\(cid.apiPath)/\(messageId)"
         case .pinMessage(let (messageId, cid)):

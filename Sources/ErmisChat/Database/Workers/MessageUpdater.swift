@@ -151,6 +151,19 @@ class MessageUpdater: Worker {
 //                    let user = try session.user(id: $0, projectId: cid.projectId)
 //                    return user
 //                })
+
+                // Update the cached decrypted message if one exists (E2E encrypted channel)
+                if let decryptDTO = MessageDecryptDTO.load(messageId: messageId, context: session as! NSManagedObjectContext) {
+                    decryptDTO.text = text
+                    if !attachments.isEmpty {
+                        let attachmentPayloads = messageDTO.attachments.compactMap {
+                            $0.asRequestPayload()
+                        }
+                        decryptDTO.attachmentsData = try? JSONEncoder.default.encode(attachmentPayloads)
+                    } else {
+                        decryptDTO.attachmentsData = nil
+                    }
+                }
             }
 
             if messageDTO.isBounced {
