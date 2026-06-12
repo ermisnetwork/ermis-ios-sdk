@@ -320,7 +320,16 @@ class ChannelUpdater: Worker {
                 switch result {
                 case .success(let keyPackages):
                     do {
-                        let (commitBundle, ratchetTree, groupInfo, epoch) = try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
+                        // A member who self-left still occupies an MLS leaf until the
+                        // designated evictor commits their eviction. If any such "ghost" is
+                        // still pending, bundle its removal into THIS add commit — a plain
+                        // add would otherwise fail (e.g. re-adding the left user hits a
+                        // duplicate leaf). See the self-leave composite-cleanup flow.
+                        let pendingGhosts = e2eRepository.getPendingRemoveMemberUserIds(channelCid: cid.rawValue)
+                        let bundle = pendingGhosts.isEmpty
+                            ? try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
+                            : try e2eRepository.addMembersWithRemovals(to: cid, removeUserIds: pendingGhosts, memberKeypackages: keyPackages)
+                        let (commitBundle, ratchetTree, groupInfo, epoch) = bundle
                         // Enable e2e
                         let body = AddMembersRequestBody(addMembers: Array(userIds),
                                                          commit: commitBundle.commit,
@@ -336,6 +345,10 @@ class ChannelUpdater: Worker {
                             case .success:
                                 do {
                                     try e2eRepository.mergePendingCommit(in: cid)
+                                    // The bundled ghosts were evicted by this commit; clear them.
+                                    if !pendingGhosts.isEmpty {
+                                        e2eRepository.deletePendingRemoveMembers(userIds: pendingGhosts, channelCid: cid.rawValue)
+                                    }
                                     completion?(nil)
                                 } catch {
                                     completion?(error)
@@ -350,7 +363,7 @@ class ChannelUpdater: Worker {
                             }
                         }
                     } catch let error {
-                        log.error("Failed to add member to group", subsystems: .mls)
+                        log.error("Failed to add member to group: \(error)", subsystems: .mls)
                         completion?(error)
                     }
                 case .failure(let error):
@@ -383,15 +396,22 @@ class ChannelUpdater: Worker {
         cid: ChannelId,
         isMlsEnabled: Bool,
         userIds: Set<UserId>,
+        isSelfLeave: Bool,
         completion: ((Error?) -> Void)? = nil
     ) {
         if isMlsEnabled {
             do {
-                let (commitBunddle, groupInfo, epoch) = try e2eRepository.removeMembers(Array(userIds), in: cid)
-                let body = RemoveMembersRequestBody(removeMembers: Array(userIds),
-                                                    commit: commitBunddle.commit,
-                                                    epoch: epoch,
-                                                    groupInfo: groupInfo)
+                var body: Encodable
+                if isSelfLeave {
+                    body = LeaveChannelRequestBody(removeMembers: Array(userIds), selfRemove: true)
+                } else {
+                    let (commitBunddle, groupInfo, epoch) = try e2eRepository.removeMembers(Array(userIds), in: cid)
+                    body = RemoveMembersRequestBody(removeMembers: Array(userIds),
+                                                        selfRemove: false,
+                                                        commit: commitBunddle.commit,
+                                                        epoch: epoch,
+                                                        groupInfo: groupInfo)
+                }
                 apiClient.request(endpoint: .removeMembers(cid: cid, userIds: userIds, mlsBody: body)) { [weak self] result in
                     guard let self else {
                         return
@@ -399,14 +419,20 @@ class ChannelUpdater: Worker {
                     switch result {
                     case .success:
                         do {
-                            try e2eRepository.mergePendingCommit(in: cid)
+                            if !isSelfLeave {
+                                try e2eRepository.mergePendingCommit(in: cid)
+                            } else {
+                                try e2eRepository.deleteGroup(cid: cid.rawValue)
+                            }
                             completion?(nil)
                         } catch {
                             completion?(error)
                         }
                     case .failure(let error):
                         do {
-                            try e2eRepository.clearPendingCommit(in: cid)
+                            if !isSelfLeave {
+                                try e2eRepository.clearPendingCommit(in: cid)
+                            }
                             completion?(error)
                         } catch {
                             completion?(error)

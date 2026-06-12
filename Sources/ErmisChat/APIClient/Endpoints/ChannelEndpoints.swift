@@ -155,7 +155,7 @@ extension Endpoint {
     static func removeMembers(
         cid: ChannelId,
         userIds: Set<UserId>,
-        mlsBody: RemoveMembersRequestBody? = nil
+        mlsBody: Encodable? = nil
     ) -> Endpoint<EmptyResponse> {
         if let mlsBody {
             return .init(
@@ -166,7 +166,7 @@ extension Endpoint {
             )
         }
         let body = [
-            "remove_members": AnyEncodable(userIds)
+            "remove_members": AnyEncodable(userIds),
         ]
         return .init(
             path: .channelUpdate(cid.apiPath),

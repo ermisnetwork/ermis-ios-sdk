@@ -115,6 +115,7 @@ enum EndpointPath: Codable {
     case externalJoin(ChannelId)
     case e2eSync
     case e2eChannelSync(ChannelId)
+    case commitEviction(ChannelId)
 
     var value: String {
         switch self {
@@ -307,9 +308,11 @@ enum EndpointPath: Codable {
         case .externalJoin(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/external_join"
         case .e2eSync:
-            return "v1/e2ee/sync"
+            return "v1/e2ee/scope_sync"
         case .e2eChannelSync(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/sync"
+        case .commitEviction(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/commit_eviction"
         case .enableTopics(let channelId):
             return "channels/\(channelId.apiPath)/topics/enable"
         case .disableTopics(let channelId):

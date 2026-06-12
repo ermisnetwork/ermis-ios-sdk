@@ -81,6 +81,28 @@ extension NSManagedObjectContext: E2eDatabaseSession {
 
         return dto
     }
+
+    // MARK: - Pending Remove Member
+
+    @discardableResult
+    func savePendingRemoveMember(userId: String, channelCid: String) -> PendingRemoveMemberDTO {
+        PendingRemoveMemberDTO.createOrLoad(userId: userId, channelCid: channelCid, context: self)
+    }
+
+    func loadPendingRemoveMemberUserIds(channelCid: String) -> [String] {
+        PendingRemoveMemberDTO.loadAll(channelCid: channelCid, context: self).map(\.userId)
+    }
+
+    func deletePendingRemoveMember(userId: String, channelCid: String) {
+        guard let dto = PendingRemoveMemberDTO.load(userId: userId, channelCid: channelCid, context: self) else { return }
+        delete(dto)
+    }
+
+    func deletePendingRemoveMembers(userIds: [String], channelCid: String) {
+        for userId in userIds {
+            deletePendingRemoveMember(userId: userId, channelCid: channelCid)
+        }
+    }
 }
 
 // MARK: - Model conversion

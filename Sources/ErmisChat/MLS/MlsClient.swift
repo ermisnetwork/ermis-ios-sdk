@@ -283,12 +283,12 @@ public class MlsClient {
             throw ClientError.MlsNoProviderError()
         }
         log.debug("[MLS] Join with welcome", subsystems: .mls)
-//        do {
+        do {
             try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
-//        } catch {
-//            try provider.deleteGroup(cid: cid)
-//            try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
-//        }
+        } catch {
+            try provider.deleteGroup(cid: cid)
+            try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
+        }
     }
 
     func externalJoin(groupInfo: Data) throws -> ExternalJoinResult {
@@ -320,6 +320,43 @@ public class MlsClient {
             throw ClientError.MlsNoProviderError()
         }
         try provider.deleteGroup(cid: cid)
+    }
+    
+    func deleteMessage(messageId: String) throws {
+        guard let provider else {
+            throw ClientError.MlsNoProviderError()
+        }
+        
+    }
+    
+    func addMembersWithRemovals(in cid: String, removeUserIds: [String], addMembers: [KeyPackage]) throws -> (CommitBundle, RatchetTree, Int) {
+        guard let provider else {
+            throw ClientError.MlsNoProviderError()
+        }
+        guard let identity else {
+            throw ClientError.MlsNoIdentityError()
+        }
+        let group = try loadGroup(with: cid)
+        if group.hasPendingCommit() {
+            try group.clearPendingCommit(provider: provider)
+        }
+        log.debug("TTTTT AAAA BEFORE ADD MEMBER WITH REMOVALS, EPOCH: \(group.epoch())")
+        let commitBundle = try group.commitMemberAddWithRemovals(provider: provider, sender: identity, removeUserIds: removeUserIds, addMembers: addMembers)
+        log.debug("TTTTT AAAA AFTER ADD MEMBER WITH REMOVALS, EPOCH: \(group.epoch())")
+        let ratchetTree = group.exportRatchetTree()
+        let epoch = Int(group.epoch())
+        return (commitBundle, ratchetTree, epoch)
+    }
+    
+    func removeMembersWithRemovals(in cid: String, removeUserIds: [String]) throws {
+        guard let provider else {
+            throw ClientError.MlsNoProviderError()
+        }
+        guard let identity else {
+            throw ClientError.MlsNoIdentityError()
+        }
+        let group = try loadGroup(with: cid)
+        try group.commitMemberRemovals(provider: provider, sender: identity, removeUserIds: removeUserIds)
     }
 }
 

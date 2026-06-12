@@ -15,6 +15,9 @@ public struct TypingEvent: ChannelSpecificEvent {
     /// The parent channel of channel the typing event happend.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The user who changed the typing state.
     public let user: ChatUser
 
@@ -32,6 +35,7 @@ class TypingEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let isTyping: Bool
     let parentId: MessageId?
     var isThread: Bool { parentId != nil }
@@ -41,6 +45,7 @@ class TypingEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
         isTyping = response.eventType == .userStartTyping
@@ -55,6 +60,7 @@ class TypingEventDTO: EventDTO {
             isTyping: isTyping,
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             parentId: parentId,
             createdAt: createdAt

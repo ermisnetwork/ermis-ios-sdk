@@ -357,6 +357,23 @@
             </uniquenessConstraint>
         </uniquenessConstraints>
     </entity>
+    <entity name="PendingRemoveMemberDTO" representedClassName="PendingRemoveMemberDTO" syncable="YES">
+        <attribute name="channelCid" attributeType="String"/>
+        <attribute name="createdAt" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="id" attributeType="String"/>
+        <attribute name="userId" attributeType="String"/>
+        <fetchIndex name="channelCid">
+            <fetchIndexElement property="channelCid" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <fetchIndex name="id">
+            <fetchIndexElement property="id" type="Binary" order="ascending"/>
+        </fetchIndex>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
     <entity name="QueuedRequestDTO" representedClassName="QueuedRequestDTO" syncable="YES">
         <attribute name="date" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="endpoint" attributeType="Binary"/>

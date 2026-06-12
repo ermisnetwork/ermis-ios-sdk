@@ -81,7 +81,9 @@ class MessageEditor: Worker {
             }
 
             var requestBody = dto.asRequestBody() as MessageRequestBody
-            let isEncrypted = dto.channel?.mlsEnabled == true
+            // Topics inherit their parent channel's MLS group, so a topic under an
+            // E2EE parent is encrypted too.
+            let isEncrypted = dto.channel?.isE2eeEnabled == true
 
             // Encrypt the edited message for E2E channels
             if isEncrypted, let e2eRepository {

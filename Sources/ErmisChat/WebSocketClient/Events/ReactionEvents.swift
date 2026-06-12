@@ -15,6 +15,9 @@ public struct ReactionNewEvent: ChannelSpecificEvent {
     /// The parent channel identifier the message lives in.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The message a reaction is added to.
     public let message: ChatMessage
 
@@ -29,6 +32,7 @@ class ReactionNewEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let reaction: MessageReactionPayload
     let createdAt: Date
@@ -38,6 +42,7 @@ class ReactionNewEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         reaction = try response.value(at: \.reaction)
         createdAt = try response.value(at: \.createdAt)
@@ -59,6 +64,7 @@ class ReactionNewEventDTO: EventDTO {
             user: userDTO.asModel(),
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             message: messageDTO.asModel(),
             reaction: reactionDTO.asModel(),
             createdAt: createdAt
@@ -77,6 +83,9 @@ public struct ReactionUpdatedEvent: ChannelSpecificEvent {
     /// The parent channel identifier the message lives in.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The message a reaction is added to.
     public let message: ChatMessage
 
@@ -91,6 +100,7 @@ class ReactionUpdatedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let reaction: MessageReactionPayload
     let createdAt: Date
@@ -100,6 +110,7 @@ class ReactionUpdatedEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         reaction = try response.value(at: \.reaction)
         createdAt = try response.value(at: \.createdAt)
@@ -121,6 +132,7 @@ class ReactionUpdatedEventDTO: EventDTO {
             user: userDTO.asModel(),
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             message: messageDTO.asModel(),
             reaction: reactionDTO.asModel(),
             createdAt: createdAt
@@ -139,6 +151,9 @@ public struct ReactionDeletedEvent: ChannelSpecificEvent {
     /// The parent channel identifier the message lives in.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The message a reaction is deleted from.
     public let message: ChatMessage
 
@@ -153,6 +168,7 @@ class ReactionDeletedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let reaction: MessageReactionPayload
     let createdAt: Date
@@ -162,6 +178,7 @@ class ReactionDeletedEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         reaction = try response.value(at: \.reaction)
         createdAt = try response.value(at: \.createdAt)
@@ -183,6 +200,7 @@ class ReactionDeletedEventDTO: EventDTO {
             user: userDTO.asModel(),
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             message: messageDTO.asModel(),
             reaction: reactionDTO.asModel(),
             createdAt: createdAt

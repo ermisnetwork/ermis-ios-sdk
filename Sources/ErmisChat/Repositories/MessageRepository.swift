@@ -55,7 +55,9 @@ class MessageRepository {
 
             var requestBody = dto.asRequestBody() as MessageRequestBody
 
-            let isEncrypted = dto.channel?.mlsEnabled == true
+            // Topics inherit their parent channel's MLS group, so `isE2eeEnabled`
+            // also returns true for a topic under an E2EE parent.
+            let isEncrypted = dto.channel?.isE2eeEnabled == true
             // Encrypted message
             if isEncrypted {
                 let e2ePayload = E2ePayload(text: requestBody.text,

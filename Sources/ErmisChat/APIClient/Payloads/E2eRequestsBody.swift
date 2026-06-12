@@ -56,20 +56,33 @@ public struct ExternalJoinRequestBody: Encodable {
     }
 }
 
-/// Request body for POST /v1/e2ee/sync.
+/// Request body for POST /v1/e2ee/scope_sync.
 ///
-/// Fetches all protocol + application messages across multiple E2EE channels since the
-/// given per-channel cursors. Cursors are millisecond Unix timestamps (Int64).
+/// Fetches all protocol + application + metadata events for each sync scope since the given
+/// composite cursor. Each cursor is `{created_at, event_id}` where `created_at` is an RFC3339
+/// timestamp string and `event_id` breaks ties between events sharing the same timestamp, so
+/// pagination never skips or replays a same-timestamp event.
 public struct E2eSyncRequestBody: Encodable {
-    /// Per-channel cursors keyed by raw CID string (e.g. "team:ch001").
-    /// Only events created after the cursor timestamp are returned.
-    public let cursors: [String: Int64]
-    /// Maximum number of events to return across all channels.
+    /// Per-scope composite cursors keyed by raw scope CID string (e.g. "team:ch001").
+    /// For a parent channel scope this one cursor covers the parent channel, its non-gated
+    /// topics, metadata, and the parent MLS protocol stream.
+    public let cursors: [String: ScopeSyncCursorPayload]
+    /// Maximum number of events to return across all scopes.
     public let limit: Int
+    /// Cursor for the user-scoped `removed_channels` stream. Only removals after this
+    /// `{removed_at, event_id}` are returned. `nil` on the first sync.
+    public let removedCursor: RemovedSyncCursorPayload?
 
-    public init(cursors: [String: Int64], limit: Int = 100) {
+    public init(cursors: [String: ScopeSyncCursorPayload], limit: Int = 100, removedCursor: RemovedSyncCursorPayload? = nil) {
         self.cursors = cursors
         self.limit = limit
+        self.removedCursor = removedCursor
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case cursors
+        case limit
+        case removedCursor = "removed_cursor"
     }
 }
 
@@ -132,6 +145,8 @@ public struct AddMembersRequestBody: Encodable {
 public struct RemoveMembersRequestBody: Encodable {
     /// User IDs to remove from the channel.
     public let removeMembers: [String]
+    /// Is leave group or admin kick, true if user leave group.
+    public let selfRemove: Bool
     /// TLS-serialized commit bytes.
     public let commit: [UInt8]
     /// MLS group epoch after the commit.
@@ -141,11 +156,13 @@ public struct RemoveMembersRequestBody: Encodable {
 
     public init(
         removeMembers: [String],
+        selfRemove: Bool,
         commit: Data,
         epoch: Int,
         groupInfo: Data
     ) {
         self.removeMembers = removeMembers
+        self.selfRemove = selfRemove
         self.commit = commit.uint8Array
         self.epoch = epoch
         self.groupInfo = groupInfo.uint8Array
@@ -153,11 +170,33 @@ public struct RemoveMembersRequestBody: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case removeMembers = "remove_members"
+        case selfRemove = "self_remove"
         case commit
         case epoch
         case groupInfo = "group_info"
     }
 }
+
+public struct LeaveChannelRequestBody: Encodable {
+    /// User IDs to remove from the channel.
+    public let removeMembers: [String]
+    /// Is leave group or admin kick, true if user leave group.
+    public let selfRemove: Bool
+
+    public init(
+        removeMembers: [String],
+        selfRemove: Bool,
+    ) {
+        self.removeMembers = removeMembers
+        self.selfRemove = selfRemove
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case removeMembers = "remove_members"
+        case selfRemove = "self_remove"
+    }
+}
+
 
 public struct EnableEncryptionRequestBody: Encodable {
     public let commit: [UInt8]
@@ -189,5 +228,39 @@ public struct EnableEncryptionRequestBody: Encodable {
         try container.encode(self.ratchetTree, forKey: .ratchetTree)
         try container.encode(self.epoch, forKey: .epoch)
         try container.encode(self.groupInfo, forKey: .groupInfo)
+    }
+}
+
+/// Request body for committing an MLS eviction (ghost cleanup) after a self-leave.
+///
+/// Only performs MLS group cleanup — does NOT change channel membership.
+/// The target users were already removed from the channel by the self-leave event.
+public struct CommitEvictionRequestBody: Encodable {
+    /// User IDs of the ghost members to remove from the MLS group.
+    public let targetUserIds: [String]
+    /// TLS-serialized commit bytes for the member removal.
+    public let commit: [UInt8]
+    /// TLS-serialized GroupInfo bytes after the commit.
+    public let groupInfo: [UInt8]
+    /// MLS group epoch before the commit (pre-merge epoch).
+    public let epoch: Int
+
+    public init(
+        targetUserIds: [String],
+        commit: Data,
+        groupInfo: Data,
+        epoch: Int
+    ) {
+        self.targetUserIds = targetUserIds
+        self.commit = commit.uint8Array
+        self.groupInfo = groupInfo.uint8Array
+        self.epoch = epoch
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case targetUserIds = "target_user_ids"
+        case commit
+        case groupInfo = "group_info"
+        case epoch
     }
 }

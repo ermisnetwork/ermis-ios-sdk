@@ -12,6 +12,9 @@ public struct ChannelUpdatedEvent: ChannelSpecificEvent {
     /// The identifier of updated parrent channel
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The updated channel.
     public let channel: Channel
 
@@ -27,6 +30,7 @@ public struct ChannelUpdatedEvent: ChannelSpecificEvent {
 
 class ChannelUpdatedEventDTO: EventDTO {
     let channel: ChannelDetailPayload
+    let topicCids: [ChannelId]
     let user: UserPayload?
     let message: MessagePayload?
     let createdAt: Date
@@ -34,6 +38,7 @@ class ChannelUpdatedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         channel = try response.value(at: \.channel)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try? response.value(at: \.user)
         message = try? response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
@@ -47,6 +52,7 @@ class ChannelUpdatedEventDTO: EventDTO {
         let messageDTO = message.flatMap { session.message(id: $0.id) }
 
         return try? ChannelUpdatedEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             user: userDTO?.asModel(),
             message: messageDTO?.asModel(),
@@ -63,6 +69,9 @@ public struct ChannelDeletedEvent: ChannelSpecificEvent {
     /// The identifier of parent channel of deleted topic.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The deleted channel.
     public let channel: Channel
 
@@ -76,6 +85,7 @@ public struct ChannelDeletedEvent: ChannelSpecificEvent {
 class ChannelDeletedEventDTO: EventDTO {
     let user: UserPayload?
     let createdAt: Date
+    let topicCids: [ChannelId]
     let payload: EventPayload
     let cid: ChannelId
 
@@ -83,6 +93,7 @@ class ChannelDeletedEventDTO: EventDTO {
         user = try? response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
         cid = try response.value(at: \.cid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         payload = response
     }
 
@@ -92,6 +103,7 @@ class ChannelDeletedEventDTO: EventDTO {
         let userDTO = user.flatMap { session.user(id: $0.id, projectId: cid.projectId) }
 
         return try? ChannelDeletedEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             user: userDTO?.asModel(),
             createdAt: createdAt
@@ -109,6 +121,9 @@ public struct ChannelTruncatedEvent: ChannelSpecificEvent {
     /// The identifier of parent channel of truncated topic.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The truncated channel.
     public let channel: Channel
 
@@ -121,12 +136,14 @@ public struct ChannelTruncatedEvent: ChannelSpecificEvent {
 
 class ChannelTruncatedEventDTO: EventDTO {
     let cid: ChannelId
+    let topicCids: [ChannelId]
     let user: UserPayload?
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try? response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -138,6 +155,7 @@ class ChannelTruncatedEventDTO: EventDTO {
         let userDTO = user.flatMap { session.user(id: $0.id, projectId: cid.projectId) }
 
         return try? ChannelTruncatedEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             user: userDTO?.asModel(),
             createdAt: createdAt
@@ -153,6 +171,9 @@ public struct ChannelVisibleEvent: ChannelSpecificEvent {
     /// The parent channel idetifier if this event belong to a topic.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The user who made the channel visible.
     public let user: ChatUser
 
@@ -163,6 +184,7 @@ public struct ChannelVisibleEvent: ChannelSpecificEvent {
 class ChannelVisibleEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let user: UserPayload
     let createdAt: Date
     let payload: EventPayload
@@ -170,6 +192,7 @@ class ChannelVisibleEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -181,6 +204,7 @@ class ChannelVisibleEventDTO: EventDTO {
         return try? ChannelVisibleEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             createdAt: createdAt
         )
@@ -195,6 +219,9 @@ public struct ChannelHiddenEvent: ChannelSpecificEvent {
     /// The parent channel idetifier if this event belong to a topic.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The user who hide the channel.
     public let user: ChatUser
 
@@ -208,6 +235,7 @@ public struct ChannelHiddenEvent: ChannelSpecificEvent {
 class ChannelHiddenEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let user: UserPayload
     let isHistoryCleared: Bool
     let createdAt: Date
@@ -216,6 +244,7 @@ class ChannelHiddenEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.cid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         isHistoryCleared = (try? response.value(at: \.isChannelHistoryCleared)) ?? false
@@ -228,6 +257,7 @@ class ChannelHiddenEventDTO: EventDTO {
         return try? ChannelHiddenEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             isHistoryCleared: isHistoryCleared,
             createdAt: createdAt
@@ -238,6 +268,7 @@ class ChannelHiddenEventDTO: EventDTO {
 class ChannelPinnedEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
@@ -245,6 +276,7 @@ class ChannelPinnedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -256,6 +288,7 @@ class ChannelPinnedEventDTO: EventDTO {
         return try? ChannelPinnedEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             isPinned: true,
             createdAt: createdAt
@@ -266,6 +299,7 @@ class ChannelPinnedEventDTO: EventDTO {
 class ChannelUnpinnedEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
@@ -273,6 +307,7 @@ class ChannelUnpinnedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -284,6 +319,7 @@ class ChannelUnpinnedEventDTO: EventDTO {
         return try? ChannelPinnedEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             isPinned: false,
             createdAt: createdAt
@@ -295,9 +331,12 @@ class ChannelUnpinnedEventDTO: EventDTO {
 public struct ChannelPinnedEvent: ChannelSpecificEvent {
     /// The hidden channel identifier.
     public let cid: ChannelId
-    
+
     /// The parent channel identifier, if applicable.
     public let parentCid: ChannelId?
+
+    /// The topic cids
+    public let topicCids: [ChannelId]
 
     /// The user who pinned the channel.
     public let user: ChatUser
@@ -312,6 +351,7 @@ public struct ChannelPinnedEvent: ChannelSpecificEvent {
 class ChannelTopicEnableEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
@@ -319,6 +359,7 @@ class ChannelTopicEnableEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -330,6 +371,7 @@ class ChannelTopicEnableEventDTO: EventDTO {
         return try? ChannelEnableTopicEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             isEnableTopic: true,
             createdAt: createdAt
@@ -341,6 +383,7 @@ class ChannelTopicEnableEventDTO: EventDTO {
 class ChannelTopicDisableEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let createdAt: Date
     let user: UserPayload
     let payload: EventPayload
@@ -348,6 +391,7 @@ class ChannelTopicDisableEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.cid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         user = try response.value(at: \.user)
         payload = response
@@ -359,6 +403,7 @@ class ChannelTopicDisableEventDTO: EventDTO {
         return try? ChannelEnableTopicEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             isEnableTopic: false,
             createdAt: createdAt
@@ -373,6 +418,9 @@ public struct ChannelEnableTopicEvent: ChannelSpecificEvent {
 
     /// The parent channel idetifier if this event belong to a topic.
     public let parentCid: ChannelId?
+
+    /// The topic cids
+    public let topicCids: [ChannelId]
 
     /// The user who enabled topic of  the channel.
     public let user: ChatUser
@@ -551,6 +599,9 @@ public struct MLSEvent: ChannelSpecificEvent {
     /// The identifier of updated parrent channel
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The user who updated the channel.
     public let user: ChatUser?
 
@@ -564,6 +615,7 @@ public struct MLSEvent: ChannelSpecificEvent {
 class MLSEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let user: UserPayload?
     let mlsProtocol: MLSProtocolMessagePayload
     let createdAt: Date
@@ -572,6 +624,7 @@ class MLSEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try? response.value(at: \.user)
         mlsProtocol = try response.value(at: \.mlsProtocol)
         createdAt = try response.value(at: \.createdAt)
@@ -584,6 +637,7 @@ class MLSEventDTO: EventDTO {
         return MLSEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: try? userDTO?.asModel(),
             mlsProtocol: mlsProtocol,
             createdAt: createdAt

@@ -124,14 +124,15 @@ extension Endpoint {
         )
     }
 
-    /// Create the endpoint to fetch missed E2EE events across multiple channels in one call.
+    /// Create the endpoint to fetch missed E2EE events for every sync scope in one call
+    /// via POST /v1/e2ee/scope_sync.
     ///
-    /// Pass a per-channel cursor map (millisecond Unix timestamps) to receive only events
-    /// created after each cursor. If `has_more` is `true` for any channel in the response,
-    /// advance that channel's cursor to the last event's `created_at` and repeat the call.
+    /// Pass a per-scope composite cursor map (`{created_at, event_id}`) to receive only events
+    /// after each cursor. If `has_more` is `true` for any scope in the response, resend with
+    /// that scope's `next_cursor` and repeat the call.
     ///
-    /// - Parameter body: Cursors and optional limit for the sync request.
-    /// - Returns: The endpoint to perform a bulk E2EE sync.
+    /// - Parameter body: Composite cursors and optional limit for the scope sync request.
+    /// - Returns: The endpoint to perform a bulk E2EE scope sync.
     static func e2eSync(body: E2eSyncRequestBody) -> Endpoint<E2eSyncPayload> {
         .init(
             path: .e2eSync,
@@ -157,6 +158,24 @@ extension Endpoint {
             path: .e2eChannelSync(cid),
             method: .get,
             query: E2eChannelSyncQuery(since: since, limit: limit),
+            needDeviceId: true
+        )
+    }
+
+    /// Create the endpoint to commit an MLS eviction for users who self-left a channel.
+    ///
+    /// Only performs MLS group cleanup (removing ghost members from the MLS roster).
+    /// Does NOT change channel membership — the members were already removed by the self-leave.
+    ///
+    /// - Parameters:
+    ///   - cid: The channel identifier.
+    ///   - body: The eviction commit payload (target user IDs, commit bytes, group_info, epoch).
+    /// - Returns: The endpoint to commit an eviction.
+    static func commitEviction(cid: ChannelId, body: CommitEvictionRequestBody) -> Endpoint<EmptyResponse> {
+        .init(
+            path: .commitEviction(cid),
+            method: .post,
+            body: body,
             needDeviceId: true
         )
     }

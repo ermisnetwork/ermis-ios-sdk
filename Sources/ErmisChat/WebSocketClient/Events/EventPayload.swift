@@ -47,6 +47,7 @@ class EventPayload: Decodable {
         case keyPackagesRemaining = "key_packages_remaining"
         case mlsProtocol = "protocol_data"
         case mlsEnabled = "mls_enabled"
+        case selfRemove = "self_remove"
     }
 
     let eventType: EventType
@@ -87,6 +88,7 @@ class EventPayload: Decodable {
     let keyPackagesRemaining: Int?
     let mlsProtocol: MLSProtocolMessagePayload?
     let mlsEnabled: Bool?
+    let selfRemove: Bool?
 
     init(
         eventType: EventType,
@@ -125,7 +127,8 @@ class EventPayload: Decodable {
         metadata: Metadata? = nil,
         keyPackagesRemaining: Int? = nil,
         mlsProtocol: MLSProtocolMessagePayload? = nil,
-        mlsEnabled: Bool? = nil
+        mlsEnabled: Bool? = nil,
+        selfRemove: Bool? = nil
     ) {
         self.eventType = eventType
         self.connectionId = connectionId
@@ -164,6 +167,7 @@ class EventPayload: Decodable {
         self.keyPackagesRemaining = keyPackagesRemaining
         self.mlsProtocol = mlsProtocol
         self.mlsEnabled = mlsEnabled
+        self.selfRemove = selfRemove
     }
 
     required init(from decoder: Decoder) throws {
@@ -207,6 +211,7 @@ class EventPayload: Decodable {
         keyPackagesRemaining = try container.decodeIfPresent(Int.self, forKey: .keyPackagesRemaining)
         mlsProtocol = try container.decodeIfPresent(MLSProtocolMessagePayload.self, forKey: .mlsProtocol)
         mlsEnabled = try container.decodeIfPresent(Bool.self, forKey: .mlsEnabled)
+        selfRemove = try container.decodeIfPresent(Bool.self, forKey: .selfRemove)
     }
 
     func event() throws -> Event {

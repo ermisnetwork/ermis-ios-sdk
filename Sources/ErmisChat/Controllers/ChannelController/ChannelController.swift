@@ -704,6 +704,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     ///
     public func removeMembers(
         userIds: Set<UserId>,
+        isSelfLeave: Bool,
         completion: ((Error?) -> Void)? = nil
     ) {
         /// Perform action only if channel is already created on backend side and have a valid `cid`.
@@ -716,7 +717,8 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
             currentUserId: client.currentUserId,
             cid: cid,
             isMlsEnabled: channel?.mlsEnabled ?? false,
-            userIds: userIds
+            userIds: userIds,
+            isSelfLeave: isSelfLeave
         ) { [weak self] error in
             self?.callback {
                 completion?(error)

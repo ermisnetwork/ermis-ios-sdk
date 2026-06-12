@@ -227,6 +227,42 @@ extension ChannelDTO: EphemeralValuesContainer {
     }
 }
 
+// MARK: - E2EE / Topic MLS group resolution
+
+extension ChannelDTO {
+    /// The cid of the channel whose MLS group encrypts/decrypts this channel's messages.
+    ///
+    /// Topics do not own an MLS group — they inherit their parent channel's group. So a
+    /// topic resolves to its `parentcid`; every other channel resolves to its own `cid`.
+    var mlsGroupCid: String {
+        if let parentcid, !parentcid.isEmpty {
+            return parentcid
+        }
+        return cid
+    }
+
+    /// Whether messages in this channel are end-to-end encrypted.
+    ///
+    /// A topic shares its parent channel's MLS group, so a topic is E2EE exactly when its
+    /// parent channel has MLS enabled — even if the topic row itself doesn't carry the flag.
+    var isE2eeEnabled: Bool {
+        if mlsEnabled {
+            return true
+        }
+        guard let parentcid, !parentcid.isEmpty else {
+            return false
+        }
+        if let parent {
+            return parent.mlsEnabled
+        }
+        guard let context = managedObjectContext,
+              let parentCid = try? ChannelId(cid: parentcid) else {
+            return false
+        }
+        return ChannelDTO.load(cid: parentCid, context: context)?.mlsEnabled ?? false
+    }
+}
+
 // MARK: Saving and loading the data
 
 extension NSManagedObjectContext {
