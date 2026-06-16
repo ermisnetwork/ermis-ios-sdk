@@ -180,6 +180,44 @@ class E2eRepository: EventsControllerDelegate {
     /// Only one sync (from either `performE2eSync` or `performE2eChannelSync`) can run at a time.
     private let syncLock = NSLock()
     private var isSyncing = false
+
+    /// Per-channel sync requests that arrived while another sync was already running. Instead of
+    /// dropping them (which left a freshly accepted/received channel un-synced until the next
+    /// channel-list save), they are drained in `finishSync` as soon as the current sync ends.
+    /// Guarded by `syncLock`.
+    private var pendingChannelSyncCids: Set<String> = []
+
+    /// Throttle for the full multi-channel sync. `performE2eSync()` is triggered on every
+    /// channel-list save (each pagination page, every reconnect, every foreground resync),
+    /// and each run does a full DB scan + network round-trip. The throttle runs the leading
+    /// call immediately and coalesces a burst of follow-ups into a single trailing run, so
+    /// e.g. scrolling the channel list doesn't kick off one full sync per page.
+    private let syncThrottleInterval: TimeInterval = 2.0
+    private let syncThrottleQueue = DispatchQueue(label: "io.ermis.e2e.sync-throttle")
+    private var lastSyncTriggeredAt: Date?
+    private var pendingSyncWorkItem: DispatchWorkItem?
+
+    /// Last enqueued group-mutating operation per channel, across *all* sources (realtime
+    /// commits/welcomes from `handleMlsEvent` and bulk-sync events from `processE2eSyncEvents`).
+    /// `decryptQueue` is serial but `OperationQueue` does not guarantee FIFO dequeue order for
+    /// operations of equal priority — and a high-priority realtime commit can overtake a queued
+    /// low-priority sync commit. Both would advance the MLS epoch out of order, tripping the
+    /// epoch guard and dropping commits. Chaining each op to the previous one for the same
+    /// channel via `addDependency` enforces strict per-channel ordering regardless of queue
+    /// scheduling; priority still governs ordering *across* channels.
+    private var lastOpByCid: [String: Operation] = [:]
+    private let lastOpLock = NSLock()
+
+    /// Dedicated private-queue context for E2EE decrypt reads (decrypt cache + pending-message
+    /// lookups). Kept separate from `backgroundReadOnlyContext` — which the synchronous
+    /// send/encrypt path blocks via `waitUntilFinished` — so a decrypt running on `decryptQueue`
+    /// can never deadlock against an in-flight send, while still keeping reads off the main thread.
+    private lazy var e2eReadContext: NSManagedObjectContext = {
+        let context = database.newBackgroundContext()
+        context.automaticallyMergesChangesFromParent = true
+        context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        return context
+    }()
     
     init(database: DatabaseContainer,
          eventNotificationCenter: EventNotificationCenter,
@@ -295,7 +333,7 @@ class E2eRepository: EventsControllerDelegate {
             log.debug("[MLS] ignored event from self", subsystems: .mls)
             return
         }
-        decryptQueue.addOperation { [weak self] in
+        let op = BlockOperation { [weak self] in
             guard let self else { return }
             do {
                 switch mlsEvent.mlsProtocol.type {
@@ -310,6 +348,8 @@ class E2eRepository: EventsControllerDelegate {
                     }
                     log.debug("[MLS] Processing commit message", subsystems: .mls)
                     try self.mlsClient.processMessage(data: commit.data, in: cid)
+                    // Epoch advanced — re-attempt any messages that arrived before this commit.
+                    self.reDecryptPendingMessages(in: mlsEvent.cid)
                 case .externalCommit:
                     guard let commit = mlsProtocol.commit else {
                         return
@@ -320,6 +360,8 @@ class E2eRepository: EventsControllerDelegate {
                         return
                     }
                     try self.mlsClient.processMessage(data: commit.data, in: cid)
+                    // Epoch advanced — re-attempt any messages that arrived before this commit.
+                    self.reDecryptPendingMessages(in: mlsEvent.cid)
                 case .welcome:
                     //                    break
                     guard !self.shouldSkipWelcome(cid: cid) else {
@@ -339,6 +381,8 @@ class E2eRepository: EventsControllerDelegate {
                     }
                     try self.mlsClient.joinWithWelcome(cid: mlsEvent.cid.rawValue, welcome: welcome.data, ratchetTree: ratchetTree)
                     self.saveMlsGroupJoinedAt(cidString: mlsEvent.cid.rawValue)
+                    // Group now exists locally — decrypt any messages buffered before the join.
+                    self.reDecryptPendingMessages(in: mlsEvent.cid)
                 case .proposal:
                     break
                 }
@@ -346,6 +390,27 @@ class E2eRepository: EventsControllerDelegate {
                 log.error("[MLS] Failed to process event: \(mlsEvent)", subsystems: .mls)
             }
         }
+        // Realtime protocol messages unblock decryption — prioritise them over bulk sync.
+        // Chained per channel so commits/welcomes advance the epoch in arrival order and never
+        // overtake an in-flight sync op for the same group (see `enqueueGroupOperation`).
+        op.queuePriority = .high
+        enqueueGroupOperation(op, cidString: cid)
+    }
+
+    /// Enqueues a group-state–mutating operation onto the serial `decryptQueue`, chained after
+    /// the previous such operation for the same channel so per-channel MLS work (commits,
+    /// welcomes, sync events) runs in enqueue order. Required because `OperationQueue` does not
+    /// guarantee FIFO ordering for equal-priority operations, and a `.high` realtime commit must
+    /// not overtake a `.low` sync commit for the same group — either would advance the epoch out
+    /// of order. `queuePriority` still governs ordering across *different* channels.
+    private func enqueueGroupOperation(_ op: Operation, cidString: String) {
+        lastOpLock.lock()
+        if let previous = lastOpByCid[cidString], !previous.isFinished {
+            op.addDependency(previous)
+        }
+        lastOpByCid[cidString] = op
+        lastOpLock.unlock()
+        decryptQueue.addOperation(op)
     }
     
     private func decryptNewMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
@@ -438,9 +503,40 @@ class E2eRepository: EventsControllerDelegate {
         return nil
     }
     
+    /// Throttled entry point. Runs the leading call right away and coalesces a burst of
+    /// follow-up triggers (pagination pages, repeated foreground/reconnect resyncs) into a
+    /// single trailing run, instead of starting a full sync per trigger.
+    func performE2eSync() {
+        syncThrottleQueue.async { [weak self] in
+            guard let self else { return }
+            let now = Date()
+            if let last = self.lastSyncTriggeredAt {
+                let elapsed = now.timeIntervalSince(last)
+                if elapsed < self.syncThrottleInterval {
+                    // Within the throttle window — schedule one trailing run (coalesce).
+                    guard self.pendingSyncWorkItem == nil else { return }
+                    let item = DispatchWorkItem { [weak self] in
+                        guard let self else { return }
+                        self.pendingSyncWorkItem = nil
+                        self.lastSyncTriggeredAt = Date()
+                        self.performE2eSyncNow()
+                    }
+                    self.pendingSyncWorkItem = item
+                    self.syncThrottleQueue.asyncAfter(
+                        deadline: .now() + (self.syncThrottleInterval - elapsed),
+                        execute: item
+                    )
+                    return
+                }
+            }
+            self.lastSyncTriggeredAt = now
+            self.performE2eSyncNow()
+        }
+    }
+
     /// Fetches all missed E2EE events for every MLS-enabled channel since the last known cursor,
     /// applying protocol messages and decrypting application messages in order.
-    func performE2eSync() {
+    private func performE2eSyncNow() {
         syncLock.lock()
         guard !isSyncing else {
             syncLock.unlock()
@@ -452,8 +548,11 @@ class E2eRepository: EventsControllerDelegate {
         
         var cursors: [String: ScopeSyncCursorPayload] = [:]
         let deviceLoginTime = loginTime
-        database.viewContext.performAndWait {
-            let channels = ChannelDTO.fetchAllJoinedMlsEnabled(context: self.database.viewContext)
+        // Resolve cursors on a background context — this scans all MLS channels (and may touch
+        // MLS storage in `resolveSyncCursor`), which must not run on the main thread.
+        let context = database.backgroundReadOnlyContext
+        context.performAndWait {
+            let channels = ChannelDTO.fetchAllJoinedMlsEnabled(context: context)
             for ch in channels {
                 if let cursor = self.resolveSyncCursor(
                     cidString: ch.cid,
@@ -541,41 +640,50 @@ class E2eRepository: EventsControllerDelegate {
     ///
     /// - Parameter cid: The channel to sync.
     func performE2eChannelSync(cid: ChannelId) {
+        runSync(forCidStrings: [cid.rawValue])
+    }
+
+    /// Runs an E2EE sync for a specific set of channels. If a sync is already in flight the
+    /// requested channels are queued (`pendingChannelSyncCids`) and drained in `finishSync`, so a
+    /// freshly accepted/received channel is synced as soon as the current sync ends instead of
+    /// being dropped. Cursor resolution runs on a background context to avoid blocking the UI.
+    private func runSync(forCidStrings cidStrings: Set<String>) {
+        guard !cidStrings.isEmpty else { return }
         syncLock.lock()
-        guard !isSyncing else {
+        if isSyncing {
+            pendingChannelSyncCids.formUnion(cidStrings)
             syncLock.unlock()
-            log.debug("[E2eSync] Skipping single-channel sync for \(cid) — another sync is already in progress", subsystems: .mls)
+            log.debug("[E2eSync] Queued single-channel sync for \(cidStrings) — another sync is already in progress", subsystems: .mls)
             return
         }
         isSyncing = true
         syncLock.unlock()
-        
-        var since: ScopeSyncCursorPayload?
+
+        var cursors: [String: ScopeSyncCursorPayload] = [:]
         let deviceLoginTime = loginTime
-        database.viewContext.performAndWait {
-            guard let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) else { return }
-            since = self.resolveSyncCursor(
-                cidString: cid.rawValue,
-                mlsJoinedAt: dto.mlsGroupJoinedAt,
-                memberCreatedAt: dto.membership?.memberCreatedAt,
-                deviceLoginTime: deviceLoginTime
-            )
+        let context = database.backgroundReadOnlyContext
+        context.performAndWait {
+            for cidString in cidStrings {
+                guard let cid = try? ChannelId(cid: cidString),
+                      let dto = ChannelDTO.load(cid: cid, context: context) else { continue }
+                if let cursor = self.resolveSyncCursor(
+                    cidString: cidString,
+                    mlsJoinedAt: dto.mlsGroupJoinedAt,
+                    memberCreatedAt: dto.membership?.memberCreatedAt,
+                    deviceLoginTime: deviceLoginTime
+                ) {
+                    cursors[cidString] = cursor
+                }
+            }
         }
-        
-        guard let since else {
+
+        guard !cursors.isEmpty else {
             finishSync()
-            log.debug("[E2eSync] Skipping sync for \(cid): device has not joined the MLS group yet", subsystems: .mls)
+            log.debug("[E2eSync] Skipping sync for \(cidStrings): device has not joined the MLS group yet", subsystems: .mls)
             return
         }
-        log.debug("[E2eSync] Starting single-channel sync for \(cid) since \(since.createdAt)", subsystems: .mls)
-        syncChannelPage(cid: cid, since: since)
-    }
-
-    private func syncChannelPage(cid: ChannelId, since: ScopeSyncCursorPayload) {
-        // Delegate to the full sync which handles all channels including this one.
-        // The sync lock is already held (set by performE2eChannelSync), so we build
-        // cursors for just this channel and run through syncPage.
-        syncPage(cursors: [cid.rawValue: since])
+        log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
+        syncPage(cursors: cursors)
     }
 
     private func syncPage(cursors: [String: ScopeSyncCursorPayload]) {
@@ -712,63 +820,83 @@ class E2eRepository: EventsControllerDelegate {
         return removed.hasMore
     }
 
-    /// Marks the current sync operation as finished so a new one can start.
+    /// Marks the current sync operation as finished so a new one can start, then drains any
+    /// per-channel syncs that were requested while this one was running.
     private func finishSync() {
         syncLock.lock()
         isSyncing = false
+        let pending = pendingChannelSyncCids
+        pendingChannelSyncCids.removeAll()
         syncLock.unlock()
+
+        guard !pending.isEmpty else { return }
+        log.debug("[E2eSync] Draining \(pending.count) queued channel sync(s)", subsystems: .mls)
+        runSync(forCidStrings: pending)
     }
     
-    /// Enqueues all events for one channel onto the serial `decryptQueue` so that
-    /// protocol messages are applied before the application messages that follow them.
+    /// Enqueues each event for one channel onto the serial `decryptQueue` as its own
+    /// low-priority operation, in server order.
+    ///
+    /// Splitting per event (rather than processing the whole channel in one operation) keeps
+    /// the queue responsive while a sync is in flight: a high-priority foreground decrypt or a
+    /// send only has to wait for the single event currently executing — not the entire
+    /// channel's backlog. Per-channel ordering (protocol messages before the application
+    /// messages that depend on them) is preserved by chaining each event to the previous one
+    /// for the same channel via an operation dependency.
     private func processE2eSyncEvents(_ events: [E2eSyncEventPayload], cid: ChannelId, cidString: String) {
-        decryptQueue.addOperation { [weak self] in
-            guard let self else { return }
-            for event in events {
-                switch event {
-                case .protocol(let data):
-                    self.applyE2eSyncProtocolEvent(data, cidString: cidString)
-                case .application(let data):
-                    if data.isSystemMessage {
-                        self.handleSystemMessage(data, cid: cid)
-                    } else {
-                        // Call the synchronous body directly — we are already on decryptQueue,
-                        // so we must NOT re-enqueue via decryptMessagePayload (that would deadlock
-                        // the serial queue waiting on itself).
-                        guard let mlsCiphertext = data.mlsCiphertext else {
-                            log.error("Missing mls_ciphertext for regular application message \(data.id)")
-                            continue
-                        }
-                        self.decryptMessagePayloadSync(
-                            messageId: data.id,
-                            encryptedData: Data(mlsCiphertext),
-                            cid: cid
-                        )
-                    }
-                case .reaction(let data):
-                    self.handleReactionSyncEvent(data)
-                case .messageDeleted(let data):
-                    self.handleMessageDeletedSyncEvent(data)
-                case .messageUpdated(let data):
-                    self.handleMessageUpdatedSyncEvent(data, cid: cid)
-                case .messagePin(let data):
-                    self.handleMessagePinSyncEvent(data)
-                case .memberRemoved(let data, _):
-                    self.handleMemberRemovedSyncEvent(data, cid: cid)
-                case .inviteAccepted(let data, _):
-                    self.handleInviteRespondSyncEvent(data, cid: cid)
-                case .inviteRejected(let data, _):
-                    self.handleInviteRespondSyncEvent(data, cid: cid)
-                case .inviteMessagingRejected(let data, _):
-                    self.handleInviteRespondSyncEvent(data, cid: cid)
-                case .inviteMessagingSkipped(let data, _):
-                    self.handleInviteRespondSyncEvent(data, cid: cid)
-                case .websocketEvent(let payload):
-                    self.handleWebsocketEvent(payload)
-                case .unknown(let type, let rawData):
-                    log.warning("[E2eSync] Unknown sync event type '\(type)' in channel \(cidString), data: \(rawData)", subsystems: .mls)
-                }
+        for event in events {
+            let op = BlockOperation { [weak self] in
+                self?.processSingleE2eSyncEvent(event, cid: cid, cidString: cidString)
             }
+            op.queuePriority = .low
+            enqueueGroupOperation(op, cidString: cidString)
+        }
+    }
+
+    /// Applies a single E2EE sync event. Must run on `decryptQueue`.
+    private func processSingleE2eSyncEvent(_ event: E2eSyncEventPayload, cid: ChannelId, cidString: String) {
+        switch event {
+        case .protocol(let data):
+            applyE2eSyncProtocolEvent(data, cidString: cidString)
+        case .application(let data):
+            if data.isSystemMessage {
+                handleSystemMessage(data, cid: cid)
+            } else {
+                // Call the synchronous body directly — we are already on decryptQueue,
+                // so we must NOT re-enqueue via decryptMessagePayload (that would deadlock
+                // the serial queue waiting on itself).
+                guard let mlsCiphertext = data.mlsCiphertext else {
+                    log.error("Missing mls_ciphertext for regular application message \(data.id)")
+                    return
+                }
+                decryptMessagePayloadSync(
+                    messageId: data.id,
+                    encryptedData: Data(mlsCiphertext),
+                    cid: cid
+                )
+            }
+        case .reaction(let data):
+            handleReactionSyncEvent(data)
+        case .messageDeleted(let data):
+            handleMessageDeletedSyncEvent(data)
+        case .messageUpdated(let data):
+            handleMessageUpdatedSyncEvent(data, cid: cid)
+        case .messagePin(let data):
+            handleMessagePinSyncEvent(data)
+        case .memberRemoved(let data, _):
+            handleMemberRemovedSyncEvent(data, cid: cid)
+        case .inviteAccepted(let data, _):
+            handleInviteRespondSyncEvent(data, cid: cid)
+        case .inviteRejected(let data, _):
+            handleInviteRespondSyncEvent(data, cid: cid)
+        case .inviteMessagingRejected(let data, _):
+            handleInviteRespondSyncEvent(data, cid: cid)
+        case .inviteMessagingSkipped(let data, _):
+            handleInviteRespondSyncEvent(data, cid: cid)
+        case .websocketEvent(let payload):
+            handleWebsocketEvent(payload)
+        case .unknown(let type, let rawData):
+            log.warning("[E2eSync] Unknown sync event type '\(type)' in channel \(cidString), data: \(rawData)", subsystems: .mls)
         }
     }
 
@@ -977,9 +1105,13 @@ class E2eRepository: EventsControllerDelegate {
         completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
     ) {
         // Re-check the DB cache — a prior operation may have populated it.
+        // Read on the background read-only context so the decrypt hot path never
+        // hops to (and blocks on) the main-queue `viewContext`, and never on
+        // `backgroundReadOnlyContext` (which a synchronous send may be blocking).
         var cachedPayload: E2ePayload?
-        database.viewContext.performAndWait {
-            if let dto = MessageDecryptDTO.load(messageId: messageId, context: self.database.viewContext) {
+        let readContext = e2eReadContext
+        readContext.performAndWait {
+            if let dto = MessageDecryptDTO.load(messageId: messageId, context: readContext) {
                 cachedPayload = try? dto.asPayload()
             }
         }
@@ -1013,7 +1145,34 @@ class E2eRepository: EventsControllerDelegate {
             completion?(.failure(error))
         }
     }
-    
+
+    /// Re-attempts decryption for messages in `cid` that still hold ciphertext but have
+    /// no cached plaintext yet. Called after a commit/welcome advances the group epoch so
+    /// messages that arrived *before* their epoch's protocol message self-heal, instead of
+    /// being stuck on the "encrypted" placeholder until the user leaves and re-opens the
+    /// channel. Idempotent: messages already decrypted (cache present) are skipped.
+    private func reDecryptPendingMessages(in cid: ChannelId) {
+        let context = e2eReadContext
+        var pending: [(id: MessageId, data: Data)] = []
+        context.performAndWait {
+            let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+            request.predicate = NSPredicate(
+                format: "cid == %@ AND encryptedData != nil AND decryptedMessage == nil",
+                cid.rawValue
+            )
+            guard let results = try? context.fetch(request) else { return }
+            pending = results.compactMap { dto in
+                guard let data = dto.encryptedData else { return nil }
+                return (dto.id, data)
+            }
+        }
+        guard !pending.isEmpty else { return }
+        log.debug("[MLS] Re-decrypting \(pending.count) pending message(s) in \(cid) after epoch advance", subsystems: .mls)
+        for item in pending {
+            decryptMessagePayload(messageId: item.id, encryptedData: item.data, cid: cid)
+        }
+    }
+
     private func applyE2eSyncProtocolEvent(_ data: E2eSyncProtocolData, cidString: String) {
         do {
             switch data.type {
@@ -1027,6 +1186,10 @@ class E2eRepository: EventsControllerDelegate {
                 if let bytes = data.commit {
                     log.debug("[MLS] Processing commit message", subsystems: .mls)
                     try mlsClient.processMessage(data: Data(bytes), in: cidString)
+                    // Epoch advanced — re-attempt messages buffered before this commit.
+                    if let cid = try? ChannelId(cid: cidString) {
+                        reDecryptPendingMessages(in: cid)
+                    }
                 }
             case .welcome:
                 
@@ -1046,6 +1209,10 @@ class E2eRepository: EventsControllerDelegate {
                     do {
                         try mlsClient.joinWithWelcome(cid: cidString, welcome: Data(welcome), ratchetTree: ratchetTree)
                         saveMlsGroupJoinedAt(cidString: cidString)
+                        // Group now exists locally — decrypt any messages buffered before the join.
+                        if let cid = try? ChannelId(cid: cidString) {
+                            reDecryptPendingMessages(in: cid)
+                        }
                     } catch {
                         // The Welcome is encrypted for a KeyPackage this device no longer
                         // has — e.g. it was consumed by the user's earlier (pre-leave) join,
@@ -1431,11 +1598,38 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     func encryptedMessage(_ message: E2ePayload, in cid: ChannelId) throws -> ([UInt8], Int) {
-        let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
+        // Resolve the group cid and encode the payload up front (no MLS state touched),
+        // then perform the actual MLS encryption on the shared serial queue so it never
+        // runs concurrently with a decrypt/commit on the same group (correctness) and
+        // never contends with them on the MLS SQLite store (latency). The operation does
+        // no Core Data work, so blocking the caller via `waitUntilFinished` is deadlock-safe.
+        let groupCid = mlsGroupCid(for: cid).rawValue
         let data = try JSONEncoder().encode(message)
-        let encryptedData = try mlsClient.encrypt(inputData: data, in: group)
-        let epoch = Int(group.epoch())
-        return (encryptedData.uint8Array, epoch)
+        var result: Result<([UInt8], Int), Error>?
+        let op = BlockOperation { [weak self] in
+            guard let self else {
+                result = .failure(ClientError.MlsNoProviderError())
+                return
+            }
+            do {
+                let group = try self.mlsClient.loadGroup(with: groupCid)
+                let encryptedData = try self.mlsClient.encrypt(inputData: data, in: group)
+                result = .success((encryptedData.uint8Array, Int(group.epoch())))
+            } catch {
+                result = .failure(error)
+            }
+        }
+        // Sends run ahead of background sync so they aren't blocked by a sync backlog.
+        op.queuePriority = .high
+        decryptQueue.addOperations([op], waitUntilFinished: true)
+        switch result {
+        case .success(let value):
+            return value
+        case .failure(let error):
+            throw error
+        case .none:
+            throw ClientError.Unexpected("Encryption did not complete.")
+        }
     }
     
     func mergePendingCommit(in cid: ChannelId) throws {
@@ -1518,7 +1712,10 @@ class E2eRepository: EventsControllerDelegate {
         cid: ChannelId,
         completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
     ) {
-        decryptQueue.addOperation { [weak self] in
+        // Foreground/realtime decrypts run ahead of background sync work so a freshly
+        // arrived message is not stuck showing the "encrypted" placeholder behind a
+        // large sync backlog.
+        let op = BlockOperation { [weak self] in
             guard let self else { return }
             self.decryptMessagePayloadSync(
                 messageId: messageId,
@@ -1527,6 +1724,8 @@ class E2eRepository: EventsControllerDelegate {
                 completion: completion
             )
         }
+        op.queuePriority = .high
+        decryptQueue.addOperation(op)
     }
 
     /// Decrypts an encrypted `ChatMessage`, using the cached decrypted payload when available.
