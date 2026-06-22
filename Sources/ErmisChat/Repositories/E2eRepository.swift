@@ -426,15 +426,52 @@ class E2eRepository: EventsControllerDelegate {
         // MLS cannot decrypt ciphertext produced by the same device.
         if message.isSentByCurrentUser { return }
         log.debug("[MLS] Re-decrypt updated message \(message.id) with epoch: \(message.mlsEpoch)")
-        // Invalidate the cached decrypted payload so decryptMessagePayloadSync
-        // performs a fresh MLS decrypt with the new ciphertext.
-        database.write { session in
-            if let existing = MessageDecryptDTO.load(messageId: message.id, context: session as! NSManagedObjectContext) {
-                (session as! NSManagedObjectContext).delete(existing)
+        reDecryptUpdatedMessage(messageId: message.id, encryptedData: encryptedData, cid: cid)
+    }
+
+    /// Re-decrypts a message after a `message.updated` event WITHOUT discarding the existing
+    /// decrypted cache up front.
+    ///
+    /// An MLS application message can only be decrypted once — the ratchet secret is deleted on
+    /// first use (forward secrecy). A `message.updated` event, however, does NOT always carry new
+    /// ciphertext: reactions, pins, read receipts and plain re-deliveries (over WebSocket *and*
+    /// the E2E sync) all re-emit the message with its *original*, already-consumed ciphertext.
+    /// The previous implementation deleted the decrypted cache and re-decrypted that unchanged
+    /// ciphertext, which is guaranteed to fail — flipping an already-readable message back to the
+    /// "Message is encrypted" placeholder. This is the "see the message, then it changes to
+    /// undecrypted" report.
+    ///
+    /// Strategy: attempt a fresh MLS decrypt that bypasses the cache; overwrite the cache only on
+    /// success (a genuine edit produces new, decryptable ciphertext). On failure, leave the
+    /// existing cache untouched so the message keeps showing its decrypted content.
+    /// Must run on `decryptQueue`.
+    private func reDecryptUpdatedMessageSync(messageId: MessageId, encryptedData: Data, cid: ChannelId) {
+        do {
+            let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
+            let payload = try mlsClient.decrypt(data: encryptedData, in: group)
+            database.write { session in
+                try session.saveMessageDecrypt(payload: payload, messageId: messageId)
+                session.message(id: messageId)?.text = payload.text
+            } completion: { error in
+                if let error {
+                    log.error("Failed to save re-decrypted message cache for \(messageId): \(error)", subsystems: .mls)
+                }
             }
-        } completion: { [weak self] _ in
-            self?.decryptMessagePayload(messageId: message.id, encryptedData: encryptedData, cid: cid)
+        } catch {
+            // Unchanged/already-consumed ciphertext (a non-edit update) or an own-device message:
+            // keep the existing decrypted cache rather than regressing to the placeholder.
+            log.debug("[MLS] Skipping re-decrypt of updated message \(messageId) (likely unchanged ciphertext): \(error)", subsystems: .mls)
         }
+    }
+
+    /// Enqueues `reDecryptUpdatedMessageSync` on the serial `decryptQueue`. Used by the WebSocket
+    /// `message.updated` path, which is not already running on `decryptQueue`.
+    private func reDecryptUpdatedMessage(messageId: MessageId, encryptedData: Data, cid: ChannelId) {
+        let op = BlockOperation { [weak self] in
+            self?.reDecryptUpdatedMessageSync(messageId: messageId, encryptedData: encryptedData, cid: cid)
+        }
+        op.queuePriority = .high
+        decryptQueue.addOperation(op)
     }
     
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
@@ -985,23 +1022,24 @@ class E2eRepository: EventsControllerDelegate {
         let messageId = data.message.id
         log.debug("[E2eSync] Handling message_updated sync event for message \(messageId)", subsystems: .mls)
 
-        // Check if the message has encrypted data that needs re-decryption
+        // Check if the message has encrypted data that may need re-decryption
         if let encryptedBytes = data.message.encryptedData {
             let encryptedData = Data(encryptedBytes)
-            // Invalidate the cached decrypted payload so we perform a fresh MLS decrypt
+            // Save the updated message payload. Do NOT delete the decrypted cache here — a
+            // `message_updated` sync event is often a non-content change (reaction/pin/read/
+            // re-delivery) that carries the original, already-consumed ciphertext; re-decrypting
+            // it would fail and regress the message to the "encrypted" placeholder.
+            // See reDecryptUpdatedMessageSync.
             database.write { session in
-                if let existing = MessageDecryptDTO.load(messageId: messageId, context: session as! NSManagedObjectContext) {
-                    (session as! NSManagedObjectContext).delete(existing)
-                }
-                // Save the updated message payload
                 try session.saveMessage(payload: data.message, for: cid, syncOwnReactions: false, cache: nil)
             } completion: { [weak self] error in
                 if let error {
                     log.error("[E2eSync] Failed to save updated message \(messageId): \(error)", subsystems: .mls)
                     return
                 }
-                // Re-decrypt with new ciphertext — called directly since we are on decryptQueue
-                self?.decryptMessagePayloadSync(
+                // Non-destructive re-decrypt — overwrites the cache only if the (new) ciphertext
+                // actually decrypts. Called directly since we are on decryptQueue.
+                self?.reDecryptUpdatedMessageSync(
                     messageId: messageId,
                     encryptedData: encryptedData,
                     cid: cid
