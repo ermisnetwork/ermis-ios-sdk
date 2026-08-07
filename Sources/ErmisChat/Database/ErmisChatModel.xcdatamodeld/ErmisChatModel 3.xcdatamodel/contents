@@ -227,6 +227,7 @@
     </entity>
     <entity name="MessageDecryptDTO" representedClassName="MessageDecryptDTO" syncable="YES">
         <attribute name="attachmentsData" optional="YES" attributeType="Binary"/>
+        <attribute name="ciphertextHash" optional="YES" attributeType="Binary"/>
         <attribute name="messageId" attributeType="String"/>
         <attribute name="stickerUrl" optional="YES" attributeType="URI"/>
         <attribute name="text" attributeType="String" defaultValueString=""/>
@@ -258,7 +259,7 @@
         <attribute name="localMessageStateRaw" optional="YES" attributeType="String"/>
         <attribute name="mentionedAll" attributeType="Boolean" usesScalarValueType="YES"/>
         <attribute name="mentionedUserIds" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer"/>
-        <attribute name="mlsEpoch" optional="YES" attributeType="Integer 16" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="mlsEpoch" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="newestReplyAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="originalLanguage" optional="YES" attributeType="String"/>
         <attribute name="ownReactions" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer"/>
@@ -448,6 +449,58 @@
         <uniquenessConstraints>
             <uniquenessConstraint>
                 <constraint value="filterHash"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <entity name="E2eeInboxEventDTO" representedClassName="E2eeInboxEventDTO" syncable="YES">
+        <attribute name="accountId" attributeType="String"/>
+        <attribute name="appliedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="createdAt" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="eventId" attributeType="String"/>
+        <attribute name="failureCategory" optional="YES" attributeType="String"/>
+        <attribute name="mlsStatePersisted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="plaintextPersisted" attributeType="Boolean" defaultValueString="NO" usesScalarValueType="YES"/>
+        <attribute name="protocolCiphertextHash" optional="YES" attributeType="Binary"/>
+        <attribute name="protocolTargetEpoch" attributeType="Integer 64" defaultValueString="-1" usesScalarValueType="YES"/>
+        <attribute name="rawEnvelope" attributeType="Binary" allowsExternalBinaryDataStorage="YES"/>
+        <attribute name="scopeCid" attributeType="String"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="accountId"/>
+                <constraint value="scopeCid"/>
+                <constraint value="eventId"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <entity name="E2eeRepairIssueDTO" representedClassName="E2eeRepairIssueDTO" syncable="YES">
+        <attribute name="accountId" attributeType="String"/>
+        <attribute name="category" attributeType="String"/>
+        <attribute name="createdAt" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="details" optional="YES" attributeType="String"/>
+        <attribute name="eventId" optional="YES" attributeType="String"/>
+        <attribute name="id" attributeType="String"/>
+        <attribute name="resolvedAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+        <attribute name="scopeCid" attributeType="String"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="id"/>
+            </uniquenessConstraint>
+        </uniquenessConstraints>
+    </entity>
+    <entity name="E2eeSyncCheckpointDTO" representedClassName="E2eeSyncCheckpointDTO" syncable="YES">
+        <attribute name="accountId" attributeType="String"/>
+        <attribute name="applyCreatedAt" optional="YES" attributeType="String"/>
+        <attribute name="applyEventId" optional="YES" attributeType="String"/>
+        <attribute name="fetchCreatedAt" optional="YES" attributeType="String"/>
+        <attribute name="fetchEventId" optional="YES" attributeType="String"/>
+        <attribute name="removedAt" optional="YES" attributeType="String"/>
+        <attribute name="removedEventId" optional="YES" attributeType="String"/>
+        <attribute name="scopeCid" attributeType="String"/>
+        <attribute name="updatedAt" attributeType="Date" usesScalarValueType="NO"/>
+        <uniquenessConstraints>
+            <uniquenessConstraint>
+                <constraint value="accountId"/>
+                <constraint value="scopeCid"/>
             </uniquenessConstraint>
         </uniquenessConstraints>
     </entity>

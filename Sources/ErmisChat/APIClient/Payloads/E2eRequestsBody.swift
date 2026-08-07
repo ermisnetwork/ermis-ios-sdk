@@ -20,6 +20,12 @@ public struct UploadGroupInfoRequestBody: Encodable {
         case groupInfo = "group_info"
         case epoch
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
+        try container.encode(epoch, forKey: .epoch)
+    }
 }
 
 /// Request body for performing an External Join on an MLS group.
@@ -49,7 +55,7 @@ public struct ExternalJoinRequestBody: Encodable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(commit, forKey: .commit)
+        try container.encodeE2eeBytes(commit, forKey: .commit)
         try container.encode(epoch, forKey: .epoch)
         try container.encodeIfPresent(projectId, forKey: .projectId)
         try container.encodeIfPresent(members, forKey: .members)
@@ -140,6 +146,16 @@ public struct AddMembersRequestBody: Encodable {
         case epoch
         case groupInfo = "group_info"
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(addMembers, forKey: .addMembers)
+        try container.encodeE2eeBytes(commit, forKey: .commit)
+        try container.encodeE2eeBytes(welcome, forKey: .welcome)
+        try container.encodeE2eeBytes(ratchetTree, forKey: .ratchetTree)
+        try container.encode(epoch, forKey: .epoch)
+        try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
+    }
 }
 
 public struct RemoveMembersRequestBody: Encodable {
@@ -174,6 +190,15 @@ public struct RemoveMembersRequestBody: Encodable {
         case commit
         case epoch
         case groupInfo = "group_info"
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(removeMembers, forKey: .removeMembers)
+        try container.encode(selfRemove, forKey: .selfRemove)
+        try container.encodeE2eeBytes(commit, forKey: .commit)
+        try container.encode(epoch, forKey: .epoch)
+        try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
     }
 }
 
@@ -223,11 +248,11 @@ public struct EnableEncryptionRequestBody: Encodable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(self.commit, forKey: .commit)
-        try container.encode(self.welcome, forKey: .welcome)
-        try container.encode(self.ratchetTree, forKey: .ratchetTree)
+        try container.encodeE2eeBytes(self.commit, forKey: .commit)
+        try container.encodeE2eeBytes(self.welcome, forKey: .welcome)
+        try container.encodeE2eeBytes(self.ratchetTree, forKey: .ratchetTree)
         try container.encode(self.epoch, forKey: .epoch)
-        try container.encode(self.groupInfo, forKey: .groupInfo)
+        try container.encodeE2eeBytes(self.groupInfo, forKey: .groupInfo)
     }
 }
 
@@ -262,5 +287,13 @@ public struct CommitEvictionRequestBody: Encodable {
         case commit
         case groupInfo = "group_info"
         case epoch
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(targetUserIds, forKey: .targetUserIds)
+        try container.encodeE2eeBytes(commit, forKey: .commit)
+        try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
+        try container.encode(epoch, forKey: .epoch)
     }
 }

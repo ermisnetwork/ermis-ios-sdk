@@ -58,50 +58,151 @@ class MessageRepository {
             // Topics inherit their parent channel's MLS group, so `isE2eeEnabled`
             // also returns true for a topic under an E2EE parent.
             let isEncrypted = dto.channel?.isE2eeEnabled == true
+            let e2eeTrace = isEncrypted
+                ? E2eeSendTrace.Context(messageId: messageId, cid: cid)
+                : nil
+            e2eeTrace?.info(
+                stage: "send_preflight_succeeded",
+                reusedIntent: requestBody.hasDurableE2eeNetworkIntent
+            )
             // Encrypted message
             if isEncrypted {
+                guard !requestBody.requiresE2eeAuthenticatedSendLane else {
+                    let error = E2eeMessageAADError.authenticatedSendLaneUnavailable
+                    e2eeTrace?.failure(stage: "authenticated_send_lane_unavailable", error: error)
+                    completion(.failure(.failedToEncryptedMessage(error)))
+                    return
+                }
                 let e2ePayload = E2ePayload(text: requestBody.text,
                                             attachments: requestBody.attachments,
                                             stickerUrl: requestBody.stickerUrl)
                 do {
-                    let (encryptedData, epoch) = try e2eRepository.encryptedMessage(e2ePayload, in: cid)
-                    requestBody.encryptedData = encryptedData
-                    requestBody.mlsEpoch = epoch
-                    requestBody.text = ""
-                    requestBody.attachments = []
-                    requestBody.stickerUrl = nil
-                    // Persist the plaintext payload so decryptedMessage is available
-                    // immediately on the outgoing message without needing a decrypt round-trip.
-                    database.write { session in
-                        try session.saveMessageDecrypt(payload: e2ePayload, messageId: messageId)
+                    if let durableCiphertext = requestBody.encryptedData,
+                       let durableEpoch = requestBody.mlsEpoch {
+                        e2eeTrace?.info(
+                            stage: "durable_intent_reused",
+                            epoch: UInt64(max(0, durableEpoch)),
+                            ciphertextBytes: durableCiphertext.count,
+                            reusedIntent: true
+                        )
+                        requestBody.bindE2eeNetworkIntent(
+                            ciphertext: durableCiphertext,
+                            epoch: durableEpoch
+                        )
+                    } else {
+                        e2eeTrace?.info(stage: "encrypt_requested", reusedIntent: false)
+                        let (encryptedData, epoch) = try e2eRepository.encryptedMessage(
+                            e2ePayload,
+                            in: cid,
+                            trace: e2eeTrace
+                        )
+
+                        // `encryptedMessage` has already saved the OpenMLS provider state. The
+                        // exact retry intent must now be durable before local state becomes
+                        // `.sending` and before any network request can start. If the app dies in
+                        // the narrow saveState-before-this-write window, no intent exists and the
+                        // next launch safely creates a fresh MLS generation.
+                        let intentPersistenceStartedAt = E2eeSendTrace.nowNanoseconds()
+                        e2eeTrace?.info(
+                            stage: "durable_intent_persist_started",
+                            epoch: UInt64(max(0, epoch)),
+                            ciphertextBytes: encryptedData.count,
+                            reusedIntent: false
+                        )
+                        try database.writeAndWait { session in
+                            guard let messageDTO = session.message(id: messageId),
+                                  messageDTO.localMessageState == .pendingSend else {
+                                throw MessageRepositoryError.messageNotPendingSend
+                            }
+                            messageDTO.encryptedData = Data(encryptedData)
+                            messageDTO.mlsEpoch = Int64(epoch)
+                            try session.saveMessageDecrypt(
+                                payload: e2ePayload,
+                                messageId: messageId,
+                                ciphertextHash: nil
+                            )
+                        }
+                        e2eeTrace?.info(
+                            stage: "durable_intent_persist_succeeded",
+                            epoch: UInt64(max(0, epoch)),
+                            ciphertextBytes: encryptedData.count,
+                            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                                since: intentPersistenceStartedAt
+                            ),
+                            reusedIntent: false
+                        )
+                        requestBody.bindE2eeNetworkIntent(ciphertext: encryptedData, epoch: epoch)
                     }
                 } catch (let error) {
-                    completion(.failure(.failedToEncryptedMessage(error)))
+                    e2eeTrace?.failure(stage: "encrypt_or_intent_persist_failed", error: error)
+                    // The sender queue removes a completed request. Leaving this row in
+                    // `.pendingSend` therefore strands the bubble until a new worker is created
+                    // on the next app launch, at which point it is sent unexpectedly. Encryption
+                    // failed before any HTTP request, so surface an explicit retryable failure.
+                    self.markMessageAsFailedToSend(id: messageId, trace: e2eeTrace) {
+                        completion(.failure(.failedToEncryptedMessage(error)))
+                    }
                     return
                 }
             }
 
             // Change the message state to `.sending` and the proceed with the actual sending
+            let sendingStateStartedAt = E2eeSendTrace.nowNanoseconds()
+            e2eeTrace?.info(stage: "local_state_sending_started")
             self.database.write({
                 let messageDTO = $0.message(id: messageId)
                 messageDTO?.localMessageState = .sending
             }, completion: { error in
                 if let error = error {
-                    log.error("Error changing localMessageState message with id \(messageId) to `sending`: \(error)")
-                    self.markMessageAsFailedToSend(id: messageId) {
+                    if let e2eeTrace {
+                        e2eeTrace.failure(
+                            stage: "local_state_sending_failed",
+                            error: error,
+                            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                                since: sendingStateStartedAt
+                            )
+                        )
+                    } else {
+                        log.error("Error changing localMessageState message with id \(messageId) to `sending`: \(error)")
+                    }
+                    self.markMessageAsFailedToSend(id: messageId, trace: e2eeTrace) {
                         completion(.failure(.failedToSendMessage(error)))
                     }
                     return
                 }
+                e2eeTrace?.info(
+                    stage: "local_state_sending_succeeded",
+                    operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                        since: sendingStateStartedAt
+                    )
+                )
 
                 let endpoint: Endpoint<MessagePayload.Boxed> = .sendMessage(
                     cid: cid,
                     messagePayload: requestBody
                 )
+                let requestStartedAt = E2eeSendTrace.nowNanoseconds()
+                e2eeTrace?.info(
+                    stage: "http_request_started",
+                    epoch: requestBody.mlsEpoch.map { UInt64(max(0, $0)) },
+                    ciphertextBytes: requestBody.encryptedData?.count,
+                    reusedIntent: requestBody.hasDurableE2eeNetworkIntent
+                )
                 self.apiClient.request(endpoint: endpoint) {
                     switch $0 {
                     case let .success(payload):
-                        self.saveSuccessfullySentMessage(cid: cid, message: payload.message) { result in
+                        e2eeTrace?.info(
+                            stage: "http_request_succeeded",
+                            epoch: payload.message.mlsEpoch.map { UInt64(max(0, $0)) },
+                            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                                since: requestStartedAt
+                            )
+                        )
+                        self.saveSuccessfullySentMessage(
+                            cid: cid,
+                            message: payload.message,
+                            trace: e2eeTrace
+                        ) { result in
                             switch result {
                             case let .success(message):
                                 completion(.success(message))
@@ -111,7 +212,19 @@ class MessageRepository {
                         }
 
                     case let .failure(error):
-                        self.handleSendingMessageError(error, messageId: messageId, completion: completion)
+                        e2eeTrace?.failure(
+                            stage: "http_request_failed",
+                            error: error,
+                            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                                since: requestStartedAt
+                            )
+                        )
+                        self.handleSendingMessageError(
+                            error,
+                            messageId: messageId,
+                            trace: e2eeTrace,
+                            completion: completion
+                        )
                     }
                 }
             })
@@ -121,8 +234,11 @@ class MessageRepository {
     func saveSuccessfullySentMessage(
         cid: ChannelId,
         message: MessagePayload,
+        trace: E2eeSendTrace.Context? = nil,
         completion: @escaping (Result<ChatMessage, Error>) -> Void
     ) {
+        let persistenceStartedAt = E2eeSendTrace.nowNanoseconds()
+        trace?.info(stage: "response_persist_started")
         database.write({
             let messageDTO = try $0.saveMessage(payload: message, for: cid, syncOwnReactions: false, cache: nil)
             if messageDTO.localMessageState == .sending || messageDTO.localMessageState == .sendingFailed {
@@ -133,8 +249,25 @@ class MessageRepository {
             completion(.success(messageModel))
         }, completion: {
             if let error = $0 {
-                log.error("Error saving sent message with id \(message.id): \(error)", subsystems: .offlineSupport)
+                if let trace {
+                    trace.failure(
+                        stage: "response_persist_failed",
+                        error: error,
+                        operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                            since: persistenceStartedAt
+                        )
+                    )
+                } else {
+                    log.error("Error saving sent message with id \(message.id): \(error)", subsystems: .offlineSupport)
+                }
                 completion(.failure(error))
+            } else {
+                trace?.info(
+                    stage: "response_persist_succeeded",
+                    operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                        since: persistenceStartedAt
+                    )
+                )
             }
         })
         enqueueDecryptIfNeeded(messageId: message.id, payload: message, cid: cid)
@@ -143,31 +276,58 @@ class MessageRepository {
     private func handleSendingMessageError(
         _ error: Error,
         messageId: MessageId,
+        trace: E2eeSendTrace.Context?,
         completion: @escaping (Result<ChatMessage, MessageRepositoryError>) -> Void
     ) {
-        log.error("Sending the message with id \(messageId) failed with error: \(error)")
+        if trace == nil {
+            log.error("Sending the message with id \(messageId) failed with error: \(error)")
+        }
         // In case no internet connection, we will mark it as sending.
         // Other type of error, we will mark message as failed.
         if (error as NSError).code == -1009 {
+            trace?.info(stage: "offline_kept_in_sending_state")
             completion(.failure(.failedToSendMessage(error)))
             return
         }
-        markMessageAsFailedToSend(id: messageId) {
+        markMessageAsFailedToSend(id: messageId, trace: trace) {
             completion(.failure(.failedToSendMessage(error)))
         }
     }
 
-    private func markMessageAsFailedToSend(id: MessageId, completion: @escaping () -> Void) {
+    private func markMessageAsFailedToSend(
+        id: MessageId,
+        trace: E2eeSendTrace.Context? = nil,
+        completion: @escaping () -> Void
+    ) {
+        let persistenceStartedAt = E2eeSendTrace.nowNanoseconds()
+        trace?.info(stage: "local_state_failed_started")
         database.write({
             let dto = $0.message(id: id)
-            if dto?.localMessageState == .sending {
+            if dto?.localMessageState == .pendingSend || dto?.localMessageState == .sending {
                 dto?.markMessageAsFailed()
             }
         }, completion: {
             if let error = $0 {
-                log.error(
-                    "Error changing localMessageState message with id \(id) to `sendingFailed`: \(error)",
-                    subsystems: .offlineSupport
+                if let trace {
+                    trace.failure(
+                        stage: "local_state_failed_persist_failed",
+                        error: error,
+                        operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                            since: persistenceStartedAt
+                        )
+                    )
+                } else {
+                    log.error(
+                        "Error changing localMessageState message with id \(id) to `sendingFailed`: \(error)",
+                        subsystems: .offlineSupport
+                    )
+                }
+            } else {
+                trace?.info(
+                    stage: "local_state_failed_persist_succeeded",
+                    operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                        since: persistenceStartedAt
+                    )
                 )
             }
             completion()

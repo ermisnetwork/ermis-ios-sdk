@@ -16,6 +16,11 @@ public struct UploadKeyPackagesRequestBody: Encodable {
     enum CodingKeys: String, CodingKey {
         case keyPackages = "key_packages"
     }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeE2eeByteVector(keyPackages, forKey: .keyPackages)
+    }
 }
 
 /// Response payload after uploading KeyPackages.
@@ -47,6 +52,12 @@ public class KeyPackageEntry: Decodable {
     enum CodingKeys: String, CodingKey {
         case keyPackage = "key_package"
         case deviceId = "device_id"
+    }
+
+    public required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyPackage = try container.decodeE2eeBytes(forKey: .keyPackage)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
     }
 }
 
@@ -104,7 +115,7 @@ public class GroupInfoPayload: Decodable {
     public required init(from decoder: any Decoder) throws {
         self.channel = try ChannelPayload(from: decoder)
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.groupInfo = try container.decode([UInt8].self, forKey: .groupInfo)
+        self.groupInfo = try container.decodeE2eeBytes(forKey: .groupInfo)
         self.epoch = try container.decode(Int.self, forKey: .epoch)
         self.isStale = try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false
     }
@@ -114,6 +125,19 @@ public struct E2ePayload: Codable, Equatable {
     let text: String
     let attachments: [MessageAttachmentPayload]
     let stickerUrl: URL?
+
+    private enum CodingKeys: String, CodingKey {
+        case text
+        case attachments
+        case stickerUrl = "sticker_url"
+    }
+
+    /// iOS releases before the cross-platform payload contract was aligned used the synthesized
+    /// Swift property name inside MLS ciphertext. Keep this decode-only lane so already-sent
+    /// stickers remain readable, while every newly encrypted payload uses `sticker_url`.
+    private enum LegacyCodingKeys: String, CodingKey {
+        case stickerUrl
+    }
 
     public static func == (lhs: E2ePayload, rhs: E2ePayload) -> Bool {
         lhs.text == rhs.text && lhs.attachments == rhs.attachments && lhs.stickerUrl == rhs.stickerUrl
@@ -129,7 +153,19 @@ public struct E2ePayload: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.text = try container.decode(String.self, forKey: .text)
         self.attachments = try container.decodeIfPresent([MessageAttachmentPayload].self, forKey: .attachments) ?? []
-        self.stickerUrl = try container.decodeIfPresent(URL.self, forKey: .stickerUrl)
+        if let canonicalStickerUrl = try container.decodeIfPresent(URL.self, forKey: .stickerUrl) {
+            self.stickerUrl = canonicalStickerUrl
+        } else {
+            let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
+            self.stickerUrl = try legacyContainer.decodeIfPresent(URL.self, forKey: .stickerUrl)
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(text, forKey: .text)
+        try container.encode(attachments, forKey: .attachments)
+        try container.encodeIfPresent(stickerUrl, forKey: .stickerUrl)
     }
 }
 
@@ -174,8 +210,8 @@ struct E2eSyncPayload: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        channels = (try? container.decode([String: E2eSyncChannelPayload].self, forKey: .channels)) ?? [:]
-        removedChannels = try? container.decode(RemovedChannelsPayload.self, forKey: .removedChannels)
+        channels = try container.decodeIfPresent([String: E2eSyncChannelPayload].self, forKey: .channels) ?? [:]
+        removedChannels = try container.decodeIfPresent(RemovedChannelsPayload.self, forKey: .removedChannels)
     }
 }
 
@@ -196,9 +232,9 @@ struct RemovedChannelsPayload: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        events = (try? container.decode([RemovedChannelEventPayload].self, forKey: .events)) ?? []
-        hasMore = (try? container.decode(Bool.self, forKey: .hasMore)) ?? false
-        nextCursor = try? container.decode(RemovedSyncCursorPayload.self, forKey: .nextCursor)
+        events = try container.decodeIfPresent([RemovedChannelEventPayload].self, forKey: .events) ?? []
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        nextCursor = try container.decodeIfPresent(RemovedSyncCursorPayload.self, forKey: .nextCursor)
     }
 }
 
@@ -234,7 +270,7 @@ struct RemovedChannelEventPayload: Decodable {
 
 /// Cursor for the `removed_channels` stream: `{removed_at, event_id}` with an RFC3339
 /// `removed_at`. Kept as a string end-to-end so sub-millisecond precision is not lost.
-public struct RemovedSyncCursorPayload: Codable {
+public struct RemovedSyncCursorPayload: Codable, Equatable {
     public let removedAt: String
     public let eventId: String
 
@@ -252,7 +288,7 @@ public struct RemovedSyncCursorPayload: Codable {
 /// Events and pagination info for a single scope returned by /v1/e2ee/scope_sync.
 struct E2eSyncChannelPayload: Decodable {
     /// Ordered list of protocol, application, and metadata events for this scope.
-    let events: [E2eSyncEventPayload]
+    let events: [E2eSyncEventEnvelope]
     /// `true` when more events are available; resend with `nextCursor` to fetch the rest.
     let hasMore: Bool
     /// Composite cursor to resend on the next sync for this scope. Echo it back verbatim.
@@ -267,9 +303,77 @@ struct E2eSyncChannelPayload: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        events = (try? container.decode([E2eSyncEventPayload].self, forKey: .events)) ?? []
-        hasMore = (try? container.decode(Bool.self, forKey: .hasMore)) ?? false
-        nextCursor = try? container.decode(ScopeSyncCursorPayload.self, forKey: .nextCursor)
+        events = try container.decodeIfPresent([E2eSyncEventEnvelope].self, forKey: .events) ?? []
+        hasMore = try container.decodeIfPresent(Bool.self, forKey: .hasMore) ?? false
+        nextCursor = try container.decodeIfPresent(ScopeSyncCursorPayload.self, forKey: .nextCursor)
+    }
+}
+
+/// Durable identity and raw bytes for one scope-sync event.
+///
+/// The typed event remains convenient for application code, while the raw envelope is what the
+/// durable inbox persists for idempotent replay after process death.
+struct E2eSyncEventEnvelope: Decodable {
+    let eventId: String
+    let createdAt: Date
+    let createdAtRaw: String
+    let rawEnvelope: Data
+    let event: E2eSyncEventPayload
+
+    private enum CodingKeys: String, CodingKey {
+        case eventId = "event_id"
+        case createdAt = "created_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        eventId = try container.decode(String.self, forKey: .eventId)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        createdAtRaw = try container.decode(String.self, forKey: .createdAt)
+        let rawEncoder = JSONEncoder()
+        rawEncoder.outputFormatting = [.sortedKeys]
+        let rawData = try rawEncoder.encode(RawJSON(from: decoder))
+        // Typed field decoders already count a legacy wire representation. Canonicalizing this
+        // second copy is for durable deduplication only and must not double-count the same event.
+        rawEnvelope = try E2eeWireJSONCanonicalizer.canonicalizeJSONData(
+            rawData,
+            recordLegacyUsage: false
+        )
+        event = try E2eSyncEventPayload(from: decoder)
+    }
+}
+
+extension E2eSyncEventEnvelope {
+    /// Bellboy's `/scope_sync` canonical ordering is
+    /// `(created_at, protocol/application/metadata rank, event_id)`.
+    ///
+    /// The rank must survive a process restart. Sorting durable rows by timestamp and UUID only
+    /// can move an application message in front of the commit at the same timestamp, leaving the
+    /// local group on the wrong epoch and permanently blocking the scope.
+    var scopeSyncKindRank: Int {
+        switch event {
+        case .protocol:
+            return 0
+        case .application:
+            return 1
+        default:
+            return 2
+        }
+    }
+
+    static func canonicalScopeSyncOrder(
+        _ lhs: E2eSyncEventEnvelope,
+        _ rhs: E2eSyncEventEnvelope
+    ) -> Bool {
+        if lhs.createdAt != rhs.createdAt {
+            return lhs.createdAt < rhs.createdAt
+        }
+        if lhs.scopeSyncKindRank != rhs.scopeSyncKindRank {
+            return lhs.scopeSyncKindRank < rhs.scopeSyncKindRank
+        }
+        // UUID's canonical textual order is equivalent to its raw 16-byte order. Normalize case
+        // so a non-canonical producer cannot make replay ordering platform-dependent.
+        return lhs.eventId.lowercased() < rhs.eventId.lowercased()
     }
 }
 
@@ -416,14 +520,20 @@ struct E2eSyncProtocolData: Decodable {
         case targetUserIds = "target_user_ids"
         case createdAt = "created_at"
     }
-}
 
-/// Message type inside an application sync event.
-enum E2eSyncApplicationMessageType: String, Decodable {
-    /// A regular encrypted application message.
-    case regular
-    /// A system-generated message (e.g. member join/leave notifications).
-    case system
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        epoch = try container.decode(Int.self, forKey: .epoch)
+        user = try container.decode(UserPayload.self, forKey: .user)
+        type = try container.decode(MLSProtocolType.self, forKey: .type)
+        commit = try container.decodeE2eeBytesIfPresent(forKey: .commit)
+        welcome = try container.decodeE2eeBytesIfPresent(forKey: .welcome)
+        ratchetTree = try container.decodeE2eeBytesIfPresent(forKey: .ratchetTree)
+        proposal = try container.decodeE2eeBytesIfPresent(forKey: .proposal)
+        deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
+        targetUserIds = try container.decodeIfPresent([String].self, forKey: .targetUserIds)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
 }
 
 /// The `data` payload for an `application` sync event.
@@ -431,8 +541,11 @@ struct E2eSyncApplicationData: Decodable {
     let id: String
     let cid: String?
     let user: UserPayload?
-    /// The message type — `regular` (encrypted) or `system` (plain-text).
-    let type: E2eSyncApplicationMessageType
+    /// Bellboy message type. Keep the raw value so newly introduced or currently unsupported
+    /// application variants (for example `poll`) remain decodable during a mixed-client window.
+    /// Only `system` changes sync behavior; every other value follows the encrypted application
+    /// path and can fail as an application repair without blocking the MLS protocol scope.
+    let type: String
     /// Plain-text content; populated for system messages, empty for E2EE messages.
     let text: String?
     /// TLS-serialized MLS ciphertext bytes. Present only for regular (encrypted) messages.
@@ -456,16 +569,16 @@ struct E2eSyncApplicationData: Decodable {
         id = try container.decode(String.self, forKey: .id)
         cid = try container.decodeIfPresent(String.self, forKey: .cid)
         user = try container.decodeIfPresent(UserPayload.self, forKey: .user)
-        type = try container.decodeIfPresent(E2eSyncApplicationMessageType.self, forKey: .type) ?? .regular
+        type = try container.decodeIfPresent(String.self, forKey: .type) ?? MessageType.regular.rawValue
         text = try container.decodeIfPresent(String.self, forKey: .text)
-        mlsCiphertext = try container.decodeIfPresent([UInt8].self, forKey: .mlsCiphertext)
+        mlsCiphertext = try container.decodeE2eeBytesIfPresent(forKey: .mlsCiphertext)
         contentType = try container.decode(String.self, forKey: .contentType)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 
     /// Whether this is a system message rather than an encrypted application message.
     var isSystemMessage: Bool {
-        type == .system
+        type == MessageType.system.rawValue
     }
 }
 
@@ -473,7 +586,7 @@ struct E2eSyncApplicationData: Decodable {
 /// Contains time-sorted, merged protocol and application events for a single channel.
 struct E2eChannelSyncPayload: Decodable {
     /// Ordered list of protocol and application events for this channel.
-    let events: [E2eSyncEventPayload]
+    let events: [E2eSyncEventEnvelope]
     /// `true` when more events are available; advance the `since` cursor and repeat the request.
     let hasMore: Bool
 
@@ -649,5 +762,18 @@ public struct MLSProtocolMessagePayload: Decodable {
         case ratchetTree = "ratchet_tree"
         case targetUserIds = "target_user_ids"
         case proposal
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        type = try container.decode(MLSProtocolType.self, forKey: .type)
+        epoch = try container.decode(Int.self, forKey: .epoch)
+        user = try container.decode(UserPayload.self, forKey: .user)
+        deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
+        commit = try container.decodeE2eeBytesIfPresent(forKey: .commit)
+        welcome = try container.decodeE2eeBytesIfPresent(forKey: .welcome)
+        ratchetTree = try container.decodeE2eeBytesIfPresent(forKey: .ratchetTree)
+        targetUserIds = try container.decodeIfPresent([String].self, forKey: .targetUserIds)
+        proposal = try container.decodeE2eeBytesIfPresent(forKey: .proposal)
     }
 }

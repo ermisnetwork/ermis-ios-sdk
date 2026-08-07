@@ -101,6 +101,12 @@ class DefaultRequestEncoder: RequestEncoder {
             request = URLRequest(url: url)
             request.httpMethod = endpoint.method.rawValue
             request.addValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+            if endpoint.urlType == .normal {
+                request.setValue(
+                    E2eeByteWireFormat.headerValue,
+                    forHTTPHeaderField: E2eeByteWireFormat.headerName
+                )
+            }
 
             switch endpoint.path {
             case .users, .updateUsers:
@@ -293,7 +299,10 @@ class DefaultRequestEncoder: RequestEncoder {
             try encodeRequestQuery(with: body, to: &request)
         case .post, .patch, .delete:
             if let data = endpoint.body as? Data {
-                request.httpBody = data
+                request.httpBody = try E2eeLegacyRequestBodyNormalizer.normalizeIfNeeded(
+                    data,
+                    path: endpoint.path
+                )
             } else {
                 let body = try JSONEncoder.ermis.encode(AnyEncodable(endpoint.body ?? EmptyBody()))
                 request.httpBody = body

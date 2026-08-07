@@ -438,10 +438,46 @@ extension NSManagedObjectContext {
         dto.reads.subtracting(reads).forEach { delete($0) }
         dto.reads = reads
 
-        try payload.messages.forEach { _ = try saveMessage(payload: $0, channelDTO: dto, syncOwnReactions: true, cache: cache) }
+        var savedMessagesById: [MessageId: MessageDTO] = [:]
+        try payload.messages.forEach {
+            let message = try saveMessage(payload: $0, channelDTO: dto, syncOwnReactions: true, cache: cache)
+            savedMessagesById[message.id] = message
+        }
 
         if dto.needsPreviewUpdate(payload) {
-            dto.previewMessage = preview(for: payload.channel.cid)
+            let fetchedPreview = preview(for: payload.channel.cid)
+            let authoritativePreview = payload.newestMessage
+                .flatMap { savedMessagesById[$0.id] }
+                .flatMap { message in
+                    MessageDTO.isEligibleChannelPreview(
+                        message,
+                        cid: payload.channel.cid.rawValue,
+                        context: self
+                    ) ? message : nil
+                }
+
+            // Bellboy returns channel messages in chronological order. The last payload message
+            // is therefore authoritative when timestamps tie. Preserve a newer local pending
+            // preview that is not part of the server payload.
+            if let authoritativePreview {
+                let payloadMessageIds = Set(savedMessagesById.keys)
+                let currentPreviewDate = fetchedPreview.map {
+                    ($0.locallyCreatedAt ?? $0.createdAt).bridgeDate
+                } ?? .distantPast
+                let authoritativeDate = (
+                    authoritativePreview.locallyCreatedAt ?? authoritativePreview.createdAt
+                ).bridgeDate
+                let currentIsFromPayload = fetchedPreview.map { payloadMessageIds.contains($0.id) } ?? false
+
+                if authoritativeDate > currentPreviewDate ||
+                    (authoritativeDate == currentPreviewDate && currentIsFromPayload) {
+                    dto.previewMessage = authoritativePreview
+                } else {
+                    dto.previewMessage = fetchedPreview
+                }
+            } else {
+                dto.previewMessage = fetchedPreview
+            }
         }
 
         dto.updateOldestMessageAt(payload: payload)
@@ -826,6 +862,7 @@ extension ChannelDTO {
             return false
         }
 
-        return preview.createdAt.compare(newestMessage.createdAt) == .orderedAscending
+        guard preview.id != newestMessage.id else { return false }
+        return preview.createdAt.compare(newestMessage.createdAt) != .orderedDescending
     }
 }

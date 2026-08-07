@@ -115,7 +115,7 @@ class MessagePayload: Decodable {
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
         deletedAt = try container.decodeIfPresent(Date.self, forKey: .deletedAt)
         text = try container.decodeIfPresent(String.self, forKey: .text)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        encryptedData = try container.decodeIfPresent([UInt8].self, forKey: .encryptedData)
+        encryptedData = try container.decodeE2eeBytesIfPresent(forKey: .encryptedData)
         mlsEpoch = try container.decodeIfPresent(Int.self, forKey: .mlsEpoch)
         oldTexts = try container.decodeIfPresent([MessageEditHistoryPayload].self, forKey: .oldTexts)
         isSilent = try container.decodeIfPresent(Bool.self, forKey: .isSilent) ?? false
@@ -259,6 +259,29 @@ struct MessageRequestBody: Encodable {
     var forwardCid: String?
     let forwardMessageId: String?
 
+    /// The current no-AAD MLS lane is valid only for messages whose envelope carries no
+    /// attachment/forward metadata. M2/M4 replace this fail-closed gate with the authenticated
+    /// attachment/forward sender.
+    var requiresE2eeAuthenticatedSendLane: Bool {
+        !attachments.isEmpty ||
+            forwardCid?.isEmpty == false ||
+            forwardMessageId?.isEmpty == false
+    }
+
+    /// A sender retry must reuse this exact MLS generation. Creating another ciphertext for an
+    /// unknown HTTP result can duplicate the logical message and consume another sender secret.
+    var hasDurableE2eeNetworkIntent: Bool {
+        encryptedData != nil && mlsEpoch != nil
+    }
+
+    mutating func bindE2eeNetworkIntent(ciphertext: [UInt8], epoch: Int) {
+        encryptedData = ciphertext
+        mlsEpoch = epoch
+        text = ""
+        attachments = []
+        stickerUrl = nil
+    }
+
     init(
         id: String,
         user: UserRequestBody,
@@ -339,7 +362,7 @@ struct MessageRequestBody: Encodable {
         try container.encode(id, forKey: .id)
         try container.encodeIfPresent(user, forKey: .user)
         try container.encode(text, forKey: .text)
-        try container.encodeIfPresent(encryptedData, forKey: .encryptedData)
+        try container.encodeE2eeBytesIfPresent(encryptedData, forKey: .encryptedData)
         try container.encodeIfPresent(mlsEpoch, forKey: .mlsEpoch)
         try container.encodeIfPresent(oldTexts, forKey: .oldTexts)
         try container.encodeIfPresent(type, forKey: .type)

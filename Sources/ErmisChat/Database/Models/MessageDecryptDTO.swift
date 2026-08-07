@@ -17,6 +17,8 @@ class MessageDecryptDTO: NSManagedObject {
     @NSManaged var stickerUrl: URL?
     /// JSON-encoded array of `MessageAttachmentPayload` after decryption.
     @NSManaged var attachmentsData: Data?
+    /// SHA-256 of the exact MLS ciphertext that produced this plaintext cache.
+    @NSManaged var ciphertextHash: Data?
 
     // MARK: - Relationship
 
@@ -61,11 +63,13 @@ extension NSManagedObjectContext: E2eDatabaseSession {
     @discardableResult
     func saveMessageDecrypt(
         payload: E2ePayload,
-        messageId: String
+        messageId: String,
+        ciphertextHash: Data?
     ) throws -> MessageDecryptDTO {
         let dto = MessageDecryptDTO.loadOrCreate(messageId: messageId, context: self)
         dto.text = payload.text
         dto.stickerUrl = payload.stickerUrl
+        dto.ciphertextHash = ciphertextHash
 
         if !payload.attachments.isEmpty {
             dto.attachmentsData = try JSONEncoder.default.encode(payload.attachments)

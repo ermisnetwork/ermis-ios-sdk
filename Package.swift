@@ -53,6 +53,10 @@ let package = Package(
             exclude: ["Info.plist", "Generated/L10n_template.stencil"],
             resources: [.process("Resources")]
         ),
+        .testTarget(
+            name: "ErmisChatTests",
+            dependencies: ["ErmisChat", "open-mls-ios"]
+        ),
 //        .target(
 //            name: "ErmisWalletAuth",
 //            dependencies: [

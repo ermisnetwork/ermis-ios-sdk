@@ -387,7 +387,7 @@ protocol StickerDataBaseSession {
 
 protocol E2eDatabaseSession {
     @discardableResult
-    func saveMessageDecrypt(payload: E2ePayload, messageId: String) throws -> MessageDecryptDTO
+    func saveMessageDecrypt(payload: E2ePayload, messageId: String, ciphertextHash: Data?) throws -> MessageDecryptDTO
 
     @discardableResult
     func savePendingRemoveMember(userId: String, channelCid: String) -> PendingRemoveMemberDTO

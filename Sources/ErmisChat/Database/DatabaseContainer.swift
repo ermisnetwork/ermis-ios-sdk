@@ -221,6 +221,37 @@ class DatabaseContainer: NSPersistentContainer {
         }
     }
 
+    /// Performs and durably saves a database mutation before returning.
+    ///
+    /// MLS application-message processing uses this boundary to persist plaintext before
+    /// advancing the receiver ratchet in the separate OpenMLS SQLite provider.
+    func writeAndWait(_ actions: (DatabaseSession) throws -> Void) throws {
+        var writeError: Error?
+        writableContext.performAndWait {
+            do {
+                FetchCache.clear()
+                try actions(writableContext)
+                FetchCache.clear()
+
+                for object in writableContext.updatedObjects where object.changedValues().isEmpty {
+                    writableContext.refresh(object, mergeChanges: true)
+                }
+
+                if writableContext.hasChanges {
+                    try writableContext.save()
+                }
+            } catch {
+                writableContext.rollback()
+                FetchCache.clear()
+                writeError = error
+            }
+        }
+
+        if let writeError {
+            throw writeError
+        }
+    }
+
     /// Removes all data from the local storage.
     func removeAllData(completion: ((Error?) -> Void)? = nil) {
         /// Cleanup the current user cache for all manage object contexts.

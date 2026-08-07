@@ -104,11 +104,11 @@ struct ChannelEditDetailPayload: Encodable {
         try container.encodeIfPresent(isPublic, forKey: .isPublic)
         try container.encodeIfPresent(coolDownDuration, forKey: .cooldownDuration)
         try container.encodeIfPresent(filterWords, forKey: .filterWords)
-        try container.encodeIfPresent(commit, forKey: .commit)
-        try container.encodeIfPresent(welcome, forKey: .welcome)
+        try container.encodeE2eeBytesIfPresent(commit, forKey: .commit)
+        try container.encodeE2eeBytesIfPresent(welcome, forKey: .welcome)
         try container.encodeIfPresent(epoch, forKey: .epoch)
-        try container.encodeIfPresent(ratchetTree, forKey: .ratchetTree)
-        try container.encodeIfPresent(groupInfo, forKey: .groupInfo)
+        try container.encodeE2eeBytesIfPresent(ratchetTree, forKey: .ratchetTree)
+        try container.encodeE2eeBytesIfPresent(groupInfo, forKey: .groupInfo)
         try container.encodeIfPresent(mlsEnabled, forKey: .mlsEnabled)
     }
 }

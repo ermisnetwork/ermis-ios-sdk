@@ -5,6 +5,81 @@
 import Foundation
 import open_mls_ios
 import CoreData
+import CryptoKit
+
+private enum E2eeSyncApplyError: LocalizedError {
+    case missingAccount
+    case missingCiphertext(messageId: String)
+    case missingMember
+    case missingProtocolPayload(type: MLSProtocolType)
+    case epochMismatch(local: UInt64, event: Int)
+    case invalidCommit(reason: String)
+    case unsupportedEvent(type: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingAccount:
+            return "The E2EE sync event has no active account."
+        case .missingCiphertext(let messageId):
+            return "Application message \(messageId) has no MLS ciphertext."
+        case .missingMember:
+            return "Member removal event has no member payload."
+        case .missingProtocolPayload(let type):
+            return "MLS protocol event \(type.rawValue) is missing required bytes."
+        case .epochMismatch(let local, let event):
+            return "MLS epoch mismatch: local=\(local), event=\(event)."
+        case .invalidCommit(let reason):
+            return "Invalid MLS commit event: \(reason)."
+        case .unsupportedEvent(let type):
+            return "Unsupported E2EE sync event: \(type)."
+        }
+    }
+
+    var repairCategory: String {
+        switch self {
+        case .missingAccount: return "missing_account"
+        case .missingCiphertext: return "missing_ciphertext"
+        case .missingMember: return "missing_member"
+        case .missingProtocolPayload: return "missing_protocol_payload"
+        case .epochMismatch: return "epoch_mismatch"
+        case .invalidCommit: return "invalid_commit"
+        case .unsupportedEvent: return "unsupported_event"
+        }
+    }
+}
+
+/// Classifies a durable commit against the OpenMLS provider epoch without mutating either store.
+///
+/// A lower target epoch is historical: the provider has already advanced beyond it, so replaying
+/// the commit is impossible and blocking the scope would deadlock migration/recovery forever. A
+/// higher non-adjacent target is a real gap and remains scope-blocking.
+enum E2eeCommitEpochAction: Equatable {
+    case supersedeHistorical
+    case finalizeActive
+    case processNext
+    case blockGap
+
+    static func resolve(localEpoch: UInt64, targetEpoch: UInt64) -> Self {
+        if targetEpoch < localEpoch {
+            return .supersedeHistorical
+        }
+        if targetEpoch == localEpoch {
+            return .finalizeActive
+        }
+        let next = localEpoch.addingReportingOverflow(1)
+        if !next.overflow, targetEpoch == next.partialValue {
+            return .processNext
+        }
+        return .blockGap
+    }
+}
+
+private enum E2eeSyncApplyDisposition {
+    /// The event body is complete, but the caller must atomically advance its durable apply cursor.
+    case requiresCursorAdvance
+    /// The event and exact apply cursor were already finalized in one durable-store transaction.
+    case cursorAdvancedAtomically
+}
 
 class E2eRepository: EventsControllerDelegate {
     let database: DatabaseContainer
@@ -115,6 +190,16 @@ class E2eRepository: EventsControllerDelegate {
     /// Scoped by userId so cursors from different users don't interfere.
     private func loadRemovedSyncCursor() -> RemovedSyncCursorPayload? {
         guard let userId = mlsClient.userId else { return nil }
+        do {
+            if let durableCursor = try durableInboxStore.removedCursor(accountId: userId) {
+                return durableCursor
+            }
+        } catch {
+            log.error("[E2eSync] Failed to read durable removed cursor: \(error)", subsystems: .mls)
+            return nil
+        }
+
+        // Migration-only fallback. Once the Core Data cursor exists it is authoritative.
         let all = UserDefaults.standard.dictionary(forKey: Self.removedCursorKey) as? [String: [String: String]]
         guard let dict = all?[userId],
               let removedAt = dict["removed_at"],
@@ -207,6 +292,11 @@ class E2eRepository: EventsControllerDelegate {
     /// scheduling; priority still governs ordering *across* channels.
     private var lastOpByCid: [String: Operation] = [:]
     private let lastOpLock = NSLock()
+
+    private lazy var durableInboxStore = E2eeDurableInboxStore(database: database)
+    private let durableApplyLock = NSLock()
+    private var blockedDurableScopes: Set<String> = []
+    private var enqueuedDurableEvents: Set<String> = []
 
     /// Dedicated private-queue context for E2EE decrypt reads (decrypt cache + pending-message
     /// lookups). Kept separate from `backgroundReadOnlyContext` — which the synchronous
@@ -335,33 +425,20 @@ class E2eRepository: EventsControllerDelegate {
         }
         let op = BlockOperation { [weak self] in
             guard let self else { return }
+            self.durableApplyLock.lock()
+            let isBlocked = self.blockedDurableScopes.contains(cid)
+            self.durableApplyLock.unlock()
+            guard !isBlocked else {
+                log.error("[MLS] Realtime protocol mutation blocked behind durable repair for \(cid)", subsystems: .mls)
+                self.performE2eChannelSync(cid: mlsEvent.cid)
+                return
+            }
             do {
                 switch mlsEvent.mlsProtocol.type {
-                case .commit:
-                    guard let commit = mlsProtocol.commit else {
-                        return
-                    }
-                    let group = try self.mlsClient.loadGroup(with: cid)
-                    guard Int(group.epoch()) == mlsProtocol.epoch - 1 else {
-                        log.debug("[MLS] Skipping commit: local epoch \(group.epoch()) != expected \(mlsProtocol.epoch - 1)", subsystems: .mls)
-                        return
-                    }
-                    log.debug("[MLS] Processing commit message", subsystems: .mls)
-                    try self.mlsClient.processMessage(data: commit.data, in: cid)
-                    // Epoch advanced — re-attempt any messages that arrived before this commit.
-                    self.reDecryptPendingMessages(in: mlsEvent.cid)
-                case .externalCommit:
-                    guard let commit = mlsProtocol.commit else {
-                        return
-                    }
-                    let group = try self.mlsClient.loadGroup(with: cid)
-                    guard group.epoch() == mlsProtocol.epoch - 1 else {
-                        log.debug("[MLS] Skipping commit: local epoch \(group.epoch()) != expected \(mlsProtocol.epoch - 1)", subsystems: .mls)
-                        return
-                    }
-                    try self.mlsClient.processMessage(data: commit.data, in: cid)
-                    // Epoch advanced — re-attempt any messages that arrived before this commit.
-                    self.reDecryptPendingMessages(in: mlsEvent.cid)
+                case .commit, .externalCommit:
+                    // Commits need a durable raw envelope and exact ciphertext/epoch proof before
+                    // OpenMLS advances the group. Realtime delivery only triggers scope sync.
+                    self.performE2eChannelSync(cid: mlsEvent.cid)
                 case .welcome:
                     //                    break
                     guard !self.shouldSkipWelcome(cid: cid) else {
@@ -384,7 +461,10 @@ class E2eRepository: EventsControllerDelegate {
                     // Group now exists locally — decrypt any messages buffered before the join.
                     self.reDecryptPendingMessages(in: mlsEvent.cid)
                 case .proposal:
-                    break
+                    // Bellboy has no active standalone-proposal producer. Sync the durable event
+                    // so the reserved wire value becomes an explicit repair issue, never an MLS
+                    // mutation or silently advanced cursor.
+                    self.performE2eChannelSync(cid: mlsEvent.cid)
                 }
             } catch {
                 log.error("[MLS] Failed to process event: \(mlsEvent)", subsystems: .mls)
@@ -404,19 +484,86 @@ class E2eRepository: EventsControllerDelegate {
     /// not overtake a `.low` sync commit for the same group — either would advance the epoch out
     /// of order. `queuePriority` still governs ordering across *different* channels.
     private func enqueueGroupOperation(_ op: Operation, cidString: String) {
+        enqueueGroupOperation(op, cidStrings: [cidString])
+    }
+
+    /// Chains one operation behind every listed group and makes future work for each group wait
+    /// for it. Removal pages use this barrier because one page may delete several MLS groups but
+    /// its single user-scoped cursor cannot advance until every deletion is complete.
+    private func enqueueGroupOperation(_ op: Operation, cidStrings: Set<String>) {
         lastOpLock.lock()
-        if let previous = lastOpByCid[cidString], !previous.isFinished {
-            op.addDependency(previous)
+        for cidString in cidStrings {
+            if let previous = lastOpByCid[cidString], !previous.isFinished {
+                op.addDependency(previous)
+            }
+            lastOpByCid[cidString] = op
         }
-        lastOpByCid[cidString] = op
         lastOpLock.unlock()
         decryptQueue.addOperation(op)
     }
     
     private func decryptNewMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
-        log.debug("[MLS] Decrypt message with epoch: \(message.mlsEpoch)")
+        log.debug("[MLS] Decrypt message with epoch: \(message.mlsEpoch.map { String($0) } ?? "unknown")")
         guard let encryptedData = message.encryptedData else { return }
-        decryptMessagePayload(messageId: message.id, encryptedData: encryptedData, cid: cid)
+
+        // The sender cannot decrypt its own current-device MLS ciphertext. Its plaintext was
+        // durably cached before POST, so the WebSocket echo is only an acknowledgement/update.
+        // Skipping only when that cache exists still allows messages from another device of the
+        // same user to be decrypted normally.
+        if Self.shouldSkipRealtimeDecrypt(
+            isSentByCurrentUser: message.isSentByCurrentUser,
+            hasCachedPlaintext: message.decryptedMessage != nil
+        ) {
+            log.debug(
+                "[MLS] Skipping own realtime echo with durable plaintext for \(message.id)",
+                subsystems: .mls
+            )
+            return
+        }
+
+        let groupCid = mlsGroupCid(for: cid)
+        decryptMessagePayload(
+            messageId: message.id,
+            encryptedData: encryptedData,
+            cid: cid
+        ) { [weak self] result in
+            guard let recoveryCid = Self.realtimeRecoveryScope(
+                after: result,
+                groupCid: groupCid
+            ), case .failure(let error) = result else { return }
+
+            // Realtime application and protocol events travel through different rooms, so the
+            // application event can arrive before the commit that advances this device to the
+            // required epoch. Keep the encrypted MessageDTO as the durable retry source and ask
+            // scope sync to merge protocol/application events in Bellboy's canonical order.
+            //
+            // Do not retry MLS directly or process the raw realtime commit here: both would race
+            // the durable inbox/provider persistence path. `runSync` coalesces this scope when a
+            // sync is already active, and a successful commit re-attempts pending ciphertexts.
+            log.error(
+                "[MLS] Realtime decrypt failed for \(message.id); requesting scope recovery for \(recoveryCid.rawValue): \(error)",
+                subsystems: .mls
+            )
+            self?.performE2eChannelSync(cid: recoveryCid)
+        }
+    }
+
+    /// Keeps the realtime fast path local, but converts a failed decrypt into a durable scope-sync
+    /// recovery request. Internal so the failure/success routing remains covered by regression
+    /// tests without exposing it as SDK API.
+    static func realtimeRecoveryScope(
+        after result: Result<E2ePayload, Error>,
+        groupCid: ChannelId
+    ) -> ChannelId? {
+        guard case .failure = result else { return nil }
+        return groupCid
+    }
+
+    static func shouldSkipRealtimeDecrypt(
+        isSentByCurrentUser: Bool,
+        hasCachedPlaintext: Bool
+    ) -> Bool {
+        isSentByCurrentUser && hasCachedPlaintext
     }
     
     private func decryptUpdatedMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
@@ -448,15 +595,13 @@ class E2eRepository: EventsControllerDelegate {
     private func reDecryptUpdatedMessageSync(messageId: MessageId, encryptedData: Data, cid: ChannelId) {
         do {
             let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
-            let payload = try mlsClient.decrypt(data: encryptedData, in: group)
-            database.write { session in
-                try session.saveMessageDecrypt(payload: payload, messageId: messageId)
-                session.message(id: messageId)?.text = payload.text
-            } completion: { error in
-                if let error {
-                    log.error("Failed to save re-decrypted message cache for \(messageId): \(error)", subsystems: .mls)
-                }
-            }
+            let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
+            try persistProcessedApplicationMessage(
+                processed,
+                messageId: messageId,
+                encryptedData: encryptedData,
+                group: group
+            )
         } catch {
             // Unchanged/already-consumed ciphertext (a non-edit update) or an own-device message:
             // keep the existing decrypted cache rather than regressing to the placeholder.
@@ -471,7 +616,36 @@ class E2eRepository: EventsControllerDelegate {
             self?.reDecryptUpdatedMessageSync(messageId: messageId, encryptedData: encryptedData, cid: cid)
         }
         op.queuePriority = .high
-        decryptQueue.addOperation(op)
+        enqueueGroupOperation(op, cidString: mlsGroupCid(for: cid).rawValue)
+    }
+
+    /// Persists plaintext first and only then advances the OpenMLS receiver ratchet on disk.
+    /// The two stores cannot share a transaction; replay recovery distinguishes a stale provider
+    /// from an already-saved provider through `MlsError.MessageAlreadyConsumed`.
+    private func persistProcessedApplicationMessage(
+        _ processed: MlsProcessedApplicationMessage,
+        messageId: MessageId,
+        encryptedData: Data,
+        group: Group
+    ) throws {
+        let ciphertextHash = Data(SHA256.hash(data: encryptedData))
+        try database.writeAndWait { session in
+            try session.saveMessageDecrypt(
+                payload: processed.payload,
+                messageId: messageId,
+                ciphertextHash: ciphertextHash
+            )
+            session.message(id: messageId)?.text = processed.payload.text
+        }
+        try mlsClient.saveState(of: group)
+    }
+
+    private func isMessageAlreadyConsumed(_ error: Error) -> Bool {
+        guard let mlsError = error as? MlsError else { return false }
+        if case .MessageAlreadyConsumed = mlsError {
+            return true
+        }
+        return false
     }
     
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
@@ -499,13 +673,27 @@ class E2eRepository: EventsControllerDelegate {
     /// Resolves the sync cursor (milliseconds since epoch) for a single channel.
     ///
     /// The resolution order is:
-    /// 1. Saved cursor in UserDefaults (from a previous sync).
-    /// 2. `memberCreatedAt` from Core Data.
-    /// 3. `loginTime` if the membership was created after this device logged in.
+    /// 1. Durable fetch cursor from Core Data.
+    /// 2. Legacy cursor in UserDefaults during migration.
+    /// 3. MLS join/member/login boundary for a first sync.
     ///
     /// Returns `nil` when no cursor can be determined (e.g. the device hasn't joined the MLS group yet).
     private func resolveSyncCursor(cidString: String, mlsJoinedAt: NSDate?, memberCreatedAt: NSDate?, deviceLoginTime: Date?) -> ScopeSyncCursorPayload? {
-        // 1. Check UserDefaults for an existing sync cursor.
+        if let accountId = mlsClient.userId {
+            do {
+                if let durableCursor = try durableInboxStore.fetchCursor(
+                    accountId: accountId,
+                    scopeCid: cidString
+                ) {
+                    return durableCursor
+                }
+            } catch {
+                log.error("[E2eSync] Failed to read durable fetch cursor for \(cidString): \(error)", subsystems: .mls)
+                return nil
+            }
+        }
+
+        // Legacy migration fallback. Once a durable cursor exists it is authoritative.
         if let savedCursor = e2eSyncCursor(for: cidString) {
             if let memberCreatedAt,
                let savedDate = Self.parseRemovedAt(savedCursor.createdAt),
@@ -606,6 +794,7 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
         log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
+        replayDurablePendingEvents(scopeCids: Set(cursors.keys))
         syncPage(cursors: cursors)
     }
     
@@ -720,6 +909,7 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
         log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
+        replayDurablePendingEvents(scopeCids: Set(cursors.keys))
         syncPage(cursors: cursors)
     }
 
@@ -732,59 +922,111 @@ class E2eRepository: EventsControllerDelegate {
                 log.error("[E2eSync] Request failed: \(error)", subsystems: .mls)
                 self.finishSync()
             case .success(let payload):
+                guard let accountId = self.mlsClient.userId else {
+                    log.error("[E2eSync] Discarding response without an active account", subsystems: .mls)
+                    self.finishSync()
+                    return
+                }
                 var nextCursors: [String: ScopeSyncCursorPayload] = [:]
+                var failedScopes: Set<String> = []
 
                 for (cidString, channelPayload) in payload.channels {
-                    // Advance to the server's composite next_cursor (authoritative). Echoing it
-                    // back verbatim is what makes same-timestamp events never skip or replay.
-                    if let next = channelPayload.nextCursor {
-                        nextCursors[cidString] = next
-                    }
-
-                    guard !channelPayload.events.isEmpty else { continue }
-
                     guard let cid = try? ChannelId(cid: cidString) else {
-                        log.warning("[E2eSync] Skipping unknown scope cid '\(cidString)'", subsystems: .mls)
+                        failedScopes.insert(cidString)
+                        log.error("[E2eSync] Invalid scope cid '\(cidString)'", subsystems: .mls)
                         continue
                     }
 
-                    // Process this scope's events in server order on the serial decryptQueue.
-                    // The server already returns only events after the cursor, and the handlers
-                    // are idempotent (epoch-guarded commits, skip-if-exists welcomes, decrypt
-                    // cache hits, metadata upserts), so no extra client-side filtering is needed.
-                    self.processE2eSyncEvents(channelPayload.events, cid: cid, cidString: cidString)
-
-                    // Defensive fallback: if the server omitted next_cursor but sent events,
-                    // derive one from the last event so pagination still makes progress.
-                    if nextCursors[cidString] == nil, let lastEvent = channelPayload.events.last {
-                        nextCursors[cidString] = Self.cursor(fromMilliseconds: Int64(lastEvent.createdAt.timeIntervalSince1970 * 1000))
+                    do {
+                        let persisted = try self.durableInboxStore.persistPage(
+                            accountId: accountId,
+                            scopeCid: cidString,
+                            events: channelPayload.events,
+                            hasMore: channelPayload.hasMore,
+                            nextCursor: channelPayload.nextCursor
+                        )
+                        self.emitDurableInboxTelemetry(persisted.backlog)
+                        if let fetchCursor = persisted.fetchCursor {
+                            nextCursors[cidString] = fetchCursor
+                            // Rollback-only mirror for versions predating the durable store.
+                            self.saveSyncCursors([cidString: fetchCursor])
+                        }
+                        self.processE2eSyncEvents(
+                            persisted.insertedEvents,
+                            cid: cid,
+                            cidString: cidString
+                        )
+                    } catch {
+                        failedScopes.insert(cidString)
+                        let repairCategory: String
+                        switch error as? E2eeDurableInboxError {
+                        case .backlogLimitExceeded(let scopeCid, let scopePending, let accountPending):
+                            repairCategory = "durable_backlog_limit"
+                            log.error(
+                                "[E2eTelemetry] durable_inbox_backlog_rejected scope=\(scopeCid) scope_pending=\(scopePending) account_pending=\(accountPending)",
+                                subsystems: .mls
+                            )
+                        case .pageTooLarge(let scopeCid, let rawBytes, let maximumRawBytes):
+                            repairCategory = "durable_page_too_large"
+                            log.error(
+                                "[E2eTelemetry] durable_inbox_page_rejected scope=\(scopeCid) page_raw_bytes=\(rawBytes) maximum_raw_bytes=\(maximumRawBytes)",
+                                subsystems: .mls
+                            )
+                        default:
+                            repairCategory = "page_persistence_failed"
+                        }
+                        do {
+                            try self.durableInboxStore.recordRepairIssue(
+                                accountId: accountId,
+                                scopeCid: cidString,
+                                eventId: nil,
+                                category: repairCategory,
+                                details: String(describing: error)
+                            )
+                        } catch {
+                            log.error("[E2eSync] Failed to record page persistence repair for \(cidString): \(error)", subsystems: .mls)
+                        }
+                        log.error("[E2eSync] Failed to durably persist page for \(cidString): \(error)", subsystems: .mls)
                     }
                 }
 
-                // Persist updated cursors.
-                if !nextCursors.isEmpty {
-                    self.saveSyncCursors(nextCursors)
-                }
-
-                // Apply the user-scoped removed_channels cleanup stream and advance its
-                // own cursor. Returns whether more removal pages remain.
-                let removedHasMore = self.handleRemovedChannels(payload.removedChannels)
-
-                // Paginate for scopes that still have more events.
-                var remaining: [String: ScopeSyncCursorPayload] = [:]
-                for (cid, ch) in payload.channels where ch.hasMore {
-                    if let next = nextCursors[cid] ?? cursors[cid] {
-                        remaining[cid] = next
+                // Removal cleanup is asynchronous because it joins the same per-group MLS
+                // executor as protocol/application events. Do not paginate or finish this sync
+                // until every group deletion, Core Data cleanup, and removed cursor write has
+                // completed.
+                self.handleRemovedChannels(payload.removedChannels) { result in
+                    switch result {
+                    case .failure(let error):
+                        log.error("[E2eSync] Removed-channel cleanup blocked sync: \(error)", subsystems: .mls)
+                        self.finishSync()
+                    case .success(let removedHasMore):
+                        var remaining: [String: ScopeSyncCursorPayload] = [:]
+                        for (cid, ch) in payload.channels where ch.hasMore && !failedScopes.contains(cid) {
+                            if let next = nextCursors[cid] {
+                                remaining[cid] = next
+                            }
+                        }
+                        if !remaining.isEmpty || removedHasMore {
+                            log.debug("[E2eSync] Paginating for \(remaining.count) scope(s)\(removedHasMore ? " + removed_channels" : "")", subsystems: .mls)
+                            self.syncPage(cursors: remaining)
+                        } else {
+                            self.finishSync()
+                        }
                     }
-                }
-                if !remaining.isEmpty || removedHasMore {
-                    log.debug("[E2eSync] Paginating for \(remaining.count) scope(s)\(removedHasMore ? " + removed_channels" : "")", subsystems: .mls)
-                    self.syncPage(cursors: remaining)
-                } else {
-                    self.finishSync()
                 }
             }
         }
+    }
+
+    /// Emits count-only E2EE backlog observations through the SDK logger. Host apps can route
+    /// the existing logger destination into their telemetry backend. No event body, plaintext,
+    /// ciphertext, key, user ID, or grant URL is included.
+    private func emitDurableInboxTelemetry(_ snapshot: E2eeDurableInboxStore.BacklogSnapshot) {
+        guard snapshot.warningThresholdExceeded else { return }
+        log.warning(
+            "[E2eTelemetry] durable_inbox_backlog_warning scope=\(snapshot.scopeCid) scope_pending=\(snapshot.scopePendingCount) account_pending=\(snapshot.accountPendingCount) inserted=\(snapshot.insertedEventCount) page_raw_bytes=\(snapshot.pageRawBytes)",
+            subsystems: .mls
+        )
     }
     
     /// Applies the user-scoped `removed_channels` cleanup stream from sync.
@@ -798,63 +1040,98 @@ class E2eRepository: EventsControllerDelegate {
     /// Deleting the local group here is what lets a later re-add join cleanly via a fresh
     /// Welcome instead of replaying an old Welcome whose KeyPackage was already consumed.
     ///
-    /// - Returns: `true` when more removal pages remain (caller should keep paginating).
-    @discardableResult
-    private func handleRemovedChannels(_ removed: RemovedChannelsPayload?) -> Bool {
-        guard let removed else { return false }
-
-        var channelCids: Set<ChannelId> = []
-        for event in removed.events {
-            let cidString = event.cid
-
-            // Boundary guard: if the current user has already RE-JOINED this channel after
-            // this removal happened, the event is a stale tombstone (typically an earlier
-            // self-leave) and must NOT delete the freshly re-joined group. The page's removal
-            // cursor still advances below, so the tombstone is not re-delivered next sync.
-            if isRemovalStale(cidString: cidString, removedAt: event.removedAt, removalType: event.removalType) {
-                log.debug("[E2eSync] Skipping stale removal (type=\(event.removalType ?? "unknown")) for \(cidString): re-joined after removed_at=\(event.removedAt ?? "nil")", subsystems: .mls)
-                continue
+    /// Completion succeeds with `true` when more removal pages remain. On any failure the cursor
+    /// stays unchanged and sync stops, so the same page is replayed on the next attempt.
+    private func handleRemovedChannels(
+        _ removed: RemovedChannelsPayload?,
+        completion: @escaping (Result<Bool, Error>) -> Void
+    ) {
+        guard let removed else {
+            completion(.success(false))
+            return
+        }
+        guard let accountId = mlsClient.userId else {
+            completion(.failure(E2eeSyncApplyError.missingAccount))
+            return
+        }
+        guard let nextCursor = removed.nextCursor else {
+            if removed.events.isEmpty && !removed.hasMore {
+                completion(.success(false))
+            } else {
+                completion(.failure(E2eeDurableInboxError.invalidRemovedPagination))
             }
+            return
+        }
 
-            log.debug("[E2eSync] Channel removed (type=\(event.removalType ?? "unknown")): \(cidString); cleaning local state", subsystems: .mls)
-
-            // Delete the local MLS group and advance (not clear) its sync cursor, so a
-            // later re-invite to this channel won't replay the old Welcome. Idempotent —
-            // the realtime member.removed handler may already have cleaned it up online.
+        let scopeCids = Set(removed.events.map(\.cid))
+        let operation = BlockOperation { [weak self] in
+            guard let self else { return }
             do {
-                if mlsClient.isGroupLoaded(cid: cidString) {
-                    try deleteGroup(cid: cidString)
-                } else {
-//                    advanceE2eSyncCursor(for: cidString)
-                }
-                advanceE2eSyncCursor(for: cidString)
+                var channelCids: Set<ChannelId> = []
+                var cleanedScopeCids: Set<String> = []
 
+                for event in removed.events {
+                    let cidString = event.cid
+                    guard let cid = try? ChannelId(cid: cidString) else {
+                        throw E2eeSyncApplyError.unsupportedEvent(type: "invalid removed cid: \(cidString)")
+                    }
+
+                    // A stale tombstone still contributes to the user-scoped cursor but must not
+                    // delete state created by a later rejoin.
+                    if self.isRemovalStale(
+                        cidString: cidString,
+                        removedAt: event.removedAt,
+                        removalType: event.removalType
+                    ) {
+                        log.debug("[E2eSync] Skipping stale removal (type=\(event.removalType ?? "unknown")) for \(cidString): re-joined after removed_at=\(event.removedAt ?? "nil")", subsystems: .mls)
+                        continue
+                    }
+
+                    log.debug("[E2eSync] Channel removed (type=\(event.removalType ?? "unknown")): \(cidString); cleaning local state", subsystems: .mls)
+                    if self.mlsClient.isGroupLoaded(cid: cidString) {
+                        try self.mlsClient.deleteGroup(cid: cidString)
+                    }
+                    channelCids.insert(cid)
+                    cleanedScopeCids.insert(cidString)
+                }
+
+                // Core Data cleanup and removed-cursor advancement are atomic. If this throws,
+                // already-deleted MLS groups remain safe because deletion is idempotent and the
+                // unchanged server cursor will replay this page.
+                try self.durableInboxStore.commitRemovedPage(
+                    accountId: accountId,
+                    channelCids: channelCids,
+                    scopeCids: cleanedScopeCids,
+                    nextCursor: nextCursor
+                )
+
+                self.durableApplyLock.lock()
+                self.blockedDurableScopes.subtract(cleanedScopeCids)
+                self.durableApplyLock.unlock()
+
+                // Rollback-only mirrors for app versions predating the durable checkpoint.
+                for cidString in cleanedScopeCids {
+                    self.advanceE2eSyncCursor(for: cidString)
+                }
+                self.saveRemovedSyncCursor(nextCursor)
+                completion(.success(removed.hasMore))
             } catch {
-                log.error("[E2eSync] Failed to delete MLS group for removed channel \(cidString): \(error)", subsystems: .mls)
-            }
-
-            if let cid = try? ChannelId(cid: cidString) {
-                channelCids.insert(cid)
-            }
-        }
-
-        // Remove the cached channels and their messages from local storage.
-        if !channelCids.isEmpty {
-            database.write { session in
-                session.removeChannels(cids: channelCids)
-            } completion: { error in
-                if let error {
-                    log.error("[E2eSync] Failed to remove cached channels after removal: \(error)", subsystems: .mls)
+                do {
+                    try self.durableInboxStore.recordRepairIssue(
+                        accountId: accountId,
+                        scopeCid: E2eeSyncCheckpointDTO.removedScope,
+                        eventId: removed.events.first?.eventId,
+                        category: "removed_cleanup_failed",
+                        details: String(describing: error)
+                    )
+                } catch {
+                    log.error("[E2eSync] Failed to persist removed cleanup repair: \(error)", subsystems: .mls)
                 }
+                completion(.failure(error))
             }
         }
-
-        // Advance the removal cursor only after cleanup has been issued.
-        if let next = removed.nextCursor {
-            saveRemovedSyncCursor(next)
-        }
-
-        return removed.hasMore
+        operation.queuePriority = Operation.QueuePriority.low
+        enqueueGroupOperation(operation, cidStrings: scopeCids)
     }
 
     /// Marks the current sync operation as finished so a new one can start, then drains any
@@ -880,21 +1157,145 @@ class E2eRepository: EventsControllerDelegate {
     /// channel's backlog. Per-channel ordering (protocol messages before the application
     /// messages that depend on them) is preserved by chaining each event to the previous one
     /// for the same channel via an operation dependency.
-    private func processE2eSyncEvents(_ events: [E2eSyncEventPayload], cid: ChannelId, cidString: String) {
+    private func processE2eSyncEvents(_ events: [E2eSyncEventEnvelope], cid: ChannelId, cidString: String) {
+        guard let accountId = mlsClient.userId else {
+            log.error("[E2eSync] Cannot enqueue durable events without an active account", subsystems: .mls)
+            return
+        }
         for event in events {
+            let eventKey = "\(accountId)|\(cidString)|\(event.eventId)"
+            durableApplyLock.lock()
+            let isNewlyEnqueued = enqueuedDurableEvents.insert(eventKey).inserted
+            durableApplyLock.unlock()
+            guard isNewlyEnqueued else { continue }
+
             let op = BlockOperation { [weak self] in
-                self?.processSingleE2eSyncEvent(event, cid: cid, cidString: cidString)
+                guard let self else { return }
+                defer {
+                    self.durableApplyLock.lock()
+                    self.enqueuedDurableEvents.remove(eventKey)
+                    self.durableApplyLock.unlock()
+                }
+
+                self.durableApplyLock.lock()
+                let isBlocked = self.blockedDurableScopes.contains(cidString)
+                self.durableApplyLock.unlock()
+                guard !isBlocked else { return }
+
+                do {
+                    let disposition = try self.processSingleE2eSyncEvent(
+                        event,
+                        accountId: accountId,
+                        cid: cid,
+                        cidString: cidString
+                    )
+                    if case .application(let application) = event.event,
+                       !application.isSystemMessage {
+                        try self.durableInboxStore.markApplicationPersistenceCompleted(
+                            accountId: accountId,
+                            scopeCid: cidString,
+                            eventId: event.eventId
+                        )
+                    }
+                    if case .requiresCursorAdvance = disposition {
+                        try self.durableInboxStore.markApplied(
+                            accountId: accountId,
+                            scopeCid: cidString,
+                            envelope: event
+                        )
+                    }
+                } catch {
+                    let category = (error as? E2eeSyncApplyError)?.repairCategory ?? "apply_failed"
+                    do {
+                        try self.durableInboxStore.recordRepairIssue(
+                            accountId: accountId,
+                            scopeCid: cidString,
+                            eventId: event.eventId,
+                            category: category,
+                            details: String(describing: error)
+                        )
+                    } catch {
+                        log.error("[E2eSync] Failed to persist repair issue for \(event.eventId): \(error)", subsystems: .mls)
+                    }
+
+                    // An application ciphertext is already durable in the inbox. Bellboy's
+                    // recovery contract allows its cursor to advance after recording a repair
+                    // issue, so one unreadable historical message cannot prevent later commits
+                    // from advancing the group or block every new outgoing send. The raw event
+                    // remains available by event ID for manual/PIN recovery and the UI keeps its
+                    // encrypted placeholder. Protocol failures remain scope-blocking because
+                    // skipping a commit would make every following epoch unsafe.
+                    if case .application(let application) = event.event,
+                       !application.isSystemMessage {
+                        do {
+                            try self.durableInboxStore.markApplied(
+                                accountId: accountId,
+                                scopeCid: cidString,
+                                envelope: event,
+                                preservingFailure: true
+                            )
+                            log.error(
+                                "[E2eSync] Application repair persisted; continuing scope \(cidString) after event \(event.eventId): \(error)",
+                                subsystems: .mls
+                            )
+                            return
+                        } catch {
+                            log.error(
+                                "[E2eSync] Failed to advance repaired application event \(event.eventId): \(error)",
+                                subsystems: .mls
+                            )
+                        }
+                    }
+
+                    self.durableApplyLock.lock()
+                    self.blockedDurableScopes.insert(cidString)
+                    self.durableApplyLock.unlock()
+                    log.error("[E2eSync] Apply blocked for \(cidString) at event \(event.eventId): \(error)", subsystems: .mls)
+                }
             }
             op.queuePriority = .low
             enqueueGroupOperation(op, cidString: cidString)
         }
     }
 
+    /// Replays locally durable, unapplied events before newly fetched pages are enqueued.
+    /// Starting a new sync run clears the in-memory block so the first failed event can retry;
+    /// if the root cause is still present it immediately records the failure and blocks again.
+    private func replayDurablePendingEvents(scopeCids: Set<String>) {
+        guard let accountId = mlsClient.userId else { return }
+        for cidString in scopeCids {
+            guard let cid = try? ChannelId(cid: cidString) else { continue }
+            durableApplyLock.lock()
+            blockedDurableScopes.remove(cidString)
+            durableApplyLock.unlock()
+            do {
+                let events = try durableInboxStore.loadPendingEvents(
+                    accountId: accountId,
+                    scopeCid: cidString
+                )
+                processE2eSyncEvents(events, cid: cid, cidString: cidString)
+            } catch {
+                log.error("[E2eSync] Failed to load durable pending events for \(cidString): \(error)", subsystems: .mls)
+            }
+        }
+    }
+
     /// Applies a single E2EE sync event. Must run on `decryptQueue`.
-    private func processSingleE2eSyncEvent(_ event: E2eSyncEventPayload, cid: ChannelId, cidString: String) {
-        switch event {
+    private func processSingleE2eSyncEvent(
+        _ envelope: E2eSyncEventEnvelope,
+        accountId: String,
+        cid: ChannelId,
+        cidString: String
+    ) throws -> E2eeSyncApplyDisposition {
+        switch envelope.event {
         case .protocol(let data):
-            applyE2eSyncProtocolEvent(data, cidString: cidString)
+            return try applyE2eSyncProtocolEvent(
+                data,
+                accountId: accountId,
+                eventId: envelope.eventId,
+                envelope: envelope,
+                cidString: cidString
+            )
         case .application(let data):
             if data.isSystemMessage {
                 handleSystemMessage(data, cid: cid)
@@ -903,25 +1304,24 @@ class E2eRepository: EventsControllerDelegate {
                 // so we must NOT re-enqueue via decryptMessagePayload (that would deadlock
                 // the serial queue waiting on itself).
                 guard let mlsCiphertext = data.mlsCiphertext else {
-                    log.error("Missing mls_ciphertext for regular application message \(data.id)")
-                    return
+                    throw E2eeSyncApplyError.missingCiphertext(messageId: data.id)
                 }
-                decryptMessagePayloadSync(
+                _ = try decryptMessagePayloadSyncThrowing(
                     messageId: data.id,
                     encryptedData: Data(mlsCiphertext),
                     cid: cid
                 )
             }
         case .reaction(let data):
-            handleReactionSyncEvent(data)
+            try handleReactionSyncEvent(data)
         case .messageDeleted(let data):
-            handleMessageDeletedSyncEvent(data)
+            try handleMessageDeletedSyncEvent(data)
         case .messageUpdated(let data):
-            handleMessageUpdatedSyncEvent(data, cid: cid)
+            try handleMessageUpdatedSyncEvent(data, cid: cid)
         case .messagePin(let data):
-            handleMessagePinSyncEvent(data)
+            try handleMessagePinSyncEvent(data)
         case .memberRemoved(let data, _):
-            handleMemberRemovedSyncEvent(data, cid: cid)
+            try handleMemberRemovedSyncEvent(data, cid: cid)
         case .inviteAccepted(let data, _):
             handleInviteRespondSyncEvent(data, cid: cid)
         case .inviteRejected(let data, _):
@@ -931,56 +1331,46 @@ class E2eRepository: EventsControllerDelegate {
         case .inviteMessagingSkipped(let data, _):
             handleInviteRespondSyncEvent(data, cid: cid)
         case .websocketEvent(let payload):
-            handleWebsocketEvent(payload)
-        case .unknown(let type, let rawData):
-            log.warning("[E2eSync] Unknown sync event type '\(type)' in channel \(cidString), data: \(rawData)", subsystems: .mls)
+            try handleWebsocketEvent(payload)
+        case .unknown(let type, _):
+            throw E2eeSyncApplyError.unsupportedEvent(type: type)
         }
+        return .requiresCursorAdvance
     }
 
     /// Handles a websocket event received during E2EE sync by dispatching it
     /// through the standard event processing pipeline.
-    private func handleWebsocketEvent(_ payload: EventPayload) {
-        do {
-            if payload.eventType == .memberRemoved {
-                handleMemberRemovedEvent(payload)
-                return
-            }
-//            let event = try payload.event()
-//            eventNotificationCenter.process(event)
-        } catch {
-            log.error("[E2eSync] Failed to process websocket event (type=\(payload.eventType)): \(error)", subsystems: .mls)
+    private func handleWebsocketEvent(_ payload: EventPayload) throws {
+        if payload.eventType == .memberRemoved {
+            try handleMemberRemovedEvent(payload)
+            return
         }
+        throw E2eeSyncApplyError.unsupportedEvent(type: payload.eventType.rawValue)
     }
 
     /// Handles a member.removed event received during E2EE sync.
     /// Called on `decryptQueue`.
     /// - Parameter payload: The event payload for the member removal.
-    private func handleMemberRemovedEvent(_ payload: EventPayload) {
-        do {
-            let event = try MemberRemovedEventDTO(from: payload)
-            let targetUserId = event.member.userId
-            let cidString = event.cid.rawValue
+    private func handleMemberRemovedEvent(_ payload: EventPayload) throws {
+        let event = try MemberRemovedEventDTO(from: payload)
+        let targetUserId = event.member.userId
+        let cidString = event.cid.rawValue
 
-            if targetUserId == mlsClient.userId {
-                // Current user was removed → delete local MLS group.
+        if targetUserId == mlsClient.userId {
+            if mlsClient.isGroupLoaded(cid: cidString) {
                 try deleteGroup(cid: cidString)
-                try deleteGroups(cids: event.topicCids.map { $0.rawValue })
-                log.debug("[E2E] Deleted local MLS group for \(cidString) after current user removed", subsystems: .mls)
-            } else if event.selfRemove == true {
-                // Another user self-left → queue ghost cleanup.
-                database.write { session in
-                    session.savePendingRemoveMember(userId: targetUserId, channelCid: cidString)
-                }
-                log.debug("[E2E] Saved pending eviction for self-left member \(targetUserId) in channel \(cidString)", subsystems: .mls)
-
-                // Designated evictor performs actual MLS removal.
-                if isDesignatedEvictor(cid: event.cid) {
-                    commitEviction(cid: event.cid, targetUserIds: [targetUserId])
-                }
             }
-            // Admin kick: do nothing extra — standard remove flow includes the MLS commit.
-        } catch {
-            log.error("Failed to handle member remove sync event: \(error)", subsystems: .mls)
+            try deleteGroups(cids: event.topicCids.map { $0.rawValue })
+            log.debug("[E2E] Deleted local MLS group for \(cidString) after current user removed", subsystems: .mls)
+        } else if event.selfRemove == true {
+            try database.writeAndWait { session in
+                session.savePendingRemoveMember(userId: targetUserId, channelCid: cidString)
+            }
+            log.debug("[E2E] Saved pending eviction for self-left member \(targetUserId) in channel \(cidString)", subsystems: .mls)
+
+            if isDesignatedEvictor(cid: event.cid) {
+                commitEviction(cid: event.cid, targetUserIds: [targetUserId])
+            }
         }
     }
     
@@ -988,37 +1378,29 @@ class E2eRepository: EventsControllerDelegate {
 
     /// Handles a `reaction` sync event by saving/updating the reaction snapshot in the database.
     /// Called on `decryptQueue`.
-    private func handleReactionSyncEvent(_ data: ReactionSyncData) {
+    private func handleReactionSyncEvent(_ data: ReactionSyncData) throws {
         log.debug("[E2eSync] Handling reaction sync event for message \(data.message.id)", subsystems: .mls)
-        database.write { session in
+        try database.writeAndWait { session in
             // Save the message first so the reaction has a target
             try session.saveMessage(payload: data.message, for: data.cid, syncOwnReactions: true, cache: nil)
             // Save the reaction (creates or updates)
             try session.saveReaction(payload: data.reaction, cache: nil)
-        } completion: { error in
-            if let error {
-                log.error("[E2eSync] Failed to save reaction sync event: \(error)", subsystems: .mls)
-            }
         }
     }
 
     /// Handles a `message_deleted` sync event by removing the message from local cache.
     /// Called on `decryptQueue`.
-    private func handleMessageDeletedSyncEvent(_ data: MessageDeletedSyncData) {
+    private func handleMessageDeletedSyncEvent(_ data: MessageDeletedSyncData) throws {
         log.debug("[E2eSync] Handling message_deleted sync event for message \(data.message.id)", subsystems: .mls)
-        database.write { session in
+        try database.writeAndWait { session in
             // Save the message payload which includes deletedAt being set
             try session.saveMessage(payload: data.message, for: data.cid, syncOwnReactions: false, cache: nil)
-        } completion: { error in
-            if let error {
-                log.error("[E2eSync] Failed to handle message_deleted sync event: \(error)", subsystems: .mls)
-            }
         }
     }
 
     /// Handles a `message_updated` sync event by decrypting the latest snapshot and upserting it.
     /// Called on `decryptQueue`.
-    private func handleMessageUpdatedSyncEvent(_ data: MessageUpdatedSyncData, cid: ChannelId) {
+    private func handleMessageUpdatedSyncEvent(_ data: MessageUpdatedSyncData, cid: ChannelId) throws {
         let messageId = data.message.id
         log.debug("[E2eSync] Handling message_updated sync event for message \(messageId)", subsystems: .mls)
 
@@ -1030,44 +1412,29 @@ class E2eRepository: EventsControllerDelegate {
             // re-delivery) that carries the original, already-consumed ciphertext; re-decrypting
             // it would fail and regress the message to the "encrypted" placeholder.
             // See reDecryptUpdatedMessageSync.
-            database.write { session in
+            try database.writeAndWait { session in
                 try session.saveMessage(payload: data.message, for: cid, syncOwnReactions: false, cache: nil)
-            } completion: { [weak self] error in
-                if let error {
-                    log.error("[E2eSync] Failed to save updated message \(messageId): \(error)", subsystems: .mls)
-                    return
-                }
-                // Non-destructive re-decrypt — overwrites the cache only if the (new) ciphertext
-                // actually decrypts. Called directly since we are on decryptQueue.
-                self?.reDecryptUpdatedMessageSync(
-                    messageId: messageId,
-                    encryptedData: encryptedData,
-                    cid: cid
-                )
             }
+            reDecryptUpdatedMessageSync(
+                messageId: messageId,
+                encryptedData: encryptedData,
+                cid: cid
+            )
         } else {
             // No encrypted data — just save the message payload directly
-            database.write { session in
+            try database.writeAndWait { session in
                 try session.saveMessage(payload: data.message, for: cid, syncOwnReactions: false, cache: nil)
-            } completion: { error in
-                if let error {
-                    log.error("[E2eSync] Failed to save updated message \(messageId): \(error)", subsystems: .mls)
-                }
             }
         }
     }
 
     /// Handles a `message_pin` sync event by patching the pin/unpin state on the message.
     /// Called on `decryptQueue`.
-    private func handleMessagePinSyncEvent(_ data: MessagePinSyncData) {
+    private func handleMessagePinSyncEvent(_ data: MessagePinSyncData) throws {
         log.debug("[E2eSync] Handling message_pin sync event for message \(data.message.id)", subsystems: .mls)
-        database.write { session in
+        try database.writeAndWait { session in
             // Save the message which includes pin fields (pinnedAt, pinnedBy, pinExpires)
             try session.saveMessage(payload: data.message, for: data.cid, syncOwnReactions: false, cache: nil)
-        } completion: { error in
-            if let error {
-                log.error("[E2eSync] Failed to handle message_pin sync event: \(error)", subsystems: .mls)
-            }
         }
     }
 
@@ -1078,10 +1445,9 @@ class E2eRepository: EventsControllerDelegate {
     /// - Parameters:
     ///   - data: The member removal data (member + selfRemove flag).
     ///   - cid: The channel ID from the sync envelope.
-    private func handleMemberRemovedSyncEvent(_ data: MemberRemovedSyncData, cid: ChannelId) {
+    private func handleMemberRemovedSyncEvent(_ data: MemberRemovedSyncData, cid: ChannelId) throws {
         guard let member = data.memberContainer.member else {
-            log.error("[E2eSync] member_removed sync event missing member payload", subsystems: .mls)
-            return
+            throw E2eeSyncApplyError.missingMember
         }
 
         let userId = member.userId
@@ -1089,15 +1455,13 @@ class E2eRepository: EventsControllerDelegate {
 
         if userId == mlsClient.userId {
             // Current user was removed → delete local MLS group and stop E2EE for this channel.
-            do {
+            if mlsClient.isGroupLoaded(cid: cidString) {
                 try deleteGroup(cid: cidString)
-                log.debug("[E2eSync] Deleted local MLS group for \(cidString) after current user removed via sync", subsystems: .mls)
-            } catch {
-                log.error("[E2eSync] Failed to delete MLS group after removal via sync: \(error)", subsystems: .mls)
             }
+            log.debug("[E2eSync] Deleted local MLS group for \(cidString) after current user removed via sync", subsystems: .mls)
         } else if data.selfRemove {
             // Another member self-removed → queue ghost cleanup.
-            database.write { session in
+            try database.writeAndWait { session in
                 session.savePendingRemoveMember(userId: userId, channelCid: cidString)
             }
             log.debug("[E2eSync] Saved pending eviction for self-left member \(userId) in channel \(cidString)", subsystems: .mls)
@@ -1130,7 +1494,9 @@ class E2eRepository: EventsControllerDelegate {
     ///   - data: The application event data with `type == .system`.
     ///   - cid: The channel this message belongs to.
     private func handleSystemMessage(_ data: E2eSyncApplicationData, cid: ChannelId) {
-        // TODO: Implement system message handling (e.g. persist to DB, update UI).
+        // Explicit supported no-op: Bellboy system events carry no MLS state transition and the
+        // existing iOS message store has no system-message projection. Keeping this branch typed
+        // allows the durable inbox to advance without treating the event as an unknown success.
         log.debug("[E2E] Received system message \(data.id) in \(cid): \(data.text ?? "")", subsystems: .mls)
     }
     
@@ -1142,46 +1508,72 @@ class E2eRepository: EventsControllerDelegate {
         cid: ChannelId,
         completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
     ) {
+        do {
+            completion?(.success(try decryptMessagePayloadSyncThrowing(
+                messageId: messageId,
+                encryptedData: encryptedData,
+                cid: cid
+            )))
+        } catch {
+            log.error("Failed to decrypt message \(messageId): \(error)")
+            completion?(.failure(error))
+        }
+    }
+
+    /// Same crash-safe plaintext-first flow as `decryptMessagePayloadSync`, but exposes a
+    /// synchronous success boundary to the durable sync inbox.
+    private func decryptMessagePayloadSyncThrowing(
+        messageId: MessageId,
+        encryptedData: Data,
+        cid: ChannelId
+    ) throws -> E2ePayload {
         // Re-check the DB cache — a prior operation may have populated it.
         // Read on the background read-only context so the decrypt hot path never
         // hops to (and blocks on) the main-queue `viewContext`, and never on
         // `backgroundReadOnlyContext` (which a synchronous send may be blocking).
         var cachedPayload: E2ePayload?
+        var cachedCiphertextHash: Data?
         let readContext = e2eReadContext
         readContext.performAndWait {
             if let dto = MessageDecryptDTO.load(messageId: messageId, context: readContext) {
                 cachedPayload = try? dto.asPayload()
+                cachedCiphertextHash = dto.ciphertextHash
             }
         }
         
         if let cached = cachedPayload {
-            completion?(.success(cached))
-            return
+            // A crash can leave plaintext committed while the provider still contains the old
+            // ratchet state. Replay once to finish that write; a consumed-secret error proves the
+            // provider save had already completed before the crash.
+            do {
+                let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
+                let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
+                try persistProcessedApplicationMessage(
+                    processed,
+                    messageId: messageId,
+                    encryptedData: encryptedData,
+                    group: group
+                )
+                return processed.payload
+            } catch where isMessageAlreadyConsumed(error) {
+                let exactCiphertextHash = Data(SHA256.hash(data: encryptedData))
+                guard cachedCiphertextHash == exactCiphertextHash else { throw error }
+                return cached
+            }
         }
         
         // No cache — run MLS decrypt. A topic message is encrypted with its parent
         // channel's MLS group, so resolve the topic cid to the group-owning cid first.
-        do {
-            let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
-            log.debug("[MLS] Current group epoch: \(group.epoch())", subsystems: .mls)
-            let payload = try mlsClient.decrypt(data: encryptedData, in: group)
-            
-            database.write { session in
-                try session.saveMessageDecrypt(payload: payload, messageId: messageId)
-                // Also update MessageDTO.text directly so the channel list preview
-                // (ChannelDTO.previewMessage → MessageDTO.text) reflects the decrypted content.
-                session.message(id: messageId)?.text = payload.text
-            } completion: { error in
-                if let error {
-                    log.error("Failed to save decrypted message cache for \(messageId): \(error)")
-                }
-            }
-            
-            completion?(.success(payload))
-        } catch {
-            log.error("Failed to decrypt message \(messageId): \(error)")
-            completion?(.failure(error))
-        }
+        let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
+        log.debug("[MLS] Current group epoch: \(group.epoch())", subsystems: .mls)
+        let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
+        try persistProcessedApplicationMessage(
+            processed,
+            messageId: messageId,
+            encryptedData: encryptedData,
+            group: group
+        )
+        return processed.payload
     }
 
     /// Re-attempts decryption for messages in `cid` that still hold ciphertext but have
@@ -1211,72 +1603,159 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
-    private func applyE2eSyncProtocolEvent(_ data: E2eSyncProtocolData, cidString: String) {
-        do {
-            switch data.type {
+    private func applyE2eSyncProtocolEvent(
+        _ data: E2eSyncProtocolData,
+        accountId: String,
+        eventId: String,
+        envelope: E2eSyncEventEnvelope,
+        cidString: String
+    ) throws -> E2eeSyncApplyDisposition {
+        switch data.type {
             case .commit, .externalCommit:
-                let group = try self.mlsClient.loadGroup(with: cidString)
-                guard group.epoch() == data.epoch - 1 else {
-                    log.debug("[MLS] Skipping commit: local epoch \(group.epoch()) != expected \(data.epoch - 1)", subsystems: .mls)
-                    return
+                guard let bytes = data.commit else {
+                    throw E2eeSyncApplyError.missingProtocolPayload(type: data.type)
                 }
-                
-                if let bytes = data.commit {
-                    log.debug("[MLS] Processing commit message", subsystems: .mls)
-                    try mlsClient.processMessage(data: Data(bytes), in: cidString)
-                    // Epoch advanced — re-attempt messages buffered before this commit.
-                    if let cid = try? ChannelId(cid: cidString) {
-                        reDecryptPendingMessages(in: cid)
+                let commitData = Data(bytes)
+                let ciphertextHash = Data(SHA256.hash(data: commitData))
+                guard data.epoch > 0 else {
+                    let localEpoch = try self.mlsClient.loadGroup(with: cidString).epoch()
+                    throw E2eeSyncApplyError.epochMismatch(local: localEpoch, event: data.epoch)
+                }
+                let targetEpoch = UInt64(data.epoch)
+                let existingProof = try durableInboxStore.commitPersistenceProof(
+                    accountId: accountId,
+                    scopeCid: cidString,
+                    eventId: eventId
+                )
+                if let existingProof {
+                    guard existingProof.ciphertextHash == ciphertextHash,
+                          existingProof.targetEpoch == targetEpoch else {
+                        throw E2eeSyncApplyError.invalidCommit(
+                            reason: "ciphertext hash or target epoch does not match durable proof"
+                        )
                     }
                 }
+
+                let group = try self.mlsClient.loadGroup(with: cidString)
+                let localEpoch = group.epoch()
+                switch E2eeCommitEpochAction.resolve(
+                    localEpoch: localEpoch,
+                    targetEpoch: targetEpoch
+                ) {
+                case .supersedeHistorical:
+                    try durableInboxStore.markCommitSuperseded(
+                        accountId: accountId,
+                        scopeCid: cidString,
+                        envelope: envelope,
+                        ciphertextHash: ciphertextHash,
+                        targetEpoch: targetEpoch
+                    )
+                    durableApplyLock.lock()
+                    blockedDurableScopes.remove(cidString)
+                    durableApplyLock.unlock()
+                    log.warning(
+                        "[E2eSync] Superseded historical commit event \(eventId) target_epoch=\(targetEpoch) local_epoch=\(localEpoch)",
+                        subsystems: .mls
+                    )
+                    return .cursorAdvancedAtomically
+                case .finalizeActive, .processNext:
+                    break
+                case .blockGap:
+                    throw E2eeSyncApplyError.epochMismatch(local: localEpoch, event: data.epoch)
+                }
+
+                try durableInboxStore.markCommitProofPersisted(
+                    accountId: accountId,
+                    scopeCid: cidString,
+                    eventId: eventId,
+                    ciphertextHash: ciphertextHash,
+                    targetEpoch: targetEpoch
+                )
+                if existingProof?.mlsStatePersisted == true,
+                   localEpoch != targetEpoch {
+                    throw E2eeSyncApplyError.invalidCommit(
+                        reason: "provider epoch disagrees with completed durable proof"
+                    )
+                }
+                if localEpoch == targetEpoch {
+                    let isOwnCommit = data.deviceId.flatMap { eventDeviceId in
+                        mlsClient.currentDeviceId.map { eventDeviceId == $0 }
+                    } ?? false
+                    guard existingProof != nil || isOwnCommit else {
+                        throw E2eeSyncApplyError.invalidCommit(
+                            reason: "target epoch is already active without a prior proof"
+                        )
+                    }
+                    try durableInboxStore.markCommitStatePersisted(
+                        accountId: accountId,
+                        scopeCid: cidString,
+                        eventId: eventId,
+                        ciphertextHash: ciphertextHash,
+                        targetEpoch: targetEpoch
+                    )
+                    log.debug("[MLS] Commit replay proven at epoch \(localEpoch)", subsystems: .mls)
+                    return .requiresCursorAdvance
+                }
+
+                log.debug("[MLS] Processing commit message", subsystems: .mls)
+                let processed = try mlsClient.processProtocolMessage(data: commitData, in: group)
+                guard processed.messageType == .commit else {
+                    throw E2eeSyncApplyError.invalidCommit(
+                        reason: "OpenMLS returned \(processed.messageType)"
+                    )
+                }
+                guard group.epoch() == targetEpoch else {
+                    throw E2eeSyncApplyError.epochMismatch(local: group.epoch(), event: data.epoch)
+                }
+                try mlsClient.saveState(of: group)
+                try durableInboxStore.markCommitStatePersisted(
+                    accountId: accountId,
+                    scopeCid: cidString,
+                    eventId: eventId,
+                    ciphertextHash: ciphertextHash,
+                    targetEpoch: targetEpoch
+                )
+                if let cid = try? ChannelId(cid: cidString) {
+                    reDecryptPendingMessages(in: cid)
+                }
+                return .requiresCursorAdvance
             case .welcome:
                 
                 guard !self.shouldSkipWelcome(cid: cidString) else {
                     log.debug("[MLS] Skipping welcome: group already exists for \(cidString)", subsystems: .mls)
-                    return
+                    return .requiresCursorAdvance
                 }
                 if let targetUserIds = data.targetUserIds,
                    let currentUserId = mlsClient.userId,
                    !targetUserIds.contains(currentUserId) {
                     log.debug("[E2eSync] Skipping welcome not targeted at current user", subsystems: .mls)
-                    return
+                    return .requiresCursorAdvance
                 }
                 log.debug("[MLS] Handle welcome event of cid: \(cidString)", subsystems: .mls)
-                if let welcome = data.welcome, let tree = data.ratchetTree,
-                   let ratchetTree = try? RatchetTree.fromBytes(data: Data(tree)) {
-                    do {
-                        try mlsClient.joinWithWelcome(cid: cidString, welcome: Data(welcome), ratchetTree: ratchetTree)
-                        saveMlsGroupJoinedAt(cidString: cidString)
-                        // Group now exists locally — decrypt any messages buffered before the join.
-                        if let cid = try? ChannelId(cid: cidString) {
-                            reDecryptPendingMessages(in: cid)
-                        }
-                    } catch {
-                        // The Welcome is encrypted for a KeyPackage this device no longer
-                        // has — e.g. it was consumed by the user's earlier (pre-leave) join,
-                        // or the server served a stale KeyPackage on re-invite — surfacing as
-                        // NoMatchingKeyPackage. Recover by joining from the group's GroupInfo
-                        // via an external commit, which does not depend on a Welcome /
-                        // KeyPackage match. This is the prescribed fallback for a device that
-                        // was effectively "not included" in a usable Welcome.
-                        log.error("[E2eSync] joinWithWelcome failed for \(cidString) (\(error)); falling back to external join", subsystems: .mls)
-                        if !mlsClient.isGroupLoaded(cid: cidString), let cid = try? ChannelId(cid: cidString) {
-                            externalJoinChannel(cid: cid) { joinError in
-                                if let joinError {
-                                    log.error("[E2eSync] External join fallback failed for \(cidString): \(joinError)", subsystems: .mls)
-                                }
+                guard let welcome = data.welcome, let tree = data.ratchetTree else {
+                    throw E2eeSyncApplyError.missingProtocolPayload(type: data.type)
+                }
+                let ratchetTree = try RatchetTree.fromBytes(data: Data(tree))
+                do {
+                    try mlsClient.joinWithWelcome(cid: cidString, welcome: Data(welcome), ratchetTree: ratchetTree)
+                    try saveMlsGroupJoinedAtAndWait(cidString: cidString)
+                    if let cid = try? ChannelId(cid: cidString) {
+                        reDecryptPendingMessages(in: cid)
+                    }
+                } catch {
+                    log.error("[E2eSync] joinWithWelcome failed for \(cidString) (\(error)); falling back to external join", subsystems: .mls)
+                    if !mlsClient.isGroupLoaded(cid: cidString), let cid = try? ChannelId(cid: cidString) {
+                        externalJoinChannel(cid: cid) { joinError in
+                            if let joinError {
+                                log.error("[E2eSync] External join fallback failed for \(cidString): \(joinError)", subsystems: .mls)
                             }
                         }
                     }
+                    throw error
                 }
+                return .requiresCursorAdvance
             case .proposal:
-                break
-                //                if let proposal = data.proposal {
-                //                    try mlsClient.processMessage(data: Data(proposal), in: cidString)
-                //                }
-            }
-        } catch {
-            log.error("[E2eSync] Failed to apply protocol event (type=\(data.type)): \(error)", subsystems: .mls)
+                throw E2eeSyncApplyError.unsupportedEvent(type: "protocol.proposal")
         }
     }
     
@@ -1295,6 +1774,14 @@ class E2eRepository: EventsControllerDelegate {
             if let error {
                 log.error("[E2eSync] Failed to save mlsGroupJoinedAt for \(cidString): \(error)", subsystems: .mls)
             }
+        }
+    }
+
+    private func saveMlsGroupJoinedAtAndWait(cidString: String) throws {
+        try database.writeAndWait { session in
+            guard let cid = try? ChannelId(cid: cidString),
+                  let dto = session.channel(cid: cid) else { return }
+            dto.mlsGroupJoinedAt = Date().bridgeDate
         }
     }
     
@@ -1635,38 +2122,100 @@ class E2eRepository: EventsControllerDelegate {
         return resolved
     }
 
-    func encryptedMessage(_ message: E2ePayload, in cid: ChannelId) throws -> ([UInt8], Int) {
+    func encryptedMessage(
+        _ message: E2ePayload,
+        in cid: ChannelId,
+        trace: E2eeSendTrace.Context? = nil
+    ) throws -> ([UInt8], Int) {
         // Resolve the group cid and encode the payload up front (no MLS state touched),
         // then perform the actual MLS encryption on the shared serial queue so it never
         // runs concurrently with a decrypt/commit on the same group (correctness) and
         // never contends with them on the MLS SQLite store (latency). The operation does
         // no Core Data work, so blocking the caller via `waitUntilFinished` is deadlock-safe.
         let groupCid = mlsGroupCid(for: cid).rawValue
-        let data = try JSONEncoder().encode(message)
+        let scopedTrace = trace?.scoped(to: groupCid)
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(message)
+        } catch {
+            scopedTrace?.failure(stage: "payload_encode_failed", error: error)
+            throw error
+        }
+        scopedTrace?.info(stage: "payload_encoded", payloadBytes: data.count)
+
         var result: Result<([UInt8], Int), Error>?
+        let enqueuedAt = E2eeSendTrace.nowNanoseconds()
+        scopedTrace?.info(stage: "mls_queue_enqueued", payloadBytes: data.count)
         let op = BlockOperation { [weak self] in
             guard let self else {
-                result = .failure(ClientError.MlsNoProviderError())
+                let error = ClientError.MlsNoProviderError()
+                scopedTrace?.failure(stage: "mls_queue_owner_missing", error: error)
+                result = .failure(error)
                 return
             }
+            scopedTrace?.info(
+                stage: "mls_queue_started",
+                queueWaitMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: enqueuedAt)
+            )
+            self.durableApplyLock.lock()
+            let isBlocked = self.blockedDurableScopes.contains(groupCid)
+            self.durableApplyLock.unlock()
+            guard !isBlocked else {
+                let error = ClientError.Unexpected("MLS group is blocked pending durable sync repair.")
+                scopedTrace?.failure(stage: "mls_group_blocked_by_repair", error: error)
+                result = .failure(error)
+                return
+            }
+            let loadStartedAt = E2eeSendTrace.nowNanoseconds()
+            scopedTrace?.info(stage: "mls_group_load_started")
+            let group: Group
             do {
-                let group = try self.mlsClient.loadGroup(with: groupCid)
-                let encryptedData = try self.mlsClient.encrypt(inputData: data, in: group)
-                result = .success((encryptedData.uint8Array, Int(group.epoch())))
+                group = try self.mlsClient.loadGroup(with: groupCid)
             } catch {
+                scopedTrace?.failure(
+                    stage: "mls_group_load_failed",
+                    error: error,
+                    operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: loadStartedAt)
+                )
+                result = .failure(error)
+                return
+            }
+            let epoch = UInt64(group.epoch())
+            scopedTrace?.info(
+                stage: "mls_group_load_succeeded",
+                epoch: epoch,
+                operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: loadStartedAt)
+            )
+            do {
+                let encryptedData = try self.mlsClient.encrypt(
+                    inputData: data,
+                    in: group,
+                    trace: scopedTrace
+                )
+                scopedTrace?.info(
+                    stage: "encrypt_succeeded",
+                    epoch: epoch,
+                    ciphertextBytes: encryptedData.count
+                )
+                result = .success((encryptedData.uint8Array, Int(epoch)))
+            } catch {
+                scopedTrace?.failure(stage: "encrypt_failed", error: error)
                 result = .failure(error)
             }
         }
         // Sends run ahead of background sync so they aren't blocked by a sync backlog.
         op.queuePriority = .high
-        decryptQueue.addOperations([op], waitUntilFinished: true)
+        enqueueGroupOperation(op, cidString: groupCid)
+        op.waitUntilFinished()
         switch result {
         case .success(let value):
             return value
         case .failure(let error):
             throw error
         case .none:
-            throw ClientError.Unexpected("Encryption did not complete.")
+            let error = ClientError.Unexpected("Encryption did not complete.")
+            scopedTrace?.failure(stage: "mls_queue_completed_without_result", error: error)
+            throw error
         }
     }
     
@@ -1706,6 +2255,15 @@ class E2eRepository: EventsControllerDelegate {
     public func reset() {
         loginTime = nil
         finishSync()
+        decryptQueue.cancelAllOperations()
+        decryptQueue.waitUntilAllOperationsAreFinished()
+        lastOpLock.lock()
+        lastOpByCid.removeAll()
+        lastOpLock.unlock()
+        durableApplyLock.lock()
+        blockedDurableScopes.removeAll()
+        enqueuedDurableEvents.removeAll()
+        durableApplyLock.unlock()
         do {
             try mlsClient.reset()
         } catch (let error) {
@@ -1763,7 +2321,7 @@ class E2eRepository: EventsControllerDelegate {
             )
         }
         op.queuePriority = .high
-        decryptQueue.addOperation(op)
+        enqueueGroupOperation(op, cidString: mlsGroupCid(for: cid).rawValue)
     }
 
     /// Decrypts an encrypted `ChatMessage`, using the cached decrypted payload when available.

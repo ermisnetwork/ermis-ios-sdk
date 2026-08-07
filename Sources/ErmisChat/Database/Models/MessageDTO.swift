@@ -25,7 +25,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var cid: String?
     @NSManaged var text: String
     @NSManaged var encryptedData: Data?
-    @NSManaged var mlsEpoch: Int16
+    @NSManaged var mlsEpoch: Int64
     @NSManaged var type: String
     @NSManaged var command: String?
     @NSManaged var createdAt: DBDate
@@ -447,6 +447,20 @@ class MessageDTO: NSManagedObject {
         return load(by: request, context: context).first
     }
 
+    /// Checks the same constraints used by `preview(for:)` without relying on an in-transaction
+    /// fetch order. Channel payloads use this when selecting their authoritative newest message,
+    /// including two messages whose server timestamps are identical.
+    static func isEligibleChannelPreview(
+        _ message: MessageDTO,
+        cid: String,
+        context: NSManagedObjectContext
+    ) -> Bool {
+        previewMessagePredicate(
+            cid: cid,
+            includeShadowedMessages: context.shouldShowShadowedMessages ?? false
+        ).evaluate(with: message)
+    }
+
     static func load(id: String, context: NSManagedObjectContext) -> MessageDTO? {
         load(by: id, context: context).first
     }
@@ -670,9 +684,13 @@ extension NSManagedObjectContext: MessageDatabaseSession {
         if let encryptedData = payload.encryptedData {
             dto.encryptedData = Data(encryptedData)
         }
-        dto.mlsEpoch = Int16(payload.mlsEpoch ?? 0)
+        dto.mlsEpoch = Int64(payload.mlsEpoch ?? 0)
         dto.createdAt = payload.createdAt.bridgeDate
         dto.updatedAt = payload.updatedAt.bridgeDate
+        // `preview(for:)` can run later in this same Core Data transaction. Waiting for
+        // `willSave()` leaves this key nil during that fetch, which makes an older persisted
+        // message win over the actual latest message from the channel payload.
+        dto.prepareDefaultSortKeyIfNeeded()
         if payload.deletedAt != nil {
             dto.deletedAt = payload.deletedAt?.bridgeDate
         }
@@ -1008,10 +1026,16 @@ extension NSManagedObjectContext: MessageDatabaseSession {
     func rescueMessagesStuckInSending() {
         // Restart messages in sending state.
         let messages = MessageDTO.loadSendingMessages(context: self)
-        // MARK: - Todo: - Prevent case duplicate message.
         messages.forEach {
-            //$0.localMessageState = .pendingSend
-            delete(message: $0)
+            if $0.encryptedData != nil {
+                // E2EE sends persist their exact MLS ciphertext/epoch before POST. Retrying that
+                // same intent is idempotent by message ID and does not advance the sender ratchet.
+                $0.localMessageState = .pendingSend
+            } else {
+                // The standard path still has no durable exact network intent, so retain its
+                // existing conservative behavior until it is migrated separately.
+                delete(message: $0)
+            }
         }
 
         // Restart attachments that were in progress before the app was killed.
@@ -1049,6 +1073,8 @@ extension MessageDTO {
             id: id,
             user: user.asRequestBody(),
             text: text,
+            encryptedData: encryptedData?.uint8Array,
+            mslEpoch: encryptedData == nil ? nil : Int(mlsEpoch),
             oldTexts: Array(oldTexts?.map { MessageEditHistoryPayload(text: $0.text, createdAt: $0.createdAt) } ?? []),
             command: command,
             args: args,

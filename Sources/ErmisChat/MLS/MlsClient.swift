@@ -6,6 +6,12 @@ import Foundation
 import ErmisShared
 import open_mls_ios
 
+struct MlsProcessedApplicationMessage {
+    let payload: E2ePayload
+    let aad: Data
+    let epoch: UInt64
+}
+
 public class MlsClient {
     public static let deviceIdKey = "ermis_mls_device_id"
     public static let cursorKey = "ermis_e2e_sync_cursor"
@@ -183,14 +189,143 @@ public class MlsClient {
         return keyPackages.map { $0.toBytes() }
     }
 
-    func encrypt(inputData: Data, in group: Group) throws -> Data {
+    func encrypt(
+        inputData: Data,
+        in group: Group,
+        trace: E2eeSendTrace.Context? = nil
+    ) throws -> Data {
         guard let provider else {
-            throw ClientError.MlsNoProviderError()
+            let error = ClientError.MlsNoProviderError()
+            trace?.failure(stage: "mls_precondition_failed", error: error)
+            throw error
         }
         guard let identity else {
-            throw ClientError.MlsNoIdentityError()
+            let error = ClientError.MlsNoIdentityError()
+            trace?.failure(stage: "mls_precondition_failed", error: error)
+            throw error
         }
-        let encryptedData = try group.createMessage(provider: provider, sender: identity, plaintext: inputData)
+
+        let epoch = UInt64(group.epoch())
+        let createStartedAt = E2eeSendTrace.nowNanoseconds()
+        trace?.info(
+            stage: "mls_create_started",
+            epoch: epoch,
+            payloadBytes: inputData.count,
+            authenticatedAAD: false
+        )
+        let encryptedData: Data
+        do {
+            encryptedData = try group.createMessage(
+                provider: provider,
+                sender: identity,
+                plaintext: inputData
+            )
+        } catch {
+            trace?.failure(
+                stage: "mls_create_failed",
+                error: error,
+                epoch: epoch,
+                operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: createStartedAt)
+            )
+            throw error
+        }
+        trace?.info(
+            stage: "mls_create_succeeded",
+            epoch: epoch,
+            ciphertextBytes: encryptedData.count,
+            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: createStartedAt),
+            authenticatedAAD: false
+        )
+
+        let saveStartedAt = E2eeSendTrace.nowNanoseconds()
+        trace?.info(stage: "mls_state_save_started", epoch: epoch)
+        do {
+            try group.saveState(provider: provider)
+        } catch {
+            trace?.failure(
+                stage: "mls_state_save_failed",
+                error: error,
+                epoch: epoch,
+                operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: saveStartedAt)
+            )
+            throw error
+        }
+        trace?.info(
+            stage: "mls_state_save_succeeded",
+            epoch: epoch,
+            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: saveStartedAt)
+        )
+        return encryptedData
+    }
+
+    func encrypt(
+        inputData: Data,
+        aad: Data,
+        in group: Group,
+        trace: E2eeSendTrace.Context? = nil
+    ) throws -> Data {
+        guard let provider else {
+            let error = ClientError.MlsNoProviderError()
+            trace?.failure(stage: "mls_precondition_failed", error: error)
+            throw error
+        }
+        guard let identity else {
+            let error = ClientError.MlsNoIdentityError()
+            trace?.failure(stage: "mls_precondition_failed", error: error)
+            throw error
+        }
+
+        let epoch = UInt64(group.epoch())
+        let createStartedAt = E2eeSendTrace.nowNanoseconds()
+        trace?.info(
+            stage: "mls_create_started",
+            epoch: epoch,
+            payloadBytes: inputData.count,
+            authenticatedAAD: true
+        )
+        let encryptedData: Data
+        do {
+            encryptedData = try group.createMessageWithAad(
+                provider: provider,
+                sender: identity,
+                plaintext: inputData,
+                aad: aad
+            )
+        } catch {
+            trace?.failure(
+                stage: "mls_create_failed",
+                error: error,
+                epoch: epoch,
+                operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: createStartedAt)
+            )
+            throw error
+        }
+        trace?.info(
+            stage: "mls_create_succeeded",
+            epoch: epoch,
+            ciphertextBytes: encryptedData.count,
+            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: createStartedAt),
+            authenticatedAAD: true
+        )
+
+        let saveStartedAt = E2eeSendTrace.nowNanoseconds()
+        trace?.info(stage: "mls_state_save_started", epoch: epoch)
+        do {
+            try group.saveState(provider: provider)
+        } catch {
+            trace?.failure(
+                stage: "mls_state_save_failed",
+                error: error,
+                epoch: epoch,
+                operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: saveStartedAt)
+            )
+            throw error
+        }
+        trace?.info(
+            stage: "mls_state_save_succeeded",
+            epoch: epoch,
+            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: saveStartedAt)
+        )
         return encryptedData
     }
 
@@ -226,11 +361,8 @@ public class MlsClient {
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
-        guard let identity else {
-            throw ClientError.MlsNoIdentityError()
-        }
         let group = try loadGroup(with: cid.rawValue)
-        try group.clearPendingCommit(provider: provider)
+        try group.clearPendingProposals(provider: provider)
     }
 
     func exportGroupInfo(of group: Group, withRatchetTree: Bool = true) throws -> Data {
@@ -250,32 +382,61 @@ public class MlsClient {
         guard let identity else {
             throw ClientError.MlsNoIdentityError()
         }
-        return try group.createMessage(provider: provider, sender: identity, plaintext: data)
+        let encryptedData = try group.createMessage(provider: provider, sender: identity, plaintext: data)
+        try group.saveState(provider: provider)
+        return encryptedData
     }
 
-    func decrypt(data: Data, in group: Group) throws -> E2ePayload {
+    func processApplicationMessage(data: Data, in group: Group) throws -> MlsProcessedApplicationMessage {
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
-        guard let identity else {
-            throw ClientError.MlsNoIdentityError()
-        }
         let processedMessage = try group.processMessage(provider: provider, msg: data)
-        try group.saveState(provider: provider)
+        guard processedMessage.messageType == .applicationMessage else {
+            throw ClientError.Unexpected("Expected an MLS application message.")
+        }
         guard let content = processedMessage.content else {
             throw ClientError.Unexpected("Decrypt messsage failed: content not found.")
         }
         let e2ePayload = try JSONDecoder().decode(E2ePayload.self, from: content)
-        return e2ePayload
+        return MlsProcessedApplicationMessage(
+            payload: e2ePayload,
+            aad: processedMessage.aad,
+            epoch: processedMessage.epoch
+        )
     }
 
-    func processMessage(data: Data, in cid: String) throws {
+    func saveState(of group: Group) throws {
+        guard let provider else {
+            throw ClientError.MlsNoProviderError()
+        }
+        try group.saveState(provider: provider)
+    }
+
+    /// Processes an MLS protocol message without persisting the group's ratchet state.
+    /// Commit callers persist their durable proof before `saveState(of:)` so a crash replay can
+    /// distinguish an applied event from an unrelated epoch advance.
+    func processProtocolMessage(data: Data, in group: Group) throws -> ProcessedMessage {
+        guard let provider else {
+            throw ClientError.MlsNoProviderError()
+        }
+        let processedMessage = try group.processMessage(provider: provider, msg: data)
+        guard processedMessage.messageType != .applicationMessage else {
+            throw ClientError.Unexpected("Expected an MLS protocol message.")
+        }
+        return processedMessage
+    }
+
+    @discardableResult
+    func processMessage(data: Data, in cid: String) throws -> ProcessedMessage {
         log.debug("[MLS] processing message", subsystems: .mls)
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
         let group = try loadGroup(with: cid)
         let processedMessage = try group.processMessage(provider: provider, msg: data)
+        try group.saveState(provider: provider)
+        return processedMessage
     }
 
     func joinWithWelcome(cid: String, welcome: Data, ratchetTree: RatchetTree) throws {

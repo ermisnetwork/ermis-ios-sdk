@@ -407,6 +407,19 @@ class MessageUpdater: Worker {
     ///   - cid: The channel identifier of the channel which message will be forwarded to.
     ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
     func forwardMessage(_ messageRequestBody: MessageRequestBody, to cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
+        var destinationIsEncrypted: Bool?
+        database.viewContext.performAndWait {
+            destinationIsEncrypted = ChannelDTO.load(cid: cid, context: database.viewContext)?.isE2eeEnabled
+        }
+        guard destinationIsEncrypted == false else {
+            // The legacy forward endpoint would expose the forwarded payload and does not bind
+            // forward metadata into MLS AAD. M4 replaces this with the destination-aware E2EE
+            // forward pipeline; until then, fail closed for encrypted or unknown destinations
+            // instead of silently downgrading privacy.
+            completion?(E2eeMessageAADError.authenticatedSendLaneUnavailable)
+            return
+        }
+
         let endpoint: Endpoint<MessagePayload.Boxed> = .sendMessage(
             cid: cid,
             messagePayload: messageRequestBody
