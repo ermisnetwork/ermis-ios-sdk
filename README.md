@@ -21,8 +21,21 @@ The ErmisChat SDK for iOS allows you to integrate real-time chat into your clien
 
 The minimum requirements for ErmisChat SDK for iOS are:
 
-- iOS 14 or higher
-- Swift 5.0 or higher
+- iOS 15 or higher
+- Swift 5.10 or higher
+
+### OpenMLS compatibility
+
+The SDK pins `open-mls-ios` to the exact prerelease tag `0.1.0-m0.1`. This version contains the
+AAD and plaintext-first persistence APIs required by the E2EE implementation. PIN/Epoch Archive
+APIs are intentionally not exposed in this release.
+
+Do not commit a local path dependency for release builds. When developing both repositories
+locally, use SwiftPM editable mode:
+
+```bash
+swift package edit open-mls-ios --path ../open-mls-ios
+```
 
 ## Getting started
 

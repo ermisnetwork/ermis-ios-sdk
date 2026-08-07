@@ -1,0 +1,65 @@
+name: OpenMLS compatibility
+
+on:
+  pull_request:
+  push:
+    branches:
+      - e2ee/attachment
+      - main
+
+jobs:
+  resolve-and-build:
+    runs-on: macos-15
+    steps:
+      - name: Check out iOS SDK
+        uses: actions/checkout@v4
+        with:
+          path: ermis-ios-sdk
+
+      - name: Check out shared iOS dependency
+        uses: actions/checkout@v4
+        with:
+          repository: ermisnetwork/ermis-shared-ios
+          ref: develop
+          path: ermis-shared-ios
+          token: ${{ secrets.ERMIS_IOS_DEPENDENCY_TOKEN || github.token }}
+
+      - name: Configure private dependency access
+        working-directory: ermis-ios-sdk
+        env:
+          ERMIS_DEPENDENCY_TOKEN: ${{ secrets.ERMIS_IOS_DEPENDENCY_TOKEN }}
+        run: |
+          if [[ -n "$ERMIS_DEPENDENCY_TOKEN" ]]; then
+            git config --global \
+              url."https://x-access-token:${ERMIS_DEPENDENCY_TOKEN}@github.com/".insteadOf \
+              "https://github.com/"
+          fi
+
+      - name: Resolve exact OpenMLS package
+        working-directory: ermis-ios-sdk
+        run: swift package resolve
+
+      - name: Verify OpenMLS version, checksums, and API
+        working-directory: ermis-ios-sdk
+        run: ./scripts/verify-openmls-compatibility.sh
+
+      - name: Resolve Apple SDK paths
+        run: |
+          echo "ERMIS_SIMULATOR_SDK_PATH=$(xcrun --sdk iphonesimulator --show-sdk-path)" >> "$GITHUB_ENV"
+          echo "ERMIS_DEVICE_SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)" >> "$GITHUB_ENV"
+
+      - name: Build SDK for Apple Silicon simulator
+        working-directory: ermis-ios-sdk
+        run: |
+          swift build \
+            --triple arm64-apple-ios15.0-simulator \
+            --sdk "$ERMIS_SIMULATOR_SDK_PATH" \
+            --build-tests
+
+      - name: Build SDK for physical iOS
+        working-directory: ermis-ios-sdk
+        run: |
+          swift build \
+            --scratch-path "$RUNNER_TEMP/ermis-ios-sdk-device" \
+            --triple arm64-apple-ios15.0 \
+            --sdk "$ERMIS_DEVICE_SDK_PATH"

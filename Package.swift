@@ -29,7 +29,10 @@ let package = Package(
         .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2"),
 //        .package(url: "https://github.com/ermisnetwork/ermis-shared-ios", exact: "1.0.0"),
         .package(path: "../ermis-shared-ios"),
-        .package(path: "../open-mls-ios")
+        .package(
+            url: "https://github.com/ermisnetwork/open-mls-ios.git",
+            exact: "0.1.0-m0.1"
+        )
     ],
     targets: [
         .target(
