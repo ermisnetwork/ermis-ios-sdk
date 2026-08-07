@@ -28,6 +28,14 @@ class MessageRepository {
         with messageId: MessageId,
         completion: @escaping (Result<ChatMessage, MessageRepositoryError>) -> Void
     ) {
+        sendMessage(with: messageId, epochRecoveryCompleted: false, completion: completion)
+    }
+
+    private func sendMessage(
+        with messageId: MessageId,
+        epochRecoveryCompleted: Bool,
+        completion: @escaping (Result<ChatMessage, MessageRepositoryError>) -> Void
+    ) {
         // Check the message with the given id is still in the DB.
         database.backgroundReadOnlyContext.perform { [weak self] in
             guard let self else {
@@ -41,7 +49,9 @@ class MessageRepository {
             }
 
             // Check the message still have `pendingSend` state.
-            guard dto.localMessageState == .pendingSend else {
+            let localState = dto.localMessageState
+            let isEpochStaleRetry = localState == .pendingSendAfterE2eeEpochStale
+            guard localState == .pendingSend || isEpochStaleRetry else {
                 log.info("Skipping sending message with id \(dto.id) because it doesn't have `pendingSend` local state.")
                 completion(.failure(.messageNotPendingSend))
                 return
@@ -61,6 +71,38 @@ class MessageRepository {
             let e2eeTrace = isEncrypted
                 ? E2eeSendTrace.Context(messageId: messageId, cid: cid)
                 : nil
+
+            if isEpochStaleRetry && !epochRecoveryCompleted {
+                let minimumEpoch = dto.mlsEpoch
+                e2eeTrace?.info(
+                    stage: "epoch_stale_scope_sync_started",
+                    epoch: UInt64(max(0, minimumEpoch))
+                )
+                self.e2eRepository.recoverMessageEpoch(
+                    in: cid,
+                    minimumEpoch: minimumEpoch
+                ) { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success(let localEpoch):
+                        e2eeTrace?.info(
+                            stage: "epoch_stale_scope_sync_succeeded",
+                            epoch: localEpoch
+                        )
+                        self.sendMessage(
+                            with: messageId,
+                            epochRecoveryCompleted: true,
+                            completion: completion
+                        )
+                    case .failure(let error):
+                        e2eeTrace?.failure(stage: "epoch_stale_scope_sync_failed", error: error)
+                        self.markMessageAsFailedToSend(id: messageId, trace: e2eeTrace) {
+                            completion(.failure(.failedToEncryptedMessage(error)))
+                        }
+                    }
+                }
+                return
+            }
             e2eeTrace?.info(
                 stage: "send_preflight_succeeded",
                 reusedIntent: requestBody.hasDurableE2eeNetworkIntent
@@ -111,7 +153,7 @@ class MessageRepository {
                         )
                         try database.writeAndWait { session in
                             guard let messageDTO = session.message(id: messageId),
-                                  messageDTO.localMessageState == .pendingSend else {
+                                  messageDTO.localMessageState == localState else {
                                 throw MessageRepositoryError.messageNotPendingSend
                             }
                             messageDTO.encryptedData = Data(encryptedData)
@@ -150,8 +192,13 @@ class MessageRepository {
             let sendingStateStartedAt = E2eeSendTrace.nowNanoseconds()
             e2eeTrace?.info(stage: "local_state_sending_started")
             self.database.write({
-                let messageDTO = $0.message(id: messageId)
-                messageDTO?.localMessageState = .sending
+                guard let messageDTO = $0.message(id: messageId),
+                      messageDTO.localMessageState == localState else {
+                    throw MessageRepositoryError.messageNotPendingSend
+                }
+                messageDTO.localMessageState = isEpochStaleRetry
+                    ? .sendingAfterE2eeEpochStale
+                    : .sending
             }, completion: { error in
                 if let error = error {
                     if let e2eeTrace {
@@ -219,12 +266,43 @@ class MessageRepository {
                                 since: requestStartedAt
                             )
                         )
-                        self.handleSendingMessageError(
-                            error,
-                            messageId: messageId,
-                            trace: e2eeTrace,
-                            completion: completion
-                        )
+                        if isEncrypted,
+                           !isEpochStaleRetry,
+                           let rejection = E2eeMessageEpochStaleRejection.parse(error),
+                           let intentEpoch = requestBody.mlsEpoch,
+                           rejection.canRebind(intentEpoch: Int64(intentEpoch)) {
+                            e2eeTrace?.info(
+                                stage: "epoch_stale_rebind_accepted",
+                                epoch: UInt64(rejection.currentGroupEpoch),
+                                reusedIntent: false
+                            )
+                            self.prepareEpochStaleRebind(
+                                rejection,
+                                messageId: messageId,
+                                isEdit: false,
+                                trace: e2eeTrace
+                            ) { result in
+                                switch result {
+                                case .success:
+                                    self.sendMessage(
+                                        with: messageId,
+                                        epochRecoveryCompleted: false,
+                                        completion: completion
+                                    )
+                                case .failure(let persistenceError):
+                                    self.markMessageAsFailedToSend(id: messageId, trace: e2eeTrace) {
+                                        completion(.failure(.failedToSendMessage(persistenceError)))
+                                    }
+                                }
+                            }
+                        } else {
+                            self.handleSendingMessageError(
+                                error,
+                                messageId: messageId,
+                                trace: e2eeTrace,
+                                completion: completion
+                            )
+                        }
                     }
                 }
             })
@@ -241,7 +319,9 @@ class MessageRepository {
         trace?.info(stage: "response_persist_started")
         database.write({
             let messageDTO = try $0.saveMessage(payload: message, for: cid, syncOwnReactions: false, cache: nil)
-            if messageDTO.localMessageState == .sending || messageDTO.localMessageState == .sendingFailed {
+            if messageDTO.localMessageState == .sending ||
+                messageDTO.localMessageState == .sendingAfterE2eeEpochStale ||
+                messageDTO.localMessageState == .sendingFailed {
                 messageDTO.markMessageAsSent()
             }
 
@@ -303,7 +383,10 @@ class MessageRepository {
         trace?.info(stage: "local_state_failed_started")
         database.write({
             let dto = $0.message(id: id)
-            if dto?.localMessageState == .pendingSend || dto?.localMessageState == .sending {
+            if dto?.localMessageState == .pendingSend ||
+                dto?.localMessageState == .sending ||
+                dto?.localMessageState == .pendingSendAfterE2eeEpochStale ||
+                dto?.localMessageState == .sendingAfterE2eeEpochStale {
                 dto?.markMessageAsFailed()
             }
         }, completion: {
@@ -331,6 +414,32 @@ class MessageRepository {
                 )
             }
             completion()
+        })
+    }
+
+    func prepareEpochStaleRebind(
+        _ rejection: E2eeMessageEpochStaleRejection,
+        messageId: MessageId,
+        isEdit: Bool,
+        trace: E2eeSendTrace.Context? = nil,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        database.write({ session in
+            guard let dto = session.message(id: messageId),
+                  dto.prepareForE2eeEpochStaleRebind(rejection, isEdit: isEdit) else {
+                throw MessageRepositoryError.messageNotPendingSend
+            }
+        }, completion: { error in
+            if let error {
+                trace?.failure(stage: "epoch_stale_rebind_persist_failed", error: error)
+                completion(.failure(error))
+            } else {
+                trace?.info(
+                    stage: "epoch_stale_rebind_persist_succeeded",
+                    epoch: UInt64(rejection.currentGroupEpoch)
+                )
+                completion(.success(()))
+            }
         })
     }
 

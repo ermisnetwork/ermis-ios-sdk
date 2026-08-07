@@ -226,6 +226,10 @@
 
 // Encryption
 "message.encrypted-message" = "Encrypted message";
+/// Shown above an inline reply when the quoted message was authored by the current user.
+"message.quoted-message.replied-to-you" = "Replied to you";
+/// Shown above an inline reply. The placeholder contains the quoted-message author's name.
+"message.quoted-message.replied-to" = "Replied to %@";
 
 // System message
 
@@ -427,6 +431,12 @@
 /// Share
 "share.send-to" = "Send to";
 
+/// Encryption
+"encryption.e2e-message-encrytion" = "End-to-end message encryption";
+"encryption.enable-e2e-alert.title" = "Do you want to encrypt this conversation with %@?";
+"encryption.enable-group-e2e-alert.title" = "Do you want to encrypt the conversation in group %@?";
+"encryption.enable-e2e-alert.message" = "End-to-end encryption protects your data by encrypting it from the sender to the recipient, allowing only the intended recipient to decrypt it";
+
 /// Shown in the gallery preview, indicating which image is currently presented.
 /// The first placeholder is the number of the selected image.
 /// The second placeholder is the total number of images in the attachment.
@@ -481,4 +491,3 @@
 
 /// The default title of link preview when don't have any infomation.
 "no_preview_available" = "No preview available";
-

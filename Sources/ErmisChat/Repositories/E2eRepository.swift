@@ -48,6 +48,26 @@ private enum E2eeSyncApplyError: LocalizedError {
     }
 }
 
+enum E2eeMessageEpochRecoveryError: LocalizedError {
+    case ownerReleased
+    case invalidRejection
+    case scopeStillBehind(local: UInt64, required: Int64)
+    case scopeNotReady(cid: String)
+
+    var errorDescription: String? {
+        switch self {
+        case .ownerReleased:
+            return "The E2EE repository was released during epoch recovery."
+        case .invalidRejection:
+            return "The epoch-stale rejection cannot safely rebind this message intent."
+        case .scopeStillBehind(let local, let required):
+            return "E2EE scope sync finished below the required epoch (local=\(local), required=\(required))."
+        case .scopeNotReady(let cid):
+            return "The E2EE scope is not safe for message re-encryption: \(cid)."
+        }
+    }
+}
+
 /// Classifies a durable commit against the OpenMLS provider epoch without mutating either store.
 ///
 /// A lower target epoch is historical: the provider has already advanced beyond it, so replaying
@@ -112,6 +132,27 @@ enum E2eeApplicationEpochAction: Equatable {
             return .preJoinHistorical
         }
         return hasGroup ? .decrypt : .pendingGroup
+    }
+}
+
+/// Classifies the only safe application-message replay shortcut after a process interruption.
+///
+/// OpenMLS may report `MessageAlreadyConsumed` when the receiver ratchet was saved before the
+/// durable apply cursor advanced. The event can be finalized from the local plaintext cache only
+/// when that cache proves it came from the exact same ciphertext. Every other error (including a
+/// bad tag/malformed TLS message) and a missing/mismatched proof must follow the repair path.
+enum E2eeApplicationReplayRecovery {
+    static func canFinalizeFromCachedPlaintext(
+        error: Error,
+        cachedCiphertextHash: Data?,
+        ciphertext: Data
+    ) -> Bool {
+        guard let mlsError = error as? MlsError,
+              case .MessageAlreadyConsumed = mlsError,
+              let cachedCiphertextHash else {
+            return false
+        }
+        return cachedCiphertextHash == Data(SHA256.hash(data: ciphertext))
     }
 }
 
@@ -720,14 +761,6 @@ class E2eRepository: EventsControllerDelegate {
         try mlsClient.saveState(of: group)
     }
 
-    private func isMessageAlreadyConsumed(_ error: Error) -> Bool {
-        guard let mlsError = error as? MlsError else { return false }
-        if case .MessageAlreadyConsumed = mlsError {
-            return true
-        }
-        return false
-    }
-    
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
         // Login/reconnect catch-up for groups restored before the channel query arrives.
         performE2eSync()
@@ -1136,6 +1169,48 @@ class E2eRepository: EventsControllerDelegate {
     /// - Parameter cid: The channel to sync.
     func performE2eChannelSync(cid: ChannelId) {
         runSync(forCidStrings: [cid.rawValue], completion: nil)
+    }
+
+    /// Synchronizes the canonical MLS scope after Bellboy rejected an exact application-message
+    /// intent as stale. Completion runs only after the sync pagination and queued MLS/Core Data
+    /// apply barrier finish. The caller may then generate one replacement ciphertext while
+    /// retaining the same logical message ID and envelope metadata.
+    func recoverMessageEpoch(
+        in cid: ChannelId,
+        minimumEpoch: Int64,
+        completion: @escaping (Result<UInt64, Error>) -> Void
+    ) {
+        guard minimumEpoch >= 0 else {
+            completion(.failure(E2eeMessageEpochRecoveryError.invalidRejection))
+            return
+        }
+        let groupCid = mlsGroupCid(for: cid)
+        runSync(forCidStrings: [groupCid.rawValue]) { [weak self] in
+            guard let self else {
+                completion(.failure(E2eeMessageEpochRecoveryError.ownerReleased))
+                return
+            }
+            do {
+                let group = try self.mlsClient.loadGroup(with: groupCid.rawValue)
+                let localEpoch = UInt64(group.epoch())
+                guard localEpoch >= UInt64(minimumEpoch) else {
+                    completion(.failure(E2eeMessageEpochRecoveryError.scopeStillBehind(
+                        local: localEpoch,
+                        required: minimumEpoch
+                    )))
+                    return
+                }
+                guard self.canEncrypt(in: group, scopeCid: groupCid.rawValue) else {
+                    completion(.failure(E2eeMessageEpochRecoveryError.scopeNotReady(
+                        cid: groupCid.rawValue
+                    )))
+                    return
+                }
+                completion(.success(localEpoch))
+            } catch {
+                completion(.failure(error))
+            }
+        }
     }
 
     private func performE2eChannelSync(cids: Set<String>, completion: @escaping () -> Void) {
@@ -2321,9 +2396,12 @@ class E2eRepository: EventsControllerDelegate {
                     group: group
                 )
                 return processed.payload
-            } catch where isMessageAlreadyConsumed(error) {
-                let exactCiphertextHash = Data(SHA256.hash(data: encryptedData))
-                guard cachedCiphertextHash == exactCiphertextHash else { throw error }
+            } catch {
+                guard E2eeApplicationReplayRecovery.canFinalizeFromCachedPlaintext(
+                    error: error,
+                    cachedCiphertextHash: cachedCiphertextHash,
+                    ciphertext: encryptedData
+                ) else { throw error }
                 return cached
             }
         }

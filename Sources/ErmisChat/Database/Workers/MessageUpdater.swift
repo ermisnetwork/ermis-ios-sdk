@@ -55,17 +55,30 @@ class MessageUpdater: Worker {
         var shouldDeleteOnBackend = true
 
         database.write({ session in
-            guard let messageDTO = session.message(id: message.id) else {
+            guard let storedMessage = session.message(id: message.id) else {
                 // Even though the message does not exist locally
-                // we don't throw any error because we still want
-                // to try to delete the message on the backend.
+                // we don't throw for delete-for-me because the server may still have it.
+                // Delete-for-everyone must fail closed because authorship cannot be verified.
+                if !onlyForMe {
+                    throw ClientError.MessageDoesNotExist(messageId: message.id)
+                }
                 return
             }
 
+            let messageDTO: MessageDTO
+            if onlyForMe {
+                messageDTO = storedMessage
+            } else {
+                messageDTO = try session.messageEditableByCurrentUser(message.id)
+            }
+
             // Hard Deleting is necessary for messages which are only available locally in the DB
-            let shouldBeHardDeleted = messageDTO.isLocalOnly
+            // and authored by this user. A stale/corrupt local state on somebody else's server
+            // message must never suppress the delete-for-me backend request.
+            let shouldBeHardDeleted = (try? session.currentUserIsAuthor(of: messageDTO)) == true
+                && messageDTO.isLocalOnly
             messageDTO.isHardDeleted = shouldBeHardDeleted
-            if messageDTO.isLocalOnly {
+            if shouldBeHardDeleted {
                 messageDTO.type = MessageType.deleted.rawValue
                 messageDTO.deletedAt = DBDate()
                 messageDTO.text = ""
@@ -122,6 +135,12 @@ class MessageUpdater: Worker {
             func updateMessage(localState: LocalMessageState) throws {
                 messageDTO.text = text
 
+                // `encryptedData`/`mlsEpoch` are the exact durable network intent for the
+                // currently queued E2EE generation. A user edit creates a new generation, so
+                // the ciphertext of the previously accepted message (or a failed earlier edit)
+                // must never be reused for the new plaintext.
+                messageDTO.invalidateE2eeNetworkIntentForNewEdit()
+
                 messageDTO.localMessageState = localState
 
                 messageDTO.updatedAt = DBDate()
@@ -172,11 +191,13 @@ class MessageUpdater: Worker {
             }
 
             switch messageDTO.localMessageState {
-            case nil, .pendingSync, .syncingFailed, .deletingFailed:
+            case nil, .pendingSync, .syncingFailed, .deletingFailed,
+                 .pendingSyncAfterE2eeEpochStale:
                 try updateMessage(localState: .pendingSync)
-            case .pendingSend, .sendingFailed:
+            case .pendingSend, .sendingFailed, .pendingSendAfterE2eeEpochStale:
                 try updateMessage(localState: .pendingSend)
-            case .sending, .syncing, .deleting:
+            case .sending, .syncing, .deleting,
+                 .sendingAfterE2eeEpochStale, .syncingAfterE2eeEpochStale:
                 throw ClientError.MessageEditing(
                     messageId: messageId,
                     reason: "message is in `\(messageDTO.localMessageState!)` state"
@@ -593,7 +614,18 @@ extension ClientError {
     }
 }
 
-private extension DatabaseSession {
+extension DatabaseSession {
+    /// Returns whether the message author is the active user in the message's project.
+    /// A single database may contain identities for multiple projects, so comparing against an
+    /// arbitrary first current-user row is not sufficient.
+    func currentUserIsAuthor(of messageDTO: MessageDTO) throws -> Bool {
+        guard let projectId = messageDTO.channel?.projectId,
+              let currentProjectUser = currentUser?.user(of: projectId) else {
+            throw ClientError.CurrentUserDoesNotExist()
+        }
+        return currentProjectUser.id == messageDTO.user.id
+    }
+
     /// This helper return the message if it can be edited by the current user.
     /// The message entity will be returned if it exists and authored by the current user.
     /// If any of the requirements is not met the error will be thrown.
@@ -602,12 +634,15 @@ private extension DatabaseSession {
     /// - Throws: Either `CurrentUserDoesNotExist`/`MessageDoesNotExist`/
     /// - Returns: The message entity.
     func messageEditableByCurrentUser(_ messageId: MessageId) throws -> MessageDTO {
-        guard currentUser != nil else {
-            throw ClientError.CurrentUserDoesNotExist()
-        }
-
         guard let messageDTO = message(id: messageId) else {
             throw ClientError.MessageDoesNotExist(messageId: messageId)
+        }
+
+        guard try currentUserIsAuthor(of: messageDTO) else {
+            throw ClientError.MessageEditing(
+                messageId: messageId,
+                reason: "message is not authored by the current user"
+            )
         }
 
         return messageDTO

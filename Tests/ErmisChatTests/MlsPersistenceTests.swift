@@ -240,6 +240,81 @@ final class MlsPersistenceTests: XCTestCase {
         }
     }
 
+    func testCrashAfterPlaintextBeforeProviderSaveReprocessesAndPersistsReceiverState() throws {
+        let cid = "team:project:plaintext-before-provider-save"
+        let pair = try makeGroupPair(cid: cid)
+        let plaintext = Data("crash-recovery".utf8)
+        let ciphertext = try pair.aliceGroup.createMessage(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            plaintext: plaintext
+        )
+        try pair.aliceGroup.saveState(provider: pair.aliceProvider)
+
+        // First attempt represents plaintext already committed to Core Data. Deliberately do not
+        // save this mutated Group, as if the process stopped immediately before provider save.
+        let firstAttempt = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        XCTAssertEqual(
+            try firstAttempt.processMessageDeferred(provider: pair.bobProvider, msg: ciphertext).content,
+            plaintext
+        )
+
+        // Relaunch reloads the last durable provider state, so the exact raw inbox event can be
+        // processed again and the receiver ratchet can now be persisted.
+        let replay = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        XCTAssertEqual(
+            try replay.processMessageDeferred(provider: pair.bobProvider, msg: ciphertext).content,
+            plaintext
+        )
+        try replay.saveState(provider: pair.bobProvider)
+
+        let persisted = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        XCTAssertThrowsError(try persisted.processMessage(provider: pair.bobProvider, msg: ciphertext)) {
+            guard case MlsError.MessageAlreadyConsumed = $0 else {
+                return XCTFail("Expected persisted receiver state, got \($0)")
+            }
+        }
+    }
+
+    func testConsumedReplayFinalizesOnlyWithExactCiphertextProof() throws {
+        let cid = "team:project:consumed-proof"
+        let pair = try makeGroupPair(cid: cid)
+        let ciphertext = try pair.aliceGroup.createMessage(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            plaintext: Data("exact-proof".utf8)
+        )
+        let receiver = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        _ = try receiver.processMessage(provider: pair.bobProvider, msg: ciphertext)
+        try receiver.saveState(provider: pair.bobProvider)
+
+        let persisted = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        XCTAssertThrowsError(try persisted.processMessage(provider: pair.bobProvider, msg: ciphertext)) { error in
+            let exactHash = Data(SHA256.hash(data: ciphertext))
+            XCTAssertTrue(
+                E2eeApplicationReplayRecovery.canFinalizeFromCachedPlaintext(
+                    error: error,
+                    cachedCiphertextHash: exactHash,
+                    ciphertext: ciphertext
+                )
+            )
+            XCTAssertFalse(
+                E2eeApplicationReplayRecovery.canFinalizeFromCachedPlaintext(
+                    error: error,
+                    cachedCiphertextHash: Data(repeating: 0, count: 32),
+                    ciphertext: ciphertext
+                )
+            )
+            XCTAssertFalse(
+                E2eeApplicationReplayRecovery.canFinalizeFromCachedPlaintext(
+                    error: error,
+                    cachedCiphertextHash: nil,
+                    ciphertext: ciphertext
+                )
+            )
+        }
+    }
+
     func testCorruptCiphertextIsNotClassifiedAsConsumed() throws {
         let pair = try makeGroupPair(cid: "team:project:corrupt-test")
         var ciphertext = try pair.aliceGroup.createMessageWithAad(
@@ -252,9 +327,16 @@ final class MlsPersistenceTests: XCTestCase {
 
         XCTAssertThrowsError(
             try pair.bobGroup.processMessage(provider: pair.bobProvider, msg: ciphertext)
-        ) {
-            guard case MlsError.InvalidMessage = $0 else {
-                return XCTFail("Expected InvalidMessage, got \($0)")
+        ) { error in
+            XCTAssertFalse(
+                E2eeApplicationReplayRecovery.canFinalizeFromCachedPlaintext(
+                    error: error,
+                    cachedCiphertextHash: Data(SHA256.hash(data: ciphertext)),
+                    ciphertext: ciphertext
+                )
+            )
+            guard case MlsError.InvalidMessage = error else {
+                return XCTFail("Expected InvalidMessage, got \(error)")
             }
         }
     }

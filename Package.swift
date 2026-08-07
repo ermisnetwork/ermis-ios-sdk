@@ -55,7 +55,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ErmisChatTests",
-            dependencies: ["ErmisChat", "open-mls-ios"]
+            dependencies: ["ErmisChat", "ErmisChatUI", "open-mls-ios"]
         ),
 //        .target(
 //            name: "ErmisWalletAuth",

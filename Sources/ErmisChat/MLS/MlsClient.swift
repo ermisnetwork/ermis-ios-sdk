@@ -469,7 +469,7 @@ public class MlsClient {
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
-        let processedMessage = try group.processMessage(provider: provider, msg: data)
+        let processedMessage = try group.processMessageDeferred(provider: provider, msg: data)
         guard processedMessage.messageType == .applicationMessage else {
             throw ClientError.Unexpected("Expected an MLS application message.")
         }

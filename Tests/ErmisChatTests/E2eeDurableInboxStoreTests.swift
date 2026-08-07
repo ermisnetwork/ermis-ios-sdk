@@ -1,4 +1,5 @@
 import CoreData
+import CryptoKit
 import XCTest
 @testable import ErmisChat
 
@@ -69,19 +70,24 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
 
     private func protocolEnvelope(
         eventId: String,
-        createdAt: String
+        createdAt: String,
+        epoch: Int = 2,
+        type: String = "commit",
+        userId: String = "sender",
+        deviceId: String? = nil
     ) throws -> E2eSyncEventEnvelope {
+        let deviceIdField = deviceId.map { ",\n            \"device_id\": \"\($0)\"" } ?? ""
         let json = """
         {
           "event_id": "\(eventId)",
           "created_at": "\(createdAt)",
           "type": "protocol",
           "data": {
-            "epoch": 2,
-            "user": {"id": "sender", "project_id": "project"},
-            "type": "commit",
+            "epoch": \(epoch),
+            "user": {"id": "\(userId)", "project_id": "project"},
+            "type": "\(type)",
             "commit": "AA==",
-            "created_at": "\(createdAt)"
+            "created_at": "\(createdAt)"\(deviceIdField)
           }
         }
         """
@@ -1061,6 +1067,57 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         XCTAssertEqual(category, "application_decrypt_failed")
     }
 
+    func testApplicationPersistenceProofDoesNotAdvanceCursorBeforeFinalApply() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let event = try applicationEnvelope(ciphertextJSON: #""AAEC""#)
+        _ = try store.persistPage(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            events: [event],
+            hasMore: false,
+            nextCursor: nil
+        )
+
+        // Simulates a stop after plaintext + OpenMLS provider persistence but before the final
+        // durable inbox/apply-cursor transaction.
+        try store.markApplicationPersistenceCompleted(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            eventId: event.eventId
+        )
+
+        XCTAssertNil(try store.applyCursor(accountId: accountId, scopeCid: scopeCid))
+        XCTAssertEqual(
+            try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).map(\.eventId),
+            [event.eventId]
+        )
+        database.writableContext.performAndWait {
+            let row = try? E2eeInboxEventDTO.load(
+                accountId: accountId,
+                scopeCid: scopeCid,
+                eventId: event.eventId,
+                context: database.writableContext
+            )
+            XCTAssertEqual(row?.plaintextPersisted, true)
+            XCTAssertEqual(row?.mlsStatePersisted, true)
+            XCTAssertNil(row?.appliedAt)
+        }
+
+        try store.markApplicationDispositionAndApplied(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            envelope: event,
+            disposition: .decrypted
+        )
+
+        XCTAssertTrue(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).isEmpty)
+        XCTAssertEqual(
+            try store.applyCursor(accountId: accountId, scopeCid: scopeCid),
+            ScopeSyncCursorPayload(createdAt: event.createdAtRaw, eventId: event.eventId)
+        )
+    }
+
     func testPendingPageSurvivesDatabaseReopen() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("E2eeDurableInboxStoreTests-\(UUID().uuidString)", isDirectory: true)
@@ -1095,7 +1152,7 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
     func testPreparedExternalJoinReceiptIsDurableAndTyped() throws {
         let database = try makeDatabase()
         let store = E2eeDurableInboxStore(database: database)
-        let hash = Data(repeating: 7, count: 32)
+        let hash = Data(SHA256.hash(data: Data([0])))
 
         try store.prepareLocalJoinReceipt(
             accountId: accountId,
@@ -1120,18 +1177,27 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
             .serverAccepted
         )
 
-        database.writableContext.performAndWait {
-            let receipt = try? E2eeLocalJoinReceiptDTO.load(
-                accountId: accountId,
-                scopeCid: scopeCid,
-                context: database.writableContext
-            )
-            receipt?.status = E2eeLocalJoinReceiptStatus.merged.rawValue
-            try? database.writableContext.save()
+        try database.writeAndWait { context in
+            guard let context = context as? NSManagedObjectContext else {
+                throw ClientError.Unexpected("Core Data writer context is unavailable.")
+            }
+            let cid = try ChannelId(cid: scopeCid)
+            let channel = ChannelDTO.loadOrCreate(cid: cid, context: context, cache: nil)
+            channel.createdAt = Date().bridgeDate
+            channel.updatedAt = Date().bridgeDate
         }
+        try store.markLocalJoinMerged(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            firstDecryptableEpoch: 12
+        )
         let appliedCommit = try protocolEnvelope(
             eventId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-            createdAt: "2026-08-06T10:00:01.123456Z"
+            createdAt: "2026-08-06T10:00:01.123456Z",
+            epoch: 12,
+            type: "external_commit",
+            userId: accountId,
+            deviceId: "ios-canonical"
         )
         _ = try store.persistPage(
             accountId: accountId,
@@ -1163,6 +1229,11 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
             )
         )
         XCTAssertNil(try store.localJoinReceiptProof(accountId: accountId, scopeCid: scopeCid))
+        database.writableContext.performAndWait {
+            let channel = database.writableContext.channel(cid: try! ChannelId(cid: scopeCid))
+            XCTAssertEqual(channel?.mlsFirstDecryptableEpoch?.int64Value, 12)
+            XCTAssertEqual(channel?.mlsFirstDecryptableCursorEventId, appliedCommit.eventId)
+        }
     }
 
     func testHistoricalApplicationRunAdvancesCursorInOneBatch() throws {

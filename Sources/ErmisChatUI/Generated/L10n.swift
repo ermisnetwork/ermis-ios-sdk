@@ -523,6 +523,14 @@ public enum L10n {
       /// Are you sure?
       public static var title: String { L10n.tr("Localizable", "message.moderation.title") }
     }
+    public enum QuotedMessage {
+      /// Replied to %@
+      public static func repliedTo(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.quoted-message.replied-to", String(describing: p1))
+      }
+      /// Replied to you
+      public static var repliedToYou: String { L10n.tr("Localizable", "message.quoted-message.replied-to-you") }
+    }
     public enum Sending {
       /// UPLOADING FAILED
       public static var attachmentUploadingFailed: String { L10n.tr("Localizable", "message.sending.attachment-uploading-failed") }
@@ -775,7 +783,10 @@ public enum L10n {
 extension L10n {
   private static func tr(_ table: String, _ key: String, _ args: CVarArg...) -> String {
      // TODO: Using using Theme.default prohibits using Theme injection
-     let format = Theme.default.localizationProvider(key, table)
+     let providedFormat = Theme.default.localizationProvider(key, table)
+     let format = providedFormat == key
+       ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: table)
+       : providedFormat
      return String(format: format, locale: Locale.current, arguments: args)
   }
 }

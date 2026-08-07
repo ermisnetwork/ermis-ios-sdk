@@ -226,6 +226,10 @@
 
 // Encryption
 "message.encrypted-message" = "Tin nhắn được mã hóa";
+/// Hiển thị phía trên trả lời trích dẫn khi tin nhắn gốc là của người dùng hiện tại.
+"message.quoted-message.replied-to-you" = "Đã trả lời bạn";
+/// Hiển thị phía trên trả lời trích dẫn. Biến là tên tác giả của tin nhắn gốc.
+"message.quoted-message.replied-to" = "Đã trả lời %@";
 
 // System message
 
@@ -487,4 +491,3 @@
 
 /// The default title of link preview when don't have any information.
 "no_preview_available" = "Không có bản xem trước";
-

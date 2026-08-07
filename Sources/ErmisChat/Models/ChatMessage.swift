@@ -436,7 +436,9 @@ public extension ChatMessage {
         }
 
         switch localState {
-        case .pendingSend, .sending, .pendingSync, .syncing, .deleting:
+        case .pendingSend, .sending, .pendingSync, .syncing, .deleting,
+             .pendingSendAfterE2eeEpochStale, .sendingAfterE2eeEpochStale,
+             .pendingSyncAfterE2eeEpochStale, .syncingAfterE2eeEpochStale:
             return .pending
         case .sendingFailed, .syncingFailed, .deletingFailed:
             return .failed
@@ -516,6 +518,18 @@ public enum LocalMessageState: String {
     /// Sending of the message failed after multiple of tries. The system is not trying to send this message anymore.
     case sendingFailed
 
+    /// Bellboy rejected the first exact E2EE send intent as stale. Before this state can send,
+    /// the SDK must finish scope sync and create one replacement ciphertext at the newer epoch.
+    case pendingSendAfterE2eeEpochStale
+    /// The single automatic replacement send is in flight. A second epoch-stale rejection fails
+    /// closed and requires an explicit user retry rather than looping indefinitely.
+    case sendingAfterE2eeEpochStale
+
+    /// Edit equivalent of `pendingSendAfterE2eeEpochStale`.
+    case pendingSyncAfterE2eeEpochStale
+    /// Edit equivalent of `sendingAfterE2eeEpochStale`.
+    case syncingAfterE2eeEpochStale
+
     /// The message is waiting to be deleted.
     case deleting
     /// Deleting of the message failed after multiple of tries. The system is not trying to delete this message anymore.
@@ -523,7 +537,8 @@ public enum LocalMessageState: String {
 
     /// If the message is available only locally. The message is not on the server.
     var isLocalOnly: Bool {
-        self == .pendingSend || self == .sendingFailed || self == .sending
+        self == .pendingSend || self == .sendingFailed || self == .sending ||
+            self == .pendingSendAfterE2eeEpochStale || self == .sendingAfterE2eeEpochStale
     }
 }
 
@@ -681,4 +696,3 @@ public enum SystemMessage {
         }
     }
 }
-

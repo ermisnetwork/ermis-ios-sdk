@@ -16,7 +16,6 @@ import ErmisShared
 ///     state of is changed to `syncingFailed`.
 ///
 // TODO:
-/// - Message edit retry
 /// - Start editing messages when connection status changes (offline -> online)
 ///
 class MessageEditor: Worker {
@@ -67,16 +66,23 @@ class MessageEditor: Worker {
     }
 
     private func processNextMessage() {
-        database.write { [weak self, weak messageRepository, weak e2eRepository] session in
-            guard let messageId = self?.pendingMessageIDs.first else { return }
+        guard let messageId = pendingMessageIDs.first else { return }
 
+        processMessage(messageId, epochRecoveryCompleted: false)
+    }
+
+    private func processMessage(_ messageId: MessageId, epochRecoveryCompleted: Bool) {
+        database.backgroundReadOnlyContext.perform { [weak self, weak messageRepository, weak e2eRepository] in
+            guard let self else { return }
+            let localState = self.database.backgroundReadOnlyContext.message(id: messageId)?.localMessageState
+            let isEpochStaleRetry = localState == .pendingSyncAfterE2eeEpochStale
             guard
-                let dto = session.message(id: messageId),
+                let dto = self.database.backgroundReadOnlyContext.message(id: messageId),
                 let cidString = dto.channel?.cid,
                 let cid = try? ChannelId(cid: cidString),
-                dto.localMessageState == .pendingSync
+                localState == .pendingSync || isEpochStaleRetry
             else {
-                self?.removeMessageIDAndContinue(messageId)
+                self.removeMessageIDAndContinue(messageId)
                 return
             }
 
@@ -85,40 +91,167 @@ class MessageEditor: Worker {
             // E2EE parent is encrypted too.
             let isEncrypted = dto.channel?.isE2eeEnabled == true
 
-            // Encrypt the edited message for E2E channels
-            if isEncrypted, let e2eRepository {
+            if isEpochStaleRetry && !epochRecoveryCompleted {
+                guard let e2eRepository else {
+                    messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
+                        self.removeMessageIDAndContinue(messageId)
+                    }
+                    return
+                }
+                e2eRepository.recoverMessageEpoch(
+                    in: cid,
+                    minimumEpoch: dto.mlsEpoch
+                ) { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success:
+                        self.processMessage(messageId, epochRecoveryCompleted: true)
+                    case .failure(let error):
+                        log.error("Failed to recover stale E2EE edit epoch for \(messageId): \(error)")
+                        messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
+                            self.removeMessageIDAndContinue(messageId)
+                        }
+                    }
+                }
+                return
+            }
+
+            // Encrypt the edited message for E2E channels. A failed/unknown HTTP result must
+            // reuse the exact ciphertext already stored on MessageDTO; generating another one
+            // consumes a new sender secret and makes crash recovery non-idempotent.
+            if isEncrypted {
+                guard let e2eRepository else {
+                    log.error("Missing E2E repository while editing encrypted message \(messageId)")
+                    messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
+                        self.removeMessageIDAndContinue(messageId)
+                    }
+                    return
+                }
+                guard !requestBody.requiresE2eeAuthenticatedSendLane else {
+                    log.error("Refusing unauthenticated E2EE attachment/forward edit for message \(messageId)")
+                    messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
+                        self.removeMessageIDAndContinue(messageId)
+                    }
+                    return
+                }
+
                 let e2ePayload = E2ePayload(
                     text: requestBody.text,
                     attachments: requestBody.attachments,
                     stickerUrl: requestBody.stickerUrl
                 )
                 do {
-                    let (encryptedData, epoch) = try e2eRepository.encryptedMessage(e2ePayload, in: cid)
-                    requestBody.encryptedData = encryptedData
-                    requestBody.mlsEpoch = epoch
-                    requestBody.text = ""
-                    requestBody.attachments = []
-                    requestBody.stickerUrl = nil
+                    let encryptedData: [UInt8]
+                    let epoch: Int
+                    if let durableCiphertext = requestBody.encryptedData,
+                       let durableEpoch = requestBody.mlsEpoch {
+                        encryptedData = durableCiphertext
+                        epoch = durableEpoch
+                    } else {
+                        (encryptedData, epoch) = try e2eRepository.encryptedMessage(e2ePayload, in: cid)
+                    }
+
+                    // Claim this exact edit generation and durably store its network intent in
+                    // one Core Data transaction before the HTTP request can start. Re-checking
+                    // the plaintext prevents a concurrent user edit from sending stale content.
+                    try self.database.writeAndWait { session in
+                        guard let current = session.message(id: messageId),
+                              current.localMessageState == localState else {
+                            throw MessageEditIntentError.messageNoLongerPending
+                        }
+                        let currentBody = current.asRequestBody()
+                        let currentPayload = E2ePayload(
+                            text: currentBody.text,
+                            attachments: currentBody.attachments,
+                            stickerUrl: currentBody.stickerUrl
+                        )
+                        guard currentPayload == e2ePayload else {
+                            throw MessageEditIntentError.generationChanged
+                        }
+
+                        if let storedCiphertext = current.encryptedData {
+                            guard storedCiphertext.uint8Array == encryptedData,
+                                  Int(current.mlsEpoch) == epoch else {
+                                throw MessageEditIntentError.generationChanged
+                            }
+                        } else {
+                            current.encryptedData = Data(encryptedData)
+                            current.mlsEpoch = Int64(epoch)
+                            try session.saveMessageDecrypt(
+                                payload: e2ePayload,
+                                messageId: messageId,
+                                ciphertextHash: nil
+                            )
+                        }
+                        current.localMessageState = isEpochStaleRetry
+                            ? .syncingAfterE2eeEpochStale
+                            : .syncing
+                    }
+                    requestBody.bindE2eeNetworkIntent(ciphertext: encryptedData, epoch: epoch)
+                } catch MessageEditIntentError.generationChanged {
+                    // Keep the ID queued. The next pass snapshots and encrypts the newer edit.
+                    self.processNextMessage()
+                    return
+                } catch MessageEditIntentError.messageNoLongerPending {
+                    self.removeMessageIDAndContinue(messageId)
+                    return
                 } catch {
                     log.error("Failed to encrypt edited message \(messageId): \(error)")
                     messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
-                        self?.removeMessageIDAndContinue(messageId)
+                        self.removeMessageIDAndContinue(messageId)
                     }
                     return
                 }
+                self.apiClient.request(endpoint: .editMessage(payload: requestBody,
+                                                              oldMessage: nil,
+                                                              channelId: cid)) {
+                    switch $0 {
+                    case .success:
+                        messageRepository?.updateMessage(withID: messageId, localState: nil) {
+                            self.removeMessageIDAndContinue(messageId)
+                        }
+                    case .failure(let error):
+                        if !isEpochStaleRetry,
+                           let rejection = E2eeMessageEpochStaleRejection.parse(error),
+                           let intentEpoch = requestBody.mlsEpoch,
+                           rejection.canRebind(intentEpoch: Int64(intentEpoch)) {
+                            messageRepository?.prepareEpochStaleRebind(
+                                rejection,
+                                messageId: messageId,
+                                isEdit: true
+                            ) { result in
+                                switch result {
+                                case .success:
+                                    self.processMessage(messageId, epochRecoveryCompleted: false)
+                                case .failure:
+                                    messageRepository?.updateMessage(
+                                        withID: messageId,
+                                        localState: .syncingFailed
+                                    ) {
+                                        self.removeMessageIDAndContinue(messageId)
+                                    }
+                                }
+                            }
+                        } else {
+                            messageRepository?.updateMessage(
+                                withID: messageId,
+                                localState: .syncingFailed
+                            ) {
+                                self.removeMessageIDAndContinue(messageId)
+                            }
+                        }
+                    }
+                }
+                return
             }
 
             messageRepository?.updateMessage(withID: messageId, localState: .syncing) {
-                self?.apiClient.request(endpoint: .editMessage(payload: requestBody,
-                                                               oldMessage: nil,
-                                                               channelId: cid)) {
+                self.apiClient.request(endpoint: .editMessage(payload: requestBody,
+                                                              oldMessage: nil,
+                                                              channelId: cid)) {
                     let newMessageState: LocalMessageState? = $0.error == nil ? nil : .syncingFailed
-
-                    messageRepository?.updateMessage(
-                        withID: messageId,
-                        localState: newMessageState
-                    ) {
-                        self?.removeMessageIDAndContinue(messageId)
+                    messageRepository?.updateMessage(withID: messageId, localState: newMessageState) {
+                        self.removeMessageIDAndContinue(messageId)
                     }
                 }
             }
@@ -129,6 +262,11 @@ class MessageEditor: Worker {
         _pendingMessageIDs.mutate { $0.remove(messageId) }
         processNextMessage()
     }
+}
+
+private enum MessageEditIntentError: Error {
+    case generationChanged
+    case messageNoLongerPending
 }
 
 private extension Array where Element == ListChange<MessageDTO> {

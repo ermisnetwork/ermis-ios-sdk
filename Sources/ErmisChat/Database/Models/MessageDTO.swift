@@ -137,7 +137,11 @@ class MessageDTO: NSManagedObject {
         request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: true)]
 
         let pendingSendMessage = NSPredicate(
-            format: "localMessageStateRaw == %@", LocalMessageState.pendingSend.rawValue
+            format: "localMessageStateRaw IN %@",
+            [
+                LocalMessageState.pendingSend.rawValue,
+                LocalMessageState.pendingSendAfterE2eeEpochStale.rawValue
+            ]
         )
         request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             pendingSendMessage,
@@ -152,7 +156,13 @@ class MessageDTO: NSManagedObject {
         let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: true)]
         request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-            NSPredicate(format: "localMessageStateRaw == %@", LocalMessageState.pendingSync.rawValue),
+            NSPredicate(
+                format: "localMessageStateRaw IN %@",
+                [
+                    LocalMessageState.pendingSync.rawValue,
+                    LocalMessageState.pendingSyncAfterE2eeEpochStale.rawValue
+                ]
+            ),
             allAttachmentsAreUploadedOrEmptyPredicate()
         ])
 
@@ -558,7 +568,26 @@ class MessageDTO: NSManagedObject {
     static func loadSendingMessages(context: NSManagedObjectContext) -> [MessageDTO] {
         let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: false)]
-        request.predicate = NSPredicate(format: "localMessageStateRaw == %@", LocalMessageState.sending.rawValue)
+        request.predicate = NSPredicate(
+            format: "localMessageStateRaw IN %@",
+            [
+                LocalMessageState.sending.rawValue,
+                LocalMessageState.sendingAfterE2eeEpochStale.rawValue
+            ]
+        )
+        return load(by: request, context: context)
+    }
+
+    static func loadSyncingMessages(context: NSManagedObjectContext) -> [MessageDTO] {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: false)]
+        request.predicate = NSPredicate(
+            format: "localMessageStateRaw IN %@",
+            [
+                LocalMessageState.syncing.rawValue,
+                LocalMessageState.syncingAfterE2eeEpochStale.rawValue
+            ]
+        )
         return load(by: request, context: context)
     }
 }
@@ -570,6 +599,38 @@ extension MessageDTO {
     var localMessageState: LocalMessageState? {
         get { localMessageStateRaw.flatMap(LocalMessageState.init(rawValue:)) }
         set { localMessageStateRaw = newValue?.rawValue }
+    }
+
+    /// Invalidates the exact MLS network intent when the user creates another edit generation.
+    /// The next background edit pass must encrypt and durably bind the new plaintext before POST.
+    func invalidateE2eeNetworkIntentForNewEdit() {
+        guard channel?.isE2eeEnabled == true else { return }
+        encryptedData = nil
+        mlsEpoch = 0
+        decryptedMessage?.ciphertextHash = nil
+    }
+
+    /// Discards an exact application-message intent only after Bellboy authoritatively rejected
+    /// that same epoch. `mlsEpoch` is then repurposed (while ciphertext is nil) as Bellboy's
+    /// durable minimum epoch the recovery sync must reach before one replacement may be generated.
+    func prepareForE2eeEpochStaleRebind(
+        _ rejection: E2eeMessageEpochStaleRejection,
+        isEdit: Bool
+    ) -> Bool {
+        let expectedInFlightState: LocalMessageState = isEdit ? .syncing : .sending
+        guard channel?.isE2eeEnabled == true,
+              localMessageState == expectedInFlightState,
+              encryptedData != nil,
+              rejection.canRebind(intentEpoch: mlsEpoch) else {
+            return false
+        }
+        encryptedData = nil
+        mlsEpoch = rejection.currentGroupEpoch
+        decryptedMessage?.ciphertextHash = nil
+        localMessageState = isEdit
+            ? .pendingSyncAfterE2eeEpochStale
+            : .pendingSendAfterE2eeEpochStale
+        return true
     }
 
     var isLocalOnly: Bool {
@@ -674,9 +735,20 @@ extension NSManagedObjectContext: MessageDatabaseSession {
     ) throws -> MessageDTO {
         let cid = try ChannelId(cid: channelDTO.cid)
         let dto = MessageDTO.loadOrCreate(id: payload.id, context: self, cache: cache)
+        let currentProjectUserId = currentUser?.user(of: cid.projectId)?.userId
+        let isKnownForeignMessage = currentProjectUserId.map { $0 != payload.user.id } ?? false
 
-        if dto.localMessageState == .pendingSend || dto.localMessageState == .pendingSync {
+        if (dto.localMessageState == .pendingSend || dto.localMessageState == .pendingSync),
+           !isKnownForeignMessage {
             return dto
+        }
+
+        if isKnownForeignMessage {
+            // Local send/edit/delete states are meaningful only for the current user's own
+            // optimistic messages. Clear state left by older clients that allowed a foreign
+            // message mutation so authoritative sync restores its normal interaction menu.
+            dto.localMessageState = nil
+            dto.isHardDeleted = false
         }
 
         dto.cid = payload.cid?.rawValue
@@ -1027,6 +1099,10 @@ extension NSManagedObjectContext: MessageDatabaseSession {
         // Restart messages in sending state.
         let messages = MessageDTO.loadSendingMessages(context: self)
         messages.forEach {
+            if $0.localMessageState == .sendingAfterE2eeEpochStale {
+                $0.localMessageState = .pendingSendAfterE2eeEpochStale
+                return
+            }
             if $0.encryptedData != nil {
                 // E2EE sends persist their exact MLS ciphertext/epoch before POST. Retrying that
                 // same intent is idempotent by message ID and does not advance the sender ratchet.
@@ -1035,6 +1111,22 @@ extension NSManagedObjectContext: MessageDatabaseSession {
                 // The standard path still has no durable exact network intent, so retain its
                 // existing conservative behavior until it is migrated separately.
                 delete(message: $0)
+            }
+        }
+
+        // E2EE edits also persist their exact ciphertext/epoch before entering `.syncing`.
+        // A process death makes the HTTP outcome unknown, so replay that same intent instead
+        // of encrypting the edited plaintext again and advancing the sender ratchet twice.
+        let syncingEdits = MessageDTO.loadSyncingMessages(context: self)
+        syncingEdits.forEach {
+            if $0.localMessageState == .syncingAfterE2eeEpochStale {
+                $0.localMessageState = .pendingSyncAfterE2eeEpochStale
+                return
+            }
+            if $0.encryptedData != nil {
+                $0.localMessageState = .pendingSync
+            } else {
+                $0.localMessageState = .syncingFailed
             }
         }
 
