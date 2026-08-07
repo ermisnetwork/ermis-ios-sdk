@@ -175,6 +175,24 @@ To logout, call `logout` function in ```ErmisClient```
 client.logout(completion: completion)
 ```
 
+#### MLS device identity storage
+
+For E2EE accounts, the SDK keeps one MLS `device_id` per user in a non-synchronizing Keychain
+generic-password item protected with `AfterFirstUnlockThisDeviceOnly`. Normal logout preserves this
+identity; only an explicit local E2EE purge removes it.
+
+When upgrading from a version that stored device IDs in `UserDefaults`, the SDK copies the existing
+per-user value to Keychain and writes the migration marker only after an exact read-back succeeds.
+The legacy value remains available during the compatibility/rollback window. Before migration has
+completed, a temporarily unavailable Keychain makes the SDK keep using the existing legacy value
+without generating a replacement. After Keychain is authoritative, the same condition fails closed
+because a restored legacy value may belong to another installation.
+
+`ThisDeviceOnly` Keychain items do not migrate to another installation through backup/restore. Once
+migration has completed, a missing Keychain item is therefore treated as a new installation: the SDK
+creates a new device ID and the account must follow the normal MLS external-join flow. Applications
+must not assume that restoring an encrypted device backup preserves the previous MLS device identity.
+
 <br />
 
 ### Step 6: Sending your first message

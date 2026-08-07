@@ -4,6 +4,22 @@ import open_mls_ios
 import CryptoKit
 
 final class MlsPersistenceTests: XCTestCase {
+    private final class DeviceIdSecureStore: MlsDeviceIdSecureStoring {
+        var values: [UserId: String] = [:]
+
+        func load(userId: UserId) throws -> String? {
+            values[userId]
+        }
+
+        func save(deviceId: String, userId: UserId) throws {
+            values[userId] = deviceId
+        }
+
+        func remove(userId: UserId) throws {
+            values.removeValue(forKey: userId)
+        }
+    }
+
     private struct GroupPair {
         let aliceProvider: Provider
         let alice: Identity
@@ -60,7 +76,13 @@ final class MlsPersistenceTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        let client = MlsClient(storageFolderURL: root, applicationGroupIdentifier: suite)
+        let secureStore = DeviceIdSecureStore()
+        let deviceIdStore = MlsDeviceIdStore(
+            defaults: defaults,
+            legacyDefaults: defaults,
+            secureStore: secureStore
+        )
+        let client = MlsClient(storageFolderURL: root, deviceIdStore: deviceIdStore)
         try client.setup(with: "alice")
         let originalDeviceId = try XCTUnwrap(client.currentDeviceId)
         XCTAssertNotNil(client.identity)
@@ -87,7 +109,13 @@ final class MlsPersistenceTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
 
-        let client = MlsClient(storageFolderURL: root, applicationGroupIdentifier: suite)
+        let secureStore = DeviceIdSecureStore()
+        let deviceIdStore = MlsDeviceIdStore(
+            defaults: defaults,
+            legacyDefaults: defaults,
+            secureStore: secureStore
+        )
+        let client = MlsClient(storageFolderURL: root, deviceIdStore: deviceIdStore)
         try client.setup(with: "alice")
         XCTAssertNotNil(client.currentDeviceId)
 
@@ -95,6 +123,7 @@ final class MlsPersistenceTests: XCTestCase {
 
         let deviceIds = defaults.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String]
         XCTAssertNil(deviceIds?["alice"])
+        XCTAssertNil(secureStore.values["alice"])
         let files = try FileManager.default.contentsOfDirectory(
             at: root.appendingPathComponent("mls"),
             includingPropertiesForKeys: nil
