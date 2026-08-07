@@ -27,6 +27,7 @@ final class E2eeInboxEventDTO: NSManagedObject {
     @NSManaged var mlsStatePersisted: Bool
     @NSManaged var appliedAt: DBDate?
     @NSManaged var failureCategory: String?
+    @NSManaged var applicationDisposition: String?
     @NSManaged var protocolCiphertextHash: Data?
     @NSManaged var protocolTargetEpoch: Int64
 
@@ -152,6 +153,44 @@ final class E2eeInboxEventDTO: NSManagedObject {
         event.mlsStatePersisted = false
         event.protocolTargetEpoch = -1
         return event
+    }
+}
+
+enum E2eeApplicationDisposition: String {
+    case pendingGroup = "pending_group"
+    case preJoinHistorical = "pre_join_historical"
+    case decrypted
+}
+
+enum E2eeLocalJoinReceiptStatus: String {
+    case prepared
+    case serverAccepted
+    case merged
+    case finalized
+}
+
+@objc(E2eeLocalJoinReceiptDTO)
+final class E2eeLocalJoinReceiptDTO: NSManagedObject {
+    @NSManaged var accountId: String
+    @NSManaged var scopeCid: String
+    @NSManaged var epoch: Int64
+    @NSManaged var commitHash: Data
+    @NSManaged var requestDeviceId: String
+    @NSManaged var status: String
+    @NSManaged var createdAt: DBDate
+    @NSManaged var updatedAt: DBDate
+    @NSManaged var serverAcceptedAt: DBDate?
+    @NSManaged var mergedAt: DBDate?
+
+    static func load(
+        accountId: String,
+        scopeCid: String,
+        context: NSManagedObjectContext
+    ) throws -> E2eeLocalJoinReceiptDTO? {
+        let request = NSFetchRequest<E2eeLocalJoinReceiptDTO>(entityName: entityName)
+        request.predicate = NSPredicate(format: "accountId == %@ AND scopeCid == %@", accountId, scopeCid)
+        request.fetchLimit = 1
+        return try context.fetch(request).first
     }
 }
 

@@ -5,6 +5,7 @@
 import Foundation
 import ErmisShared
 import open_mls_ios
+import CryptoKit
 
 struct MlsProcessedApplicationMessage {
     let payload: E2ePayload
@@ -13,32 +14,44 @@ struct MlsProcessedApplicationMessage {
 }
 
 public class MlsClient {
-    public static let deviceIdKey = "ermis_mls_device_id"
+    public static let deviceIdKey = MlsDeviceIdStore.deviceIdKey
     public static let cursorKey = "ermis_e2e_sync_cursor"
 
     var provider: Provider?
     var identity: Identity?
     var userId: UserId?
     var hasSetup: Bool = false
+    let userDefaults: UserDefaults
+    let deviceIdStore: MlsDeviceIdStore
+    private let storageFolderURL: URL?
+    private var providerDatabaseURL: URL?
 
     /// Returns the device ID for the current userId, or nil if not available.
     var currentDeviceId: String? {
         guard let userId else { return nil }
-        let dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String]
-        return dict?[userId]
+        return deviceIdStore.canonicalDeviceId(for: userId, createIfNeeded: false)
     }
 
-    init() {
+    init(
+        storageFolderURL: URL? = nil,
+        applicationGroupIdentifier: String? = nil,
+        deviceIdStore: MlsDeviceIdStore? = nil
+    ) {
+        self.storageFolderURL = storageFolderURL
+        self.userDefaults = applicationGroupIdentifier.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        self.deviceIdStore = deviceIdStore ?? MlsDeviceIdStore(defaults: self.userDefaults)
+        if self.userDefaults !== UserDefaults.standard {
+            Self.migrateLegacyDefaultsIfNeeded(to: self.userDefaults)
+        }
         initLogger()
     }
 
     public func reset() throws {
-//        guard let provider else {
-//            throw ClientError.MlsNoProviderError()
-//        }
-//        try provider.deleteAllGroups()
-//        try provider.deleteIdentity()
-
+        provider = nil
+        identity = nil
+        userId = nil
+        hasSetup = false
+        providerDatabaseURL = nil
     }
 
     public func setup(with userId: String) throws {
@@ -53,8 +66,14 @@ public class MlsClient {
         }
         self.userId = userId
         generateDeviceIdIfNeeded(for: userId)
-        let dbName = "ermis_mls_" + userId + ".db"
-        let dbPath = documentDir.appendingPathComponent(dbName).path
+        let storageRoot = storageFolderURL ?? documentDir
+        let mlsFolder = storageRoot.appendingPathComponent("mls", isDirectory: true)
+        try FileManager.default.createDirectory(at: mlsFolder, withIntermediateDirectories: true)
+        let dbName = "ermis_mls_" + Self.storageNamespace(for: userId) + ".db"
+        let dbURL = mlsFolder.appendingPathComponent(dbName)
+        let legacyURL = documentDir.appendingPathComponent("ermis_mls_" + userId + ".db")
+        try Self.migrateLegacyProviderIfNeeded(from: legacyURL, to: dbURL)
+        let dbPath = dbURL.path
         let provider = try Provider.newWithPath(dbPath: dbPath)
 
         if let identityBytes = try? provider.loadIdentity() {
@@ -67,7 +86,66 @@ public class MlsClient {
         }
 
         self.provider = provider
+        providerDatabaseURL = dbURL
         hasSetup = true
+    }
+
+    func purgeCurrentUserData() throws {
+        guard let currentUserId = userId else { return }
+        let databaseURL = providerDatabaseURL
+        if let provider {
+            try provider.deleteAllGroups()
+            try provider.deleteIdentity()
+        }
+        provider = nil
+        identity = nil
+        userId = nil
+        hasSetup = false
+        providerDatabaseURL = nil
+
+        if let databaseURL {
+            for suffix in ["", "-wal", "-shm"] {
+                let url = URL(fileURLWithPath: databaseURL.path + suffix)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            }
+        }
+        deviceIdStore.removeUser(currentUserId)
+        removeUserScopedDefault(forKey: Self.cursorKey, userId: currentUserId)
+    }
+
+    private func removeUserScopedDefault(forKey key: String, userId: String) {
+        var values = userDefaults.dictionary(forKey: key) ?? [:]
+        values.removeValue(forKey: userId)
+        userDefaults.set(values, forKey: key)
+    }
+
+    private static func storageNamespace(for userId: String) -> String {
+        SHA256.hash(data: Data(userId.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func migrateLegacyProviderIfNeeded(from legacyURL: URL, to destinationURL: URL) throws {
+        let fileManager = FileManager.default
+        guard legacyURL.standardizedFileURL != destinationURL.standardizedFileURL,
+              !fileManager.fileExists(atPath: destinationURL.path),
+              fileManager.fileExists(atPath: legacyURL.path) else { return }
+        for suffix in ["", "-wal", "-shm"] {
+            let source = URL(fileURLWithPath: legacyURL.path + suffix)
+            let destination = URL(fileURLWithPath: destinationURL.path + suffix)
+            if fileManager.fileExists(atPath: source.path) {
+                try fileManager.moveItem(at: source, to: destination)
+            }
+        }
+    }
+
+    private static func migrateLegacyDefaultsIfNeeded(to destination: UserDefaults) {
+        for key in [deviceIdKey, cursorKey, "ermis_mls_login_time", "ermis_e2e_removed_cursor"]
+            where destination.object(forKey: key) == nil {
+            if let value = UserDefaults.standard.object(forKey: key) {
+                destination.set(value, forKey: key)
+            }
+        }
     }
     
     func getChannelId(projectId: String, userIds: [String]) -> String {
@@ -444,12 +522,11 @@ public class MlsClient {
             throw ClientError.MlsNoProviderError()
         }
         log.debug("[MLS] Join with welcome", subsystems: .mls)
-        do {
-            try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
-        } catch {
-            try provider.deleteGroup(cid: cid)
-            try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
-        }
+        try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
+    }
+
+    func ownsDeviceId(_ deviceId: String, userId: UserId) -> Bool {
+        deviceIdStore.owns(deviceId: deviceId, for: userId)
     }
 
     func externalJoin(groupInfo: Data) throws -> ExternalJoinResult {
@@ -464,16 +541,7 @@ public class MlsClient {
     }
 
     func generateDeviceIdIfNeeded(for userId: String) {
-        var dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String] ?? [:]
-        
-        if let deviceId = dict[userId] as? String {
-            log.debug("[MLSClient] has deviceID: \(dict[userId])")
-        } else {
-            let deviceId = "ios-" + UUID().uuidString
-            dict[userId] = deviceId
-            UserDefaults.standard.set(dict, forKey: MlsClient.deviceIdKey)
-            log.debug("[MLSClient] generate new deviceID: \(deviceId)")
-        }
+        _ = deviceIdStore.canonicalDeviceId(for: userId)
     }
     
     func deleteGroup(cid: String) throws {
@@ -528,5 +596,11 @@ public extension ClientError {
 
     class MlsNoIdentityError: ClientError, @unchecked Sendable {
 
+    }
+
+    class E2eeChannelNotReady: ClientError, @unchecked Sendable {
+        init(cid: String, state: E2eeChannelReadiness) {
+            super.init("E2EE channel \(cid) is not ready (state: \(state.rawValue)).")
+        }
     }
 }

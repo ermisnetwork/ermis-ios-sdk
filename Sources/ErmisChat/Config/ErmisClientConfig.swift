@@ -4,6 +4,17 @@
 
 import Foundation
 import ErmisShared
+
+/// Selects the local database namespace used by an Ermis client.
+///
+/// `.automatic` preserves source compatibility: the public `ErmisClient` initializer resolves it
+/// to `.user(token.userId)` when a token is supplied and `.inMemory` before authentication.
+public enum ErmisLocalStorageScope: Equatable {
+    case automatic
+    case inMemory
+    case user(UserId)
+}
+
 /// A configuration object used to configure a `ErmisClient` instance.
 ///
 /// The default configuration can be changed the following way:
@@ -28,6 +39,9 @@ public struct ErmisClientConfig {
     public var localStorageFolderURL: URL? = {
         Self.initLocalStorageFolderURL(groupIdentifier: nil)
     }()
+
+    /// Authentication-aware storage scope. Do not share one on-disk cache between users.
+    public var localStorageScope: ErmisLocalStorageScope = .automatic
 
     static func initLocalStorageFolderURL(groupIdentifier: String?) -> URL? {
 #if os(macOS)

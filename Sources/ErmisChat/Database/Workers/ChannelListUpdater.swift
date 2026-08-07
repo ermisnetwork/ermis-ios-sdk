@@ -258,33 +258,17 @@ private extension ChannelListUpdater {
                 log.error("Failed to save `ChannelListPayload` to the database. Error: \(error)")
                 completion?(.failure(error))
             } else {
-                // Only external-join channels the user was already a member of
-                // before this device logged in (membershipCreatedAt < loginTime).
-                // Channels joined after login will be handled via welcome or
-                // invite events instead.
-                // Clean up local MLS groups for channels the user is no longer part of.
-                
+                // Query results are now the bootstrap trigger, matching Web: restored groups
+                // catch up in bounded batches; missing groups pre-sync for a Welcome and only
+                // then fall back to serialized external join + post-sync.
                 self?.e2eRepository?.cleanupOrphanedMlsGroups()
 
-                let loginTime = self?.e2eRepository?.loginTime
                 let mlsCids = payload.channels
-                    .filter { channelPayload in
-                        guard channelPayload.channel.mlsEnabled else { return false }
-                        guard let loginTime,
-                              let memberCreatedAt = channelPayload.membership?.createdAt else {
-                            return false
-                        }
-                        return memberCreatedAt < loginTime
-                    }
+                    .filter { $0.channel.mlsEnabled }
                     .map { $0.channel.cid }
                 if !mlsCids.isEmpty {
                     self?.e2eRepository?.handleNewEncryptedChannels(mlsCids)
-                } else {
-                    // No new encrypted channels to join, but still sync
-                    // missed E2EE events for existing channels.
                 }
-                
-                self?.e2eRepository?.performE2eSync()
                 completion?(.success(channels))
             }
         }

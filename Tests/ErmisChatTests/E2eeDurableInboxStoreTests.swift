@@ -41,18 +41,26 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         return try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: Data(json.utf8))
     }
 
-    private func applicationEnvelope(ciphertextJSON: String) throws -> E2eSyncEventEnvelope {
+    private func applicationEnvelope(
+        ciphertextJSON: String,
+        eventId: String = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        messageId: String = "message-1",
+        createdAt: String = "2026-08-06T10:00:00.123456Z",
+        mlsEpoch: Int? = nil
+    ) throws -> E2eSyncEventEnvelope {
+        let epochField = mlsEpoch.map { "\"mls_epoch\": \($0)," } ?? ""
         let json = """
         {
-          "event_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          "created_at": "2026-08-06T10:00:00.123456Z",
+          "event_id": "\(eventId)",
+          "created_at": "\(createdAt)",
           "type": "application",
           "data": {
-            "id": "message-1",
+            "id": "\(messageId)",
             "type": "regular",
             "mls_ciphertext": \(ciphertextJSON),
+            \(epochField)
             "content_type": "text/plain",
-            "created_at": "2026-08-06T10:00:00.123456Z"
+            "created_at": "\(createdAt)"
           }
         }
         """
@@ -178,6 +186,42 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
                 )
             )
         }
+    }
+
+    func testDurablePrefixIsBoundedAndPreservesKindRank() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let createdAt = "2026-08-06T10:00:00.123456Z"
+        let firstApplication = try applicationEnvelope(
+            ciphertextJSON: #""AAEC""#,
+            eventId: "00000000-0000-4000-8000-000000000001",
+            createdAt: createdAt
+        )
+        let secondApplication = try applicationEnvelope(
+            ciphertextJSON: #""AAEC""#,
+            eventId: "00000000-0000-4000-8000-000000000002",
+            createdAt: createdAt
+        )
+        let protocolEvent = try protocolEnvelope(
+            eventId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+            createdAt: createdAt
+        )
+        _ = try store.persistPage(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            events: [firstApplication, secondApplication, protocolEvent],
+            hasMore: false,
+            nextCursor: nil
+        )
+
+        XCTAssertEqual(
+            try store.loadPendingPrefix(
+                accountId: accountId,
+                scopeCid: scopeCid,
+                limit: 2
+            ).map(\.eventId),
+            [protocolEvent.eventId, firstApplication.eventId]
+        )
     }
 
     func testLegacyArrayAndBase64EventAreTheSameDurableEvent() throws {
@@ -1048,7 +1092,198 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         try FileManager.default.removeItem(at: directory)
     }
 
-    func testVersionTwoStoreLightweightMigratesToDurabilitySchema() throws {
+    func testPreparedExternalJoinReceiptIsDurableAndTyped() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let hash = Data(repeating: 7, count: 32)
+
+        try store.prepareLocalJoinReceipt(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            epoch: 12,
+            commitHash: hash,
+            requestDeviceId: "ios-canonical"
+        )
+        XCTAssertEqual(
+            try store.localJoinReceiptProof(accountId: accountId, scopeCid: scopeCid),
+            .init(
+                commitHash: hash,
+                epoch: 12,
+                requestDeviceId: "ios-canonical",
+                status: .prepared
+            )
+        )
+
+        try store.markLocalJoinServerAccepted(accountId: accountId, scopeCid: scopeCid)
+        XCTAssertEqual(
+            try store.localJoinReceiptProof(accountId: accountId, scopeCid: scopeCid)?.status,
+            .serverAccepted
+        )
+
+        database.writableContext.performAndWait {
+            let receipt = try? E2eeLocalJoinReceiptDTO.load(
+                accountId: accountId,
+                scopeCid: scopeCid,
+                context: database.writableContext
+            )
+            receipt?.status = E2eeLocalJoinReceiptStatus.merged.rawValue
+            try? database.writableContext.save()
+        }
+        let appliedCommit = try protocolEnvelope(
+            eventId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            createdAt: "2026-08-06T10:00:01.123456Z"
+        )
+        _ = try store.persistPage(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            events: [appliedCommit],
+            hasMore: false,
+            nextCursor: .init(createdAt: appliedCommit.createdAtRaw, eventId: appliedCommit.eventId)
+        )
+        try store.markCommitProofPersisted(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            eventId: appliedCommit.eventId,
+            ciphertextHash: hash,
+            targetEpoch: 12
+        )
+        try store.markCommitStatePersisted(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            eventId: appliedCommit.eventId,
+            ciphertextHash: hash,
+            targetEpoch: 12
+        )
+        try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: appliedCommit)
+
+        XCTAssertTrue(
+            try store.finalizeAppliedLocalJoinReceiptIfPossible(
+                accountId: accountId,
+                scopeCid: scopeCid
+            )
+        )
+        XCTAssertNil(try store.localJoinReceiptProof(accountId: accountId, scopeCid: scopeCid))
+    }
+
+    func testHistoricalApplicationRunAdvancesCursorInOneBatch() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let first = try applicationEnvelope(
+            ciphertextJSON: #""AA==""#,
+            eventId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            messageId: "historical-1",
+            createdAt: "2026-08-06T10:00:00.000000Z",
+            mlsEpoch: 3
+        )
+        let second = try applicationEnvelope(
+            ciphertextJSON: #""AQ==""#,
+            eventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            messageId: "historical-2",
+            createdAt: "2026-08-06T10:00:01.000000Z",
+            mlsEpoch: 4
+        )
+        _ = try store.persistPage(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            events: [first, second],
+            hasMore: false,
+            nextCursor: .init(createdAt: second.createdAtRaw, eventId: second.eventId)
+        )
+
+        try store.markApplicationDispositionsAndApplied(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            applications: [
+                (first, .preJoinHistorical),
+                (second, .preJoinHistorical)
+            ]
+        )
+
+        XCTAssertTrue(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).isEmpty)
+        XCTAssertEqual(
+            try store.applyCursor(accountId: accountId, scopeCid: scopeCid),
+            .init(createdAt: second.createdAtRaw, eventId: second.eventId)
+        )
+        database.writableContext.performAndWait {
+            for event in [first, second] {
+                let row = try? E2eeInboxEventDTO.load(
+                    accountId: accountId,
+                    scopeCid: scopeCid,
+                    eventId: event.eventId,
+                    context: database.writableContext
+                )
+                XCTAssertEqual(
+                    row?.applicationDisposition,
+                    E2eeApplicationDisposition.preJoinHistorical.rawValue
+                )
+            }
+        }
+    }
+
+    func testNormalizationResolvesLegacyRepairWithoutDeletingHistoricalEnvelope() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let json = """
+        {
+          "event_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+          "created_at": "2026-08-06T10:00:00.123456Z",
+          "type": "application",
+          "data": {
+            "id": "historical-message",
+            "type": "regular",
+            "mls_ciphertext": "AA==",
+            "mls_epoch": 4,
+            "content_type": "text/plain",
+            "created_at": "2026-08-06T10:00:00.123456Z"
+          }
+        }
+        """
+        let event = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: Data(json.utf8))
+        _ = try store.persistPage(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            events: [event],
+            hasMore: false,
+            nextCursor: .init(createdAt: event.createdAtRaw, eventId: event.eventId)
+        )
+        try store.recordRepairIssue(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            eventId: event.eventId,
+            category: "application_decrypt_failed",
+            details: "TooDistantInThePast"
+        )
+        try store.markApplied(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            envelope: event,
+            preservingFailure: true
+        )
+
+        try store.normalizePreJoinHistoricalApplications(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            firstDecryptableEpoch: 5
+        )
+
+        database.writableContext.performAndWait {
+            let stored = try? E2eeInboxEventDTO.load(
+                accountId: accountId,
+                scopeCid: scopeCid,
+                eventId: event.eventId,
+                context: database.writableContext
+            )
+            XCTAssertEqual(stored?.applicationDisposition, E2eeApplicationDisposition.preJoinHistorical.rawValue)
+            XCTAssertNil(stored?.failureCategory)
+            XCTAssertFalse(stored?.rawEnvelope.isEmpty ?? true)
+
+            let repairs = NSFetchRequest<E2eeRepairIssueDTO>(entityName: E2eeRepairIssueDTO.entityName)
+            repairs.predicate = NSPredicate(format: "eventId == %@", event.eventId)
+            XCTAssertNotNil(try? database.writableContext.fetch(repairs).first?.resolvedAt)
+        }
+    }
+
+    func testVersionTwoStoreLightweightMigratesToCurrentDurabilitySchema() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("E2eeDurabilityMigrationTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

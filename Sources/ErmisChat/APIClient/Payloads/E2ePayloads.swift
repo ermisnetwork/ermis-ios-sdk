@@ -550,6 +550,7 @@ struct E2eSyncApplicationData: Decodable {
     let text: String?
     /// TLS-serialized MLS ciphertext bytes. Present only for regular (encrypted) messages.
     let mlsCiphertext: [UInt8]?
+    let mlsEpoch: Int64?
     let contentType: String
     let createdAt: Date
 
@@ -560,6 +561,7 @@ struct E2eSyncApplicationData: Decodable {
         case type
         case text
         case mlsCiphertext = "mls_ciphertext"
+        case mlsEpoch = "mls_epoch"
         case contentType = "content_type"
         case createdAt = "created_at"
     }
@@ -572,6 +574,7 @@ struct E2eSyncApplicationData: Decodable {
         type = try container.decodeIfPresent(String.self, forKey: .type) ?? MessageType.regular.rawValue
         text = try container.decodeIfPresent(String.self, forKey: .text)
         mlsCiphertext = try container.decodeE2eeBytesIfPresent(forKey: .mlsCiphertext)
+        mlsEpoch = try container.decodeIfPresent(Int64.self, forKey: .mlsEpoch)
         contentType = try container.decode(String.self, forKey: .contentType)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
@@ -662,16 +665,28 @@ struct MessageUpdatedSyncData: Decodable {
 /// The `data` payload for a `message_pin` sync event.
 /// Patches the pin/unpin state on the message.
 struct MessagePinSyncData: Decodable {
-    let cid: ChannelId
+    let action: String
     let message: MessagePayload
-    let user: UserPayload
+    let sender: UserPayload?
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case cid
+        case action
         case message
+        case sender
         case user
         case createdAt = "created_at"
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Bellboy deliberately keeps the CID on the outer scope envelope. `user` was emitted
+        // by an older iOS durable row, so retain it as a read-only compatibility alias.
+        action = try container.decode(String.self, forKey: .action)
+        message = try container.decode(MessagePayload.self, forKey: .message)
+        sender = try container.decodeIfPresent(UserPayload.self, forKey: .sender)
+            ?? (try container.decodeIfPresent(UserPayload.self, forKey: .user))
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 }
 

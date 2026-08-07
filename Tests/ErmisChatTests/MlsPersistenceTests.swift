@@ -43,6 +43,109 @@ final class MlsPersistenceTests: XCTestCase {
         )
     }
 
+    func testUserScopedStorageNamespaceIsStableAndIsolated() {
+        let first = ErmisClientFactory.storageNamespace(apiKey: "api", userId: "alice")
+        XCTAssertEqual(first, ErmisClientFactory.storageNamespace(apiKey: "api", userId: "alice"))
+        XCTAssertNotEqual(first, ErmisClientFactory.storageNamespace(apiKey: "api", userId: "bob"))
+        XCTAssertNotEqual(first, ErmisClientFactory.storageNamespace(apiKey: "other", userId: "alice"))
+    }
+
+    func testMlsResetPreservesProviderAndDeviceIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ermis-mls-reset-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suite = "io.ermis.tests.mls-reset.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let client = MlsClient(storageFolderURL: root, applicationGroupIdentifier: suite)
+        try client.setup(with: "alice")
+        let originalDeviceId = try XCTUnwrap(client.currentDeviceId)
+        XCTAssertNotNil(client.identity)
+        let providerFiles = try FileManager.default.contentsOfDirectory(
+            at: root.appendingPathComponent("mls"),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertTrue(providerFiles.contains(where: { $0.pathExtension == "db" }))
+
+        try client.reset()
+        try client.setup(with: "alice")
+
+        XCTAssertEqual(client.currentDeviceId, originalDeviceId)
+        XCTAssertNotNil(client.identity)
+    }
+
+    func testExplicitMlsPurgeDeletesProviderAndUserDeviceId() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ermis-mls-purge-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let suite = "io.ermis.tests.mls-purge.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let client = MlsClient(storageFolderURL: root, applicationGroupIdentifier: suite)
+        try client.setup(with: "alice")
+        XCTAssertNotNil(client.currentDeviceId)
+
+        try client.purgeCurrentUserData()
+
+        let deviceIds = defaults.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String]
+        XCTAssertNil(deviceIds?["alice"])
+        let files = try FileManager.default.contentsOfDirectory(
+            at: root.appendingPathComponent("mls"),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertFalse(files.contains(where: { $0.pathExtension == "db" }))
+    }
+
+    func testNoMatchingWelcomeIsTypedAndDoesNotDeleteExistingGroupForRetry() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ermis-mls-welcome-error-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let client = MlsClient(storageFolderURL: root)
+        try client.setup(with: "local-user")
+        let provider = try XCTUnwrap(client.provider)
+        let identity = try XCTUnwrap(client.identity)
+        let cid = "team:typed-welcome"
+        _ = try Group.createWithCid(provider: provider, founder: identity, cid: cid)
+
+        let senderProvider = Provider()
+        let targetProvider = Provider()
+        let sender = try Identity(provider: senderProvider, userId: "sender")
+        let target = try Identity(provider: targetProvider, userId: "other-device")
+        let senderGroup = try Group.createWithCid(
+            provider: senderProvider,
+            founder: sender,
+            cid: cid
+        )
+        let bundle = try senderGroup.addMembers(
+            provider: senderProvider,
+            sender: sender,
+            newMembers: [target.keyPackage(provider: targetProvider)]
+        )
+        try senderGroup.mergePendingCommit(provider: senderProvider)
+
+        XCTAssertThrowsError(
+            try client.joinWithWelcome(
+                cid: cid,
+                welcome: try XCTUnwrap(bundle.welcome),
+                ratchetTree: senderGroup.exportRatchetTree()
+            )
+        ) { error in
+            guard let mlsError = error as? MlsError,
+                  case .NoMatchingKeyPackage = mlsError else {
+                return XCTFail("Expected typed NoMatchingKeyPackage, received \(error)")
+            }
+        }
+        XCTAssertTrue(client.isGroupLoaded(cid: cid))
+    }
+
     func testRealtimeDecryptFailureRequestsCanonicalGroupScopeRecovery() throws {
         let groupCid = try ChannelId(cid: "team:project:realtime-recovery")
         let failure: Result<E2ePayload, Error> = .failure(

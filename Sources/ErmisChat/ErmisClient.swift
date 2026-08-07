@@ -6,6 +6,14 @@ import CoreData
 import Foundation
 import ErmisShared
 
+/// Controls whether logout preserves or destroys the authenticated user's local cache.
+public enum LogoutLocalDataPolicy: Equatable {
+    /// Clear authentication/runtime state while retaining user-scoped messages, cursors and MLS state.
+    case preserve
+    /// Explicitly destroy the current user's Core Data cache, MLS provider, device ID and cursors.
+    case purgeCurrentUser
+}
+
 /// The root object representing a Ermis Chat.
 ///
 /// Typically, an app contains just one instance of `ErmisClient`. However, it's possible to have multiple instances if your use
@@ -120,21 +128,25 @@ public class ErmisClient {
         token: Token?,
         notificationTokenProvider: NotificationTokenProviding?
     ) {
+        var resolvedConfig = config
+        if resolvedConfig.localStorageScope == .automatic {
+            resolvedConfig.localStorageScope = token.map { .user($0.userId) } ?? .inMemory
+        }
         var environment = Environment()
 
-        if !config.isClientInActiveMode {
+        if !resolvedConfig.isClientInActiveMode {
             environment.webSocketClientBuilder = nil
         }
 
         self.init(
-            config: config,
+            config: resolvedConfig,
             clientId: token?.clientId,
             projectId: token?.projectId ?? "",
             rootProjectId: token?.projectId ?? "",
             chainId: token?.chainId,
             environment: environment,
             notificationTokenProvider: notificationTokenProvider ?? DefaultNotificationTokenProvider(),
-            factory: .init(config: config, environment: environment)
+            factory: .init(config: resolvedConfig, environment: environment)
         )
 
         if let token {
@@ -164,11 +176,18 @@ public class ErmisClient {
         self.rootProjectid = rootProjectId
         self.chainId = chainId
         self.environment = environment
-        let mlsClient = MlsClient()
+        let deviceIdStore = MlsDeviceIdStore(applicationGroupIdentifier: config.applicationGroupIdentifier)
+        let mlsClient = MlsClient(
+            storageFolderURL: config.localStorageFolderURL,
+            applicationGroupIdentifier: config.applicationGroupIdentifier,
+            deviceIdStore: deviceIdStore
+        )
 
         urlSessionConfiguration = factory.makeUrlSessionConfiguration()
         var apiClientEncoder = factory.makeApiClientRequestEncoder()
         var webSocketEncoder = factory.makeWebSocketRequestEncoder()
+        apiClientEncoder.deviceIdStore = deviceIdStore
+        webSocketEncoder.deviceIdStore = deviceIdStore
         let databaseContainer = factory.makeDatabaseContainer()
         let apiClient = factory.makeApiClient(
             encoder: apiClientEncoder,
@@ -227,6 +246,7 @@ public class ErmisClient {
             projectId,
             environment.timerType
         )
+        authRepository.configureDeviceIdStore(deviceIdStore)
 
         let walletRepository = environment.walletRepositoryBuilder(
             databaseContainer,
@@ -420,32 +440,48 @@ public class ErmisClient {
         authenticationRepository.cancelTimers()
     }
 
-    /// Disconnects the chat client form the chat servers and removes all the local data related.
+    /// Disconnects the chat client while preserving the current user's local data.
     public func logout(completion: @escaping () -> Void) {
+        logout(localDataPolicy: .preserve, completion: completion)
+    }
+
+    /// Disconnects the chat client and applies the requested local-data policy.
+    public func logout(
+        localDataPolicy: LogoutLocalDataPolicy,
+        completion: @escaping () -> Void
+    ) {
         authenticationRepository.logOutUser()
-        e2eRepository.reset()
         // Stop tracking active components
         activeChannelControllers.removeAllObjects()
         activeChannelListControllers.removeAllObjects()
 
-        let group = DispatchGroup()
-        group.enter()
-        disconnect {
-            group.leave()
-        }
-
-        group.enter()
-        databaseContainer.removeAllData { error in
-            if let error = error {
-                log.error("Logging out current user failed with error \(error)", subsystems: .all)
-            } else {
-                log.debug("Logging out current user successfully.", subsystems: .all)
+        // Disconnect first so no WebSocket event can enqueue MLS work after runtime teardown.
+        disconnect { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async(execute: completion)
+                return
             }
-            group.leave()
-        }
-
-        group.notify(queue: .main) {
-            completion()
+            let finish = {
+                log.debug("Logged out user with local data policy \(localDataPolicy).", subsystems: .all)
+                DispatchQueue.main.async(execute: completion)
+            }
+            switch localDataPolicy {
+            case .preserve:
+                self.e2eRepository.reset()
+                finish()
+            case .purgeCurrentUser:
+                do {
+                    try self.e2eRepository.purgeCurrentUserState()
+                } catch {
+                    log.error("Purging current user's MLS state failed with error \(error)", subsystems: .mls)
+                }
+                self.databaseContainer.removeAllData { error in
+                    if let error {
+                        log.error("Purging current user's local database failed with error \(error)", subsystems: .database)
+                    }
+                    finish()
+                }
+            }
         }
     }
 
@@ -455,6 +491,19 @@ public class ErmisClient {
             let error = result.results.first(where: { $0.error != nil})?.error
             completion(downloadedAttachments, error)
         })
+    }
+
+    /// Returns the readiness of the MLS group effectively used by `cid`.
+    public func e2eeReadiness(for cid: ChannelId) -> E2eeChannelReadiness {
+        e2eRepository.readiness(for: cid)
+    }
+
+    /// Runs the Welcome-first bootstrap flow and completes when the channel reaches a terminal state.
+    public func ensureE2eeReady(
+        for cid: ChannelId,
+        completion: @escaping (E2eeChannelReadiness) -> Void
+    ) {
+        e2eRepository.ensureE2eeReady(for: cid, completion: completion)
     }
 
     func createBackgroundWorkers() {

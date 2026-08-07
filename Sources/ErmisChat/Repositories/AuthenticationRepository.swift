@@ -100,11 +100,11 @@ class AuthenticationRepository {
     private let connectionRepository: ConnectionRepository
     private let timerType: Timer.Type
     public var projectId: String
+    private var deviceIdStore = MlsDeviceIdStore(defaults: .standard)
 
     var currentDeviceId: String {
         guard let userId = currentUserId else { return "" }
-        let dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String]
-        return dict?[userId] ?? ""
+        return deviceIdStore.canonicalDeviceId(for: userId) ?? ""
     }
 
     init(
@@ -130,12 +130,14 @@ class AuthenticationRepository {
     }
 
     private func generateDeviceIdIfNeeded(for userId: String) {
-        var dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String] ?? [:]
-        if dict[userId] == nil {
-            let deviceId = "ios-" + UUID().uuidString
-            dict[userId] = deviceId
-            UserDefaults.standard.set(dict, forKey: MlsClient.deviceIdKey)
-        }
+        _ = deviceIdStore.canonicalDeviceId(for: userId)
+    }
+
+    func configureDeviceIdStore(_ store: MlsDeviceIdStore) {
+        deviceIdStore = store
+        guard let currentUserId else { return }
+        generateDeviceIdIfNeeded(for: currentUserId)
+        connectionRepository.updateWebSocketEndpoint(with: currentUserId, deviceId: currentDeviceId)
     }
 
     func update(token: Token, userInfo: UserInfo) {

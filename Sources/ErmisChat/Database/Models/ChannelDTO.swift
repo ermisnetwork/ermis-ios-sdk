@@ -82,6 +82,13 @@ class ChannelDTO: NSManagedObject {
     /// (via external join or welcome message). Used as the fallback cursor for E2E sync
     /// when `e2eSyncCursor` is nil, so only events after the device joined are fetched.
     @NSManaged var mlsGroupJoinedAt: DBDate?
+    /// The first MLS epoch this installation can decrypt for this effective group.
+    /// It is persisted only from a verified Welcome or external-join proof.
+    @NSManaged var mlsFirstDecryptableEpoch: NSNumber?
+    /// Exact durable external-commit boundary for this installation. Events before this
+    /// envelope are retained as encrypted history and must never be offered to OpenMLS.
+    @NSManaged var mlsFirstDecryptableCursorCreatedAt: DBDate?
+    @NSManaged var mlsFirstDecryptableCursorEventId: String?
 
     var projectId: String? {
         guard let channelId = try? ChannelId(cid: cid) else {

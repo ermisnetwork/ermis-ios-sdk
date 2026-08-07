@@ -11,6 +11,7 @@ protocol RequestEncoder {
     ///
     /// Trying to encode an `Endpoint` with the `needConnectionId` set to `true` without setting the delegate
     var connectionProviderDelegate: ConnectionProviderDelegate? { get set }
+    var deviceIdStore: MlsDeviceIdStore? { get set }
 
     /// Asynchronously creates a new `URLRequest` with the data from the `Endpoint`. It also adds all required data
     /// like an api key, etc.
@@ -86,6 +87,7 @@ class DefaultRequestEncoder: RequestEncoder {
     /// Timeout when waiting for token or connectionId
     private let waiterTimeout: TimeInterval = 10
     weak var connectionProviderDelegate: ConnectionProviderDelegate?
+    var deviceIdStore: MlsDeviceIdStore?
 
     func encodeRequest<ResponsePayload: Decodable>(
         for endpoint: Endpoint<ResponsePayload>,
@@ -258,8 +260,7 @@ class DefaultRequestEncoder: RequestEncoder {
         if let url = request.url,
            let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
            let userId = components.queryItems?.first(where: { $0.name == "user_id" })?.value,
-           let dict = UserDefaults.standard.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String],
-           let deviceId = dict[userId] {
+           let deviceId = deviceIdStore?.canonicalDeviceId(for: userId) {
             updatedRequest.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
         }
         completion(.success(updatedRequest))
