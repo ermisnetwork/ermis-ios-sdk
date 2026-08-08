@@ -178,7 +178,8 @@ public class ErmisClient {
         self.environment = environment
         let deviceIdStore = MlsDeviceIdStore(applicationGroupIdentifier: config.applicationGroupIdentifier)
         let mlsClient = MlsClient(
-            storageFolderURL: config.localStorageFolderURL,
+            storageFolderURL: config.mlsStorageFolderURL,
+            legacyStorageFolderURLs: [config.localStorageFolderURL].compactMap { $0 },
             applicationGroupIdentifier: config.applicationGroupIdentifier,
             deviceIdStore: deviceIdStore
         )

@@ -419,16 +419,145 @@ final class MlsPersistenceTests: XCTestCase {
             sender: pair.alice
         )
 
-        let processed = try pair.bobGroup.processMessage(
-            provider: pair.bobProvider,
-            msg: commit.commit
-        )
-        XCTAssertEqual(processed.messageType, .commit)
+        let client = MlsClient()
+        client.provider = pair.bobProvider
+        let processed = try client.processProtocolMessage(data: commit.commit, in: pair.bobGroup)
+        guard case .commit(let metadata) = processed else {
+            return XCTFail("Expected a typed commit result")
+        }
+        XCTAssertEqual(metadata.messageEpoch, startingEpoch)
+        XCTAssertEqual(metadata.groupEpochBefore, startingEpoch)
+        XCTAssertEqual(metadata.groupEpochAfter, startingEpoch + 1)
+        XCTAssertEqual(metadata.aad, Data())
         XCTAssertEqual(pair.bobGroup.epoch(), startingEpoch + 1)
 
-        try pair.bobGroup.saveState(provider: pair.bobProvider)
+        try client.saveState(of: pair.bobGroup)
         let reloaded = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
         XCTAssertEqual(reloaded.epoch(), startingEpoch + 1)
+    }
+
+    func testTypedApplicationProcessingPreservesPlaintextAndMetadataBeforeExplicitSave() throws {
+        let cid = "team:project:typed-application"
+        let pair = try makeGroupPair(cid: cid)
+        let payload = E2ePayload(text: "typed application", attachments: [], stickerUrl: nil)
+        let plaintext = try JSONEncoder().encode(payload)
+        let aad = Data("typed-aad".utf8)
+        let startingEpoch = pair.bobGroup.epoch()
+        let ciphertext = try pair.aliceGroup.createMessageWithAad(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            plaintext: plaintext,
+            aad: aad
+        )
+        try pair.aliceGroup.saveState(provider: pair.aliceProvider)
+
+        let client = MlsClient()
+        client.provider = pair.bobProvider
+        let processed = try client.processApplicationMessage(data: ciphertext, in: pair.bobGroup)
+        XCTAssertEqual(processed.plaintext, plaintext)
+        XCTAssertEqual(processed.payload, payload)
+        XCTAssertEqual(processed.aad, aad)
+        XCTAssertEqual(processed.epoch, startingEpoch)
+        XCTAssertEqual(processed.senderIndex, 0)
+        XCTAssertEqual(processed.resultingGroupEpoch, startingEpoch)
+
+        // Deferred processing leaves the durable receiver ratchet replayable until the caller
+        // stores plaintext and explicitly saves the mutated group state.
+        let replay = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        XCTAssertEqual(
+            try client.processApplicationMessage(data: ciphertext, in: replay).plaintext,
+            plaintext
+        )
+        try client.saveState(of: replay)
+    }
+
+    func testTypedProposalReportsBindingPersistenceWithoutEnablingBellboyProposalFlow() throws {
+        let cid = "team:project:typed-proposal"
+        let pair = try makeGroupPair(cid: cid)
+        let charlieProvider = Provider()
+        let charlie = try Identity(provider: charlieProvider, userId: "charlie")
+        let proposal = try pair.aliceGroup.proposeAddMember(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            newMember: charlie.keyPackage(provider: charlieProvider)
+        )
+        let startingEpoch = pair.bobGroup.epoch()
+
+        let client = MlsClient()
+        client.provider = pair.bobProvider
+        let processed = try client.processProtocolMessage(data: proposal.bytes, in: pair.bobGroup)
+        guard case .proposal(let metadata) = processed else {
+            return XCTFail("Expected a typed proposal result")
+        }
+        XCTAssertEqual(metadata.messageEpoch, startingEpoch)
+        XCTAssertEqual(metadata.groupEpochBefore, startingEpoch)
+        XCTAssertEqual(metadata.groupEpochAfter, startingEpoch)
+        XCTAssertEqual(pair.bobGroup.pendingProposalsCount(), 1)
+
+        // OpenMLS stores a received pending proposal during processMessage. Bellboy has no active
+        // standalone-proposal producer; production sync still rejects that reserved wire type.
+        let reloaded = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        XCTAssertEqual(reloaded.pendingProposalsCount(), 1)
+    }
+
+    func testOutgoingCrashBeforeProviderSaveCanReencryptFromDurableSenderState() throws {
+        let cid = "team:project:outgoing-before-provider-save"
+        let pair = try makeGroupPair(cid: cid)
+        let plaintext = Data("replacement generation".utf8)
+
+        let discardedGeneration = try Group.loadFromStorage(provider: pair.aliceProvider, cid: cid)
+        _ = try discardedGeneration.createMessage(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            plaintext: plaintext
+        )
+        // Simulate termination before the sender group is explicitly stored.
+
+        let replacementGeneration = try Group.loadFromStorage(provider: pair.aliceProvider, cid: cid)
+        let replacementCiphertext = try replacementGeneration.createMessage(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            plaintext: plaintext
+        )
+        try replacementGeneration.saveState(provider: pair.aliceProvider)
+
+        let processed = try pair.bobGroup.processMessage(
+            provider: pair.bobProvider,
+            msg: replacementCiphertext
+        )
+        XCTAssertEqual(processed.content, plaintext)
+    }
+
+    func testOutgoingCrashAfterProviderSaveBeforeIntentCanSendLaterGeneration() throws {
+        let cid = "team:project:outgoing-after-provider-save"
+        let pair = try makeGroupPair(cid: cid)
+
+        let abandonedGeneration = try Group.loadFromStorage(provider: pair.aliceProvider, cid: cid)
+        _ = try abandonedGeneration.createMessage(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            plaintext: Data("not posted".utf8)
+        )
+        try abandonedGeneration.saveState(provider: pair.aliceProvider)
+        // Simulate termination before the exact ciphertext is committed to Core Data. The next
+        // launch must create a later sender generation; it must never POST unknown bytes.
+
+        let replacementGeneration = try Group.loadFromStorage(provider: pair.aliceProvider, cid: cid)
+        let replacementPlaintext = Data("durable replacement".utf8)
+        let replacementCiphertext = try replacementGeneration.createMessage(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            plaintext: replacementPlaintext
+        )
+        try replacementGeneration.saveState(provider: pair.aliceProvider)
+
+        // The receiver can advance over the abandoned sender generation and decrypt the exact
+        // replacement intent that will be persisted before POST.
+        let processed = try pair.bobGroup.processMessage(
+            provider: pair.bobProvider,
+            msg: replacementCiphertext
+        )
+        XCTAssertEqual(processed.content, replacementPlaintext)
     }
 
     func testClearPendingProposalCallsProposalApi() throws {

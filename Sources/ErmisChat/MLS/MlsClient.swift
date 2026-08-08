@@ -8,9 +8,32 @@ import open_mls_ios
 import CryptoKit
 
 struct MlsProcessedApplicationMessage {
+    let plaintext: Data
     let payload: E2ePayload
     let aad: Data
     let epoch: UInt64
+    let senderIndex: UInt32
+    let resultingGroupEpoch: UInt64
+}
+
+struct MlsProcessedProtocolMetadata: Equatable {
+    let messageEpoch: UInt64
+    let senderIndex: UInt32
+    let aad: Data
+    let groupEpochBefore: UInt64
+    let groupEpochAfter: UInt64
+}
+
+enum MlsProcessedProtocolMessage: Equatable {
+    case proposal(MlsProcessedProtocolMetadata)
+    case commit(MlsProcessedProtocolMetadata)
+
+    var metadata: MlsProcessedProtocolMetadata {
+        switch self {
+        case .proposal(let metadata), .commit(let metadata):
+            return metadata
+        }
+    }
 }
 
 public class MlsClient {
@@ -24,7 +47,11 @@ public class MlsClient {
     let userDefaults: UserDefaults
     let deviceIdStore: MlsDeviceIdStore
     private let storageFolderURL: URL?
+    private let legacyStorageFolderURLs: [URL]
     private var providerDatabaseURL: URL?
+    private var providerDatabaseCleanupURLs: [URL] = []
+    private var currentProviderMigrationMarkerKey: String?
+    private var mutationExecutorAssertion: (() -> Void)?
 
     /// Returns the device ID for the current userId, or nil if not available.
     var currentDeviceId: String? {
@@ -34,11 +61,16 @@ public class MlsClient {
 
     init(
         storageFolderURL: URL? = nil,
+        legacyStorageFolderURLs: [URL] = [],
         applicationGroupIdentifier: String? = nil,
-        deviceIdStore: MlsDeviceIdStore? = nil
+        deviceIdStore: MlsDeviceIdStore? = nil,
+        userDefaults: UserDefaults? = nil
     ) {
         self.storageFolderURL = storageFolderURL
-        self.userDefaults = applicationGroupIdentifier.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        self.legacyStorageFolderURLs = legacyStorageFolderURLs
+        self.userDefaults = userDefaults
+            ?? applicationGroupIdentifier.flatMap(UserDefaults.init(suiteName:))
+            ?? .standard
         self.deviceIdStore = deviceIdStore ?? MlsDeviceIdStore(defaults: self.userDefaults)
         if self.userDefaults !== UserDefaults.standard {
             Self.migrateLegacyDefaultsIfNeeded(to: self.userDefaults)
@@ -52,6 +84,8 @@ public class MlsClient {
         userId = nil
         hasSetup = false
         providerDatabaseURL = nil
+        providerDatabaseCleanupURLs = []
+        currentProviderMigrationMarkerKey = nil
     }
 
     public func setup(with userId: String) throws {
@@ -61,22 +95,57 @@ public class MlsClient {
 //        }
         
         
-        guard let documentDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            return
-        }
+        // Releasing these references closes the SQLite provider before any cross-directory copy.
+        provider = nil
+        identity = nil
+        hasSetup = false
+        providerDatabaseURL = nil
+        providerDatabaseCleanupURLs = []
+        currentProviderMigrationMarkerKey = nil
+
         self.userId = userId
         generateDeviceIdIfNeeded(for: userId)
-        let storageRoot = storageFolderURL ?? documentDir
-        let mlsFolder = storageRoot.appendingPathComponent("mls", isDirectory: true)
-        try FileManager.default.createDirectory(at: mlsFolder, withIntermediateDirectories: true)
-        let dbName = "ermis_mls_" + Self.storageNamespace(for: userId) + ".db"
-        let dbURL = mlsFolder.appendingPathComponent(dbName)
-        let legacyURL = documentDir.appendingPathComponent("ermis_mls_" + userId + ".db")
-        try Self.migrateLegacyProviderIfNeeded(from: legacyURL, to: dbURL)
-        let dbPath = dbURL.path
-        let provider = try Provider.newWithPath(dbPath: dbPath)
+        guard let storageRoot = storageFolderURL ?? Self.defaultStorageFolderURL() else {
+            throw CocoaError(.fileNoSuchFile)
+        }
 
-        if let identityBytes = try? provider.loadIdentity() {
+        let namespace = Self.storageNamespace(for: userId)
+        let dbName = "ermis_mls_" + namespace + ".db"
+        let destinationURL = storageRoot
+            .appendingPathComponent("mls", isDirectory: true)
+            .appendingPathComponent(dbName)
+        let documentDirectory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first
+        var legacyRoots = legacyStorageFolderURLs
+        if let documentDirectory {
+            legacyRoots.append(documentDirectory)
+        }
+        let legacyCandidates = Self.legacyProviderCandidates(
+            roots: legacyRoots,
+            userId: userId,
+            dbName: dbName,
+            documentDirectory: documentDirectory
+        )
+        let markerKey = Self.providerMigrationMarkerKey(
+            namespace: namespace,
+            destinationURL: destinationURL
+        )
+        let migrator = MlsProviderStoreMigrator(defaults: userDefaults)
+        let resolvedURL = try migrator.resolveDatabaseURL(
+            legacyCandidates: legacyCandidates,
+            destinationURL: destinationURL,
+            markerKey: markerKey
+        )
+        if resolvedURL.standardizedFileURL != destinationURL.standardizedFileURL {
+            log.warning(
+                "MLS provider migration did not complete; continuing with verified legacy store"
+            )
+        }
+
+        let provider = try Provider.newWithPath(dbPath: resolvedURL.path)
+        if let identityBytes = try provider.loadIdentity() {
             self.identity = try Identity.fromBytes(provider: provider, data: identityBytes)
         } else {
             let identity = try Identity(provider: provider, userId: userId)
@@ -84,15 +153,30 @@ public class MlsClient {
             let identityBytes = try identity.toBytes()
             try provider.storeIdentity(userId: userId, identityBytes: identityBytes)
         }
+        try migrator.protectResolvedStore(at: resolvedURL)
+        if resolvedURL.standardizedFileURL == destinationURL.standardizedFileURL {
+            // Fresh installs have no legacy store to migrate, but still need an authoritative
+            // marker after the new provider has opened and its identity is durable. This prevents
+            // a later stale legacy file from replacing a valid Application Support store.
+            userDefaults.set(true, forKey: markerKey)
+        }
 
         self.provider = provider
-        providerDatabaseURL = dbURL
+        providerDatabaseURL = resolvedURL
+        providerDatabaseCleanupURLs = Self.uniqueURLs(
+            [resolvedURL, destinationURL] + legacyCandidates
+        )
+        currentProviderMigrationMarkerKey = markerKey
         hasSetup = true
     }
 
     func purgeCurrentUserData() throws {
+        assertMutationExecutor()
         guard let currentUserId = userId else { return }
-        let databaseURL = providerDatabaseURL
+        let databaseURLs = providerDatabaseCleanupURLs.isEmpty
+            ? [providerDatabaseURL].compactMap { $0 }
+            : providerDatabaseCleanupURLs
+        let migrationMarkerKey = currentProviderMigrationMarkerKey
         if let provider {
             try provider.deleteAllGroups()
             try provider.deleteIdentity()
@@ -102,8 +186,10 @@ public class MlsClient {
         userId = nil
         hasSetup = false
         providerDatabaseURL = nil
+        providerDatabaseCleanupURLs = []
+        currentProviderMigrationMarkerKey = nil
 
-        if let databaseURL {
+        for databaseURL in databaseURLs {
             for suffix in ["", "-wal", "-shm"] {
                 let url = URL(fileURLWithPath: databaseURL.path + suffix)
                 if FileManager.default.fileExists(atPath: url.path) {
@@ -113,6 +199,20 @@ public class MlsClient {
         }
         deviceIdStore.removeUser(currentUserId)
         removeUserScopedDefault(forKey: Self.cursorKey, userId: currentUserId)
+        if let migrationMarkerKey {
+            userDefaults.removeObject(forKey: migrationMarkerKey)
+        }
+    }
+
+    /// Installs the repository-owned runtime guard after dependency construction. Direct
+    /// `MlsClient` tests remain possible when no guard is installed; production group mutations
+    /// assert in debug builds unless they are running on `MlsMutationExecutor`.
+    func installMutationExecutorAssertion(_ assertion: @escaping () -> Void) {
+        mutationExecutorAssertion = assertion
+    }
+
+    private func assertMutationExecutor() {
+        mutationExecutorAssertion?()
     }
 
     private func removeUserScopedDefault(forKey key: String, userId: String) {
@@ -125,18 +225,40 @@ public class MlsClient {
         SHA256.hash(data: Data(userId.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func migrateLegacyProviderIfNeeded(from legacyURL: URL, to destinationURL: URL) throws {
-        let fileManager = FileManager.default
-        guard legacyURL.standardizedFileURL != destinationURL.standardizedFileURL,
-              !fileManager.fileExists(atPath: destinationURL.path),
-              fileManager.fileExists(atPath: legacyURL.path) else { return }
-        for suffix in ["", "-wal", "-shm"] {
-            let source = URL(fileURLWithPath: legacyURL.path + suffix)
-            let destination = URL(fileURLWithPath: destinationURL.path + suffix)
-            if fileManager.fileExists(atPath: source.path) {
-                try fileManager.moveItem(at: source, to: destination)
-            }
+    private static func providerMigrationMarkerKey(namespace: String, destinationURL: URL) -> String {
+        let destinationNamespace = storageNamespace(
+            for: destinationURL.standardizedFileURL.path
+        )
+        return "ermis_mls_provider_migration_v1_\(namespace)_\(destinationNamespace)"
+    }
+
+    private static func defaultStorageFolderURL() -> URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("network.ermis.ermisChat", isDirectory: true)
+    }
+
+    private static func legacyProviderCandidates(
+        roots: [URL],
+        userId: String,
+        dbName: String,
+        documentDirectory: URL?
+    ) -> [URL] {
+        var candidates = roots.map {
+            $0.appendingPathComponent("mls", isDirectory: true)
+                .appendingPathComponent(dbName)
         }
+        if let documentDirectory {
+            candidates.append(
+                documentDirectory.appendingPathComponent("ermis_mls_" + userId + ".db")
+            )
+        }
+        return uniqueURLs(candidates)
+    }
+
+    private static func uniqueURLs(_ urls: [URL]) -> [URL] {
+        var paths = Set<String>()
+        return urls.filter { paths.insert($0.standardizedFileURL.path).inserted }
     }
 
     private static func migrateLegacyDefaultsIfNeeded(to destination: UserDefaults) {
@@ -153,6 +275,7 @@ public class MlsClient {
     }
 
     private func createGroup(with cid: String) throws -> Group {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -205,6 +328,7 @@ public class MlsClient {
     
 
     func addMember(to group: Group, memberKeyPackages: [KeyPackage]) throws -> CommitBundle {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -222,6 +346,7 @@ public class MlsClient {
     }
 
     func removeMember(_ userId: String, in group: Group) throws -> CommitBundle {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -233,6 +358,7 @@ public class MlsClient {
     }
 
     func removeMembers(_ userIds: [String], in group: Group) throws -> CommitBundle {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -246,6 +372,7 @@ public class MlsClient {
     }
 
     func getKeyPackage() -> Data? {
+        assertMutationExecutor()
         guard let provider else {
             return nil
         }
@@ -257,6 +384,7 @@ public class MlsClient {
     }
 
     func getKeyPackage(count: Int = 50) -> [Data] {
+        assertMutationExecutor()
         guard let provider else {
             return []
         }
@@ -272,6 +400,7 @@ public class MlsClient {
         in group: Group,
         trace: E2eeSendTrace.Context? = nil
     ) throws -> Data {
+        assertMutationExecutor()
         guard let provider else {
             let error = ClientError.MlsNoProviderError()
             trace?.failure(stage: "mls_precondition_failed", error: error)
@@ -342,6 +471,7 @@ public class MlsClient {
         in group: Group,
         trace: E2eeSendTrace.Context? = nil
     ) throws -> Data {
+        assertMutationExecutor()
         guard let provider else {
             let error = ClientError.MlsNoProviderError()
             trace?.failure(stage: "mls_precondition_failed", error: error)
@@ -408,6 +538,7 @@ public class MlsClient {
     }
 
     func mergePendingCommit(in cid: ChannelId) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -417,6 +548,7 @@ public class MlsClient {
     }
 
     func clearPendingCommit(in cid: ChannelId) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -425,6 +557,7 @@ public class MlsClient {
     }
 
     func commitPendingProposal(in cid: ChannelId) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -436,6 +569,7 @@ public class MlsClient {
     }
 
     func clearPendingProposal(in cid: ChannelId) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -454,6 +588,7 @@ public class MlsClient {
     }
 
     func encrypt(data: Data, in group: Group) throws -> Data {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -466,6 +601,7 @@ public class MlsClient {
     }
 
     func processApplicationMessage(data: Data, in group: Group) throws -> MlsProcessedApplicationMessage {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -478,46 +614,52 @@ public class MlsClient {
         }
         let e2ePayload = try JSONDecoder().decode(E2ePayload.self, from: content)
         return MlsProcessedApplicationMessage(
+            plaintext: content,
             payload: e2ePayload,
             aad: processedMessage.aad,
-            epoch: processedMessage.epoch
+            epoch: processedMessage.epoch,
+            senderIndex: processedMessage.senderIndex,
+            resultingGroupEpoch: group.epoch()
         )
     }
 
     func saveState(of group: Group) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
         try group.saveState(provider: provider)
     }
 
-    /// Processes an MLS protocol message without persisting the group's ratchet state.
-    /// Commit callers persist their durable proof before `saveState(of:)` so a crash replay can
-    /// distinguish an applied event from an unrelated epoch advance.
-    func processProtocolMessage(data: Data, in group: Group) throws -> ProcessedMessage {
+    /// Processes an MLS protocol message and preserves its type plus before/after epoch metadata.
+    /// Commit callers write the durable event proof before this call, validate the returned epoch,
+    /// and then explicitly store the complete group with `saveState(of:)`.
+    func processProtocolMessage(data: Data, in group: Group) throws -> MlsProcessedProtocolMessage {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
+        let epochBefore = group.epoch()
         let processedMessage = try group.processMessage(provider: provider, msg: data)
-        guard processedMessage.messageType != .applicationMessage else {
+        let metadata = MlsProcessedProtocolMetadata(
+            messageEpoch: processedMessage.epoch,
+            senderIndex: processedMessage.senderIndex,
+            aad: processedMessage.aad,
+            groupEpochBefore: epochBefore,
+            groupEpochAfter: group.epoch()
+        )
+        switch processedMessage.messageType {
+        case .proposal:
+            return .proposal(metadata)
+        case .commit:
+            return .commit(metadata)
+        case .applicationMessage:
             throw ClientError.Unexpected("Expected an MLS protocol message.")
         }
-        return processedMessage
-    }
-
-    @discardableResult
-    func processMessage(data: Data, in cid: String) throws -> ProcessedMessage {
-        log.debug("[MLS] processing message", subsystems: .mls)
-        guard let provider else {
-            throw ClientError.MlsNoProviderError()
-        }
-        let group = try loadGroup(with: cid)
-        let processedMessage = try group.processMessage(provider: provider, msg: data)
-        try group.saveState(provider: provider)
-        return processedMessage
     }
 
     func joinWithWelcome(cid: String, welcome: Data, ratchetTree: RatchetTree) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -530,6 +672,7 @@ public class MlsClient {
     }
 
     func externalJoin(groupInfo: Data) throws -> ExternalJoinResult {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -545,6 +688,7 @@ public class MlsClient {
     }
     
     func deleteGroup(cid: String) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -559,6 +703,7 @@ public class MlsClient {
     }
     
     func addMembersWithRemovals(in cid: String, removeUserIds: [String], addMembers: [KeyPackage]) throws -> (CommitBundle, RatchetTree, Int) {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }
@@ -578,6 +723,7 @@ public class MlsClient {
     }
     
     func removeMembersWithRemovals(in cid: String, removeUserIds: [String]) throws {
+        assertMutationExecutor()
         guard let provider else {
             throw ClientError.MlsNoProviderError()
         }

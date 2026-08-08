@@ -189,6 +189,30 @@ final class E2eeEpochStaleRecoveryTests: XCTestCase {
         }
     }
 
+    func testUnknownSendResultRelaunchRetriesExactNormalE2eeIntent() throws {
+        let database = try makeDatabase()
+        defer { try? close(database) }
+
+        try database.writeAndWait { session in
+            let message = try makeMessage(in: session, id: "unknown-send-result")
+            let ciphertext = Data([10, 20, 30, 40])
+            message.encryptedData = ciphertext
+            message.mlsEpoch = 12
+            message.localMessageState = .sending
+
+            // Simulate process termination after POST started but before its result was durable.
+            session.rescueMessagesStuckInSending()
+
+            XCTAssertEqual(message.id, "unknown-send-result")
+            XCTAssertEqual(message.localMessageState, .pendingSend)
+            XCTAssertEqual(message.encryptedData, ciphertext)
+            XCTAssertEqual(message.mlsEpoch, 12)
+            let retryBody = message.asRequestBody() as MessageRequestBody
+            XCTAssertEqual(retryBody.encryptedData, ciphertext.uint8Array)
+            XCTAssertEqual(retryBody.mlsEpoch, 12)
+        }
+    }
+
     func testEpochRecoveryStatesRemainObservableByWorkers() throws {
         let database = try makeDatabase()
         defer { try? close(database) }

@@ -40,6 +40,13 @@ public struct ErmisClientConfig {
         Self.initLocalStorageFolderURL(groupIdentifier: nil)
     }()
 
+    /// MLS provider state is durable security state rather than a user-visible document or an
+    /// evictable cache. Keep it in Application Support even while the legacy chat cache remains in
+    /// Documents for source compatibility.
+    var mlsStorageFolderURL: URL? {
+        Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier)
+    }
+
     /// Authentication-aware storage scope. Do not share one on-disk cache between users.
     public var localStorageScope: ErmisLocalStorageScope = .automatic
 
@@ -59,6 +66,28 @@ public struct ErmisClientConfig {
         }
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
 #endif
+    }
+
+    static func initMlsStorageFolderURL(groupIdentifier: String?) -> URL? {
+#if !os(macOS)
+        if let groupIdentifier {
+            guard let container = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: groupIdentifier
+            ) else {
+                log.error(
+                    "Chat is configured to use the App Group: \(groupIdentifier) but the target seems to be not configured correctly"
+                )
+                return nil
+            }
+            return container
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+                .appendingPathComponent("network.ermis.ermisChat", isDirectory: true)
+        }
+#endif
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("network.ermis.ermisChat", isDirectory: true)
     }
 
     /// The datacenter `ErmisClient` uses for connecting.

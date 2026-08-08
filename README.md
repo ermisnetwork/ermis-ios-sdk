@@ -193,6 +193,66 @@ migration has completed, a missing Keychain item is therefore treated as a new i
 creates a new device ID and the account must follow the normal MLS external-join flow. Applications
 must not assume that restoring an encrypted device backup preserves the previous MLS device identity.
 
+#### MLS provider database storage and migration
+
+<details>
+<summary>Change log</summary>
+
+- `2026-08-08`: Locked the M1 incoming/outgoing persistence ordering and added a reproducible
+  SIGKILL/relaunch verification harness.
+  - Reason: same-process reload tests do not prove that SQLite/WAL state survives abrupt process
+    termination.
+  - Integrator action: run the harness on a booted simulator before changing MLS persistence or
+    pending-send recovery.
+  - Compatibility/default: production APIs and wire payloads are unchanged; the harness exists
+    only in the test target.
+
+</details>
+
+The OpenMLS SQLite provider is stored under the app's Application Support directory, separately
+from the Core Data chat cache. Its directory is excluded from backup and uses
+`completeUntilFirstUserAuthentication` file protection on iOS. When an App Group is configured,
+the same Application Support layout is used inside that container.
+
+Upgrades copy the legacy provider database and any SQLite `-wal`/`-shm` sidecars into a staging
+directory, reopen the staged database, and verify its stored identity and group IDs before promotion.
+The migration marker is written only after verification. The legacy database remains untouched for
+the rollback window; if copying or verification fails, the SDK continues with that legacy database
+instead of opening a blank provider. A relaunch safely retries an interrupted migration.
+
+At runtime, the SDK routes application decrypts, protocol processing, outgoing encryption,
+membership commits, external joins, key-package generation, and group deletion through one internal
+MLS mutation executor. It preserves FIFO ordering per effective MLS group and currently limits the
+shared OpenMLS SQLite provider to one mutation at a time. The old decrypt-only queue is not used in
+parallel. Share extensions and notification service extensions must hand work to the main app and
+must not instantiate or mutate OpenMLS group state directly.
+
+Incoming application processing is deferred: the SDK retains the exact plaintext, AAD, sender and
+message epoch, commits plaintext to Core Data, and only then saves the updated OpenMLS receiver
+state. Commit processing returns typed before/after epoch metadata; the durable commit proof and
+exact target epoch are checked before its apply cursor advances. A Welcome whose group was already
+persisted retries its historical-message normalization before cursor advancement, so a prior Core
+Data failure cannot be hidden by relaunch. Standalone MLS proposals remain unsupported by Bellboy's
+production flow and are rejected as repair issues rather than applied.
+
+Outgoing E2EE text and edit sends follow the inverse durable ordering: create the local message and
+stable ID first, encrypt on the MLS executor, save the sender state, synchronously persist the exact
+ciphertext/epoch network intent, and only then begin HTTP. Relaunch and unknown HTTP-result recovery
+reuse that exact intent. If a crash happens after sender-state save but before intent persistence,
+the missing generation is abandoned and a later generation is encrypted from the durable sender
+state. The composer clears only after the optimistic message write succeeds; database failure or
+newer user input preserves the current draft. Slow-mode cooldown starts only after that local write.
+
+To rerun the M1 process-crash gate, boot an iOS Simulator and pass its UDID:
+
+```sh
+./scripts/run-m1-e2ee-crash-harness.sh <booted-simulator-udid>
+```
+
+The four seed invocations intentionally report an XCTest process failure because each one sends
+`SIGKILL` after its durable boundary. The script succeeds only when every following invocation
+reopens the same on-disk OpenMLS/Core Data state and verifies TCR-005 through TCR-008.
+
 <br />
 
 ### Step 6: Sending your first message

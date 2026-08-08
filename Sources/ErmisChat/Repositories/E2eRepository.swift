@@ -353,15 +353,9 @@ class E2eRepository: EventsControllerDelegate {
         return iso.date(from: string)
     }
 
-    /// Serial queue that serializes all MLS decrypt operations.
-    /// All sources (WebSocket, API, NSE via shared DB) funnel through here,
-    /// so MLS `processMessage` is never called concurrently for the same group.
-    private let decryptQueue: OperationQueue = {
-        let q = OperationQueue()
-        q.maxConcurrentOperationCount = 1
-        q.name = "io.ermis.e2e.decrypt"
-        return q
-    }()
+    /// Serializes every OpenMLS group mutation in the main app process. This includes decrypt,
+    /// sync protocol events, outgoing encryption, membership commits, external join and deletion.
+    private let mutationExecutor = MlsMutationExecutor()
     
     /// Guards against multiple concurrent syncPage tasks.
     /// Only one sync (from either `performE2eSync` or `performE2eChannelSync`) can run at a time.
@@ -388,17 +382,6 @@ class E2eRepository: EventsControllerDelegate {
     private var lastSyncTriggeredAt: Date?
     private var pendingSyncWorkItem: DispatchWorkItem?
 
-    /// Last enqueued group-mutating operation per channel, across *all* sources (realtime
-    /// commits/welcomes from `handleMlsEvent` and bulk-sync events from `processE2eSyncEvents`).
-    /// `decryptQueue` is serial but `OperationQueue` does not guarantee FIFO dequeue order for
-    /// operations of equal priority — and a high-priority realtime commit can overtake a queued
-    /// low-priority sync commit. Both would advance the MLS epoch out of order, tripping the
-    /// epoch guard and dropping commits. Chaining each op to the previous one for the same
-    /// channel via `addDependency` enforces strict per-channel ordering regardless of queue
-    /// scheduling; priority still governs ordering *across* channels.
-    private var lastOpByCid: [String: Operation] = [:]
-    private let lastOpLock = NSLock()
-
     private lazy var durableInboxStore = E2eeDurableInboxStore(database: database)
     private let durableApplyLock = NSLock()
     private var blockedDurableScopes: Set<String> = []
@@ -419,7 +402,7 @@ class E2eRepository: EventsControllerDelegate {
 
     /// Dedicated private-queue context for E2EE decrypt reads (decrypt cache + pending-message
     /// lookups). Kept separate from `backgroundReadOnlyContext` — which the synchronous
-    /// send/encrypt path blocks via `waitUntilFinished` — so a decrypt running on `decryptQueue`
+    /// send/encrypt path blocks via `waitUntilFinished` — so a decrypt running on the mutation executor
     /// can never deadlock against an in-flight send, while still keeping reads off the main thread.
     private lazy var e2eReadContext: NSManagedObjectContext = {
         let context = database.newBackgroundContext()
@@ -437,6 +420,9 @@ class E2eRepository: EventsControllerDelegate {
         self.mlsClient = mlsClient
         self.eventNotificationCenter = eventNotificationCenter
         self.eventController = EventsController(notificationCenter: eventNotificationCenter)
+        mlsClient.installMutationExecutorAssertion { [weak mutationExecutor] in
+            mutationExecutor?.assertIsExecuting()
+        }
         eventController.delegate = self
     }
     
@@ -598,29 +584,38 @@ class E2eRepository: EventsControllerDelegate {
         enqueueGroupOperation(op, cidString: cid)
     }
 
-    /// Enqueues a group-state–mutating operation onto the serial `decryptQueue`, chained after
-    /// the previous such operation for the same channel so per-channel MLS work (commits,
-    /// welcomes, sync events) runs in enqueue order. Required because `OperationQueue` does not
-    /// guarantee FIFO ordering for equal-priority operations, and a `.high` realtime commit must
-    /// not overtake a `.low` sync commit for the same group — either would advance the epoch out
-    /// of order. `queuePriority` still governs ordering across *different* channels.
-    private func enqueueGroupOperation(_ op: Operation, cidString: String) {
+    /// Enqueues a group-state mutation on the shared executor. The existing `Operation` wrapper
+    /// is retained at call sites so cancellation and priority behavior stay source-compatible.
+    @discardableResult
+    private func enqueueGroupOperation(_ op: Operation, cidString: String) -> Operation {
         enqueueGroupOperation(op, cidStrings: [cidString])
     }
 
     /// Chains one operation behind every listed group and makes future work for each group wait
     /// for it. Removal pages use this barrier because one page may delete several MLS groups but
     /// its single user-scoped cursor cannot advance until every deletion is complete.
-    private func enqueueGroupOperation(_ op: Operation, cidStrings: Set<String>) {
-        lastOpLock.lock()
-        for cidString in cidStrings {
-            if let previous = lastOpByCid[cidString], !previous.isFinished {
-                op.addDependency(previous)
-            }
-            lastOpByCid[cidString] = op
+    @discardableResult
+    private func enqueueGroupOperation(_ op: Operation, cidStrings: Set<String>) -> Operation {
+        mutationExecutor.enqueue(scopeIds: cidStrings, priority: op.queuePriority) {
+            guard !op.isCancelled else { return }
+            op.start()
         }
-        lastOpLock.unlock()
-        decryptQueue.addOperation(op)
+    }
+
+    private func performMlsMutation<T>(
+        cidString: String,
+        priority: Operation.QueuePriority = .normal,
+        _ mutation: @escaping () throws -> T
+    ) throws -> T {
+        try mutationExecutor.sync(scopeIds: [cidString], priority: priority, work: mutation)
+    }
+
+    private func performMlsMutation<T>(
+        cidStrings: Set<String>,
+        priority: Operation.QueuePriority = .normal,
+        _ mutation: @escaping () throws -> T
+    ) throws -> T {
+        try mutationExecutor.sync(scopeIds: cidStrings, priority: priority, work: mutation)
     }
     
     private func decryptNewMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
@@ -712,7 +707,7 @@ class E2eRepository: EventsControllerDelegate {
     /// Strategy: attempt a fresh MLS decrypt that bypasses the cache; overwrite the cache only on
     /// success (a genuine edit produces new, decryptable ciphertext). On failure, leave the
     /// existing cache untouched so the message keeps showing its decrypted content.
-    /// Must run on `decryptQueue`.
+    /// Must run on `MlsMutationExecutor`.
     private func reDecryptUpdatedMessageSync(messageId: MessageId, encryptedData: Data, cid: ChannelId) {
         do {
             let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
@@ -730,8 +725,8 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
-    /// Enqueues `reDecryptUpdatedMessageSync` on the serial `decryptQueue`. Used by the WebSocket
-    /// `message.updated` path, which is not already running on `decryptQueue`.
+    /// Enqueues `reDecryptUpdatedMessageSync` on `MlsMutationExecutor`. Used by the WebSocket
+    /// `message.updated` path, which is not already running on the executor.
     private func reDecryptUpdatedMessage(messageId: MessageId, encryptedData: Data, cid: ChannelId) {
         let op = BlockOperation { [weak self] in
             self?.reDecryptUpdatedMessageSync(messageId: messageId, encryptedData: encryptedData, cid: cid)
@@ -772,7 +767,15 @@ class E2eRepository: EventsControllerDelegate {
         guard amountOfKeyPackagesMissing > 0 , amountOfKeyPackagesMissing <= keyPackageAmount else {
             return
         }
-        let keyPackages = mlsClient.getKeyPackage(count: amountOfKeyPackagesMissing).map { $0.uint8Array }
+        let keyPackages: [[UInt8]]
+        do {
+            keyPackages = try performMlsMutation(cidString: "__identity__") {
+                self.mlsClient.getKeyPackage(count: amountOfKeyPackagesMissing).map(\.uint8Array)
+            }
+        } catch {
+            log.error("[MLS] Generate missing keypackages failed: \(error)", subsystems: .mls)
+            return
+        }
         apiClient.request(endpoint: .uploadKeyPackages(keyPackages: keyPackages)) { result in
             log.debug("[MLS] Upload missing \(amountOfKeyPackagesMissing) keypackages result: \(result)", subsystems: .mls)
         }
@@ -817,7 +820,9 @@ class E2eRepository: EventsControllerDelegate {
                 // stale local group and restart from the new membership boundary.
                 if (try? mlsClient.loadGroup(with: cidString)) != nil {
                     do {
-                        try mlsClient.deleteGroup(cid: cidString)
+                        try performMlsMutation(cidString: cidString) {
+                            try self.mlsClient.deleteGroup(cid: cidString)
+                        }
                     } catch {
                         log.error("[MLS] Remove group: \(cidString) that user has been kick failed with error \(error)", subsystems: .mls)
                     }
@@ -1476,7 +1481,9 @@ class E2eRepository: EventsControllerDelegate {
 
                     log.debug("[E2eSync] Channel removed (type=\(event.removalType ?? "unknown")): \(cidString); cleaning local state", subsystems: .mls)
                     if self.mlsClient.isGroupLoaded(cid: cidString) {
-                        try self.mlsClient.deleteGroup(cid: cidString)
+                        try self.performMlsMutation(cidString: cidString) {
+                            try self.mlsClient.deleteGroup(cid: cidString)
+                        }
                     }
                     channelCids.insert(cid)
                     cleanedScopeCids.insert(cidString)
@@ -1575,7 +1582,7 @@ class E2eRepository: EventsControllerDelegate {
         syncLock.unlock()
     }
     
-    /// Enqueues each event for one channel onto the serial `decryptQueue` as its own
+    /// Enqueues each event for one channel onto `MlsMutationExecutor` as its own
     /// low-priority operation, in server order.
     ///
     /// Splitting per event (rather than processing the whole channel in one operation) keeps
@@ -1891,6 +1898,17 @@ class E2eRepository: EventsControllerDelegate {
                         )
                     } catch {
                         log.error("[E2eSync] Failed to persist repair issue for \(event.eventId): \(error)", subsystems: .mls)
+                        // Without a durable repair record, advancing even an application event
+                        // would erase the only actionable failure state. Keep the scope blocked
+                        // and leave the exact raw inbox event unapplied for the next replay.
+                        self.durableApplyLock.lock()
+                        self.blockedDurableScopes.insert(cidString)
+                        self.durableApplyLock.unlock()
+                        log.error(
+                            "[E2eSync] Apply blocked for \(cidString) because repair persistence failed",
+                            subsystems: .mls
+                        )
+                        return
                     }
 
                     // An application ciphertext is already durable in the inbox. Bellboy's
@@ -1943,7 +1961,7 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
-    /// Applies a single E2EE sync event. Must run on `decryptQueue`.
+    /// Applies a single E2EE sync event. Must run on `MlsMutationExecutor`.
     private func processSingleE2eSyncEvent(
         _ envelope: E2eSyncEventEnvelope,
         accountId: String,
@@ -1988,7 +2006,7 @@ class E2eRepository: EventsControllerDelegate {
                 case .decrypt:
                     break
                 }
-                // Call the synchronous body directly — we are already on decryptQueue,
+                // Call the synchronous body directly — we are already on the mutation executor,
                 // so we must NOT re-enqueue via decryptMessagePayload (that would deadlock
                 // the serial queue waiting on itself).
                 guard let mlsCiphertext = data.mlsCiphertext else {
@@ -2043,20 +2061,24 @@ class E2eRepository: EventsControllerDelegate {
         return epoch
     }
 
-    private func normalizeHistoricalApplications(cid: ChannelId) {
+    private func normalizeHistoricalApplicationsAndWait(cid: ChannelId) throws {
         guard let accountId = mlsClient.userId,
               let firstEpoch = firstDecryptableEpoch(for: mlsGroupCid(for: cid)) else { return }
+        let boundary = try durableInboxStore.localJoinBoundary(
+            accountId: accountId,
+            scopeCid: cid.rawValue
+        )
+        try durableInboxStore.normalizePreJoinHistoricalApplications(
+            accountId: accountId,
+            scopeCid: cid.rawValue,
+            firstDecryptableEpoch: firstEpoch,
+            joinBoundary: boundary
+        )
+    }
+
+    private func normalizeHistoricalApplications(cid: ChannelId) {
         do {
-            let boundary = try durableInboxStore.localJoinBoundary(
-                accountId: accountId,
-                scopeCid: cid.rawValue
-            )
-            try durableInboxStore.normalizePreJoinHistoricalApplications(
-                accountId: accountId,
-                scopeCid: cid.rawValue,
-                firstDecryptableEpoch: firstEpoch,
-                joinBoundary: boundary
-            )
+            try normalizeHistoricalApplicationsAndWait(cid: cid)
         } catch {
             log.error(
                 "[E2eSync] Failed to normalize historical application state for \(cid.rawValue)",
@@ -2182,7 +2204,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     /// Handles a member.removed event received during E2EE sync.
-    /// Called on `decryptQueue`.
+    /// Called on `MlsMutationExecutor`.
     /// - Parameter payload: The event payload for the member removal.
     private func handleMemberRemovedEvent(_ payload: EventPayload) throws {
         let event = try MemberRemovedEventDTO(from: payload)
@@ -2210,7 +2232,7 @@ class E2eRepository: EventsControllerDelegate {
     // MARK: - Sync Event Handlers
 
     /// Handles a `reaction` sync event by saving/updating the reaction snapshot in the database.
-    /// Called on `decryptQueue`.
+    /// Called on `MlsMutationExecutor`.
     private func handleReactionSyncEvent(_ data: ReactionSyncData) throws {
         log.debug("[E2eSync] Handling reaction sync event for message \(data.message.id)", subsystems: .mls)
         try database.writeAndWait { session in
@@ -2222,7 +2244,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     /// Handles a `message_deleted` sync event by removing the message from local cache.
-    /// Called on `decryptQueue`.
+    /// Called on `MlsMutationExecutor`.
     private func handleMessageDeletedSyncEvent(_ data: MessageDeletedSyncData) throws {
         log.debug("[E2eSync] Handling message_deleted sync event for message \(data.message.id)", subsystems: .mls)
         try database.writeAndWait { session in
@@ -2232,7 +2254,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     /// Handles a `message_updated` sync event by decrypting the latest snapshot and upserting it.
-    /// Called on `decryptQueue`.
+    /// Called on `MlsMutationExecutor`.
     private func handleMessageUpdatedSyncEvent(_ data: MessageUpdatedSyncData, cid: ChannelId) throws {
         let messageId = data.message.id
         log.debug("[E2eSync] Handling message_updated sync event for message \(messageId)", subsystems: .mls)
@@ -2262,7 +2284,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     /// Handles a `message_pin` sync event by patching the pin/unpin state on the message.
-    /// Called on `decryptQueue`.
+    /// Called on `MlsMutationExecutor`.
     private func handleMessagePinSyncEvent(_ data: MessagePinSyncData, cid: ChannelId) throws {
         log.debug("[E2eSync] Handling message_pin sync event for message \(data.message.id)", subsystems: .mls)
         try database.writeAndWait { session in
@@ -2274,7 +2296,7 @@ class E2eRepository: EventsControllerDelegate {
     /// Handles a `member_removed` sync event.
     /// If `selfRemove` is true, queues a pending ghost for composite cleanup.
     /// If `selfRemove` is false, treats as admin kick.
-    /// Called on `decryptQueue`.
+    /// Called on `MlsMutationExecutor`.
     /// - Parameters:
     ///   - data: The member removal data (member + selfRemove flag).
     ///   - cid: The channel ID from the sync envelope.
@@ -2309,7 +2331,7 @@ class E2eRepository: EventsControllerDelegate {
 
     /// Handles an invite respond-back sync event (accepted, rejected, messaging_rejected, messaging_skipped).
     /// Triggers E2E channel sync when MLS is enabled, matching the websocket event behavior.
-    /// Called on `decryptQueue`.
+    /// Called on `MlsMutationExecutor`.
     /// - Parameters:
     ///   - data: The invite respond data (mlsEnabled, member, topicCids).
     ///   - cid: The channel ID from the sync envelope.
@@ -2330,7 +2352,7 @@ class E2eRepository: EventsControllerDelegate {
     // MARK: - System Message Handling
     
     /// Handles a system message received during E2EE sync.
-    /// Called on `decryptQueue`. System messages are plain-text and do not require MLS decryption.
+    /// Called on `MlsMutationExecutor`. System messages are plain-text and do not require MLS decryption.
     /// - Parameters:
     ///   - data: The application event data with `type == .system`.
     ///   - cid: The channel this message belongs to.
@@ -2341,7 +2363,7 @@ class E2eRepository: EventsControllerDelegate {
         log.debug("[E2E] Received system message \(data.id) in \(cid): \(data.text ?? "")", subsystems: .mls)
     }
     
-    /// Synchronous decryption body. Must only be called from within a `decryptQueue` operation.
+    /// Synchronous decryption body. Must only be called from `MlsMutationExecutor`.
     /// External callers should use `decryptMessagePayload` which enqueues this onto the queue.
     private func decryptMessagePayloadSync(
         messageId: MessageId,
@@ -2583,13 +2605,17 @@ class E2eRepository: EventsControllerDelegate {
 
                 log.debug("[MLS] Processing commit message", subsystems: .mls)
                 let processed = try mlsClient.processProtocolMessage(data: commitData, in: group)
-                guard processed.messageType == .commit else {
+                guard case .commit(let metadata) = processed else {
                     throw E2eeSyncApplyError.invalidCommit(
-                        reason: "OpenMLS returned \(processed.messageType)"
+                        reason: "OpenMLS returned a proposal for a commit envelope"
                     )
                 }
-                guard group.epoch() == targetEpoch else {
-                    throw E2eeSyncApplyError.epochMismatch(local: group.epoch(), event: data.epoch)
+                guard metadata.groupEpochAfter == targetEpoch,
+                      group.epoch() == targetEpoch else {
+                    throw E2eeSyncApplyError.epochMismatch(
+                        local: metadata.groupEpochAfter,
+                        event: data.epoch
+                    )
                 }
                 try mlsClient.saveState(of: group)
                 try durableInboxStore.markCommitStatePersisted(
@@ -2607,6 +2633,12 @@ class E2eRepository: EventsControllerDelegate {
                 
                 guard !self.shouldSkipWelcome(cid: cidString) else {
                     log.debug("[MLS] Skipping welcome: group already exists for \(cidString)", subsystems: .mls)
+                    if let existingCid = try? ChannelId(cid: cidString) {
+                        // A prior attempt may have persisted the group and then failed its Core
+                        // Data normalization. Retry that durable metadata write before advancing
+                        // the exact Welcome cursor.
+                        try normalizeHistoricalApplicationsAndWait(cid: existingCid)
+                    }
                     return .requiresCursorAdvance
                 }
                 if let targetUserIds = data.targetUserIds,
@@ -2624,7 +2656,7 @@ class E2eRepository: EventsControllerDelegate {
                     try mlsClient.joinWithWelcome(cid: cidString, welcome: Data(welcome), ratchetTree: ratchetTree)
                     try saveMlsGroupJoinedAtAndWait(cidString: cidString)
                     if let joinedCid = try? ChannelId(cid: cidString) {
-                        normalizeHistoricalApplications(cid: joinedCid)
+                        try normalizeHistoricalApplicationsAndWait(cid: joinedCid)
                         reDecryptPendingMessages(in: joinedCid)
                     }
                 } catch {
@@ -2747,17 +2779,22 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     func addMember(to cid: ChannelId, memberKeypackages: [KeyPackage]) throws -> (CommitBundle, RatchetTree, Data, Int) {
-        let group = try mlsClient.loadOrCreateGroup(with: cid.rawValue)
-        let commitBundle = try mlsClient.addMember(to: group, memberKeyPackages: memberKeypackages)
-        
-        let ratchetTree = group.exportRatchetTree()
-        
-        guard let groupInfo = commitBundle.groupInfo else {
-            throw ClientError("[MLS] add member failed, no group info in commit bundle")
+        try performMlsMutation(cidString: cid.rawValue) {
+            let group = try self.mlsClient.loadOrCreateGroup(with: cid.rawValue)
+            let commitBundle = try self.mlsClient.addMember(
+                to: group,
+                memberKeyPackages: memberKeypackages
+            )
+
+            let ratchetTree = group.exportRatchetTree()
+
+            guard let groupInfo = commitBundle.groupInfo else {
+                throw ClientError("[MLS] add member failed, no group info in commit bundle")
+            }
+            let epoch = Int(group.epoch())
+            log.debug("TTTTTTTT ADD MEMBER CURRENT EPOCH: \(epoch)")
+            return (commitBundle, ratchetTree, groupInfo, epoch)
         }
-        let epoch = Int(group.epoch())
-        log.debug("TTTTTTTT ADD MEMBER CURRENT EPOCH: \(epoch)")
-        return (commitBundle, ratchetTree, groupInfo, epoch)
     }
 
     /// Adds new members while removing pending "ghost" leaves (members who self-left but
@@ -2770,16 +2807,18 @@ class E2eRepository: EventsControllerDelegate {
     /// (the self-leave composite-cleanup flow) clears the stale leaves and adds the new
     /// members in one epoch advance.
     func addMembersWithRemovals(to cid: ChannelId, removeUserIds: [String], memberKeypackages: [KeyPackage]) throws -> (CommitBundle, RatchetTree, Data, Int) {
-        let (commitBundle, ratchetTree, epoch) = try mlsClient.addMembersWithRemovals(
-            in: cid.rawValue,
-            removeUserIds: removeUserIds,
-            addMembers: memberKeypackages
-        )
-        guard let groupInfo = commitBundle.groupInfo else {
-            throw ClientError("[MLS] add member with removals failed, no group info in commit bundle")
+        try performMlsMutation(cidString: cid.rawValue) {
+            let (commitBundle, ratchetTree, epoch) = try self.mlsClient.addMembersWithRemovals(
+                in: cid.rawValue,
+                removeUserIds: removeUserIds,
+                addMembers: memberKeypackages
+            )
+            guard let groupInfo = commitBundle.groupInfo else {
+                throw ClientError("[MLS] add member with removals failed, no group info in commit bundle")
+            }
+            log.debug("TTTTTTTT ADD MEMBER WITH REMOVALS CURRENT EPOCH: \(epoch), removed ghosts: \(removeUserIds)")
+            return (commitBundle, ratchetTree, groupInfo, epoch)
         }
-        log.debug("TTTTTTTT ADD MEMBER WITH REMOVALS CURRENT EPOCH: \(epoch), removed ghosts: \(removeUserIds)")
-        return (commitBundle, ratchetTree, groupInfo, epoch)
     }
 
     func removeAllPendingChannel(cids: [String]) {
@@ -2858,23 +2897,18 @@ class E2eRepository: EventsControllerDelegate {
         let cidString = cid.rawValue
 
         do {
-            // 1. Load current MLS group.
-            let group = try mlsClient.loadGroup(with: cidString)
+            // Create the pending removal commit and capture its network payload as one mutation.
+            let (commitBundle, groupInfo, preMergeEpoch) = try removeMembers(
+                targetUserIds,
+                in: cid
+            )
 
-            // 2. Create commit to remove target users from MLS group.
-            let commitBundle = try mlsClient.removeMembers(targetUserIds, in: group)
-
-            // 3. Get pre-merge epoch.
-            let preMergeEpoch = Int(group.epoch())
-
-            // 4. Validate group_info.
-            guard let groupInfo = commitBundle.groupInfo, !groupInfo.isEmpty else {
-                try mlsClient.clearPendingCommit(in: cid)
+            guard !groupInfo.isEmpty else {
+                try clearPendingCommit(in: cid)
                 log.error("[E2E] commitEviction failed: group_info is required for \(cidString)", subsystems: .mls)
                 return
             }
 
-            // 5. Send eviction commit to server.
             let body = CommitEvictionRequestBody(
                 targetUserIds: targetUserIds,
                 commit: commitBundle.commit,
@@ -2912,14 +2946,16 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     func removeMembers(_ userIds: [String], in cid: ChannelId) throws -> (CommitBundle, Data, Int) {
-        let group = try mlsClient.loadGroup(with: cid.rawValue)
-        let commitBunddle = try mlsClient.removeMembers(userIds, in: group)
-        guard let groupInfo = commitBunddle.groupInfo else {
-            throw ClientError("[MLS] Remove member failed, no group info in commit bundle")
-        }//try mlsClient.exportGroupInfo(of: group)
-        let epoch = Int(group.epoch())
-        log.debug("TTTTTTTT REMOVE MEMBER CURRENT EPOCH: \(epoch)")
-        return (commitBunddle, groupInfo, epoch)
+        try performMlsMutation(cidString: cid.rawValue) {
+            let group = try self.mlsClient.loadGroup(with: cid.rawValue)
+            let commitBundle = try self.mlsClient.removeMembers(userIds, in: group)
+            guard let groupInfo = commitBundle.groupInfo else {
+                throw ClientError("[MLS] Remove member failed, no group info in commit bundle")
+            }
+            let epoch = Int(group.epoch())
+            log.debug("TTTTTTTT REMOVE MEMBER CURRENT EPOCH: \(epoch)")
+            return (commitBundle, groupInfo, epoch)
+        }
     }
     
     /// Joins a channel's MLS group from its server-published `group_info` via an external
@@ -2936,7 +2972,7 @@ class E2eRepository: EventsControllerDelegate {
         if recoverExternalJoinIfNeeded(cid: cid, completion: completion) {
             return
         }
-        apiClient.request(endpoint: .getGroupInfo(cid: cid)) { [weak self] result in
+        apiClient.request(endpoint: .getGroupInfo(cid: cid)) { [weak self] (result: Result<GroupInfoPayload, Error>) in
             guard let self else {
                 return
             }
@@ -2955,14 +2991,17 @@ class E2eRepository: EventsControllerDelegate {
                     }
                     return
                 }
-                // A Welcome may have created the group while we were fetching group_info —
-                // don't external-join over it (that would fork the group at a new epoch).
-                guard !mlsClient.isGroupLoaded(cid: cid.rawValue) else {
-                    completion(nil)
-                    return
-                }
                 do {
-                    let externalJoinResult = try mlsClient.externalJoin(groupInfo: groupInfo.groupInfo.data)
+                    // Re-check inside the mutation executor: a queued Welcome may have created
+                    // the group while the group_info request was in flight.
+                    let externalJoinResult: ExternalJoinResult? = try performMlsMutation(cidString: cid.rawValue) {
+                        guard !self.mlsClient.isGroupLoaded(cid: cid.rawValue) else { return nil }
+                        return try self.mlsClient.externalJoin(groupInfo: groupInfo.groupInfo.data)
+                    }
+                    guard let externalJoinResult else {
+                        completion(nil)
+                        return
+                    }
                     log.debug("External join group with cid: \(cid) info: \(externalJoinResult.group.epoch())", subsystems: .mls)
                     requestExternalJoin(to: cid, externalJoinResult: externalJoinResult, completion: completion)
                 } catch (let error) {
@@ -3016,19 +3055,21 @@ class E2eRepository: EventsControllerDelegate {
                 return false
             }
             do {
-                try mlsClient.mergePendingCommit(in: cid)
-                let group = try mlsClient.loadGroup(with: cid.rawValue)
-                let groupInfo = try mlsClient.exportGroupInfo(of: group)
+                let (groupInfo, epoch) = try performMlsMutation(cidString: cid.rawValue) {
+                    try self.mlsClient.mergePendingCommit(in: cid)
+                    let group = try self.mlsClient.loadGroup(with: cid.rawValue)
+                    return (try self.mlsClient.exportGroupInfo(of: group), group.epoch())
+                }
                 try durableInboxStore.markLocalJoinMerged(
                     accountId: accountId,
                     scopeCid: cid.rawValue,
-                    firstDecryptableEpoch: group.epoch()
+                    firstDecryptableEpoch: epoch
                 )
                 normalizeHistoricalApplications(cid: cid)
                 uploadGroupInfo(
                     in: cid,
                     groupInfo: groupInfo,
-                    epoch: Int(group.epoch()),
+                    epoch: Int(epoch),
                     completion: completion
                 )
             } catch {
@@ -3036,9 +3077,11 @@ class E2eRepository: EventsControllerDelegate {
             }
             return true
         case .prepared, .finalized:
-            try? mlsClient.clearPendingCommit(in: cid)
-            if mlsClient.isGroupLoaded(cid: cid.rawValue) {
-                try? mlsClient.deleteGroup(cid: cid.rawValue)
+            try? performMlsMutation(cidString: cid.rawValue) {
+                try? self.mlsClient.clearPendingCommit(in: cid)
+                if self.mlsClient.isGroupLoaded(cid: cid.rawValue) {
+                    try self.mlsClient.deleteGroup(cid: cid.rawValue)
+                }
             }
             try? durableInboxStore.discardLocalJoinReceipt(accountId: accountId, scopeCid: cid.rawValue)
             return false
@@ -3062,7 +3105,7 @@ class E2eRepository: EventsControllerDelegate {
                 requestDeviceId: requestDeviceId
             )
         } catch {
-            try? mlsClient.clearPendingCommit(in: cid)
+            try? clearPendingCommit(in: cid)
             completion(error)
             return
         }
@@ -3080,10 +3123,11 @@ class E2eRepository: EventsControllerDelegate {
                         accountId: accountId,
                         scopeCid: cid.rawValue
                     )
-                    try mlsClient.mergePendingCommit(in: cid)
-                    let group = externalJoinResult.group
-                    let groupInfo = try mlsClient.exportGroupInfo(of: group)
-                    let epoch = group.epoch()
+                    let (groupInfo, epoch) = try performMlsMutation(cidString: cid.rawValue) {
+                        try self.mlsClient.mergePendingCommit(in: cid)
+                        let group = externalJoinResult.group
+                        return (try self.mlsClient.exportGroupInfo(of: group), group.epoch())
+                    }
                     try durableInboxStore.markLocalJoinMerged(
                         accountId: accountId,
                         scopeCid: cid.rawValue,
@@ -3095,7 +3139,7 @@ class E2eRepository: EventsControllerDelegate {
                     completion(error)
                 }
             case .failure(let error):
-                try? mlsClient.clearPendingCommit(in: cid)
+                try? clearPendingCommit(in: cid)
                 completion(error)
             }
         }
@@ -3216,8 +3260,8 @@ class E2eRepository: EventsControllerDelegate {
         }
         // Sends run ahead of background sync so they aren't blocked by a sync backlog.
         op.queuePriority = .high
-        enqueueGroupOperation(op, cidString: groupCid)
-        op.waitUntilFinished()
+        let scheduledOperation = enqueueGroupOperation(op, cidString: groupCid)
+        scheduledOperation.waitUntilFinished()
         switch result {
         case .success(let value):
             return value
@@ -3277,15 +3321,21 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     func mergePendingCommit(in cid: ChannelId) throws {
-        try mlsClient.mergePendingCommit(in: cid)
+        try performMlsMutation(cidString: cid.rawValue) {
+            try self.mlsClient.mergePendingCommit(in: cid)
+        }
     }
     
     func clearPendingCommit(in cid: ChannelId) throws {
-        try mlsClient.clearPendingCommit(in: cid)
+        try performMlsMutation(cidString: cid.rawValue) {
+            try self.mlsClient.clearPendingCommit(in: cid)
+        }
     }
     
     func commitPendingProposal(in cid: ChannelId) throws {
-        try mlsClient.commitPendingProposal(in: cid)
+        try performMlsMutation(cidString: cid.rawValue) {
+            try self.mlsClient.commitPendingProposal(in: cid)
+        }
     }
     
     /// Returns `true` when we should skip a welcome message for the given channel.
@@ -3306,7 +3356,9 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     func clearPendingProposal(in cid: ChannelId) throws {
-        try mlsClient.clearPendingProposal(in: cid)
+        try performMlsMutation(cidString: cid.rawValue) {
+            try self.mlsClient.clearPendingProposal(in: cid)
+        }
     }
     
     public func reset() {
@@ -3328,7 +3380,9 @@ class E2eRepository: EventsControllerDelegate {
             removedCursors.removeValue(forKey: currentUserId)
             mlsClient.userDefaults.set(removedCursors, forKey: Self.removedCursorKey)
         }
-        try mlsClient.purgeCurrentUserData()
+        try performMlsMutation(cidStrings: ["__all_groups__"]) {
+            try self.mlsClient.purgeCurrentUserData()
+        }
     }
 
     private func stopRuntimeOperations() {
@@ -3343,11 +3397,7 @@ class E2eRepository: EventsControllerDelegate {
         readinessByCid.removeAll()
         readinessCallbacks.removeAll()
         readinessLock.unlock()
-        decryptQueue.cancelAllOperations()
-        decryptQueue.waitUntilAllOperationsAreFinished()
-        lastOpLock.lock()
-        lastOpByCid.removeAll()
-        lastOpLock.unlock()
+        mutationExecutor.cancelAllAndWait()
         durableApplyLock.lock()
         blockedDurableScopes.removeAll()
         enqueuedDurableEvents.removeAll()
@@ -3356,7 +3406,9 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     public func deleteGroup(cid: String) throws {
-        try mlsClient.deleteGroup(cid: cid)
+        try performMlsMutation(cidString: cid) {
+            try self.mlsClient.deleteGroup(cid: cid)
+        }
         // Advance (do NOT clear) the cursor so a later re-add/re-invite won't replay the
         // old Welcome (already-consumed KeyPackage → NoMatchingKeyPackage). See
         // `advanceE2eSyncCursor`.
@@ -3364,11 +3416,13 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     public func deleteGroups(cids: [String]) throws {
-        for cid in cids {
-            if mlsClient.isGroupLoaded(cid: cid) {
-                try mlsClient.deleteGroup(cid: cid)
+        try performMlsMutation(cidStrings: Set(cids)) {
+            for cid in cids {
+                if self.mlsClient.isGroupLoaded(cid: cid) {
+                    try self.mlsClient.deleteGroup(cid: cid)
+                }
+                self.advanceE2eSyncCursor(for: cid)
             }
-            advanceE2eSyncCursor(for: cid)
         }
     }
 
@@ -3376,7 +3430,7 @@ class E2eRepository: EventsControllerDelegate {
 
     /// The single decryption gate for all message sources (WebSocket, API, NSE).
     ///
-    /// Enqueues work onto the serial `decryptQueue` so MLS `processMessage` is
+    /// Enqueues work onto `MlsMutationExecutor` so MLS `processMessage` is
     /// never called concurrently. Inside the queue the database is consulted first;
     /// if another operation has already written the cache the MLS call is skipped.
     ///

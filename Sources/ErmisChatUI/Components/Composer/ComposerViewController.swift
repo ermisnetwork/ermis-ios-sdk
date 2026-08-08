@@ -7,6 +7,27 @@ import ErmisChat
 import UIKit
 import PhotosUI
 
+struct ComposerDraftPersistenceGate {
+    private(set) var submittedRevision: UInt64?
+
+    mutating func begin(revision: UInt64) -> Bool {
+        guard submittedRevision == nil else { return false }
+        submittedRevision = revision
+        return true
+    }
+
+    mutating func updateSubmittedRevision(_ revision: UInt64) {
+        guard submittedRevision != nil else { return }
+        submittedRevision = revision
+    }
+
+    mutating func complete(succeeded: Bool, currentRevision: UInt64) -> Bool {
+        guard let submittedRevision else { return false }
+        self.submittedRevision = nil
+        return succeeded && submittedRevision == currentRevision
+    }
+}
+
 /// The possible errors that can occur in attachment validation
 public enum AttachmentValidationError: Error {
     /// The size of the attachment exceeds the max file size
@@ -315,8 +336,13 @@ open class ComposerViewController: _ViewController,
     }
 
     /// The content of the composer.
+    private var contentRevision: UInt64 = 0
+    private var draftPersistenceGate = ComposerDraftPersistenceGate()
+    private var pendingDraftCooldownDuration: Int?
+
     public var content: Content = .initial() {
         didSet {
+            contentRevision &+= 1
             updateContentIfNeeded()
         }
     }
@@ -1008,15 +1034,12 @@ open class ComposerViewController: _ViewController,
             mentionTokens = []
             channelController?.saveComposerUnsentContent(nil)
         } else {
+            // Do not clear the composer until the optimistic message and its stable ID/plaintext
+            // are durable. The revision also prevents a delayed completion from erasing text the
+            // user entered while Core Data was finishing the previous draft write.
+            guard draftPersistenceGate.begin(revision: contentRevision) else { return }
+            pendingDraftCooldownDuration = content.hasCommand ? nil : channelController?.channel?.cooldownDuration
             createNewMessage(text: text)
-
-            let channel = channelController?.channel
-            if !content.hasCommand, let cooldownDuration = channel?.cooldownDuration {
-                cooldownTracker.start(with: cooldownDuration)
-            }
-            content.clear()
-            mentionTokens = []
-            channelController?.saveComposerUnsentContent(nil)
         }
     }
 
@@ -1132,7 +1155,10 @@ open class ComposerViewController: _ViewController,
     /// Creates a new message and notifies the delegate that a new message was created.
     /// - Parameter text: The text content of the message.
     open func createNewMessage(text: String) {
-        guard let cid = channelController?.cid else { return }
+        guard let channelController, let cid = channelController.cid else {
+            completePendingDraftPersistence(succeeded: false)
+            return
+        }
 
         // If the user included some mentions via suggestions,
         // but then removed them from text, we should remove them from
@@ -1147,31 +1173,75 @@ open class ComposerViewController: _ViewController,
             content.hasMentionedAll = false
         }
 
+        // Mention normalization above is part of the same submitted draft and may trigger
+        // `content.didSet`; capture the final revision that was handed to Core Data.
+        draftPersistenceGate.updateSubmittedRevision(contentRevision)
+
         if let threadParentMessageId = content.threadMessage?.id {
-            let messageController = channelController?.client.messageController(
+            let messageController = channelController.client.messageController(
                 cid: cid,
                 messageId: threadParentMessageId
             )
 
-            messageController?.createNewReply(
+            messageController.createNewReply(
                 text: text,
                 attachments: content.attachments,
                 stickerUrl: content.stickerUrl,
                 mentionedUserIds: content.mentionedUsers.map(\.userId),
                 mentionedAll: content.hasMentionedAll,
-                quotedMessageId: content.quotingMessage?.id
+                quotedMessageId: content.quotingMessage?.id,
+                completion: { [weak self] result in
+                    switch result {
+                    case .success:
+                        self?.completePendingDraftPersistence(succeeded: true)
+                    case .failure:
+                        self?.completePendingDraftPersistence(succeeded: false)
+                    }
+                }
             )
             return
         }
 
-        channelController?.createNewMessage(
+        channelController.createNewMessage(
             text: text,
             attachments: content.attachments,
             stickerUrl: content.stickerUrl,
             mentionedUserIds: content.mentionedUsers.map(\.userId),
             mentionedAll: content.hasMentionedAll,
-            quotedMessageId: content.quotingMessage?.id
+            quotedMessageId: content.quotingMessage?.id,
+            completion: { [weak self] result in
+                switch result {
+                case .success:
+                    self?.completePendingDraftPersistence(succeeded: true)
+                case .failure:
+                    self?.completePendingDraftPersistence(succeeded: false)
+                }
+            }
         )
+    }
+
+    private func completePendingDraftPersistence(succeeded: Bool) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in
+                self?.completePendingDraftPersistence(succeeded: succeeded)
+            }
+            return
+        }
+
+        let shouldClear = draftPersistenceGate.complete(
+            succeeded: succeeded,
+            currentRevision: contentRevision
+        )
+        defer { pendingDraftCooldownDuration = nil }
+
+        if succeeded, let cooldownDuration = pendingDraftCooldownDuration {
+            cooldownTracker.start(with: cooldownDuration)
+        }
+
+        guard shouldClear else { return }
+        content.clear()
+        mentionTokens = []
+        channelController?.saveComposerUnsentContent(nil)
     }
 
     /// Updates an existing message.
