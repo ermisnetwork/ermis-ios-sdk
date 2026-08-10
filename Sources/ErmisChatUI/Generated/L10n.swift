@@ -51,8 +51,12 @@ public enum L10n {
   }
 
   public enum Attachment {
-    /// File size exceeds the limit. Maximum allowed: 100MB.
+    /// File size exceeds the configured limit.
     public static var maxSizeExceeded: String { L10n.tr("Localizable", "attachment.max-size-exceeded") }
+    /// File size exceeds the limit. Maximum allowed: %@.
+    public static func maxSizeExceededFormat(_ p1: Any) -> String {
+      return L10n.tr("Localizable", "attachment.max-size-exceeded-format", String(describing: p1))
+    }
   }
 
   public enum Audio {
@@ -794,4 +798,3 @@ extension L10n {
 private final class BundleToken {
   static let bundle: Bundle = .ermisChatUI
 }
-

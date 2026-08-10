@@ -56,6 +56,27 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         }
         return channelObserver?.item
     }
+
+    /// Whether this channel effectively uses E2EE.
+    ///
+    /// The immutable channel snapshot can briefly lag behind the Core Data row during initial
+    /// observation/reconnect. Composer validation must not fall back to standard-channel limits
+    /// during that window. Topics inherit the effective value from their parent through
+    /// `ChannelDTO.isE2eeEnabled`.
+    public var isE2eeEnabled: Bool {
+        if channel?.mlsEnabled == true || channelQuery.mlsEnabled == true {
+            return true
+        }
+        guard let cid else { return false }
+        var enabled = false
+        client.databaseContainer.viewContext.performAndWait {
+            enabled = ChannelDTO.load(
+                cid: cid,
+                context: client.databaseContainer.viewContext
+            )?.isE2eeEnabled == true
+        }
+        return enabled
+    }
     
     /// The messages of the channel the controller represents.
     ///

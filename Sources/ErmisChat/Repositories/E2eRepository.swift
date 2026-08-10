@@ -68,6 +68,16 @@ enum E2eeMessageEpochRecoveryError: LocalizedError {
     }
 }
 
+/// A health-check/pong proves only that the socket is alive. It must never trigger a full
+/// history sync because pongs arrive periodically while the connection is healthy. Catch-up is
+/// tied to the public transition into `connected`, which is emitted once per connect/reconnect.
+enum E2eeFullSyncTriggerPolicy {
+    static func shouldRunFullSync(for event: any Event) -> Bool {
+        guard let connection = event as? ConnectionStatusUpdated else { return false }
+        return connection.connectionStatus == .connected
+    }
+}
+
 /// Classifies a durable commit against the OpenMLS provider epoch without mutating either store.
 ///
 /// A lower target epoch is historical: the provider has already advanced beyond it, so replaying
@@ -188,6 +198,11 @@ class E2eRepository: EventsControllerDelegate {
     let eventNotificationCenter: EventNotificationCenter
     let mlsClient: MlsClient
     let apiClient: APIClient
+
+    private lazy var e2eeAttachmentReceiveCoordinator = E2eeAttachmentReceiveCoordinator(
+        apiClient: apiClient,
+        database: database
+    )
     
     let eventController: EventsController
     
@@ -372,11 +387,8 @@ class E2eRepository: EventsControllerDelegate {
     private var pendingChannelSyncCids: Set<String> = []
     private var pendingSyncCompletions: [() -> Void] = []
 
-    /// Throttle for the full multi-channel sync. `performE2eSync()` is triggered on every
-    /// channel-list save (each pagination page, every reconnect, every foreground resync),
-    /// and each run does a full DB scan + network round-trip. The throttle runs the leading
-    /// call immediately and coalesces a burst of follow-ups into a single trailing run, so
-    /// e.g. scrolling the channel list doesn't kick off one full sync per page.
+    /// Throttle for the full multi-channel sync. A connection transition is the normal trigger;
+    /// the throttle still coalesces duplicate lifecycle/connect notifications defensively.
     private let syncThrottleInterval: TimeInterval = 2.0
     private let syncThrottleQueue = DispatchQueue(label: "io.ermis.e2e.sync-throttle")
     private var lastSyncTriggeredAt: Date?
@@ -427,7 +439,9 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     func eventsController(_ controller: EventsController, didReceiveEvent event: any Event) {
-        if let event = event as? HealthCheckEvent {
+        if E2eeFullSyncTriggerPolicy.shouldRunFullSync(for: event) {
+            performE2eSync(trigger: "connection_established")
+        } else if let event = event as? HealthCheckEvent {
             handleHealthCheckEvent(event)
         } else if let event = event as? MessageNewEvent {
             decryptNewMessageEventIfNeeded(message: event.message, cid: event.cid)
@@ -634,6 +648,14 @@ class E2eRepository: EventsControllerDelegate {
                 "[MLS] Skipping own realtime echo with durable plaintext for \(message.id)",
                 subsystems: .mls
             )
+            if let cached = message.decryptedMessage {
+                e2eeAttachmentReceiveCoordinator.hydratePreviews(
+                    payload: cached,
+                    messageId: message.id,
+                    cid: cid,
+                    source: .websocket
+                )
+            }
             return
         }
 
@@ -641,7 +663,8 @@ class E2eRepository: EventsControllerDelegate {
         decryptMessagePayload(
             messageId: message.id,
             encryptedData: encryptedData,
-            cid: cid
+            cid: cid,
+            receiveSource: .websocket
         ) { [weak self] result in
             guard let recoveryCid = Self.realtimeRecoveryScope(
                 after: result,
@@ -689,7 +712,12 @@ class E2eRepository: EventsControllerDelegate {
         // MLS cannot decrypt ciphertext produced by the same device.
         if message.isSentByCurrentUser { return }
         log.debug("[MLS] Re-decrypt updated message \(message.id) with epoch: \(message.mlsEpoch)")
-        reDecryptUpdatedMessage(messageId: message.id, encryptedData: encryptedData, cid: cid)
+        reDecryptUpdatedMessage(
+            messageId: message.id,
+            encryptedData: encryptedData,
+            cid: cid,
+            receiveSource: .messageUpdate
+        )
     }
 
     /// Re-decrypts a message after a `message.updated` event WITHOUT discarding the existing
@@ -708,7 +736,12 @@ class E2eRepository: EventsControllerDelegate {
     /// success (a genuine edit produces new, decryptable ciphertext). On failure, leave the
     /// existing cache untouched so the message keeps showing its decrypted content.
     /// Must run on `MlsMutationExecutor`.
-    private func reDecryptUpdatedMessageSync(messageId: MessageId, encryptedData: Data, cid: ChannelId) {
+    private func reDecryptUpdatedMessageSync(
+        messageId: MessageId,
+        encryptedData: Data,
+        cid: ChannelId,
+        receiveSource: E2eeAttachmentReceiveSource
+    ) {
         do {
             let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
             let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
@@ -716,20 +749,37 @@ class E2eRepository: EventsControllerDelegate {
                 processed,
                 messageId: messageId,
                 encryptedData: encryptedData,
-                group: group
+                cid: cid,
+                group: group,
+                receiveSource: receiveSource
             )
         } catch {
             // Unchanged/already-consumed ciphertext (a non-edit update) or an own-device message:
             // keep the existing decrypted cache rather than regressing to the placeholder.
             log.debug("[MLS] Skipping re-decrypt of updated message \(messageId) (likely unchanged ciphertext): \(error)", subsystems: .mls)
+            hydrateDurablePayloadIfPresent(
+                messageId: messageId,
+                cid: cid,
+                source: receiveSource
+            )
         }
     }
 
     /// Enqueues `reDecryptUpdatedMessageSync` on `MlsMutationExecutor`. Used by the WebSocket
     /// `message.updated` path, which is not already running on the executor.
-    private func reDecryptUpdatedMessage(messageId: MessageId, encryptedData: Data, cid: ChannelId) {
+    private func reDecryptUpdatedMessage(
+        messageId: MessageId,
+        encryptedData: Data,
+        cid: ChannelId,
+        receiveSource: E2eeAttachmentReceiveSource
+    ) {
         let op = BlockOperation { [weak self] in
-            self?.reDecryptUpdatedMessageSync(messageId: messageId, encryptedData: encryptedData, cid: cid)
+            self?.reDecryptUpdatedMessageSync(
+                messageId: messageId,
+                encryptedData: encryptedData,
+                cid: cid,
+                receiveSource: receiveSource
+            )
         }
         op.queuePriority = .high
         enqueueGroupOperation(op, cidString: mlsGroupCid(for: cid).rawValue)
@@ -742,7 +792,9 @@ class E2eRepository: EventsControllerDelegate {
         _ processed: MlsProcessedApplicationMessage,
         messageId: MessageId,
         encryptedData: Data,
-        group: Group
+        cid: ChannelId,
+        group: Group,
+        receiveSource: E2eeAttachmentReceiveSource
     ) throws {
         let ciphertextHash = Data(SHA256.hash(data: encryptedData))
         try database.writeAndWait { session in
@@ -754,12 +806,18 @@ class E2eRepository: EventsControllerDelegate {
             session.message(id: messageId)?.text = processed.payload.text
         }
         try mlsClient.saveState(of: group)
+        e2eeAttachmentReceiveCoordinator.hydratePreviews(
+            payload: processed.payload,
+            messageId: messageId,
+            cid: cid,
+            source: receiveSource
+        )
     }
 
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
-        // Login/reconnect catch-up for groups restored before the channel query arrives.
-        performE2eSync()
-        // Send mising keypackages to BE
+        // Health checks are periodic liveness signals. Full catch-up is triggered only by the
+        // connection-state transition above; doing it here polls scope_sync on every pong.
+        // Refill missing key packages reported by the server.
         guard let keyPackagesRemaining = event.keyPackagesRemaining else {
             return
         }
@@ -851,7 +909,7 @@ class E2eRepository: EventsControllerDelegate {
     /// Throttled entry point. Runs the leading call right away and coalesces a burst of
     /// follow-up triggers (pagination pages, repeated foreground/reconnect resyncs) into a
     /// single trailing run, instead of starting a full sync per trigger.
-    func performE2eSync() {
+    func performE2eSync(trigger: String = "explicit") {
         syncThrottleQueue.async { [weak self] in
             guard let self else { return }
             let now = Date()
@@ -864,7 +922,7 @@ class E2eRepository: EventsControllerDelegate {
                         guard let self else { return }
                         self.pendingSyncWorkItem = nil
                         self.lastSyncTriggeredAt = Date()
-                        self.performE2eSyncNow()
+                        self.performE2eSyncNow(trigger: trigger)
                     }
                     self.pendingSyncWorkItem = item
                     self.syncThrottleQueue.asyncAfter(
@@ -875,17 +933,17 @@ class E2eRepository: EventsControllerDelegate {
                 }
             }
             self.lastSyncTriggeredAt = now
-            self.performE2eSyncNow()
+            self.performE2eSyncNow(trigger: trigger)
         }
     }
 
     /// Fetches all missed E2EE events for every MLS-enabled channel since the last known cursor,
     /// applying protocol messages and decrypting application messages in order.
-    private func performE2eSyncNow() {
+    private func performE2eSyncNow(trigger: String) {
         syncLock.lock()
         guard !isSyncing else {
             syncLock.unlock()
-            log.debug("[E2eSync] Skipping sync — another sync is already in progress", subsystems: .mls)
+            log.debug("[E2eSync] mode=full state=coalesced trigger=\(trigger)", subsystems: .mls)
             return
         }
         isSyncing = true
@@ -916,7 +974,10 @@ class E2eRepository: EventsControllerDelegate {
         syncLock.lock()
         activeSyncCids = Set(cursors.keys)
         syncLock.unlock()
-        log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
+        log.debug(
+            "[E2eSync] mode=full state=started trigger=\(trigger) scope_count=\(cursors.count)",
+            subsystems: .mls
+        )
         replayDurablePendingEvents(scopeCids: Set(cursors.keys))
         startSyncPages(cursors: cursors)
     }
@@ -2012,17 +2073,24 @@ class E2eRepository: EventsControllerDelegate {
                 guard let mlsCiphertext = data.mlsCiphertext else {
                     throw E2eeSyncApplyError.missingCiphertext(messageId: data.id)
                 }
-                if hasDurableOwnPlaintext(
+                if let cached = durableOwnPlaintext(
                     messageId: data.id,
                     ciphertext: Data(mlsCiphertext),
                     cid: cid
                 ) {
+                    e2eeAttachmentReceiveCoordinator.hydratePreviews(
+                        payload: cached,
+                        messageId: data.id,
+                        cid: cid,
+                        source: .scopeSync
+                    )
                     return .application(.decrypted)
                 }
                 _ = try decryptMessagePayloadSyncThrowing(
                     messageId: data.id,
                     encryptedData: Data(mlsCiphertext),
-                    cid: cid
+                    cid: cid,
+                    receiveSource: .scopeSync
                 )
                 return .application(.decrypted)
             }
@@ -2087,16 +2155,65 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
-    private func hasDurableOwnPlaintext(messageId: MessageId, ciphertext: Data, cid: ChannelId) -> Bool {
-        var matches = false
+    private func durableOwnPlaintext(
+        messageId: MessageId,
+        ciphertext: Data,
+        cid: ChannelId
+    ) -> E2ePayload? {
+        var payload: E2ePayload?
         e2eReadContext.performAndWait {
             guard let message = MessageDTO.load(id: messageId, context: e2eReadContext),
                   message.cid == cid.rawValue,
                   message.encryptedData == ciphertext,
-                  message.decryptedMessage != nil else { return }
-            matches = true
+                  let decrypted = message.decryptedMessage else { return }
+            payload = try? decrypted.asPayload()
         }
-        return matches
+        return payload
+    }
+
+    private func hydrateDurablePayloadIfPresent(
+        messageId: MessageId,
+        cid: ChannelId,
+        source: E2eeAttachmentReceiveSource
+    ) {
+        var payload: E2ePayload?
+        e2eReadContext.performAndWait {
+            payload = MessageDecryptDTO.load(messageId: messageId, context: e2eReadContext)
+                .flatMap { try? $0.asPayload() }
+        }
+        guard let payload else { return }
+        e2eeAttachmentReceiveCoordinator.hydratePreviews(
+            payload: payload,
+            messageId: messageId,
+            cid: cid,
+            source: source
+        )
+    }
+
+    /// Restores process-local E2EE preview bytes for messages materialized by a channel query.
+    ///
+    /// Decrypted preview bytes intentionally live only in `E2eeAttachmentPreviewCache`, so they
+    /// disappear after every relaunch. A scope sync with no new application events cannot restore
+    /// that cache by itself. Channel queries, however, materialize the visible message page on
+    /// every open/reload; use that boundary to rehydrate only the previews in that page from the
+    /// durable authenticated manifests. Original assets remain explicit user-initiated downloads.
+    func hydrateCachedAttachmentPreviews(messageIds: [MessageId], cid: ChannelId) {
+        guard !messageIds.isEmpty else { return }
+        let uniqueMessageIds = Array(Set(messageIds))
+        e2eReadContext.perform { [weak self] in
+            guard let self else { return }
+            for messageId in uniqueMessageIds {
+                guard let payload = MessageDecryptDTO.load(messageId: messageId, context: self.e2eReadContext)
+                    .flatMap({ try? $0.asPayload() }),
+                    !payload.e2eeAttachments.isEmpty else { continue }
+                self.e2eeAttachmentReceiveCoordinator.hydratePreviews(
+                    payload: payload,
+                    messageId: messageId,
+                    cid: cid,
+                    source: .cachedModel
+                )
+            }
+        }
     }
 
     private func retryPendingGroupApplications(in cid: ChannelId) {
@@ -2141,11 +2258,17 @@ class E2eRepository: EventsControllerDelegate {
                         }
                         guard action == .decrypt else { continue }
                         guard let ciphertext = application.mlsCiphertext else { continue }
-                        if self.hasDurableOwnPlaintext(
+                        if let cached = self.durableOwnPlaintext(
                             messageId: application.id,
                             ciphertext: Data(ciphertext),
                             cid: cid
                         ) {
+                            self.e2eeAttachmentReceiveCoordinator.hydratePreviews(
+                                payload: cached,
+                                messageId: application.id,
+                                cid: cid,
+                                source: .scopeSync
+                            )
                             try self.durableInboxStore.markApplicationPersistenceCompleted(
                                 accountId: accountId,
                                 scopeCid: scopeCid,
@@ -2162,7 +2285,8 @@ class E2eRepository: EventsControllerDelegate {
                         _ = try self.decryptMessagePayloadSyncThrowing(
                             messageId: application.id,
                             encryptedData: Data(ciphertext),
-                            cid: cid
+                            cid: cid,
+                            receiveSource: .scopeSync
                         )
                         try self.durableInboxStore.markApplicationPersistenceCompleted(
                             accountId: accountId,
@@ -2273,7 +2397,8 @@ class E2eRepository: EventsControllerDelegate {
             reDecryptUpdatedMessageSync(
                 messageId: messageId,
                 encryptedData: encryptedData,
-                cid: cid
+                cid: cid,
+                receiveSource: .scopeSync
             )
         } else {
             // No encrypted data — just save the message payload directly
@@ -2369,13 +2494,15 @@ class E2eRepository: EventsControllerDelegate {
         messageId: MessageId,
         encryptedData: Data,
         cid: ChannelId,
+        receiveSource: E2eeAttachmentReceiveSource,
         completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
     ) {
         do {
             completion?(.success(try decryptMessagePayloadSyncThrowing(
                 messageId: messageId,
                 encryptedData: encryptedData,
-                cid: cid
+                cid: cid,
+                receiveSource: receiveSource
             )))
         } catch {
             log.error("Failed to decrypt message \(messageId): \(error)")
@@ -2388,7 +2515,8 @@ class E2eRepository: EventsControllerDelegate {
     private func decryptMessagePayloadSyncThrowing(
         messageId: MessageId,
         encryptedData: Data,
-        cid: ChannelId
+        cid: ChannelId,
+        receiveSource: E2eeAttachmentReceiveSource
     ) throws -> E2ePayload {
         // Re-check the DB cache — a prior operation may have populated it.
         // Read on the background read-only context so the decrypt hot path never
@@ -2415,7 +2543,9 @@ class E2eRepository: EventsControllerDelegate {
                     processed,
                     messageId: messageId,
                     encryptedData: encryptedData,
-                    group: group
+                    cid: cid,
+                    group: group,
+                    receiveSource: receiveSource
                 )
                 return processed.payload
             } catch {
@@ -2424,6 +2554,12 @@ class E2eRepository: EventsControllerDelegate {
                     cachedCiphertextHash: cachedCiphertextHash,
                     ciphertext: encryptedData
                 ) else { throw error }
+                e2eeAttachmentReceiveCoordinator.hydratePreviews(
+                    payload: cached,
+                    messageId: messageId,
+                    cid: cid,
+                    source: .replayRecovery
+                )
                 return cached
             }
         }
@@ -2437,7 +2573,9 @@ class E2eRepository: EventsControllerDelegate {
             processed,
             messageId: messageId,
             encryptedData: encryptedData,
-            group: group
+            cid: cid,
+            group: group,
+            receiveSource: receiveSource
         )
         return processed.payload
     }
@@ -2475,7 +2613,12 @@ class E2eRepository: EventsControllerDelegate {
         guard !pending.isEmpty else { return }
         log.debug("[MLS] Re-decrypting \(pending.count) pending message(s) in \(cid) after epoch advance", subsystems: .mls)
         for item in pending {
-            decryptMessagePayload(messageId: item.id, encryptedData: item.data, cid: cid)
+            decryptMessagePayload(
+                messageId: item.id,
+                encryptedData: item.data,
+                cid: cid,
+                receiveSource: .scopeSync
+            )
         }
     }
 
@@ -3180,6 +3323,34 @@ class E2eRepository: EventsControllerDelegate {
         in cid: ChannelId,
         trace: E2eeSendTrace.Context? = nil
     ) throws -> ([UInt8], Int) {
+        try encryptedMessage(
+            message,
+            in: cid,
+            authenticatedAAD: nil,
+            trace: trace
+        )
+    }
+
+    func encryptedMessage(
+        _ message: E2ePayload,
+        aad: E2eeMessageAADV1,
+        in cid: ChannelId,
+        trace: E2eeSendTrace.Context? = nil
+    ) throws -> ([UInt8], Int) {
+        try encryptedMessage(
+            message,
+            in: cid,
+            authenticatedAAD: aad.encoded(),
+            trace: trace
+        )
+    }
+
+    private func encryptedMessage(
+        _ message: E2ePayload,
+        in cid: ChannelId,
+        authenticatedAAD: Data?,
+        trace: E2eeSendTrace.Context?
+    ) throws -> ([UInt8], Int) {
         // Resolve the group cid and encode the payload up front (no MLS state touched),
         // then perform the actual MLS encryption on the shared serial queue so it never
         // runs concurrently with a decrypt/commit on the same group (correctness) and
@@ -3242,11 +3413,21 @@ class E2eRepository: EventsControllerDelegate {
                 operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(since: loadStartedAt)
             )
             do {
-                let encryptedData = try self.mlsClient.encrypt(
-                    inputData: data,
-                    in: group,
-                    trace: scopedTrace
-                )
+                let encryptedData: Data
+                if let authenticatedAAD {
+                    encryptedData = try self.mlsClient.encrypt(
+                        inputData: data,
+                        aad: authenticatedAAD,
+                        in: group,
+                        trace: scopedTrace
+                    )
+                } else {
+                    encryptedData = try self.mlsClient.encrypt(
+                        inputData: data,
+                        in: group,
+                        trace: scopedTrace
+                    )
+                }
                 scopedTrace?.info(
                     stage: "encrypt_succeeded",
                     epoch: epoch,
@@ -3444,6 +3625,7 @@ class E2eRepository: EventsControllerDelegate {
         messageId: MessageId,
         encryptedData: Data,
         cid: ChannelId,
+        receiveSource: E2eeAttachmentReceiveSource = .directDecrypt,
         completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
     ) {
         // Foreground/realtime decrypts run ahead of background sync work so a freshly
@@ -3455,6 +3637,7 @@ class E2eRepository: EventsControllerDelegate {
                 messageId: messageId,
                 encryptedData: encryptedData,
                 cid: cid,
+                receiveSource: receiveSource,
                 completion: completion
             )
         }
@@ -3481,6 +3664,14 @@ class E2eRepository: EventsControllerDelegate {
             var updated = message
             updated.text = cached.text
             updated.stickerUrl = cached.stickerUrl
+            if let cid = message.cid {
+                e2eeAttachmentReceiveCoordinator.hydratePreviews(
+                    payload: cached,
+                    messageId: message.id,
+                    cid: cid,
+                    source: .cachedModel
+                )
+            }
             completion(.success(updated))
             return
         }
@@ -3496,7 +3687,12 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
 
-        decryptMessagePayload(messageId: message.id, encryptedData: encryptedData, cid: cid) { result in
+        decryptMessagePayload(
+            messageId: message.id,
+            encryptedData: encryptedData,
+            cid: cid,
+            receiveSource: .directDecrypt
+        ) { result in
             switch result {
             case .success(let payload):
                 var updated = message

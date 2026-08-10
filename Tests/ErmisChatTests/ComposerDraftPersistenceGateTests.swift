@@ -1,4 +1,5 @@
 import XCTest
+@testable import ErmisChat
 @testable import ErmisChatUI
 
 final class ComposerDraftPersistenceGateTests: XCTestCase {
@@ -29,5 +30,36 @@ final class ComposerDraftPersistenceGateTests: XCTestCase {
         XCTAssertTrue(editedGate.begin(revision: 4))
         XCTAssertFalse(editedGate.complete(succeeded: true, currentRevision: 5))
         XCTAssertNil(editedGate.submittedRevision)
+    }
+
+    func testAttachmentSizePolicyUsesTwoGiBBackendContractForAllUploadLanes() {
+        let backendSafePlaintextLimit = Int64(2_147_287_040)
+
+        XCTAssertEqual(
+            ComposerAttachmentSizePolicy.maximumSize(
+                standardLimit: backendSafePlaintextLimit,
+                e2eeLimit: backendSafePlaintextLimit,
+                isE2ee: false
+            ),
+            backendSafePlaintextLimit
+        )
+        XCTAssertEqual(
+            ComposerAttachmentSizePolicy.maximumSize(
+                standardLimit: backendSafePlaintextLimit,
+                e2eeLimit: backendSafePlaintextLimit,
+                isE2ee: true
+            ),
+            backendSafePlaintextLimit
+        )
+        XCTAssertEqual(AttachmentValidationError.fileSizeMaxLimitFallback, backendSafePlaintextLimit)
+    }
+
+    func testPhotoPickerVideoSourceDefersBytesUntilPendingMessageProcessing() {
+        let url = ComposerPhotoPickerVideoSource.placeholderURL(fileName: "IMG_2831.MOV")
+
+        XCTAssertTrue(url.isFileURL)
+        XCTAssertTrue(url.isTemporaryItemProviderURL)
+        XCTAssertEqual(url.lastPathComponent, "IMG_2831.MOV")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 }

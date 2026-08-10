@@ -8,6 +8,29 @@ import UIKit
 import AVFoundation
 import Photos
 
+enum PreparedAttachmentSourcePersistence {
+    /// Persists the prepared file URL on Core Data's single writable context and returns only an
+    /// immutable model snapshot. This is safe to call from PhotoKit and file-I/O callbacks.
+    static func persist(
+        database: DatabaseContainer,
+        id: AttachmentId,
+        localURL: URL
+    ) throws -> AnyMessageAttachment {
+        var model: AnyMessageAttachment?
+        try database.writeAndWait { session in
+            guard let attachment = session.attachment(id: id) else {
+                throw ClientError.AttachmentDoesNotExist(id: id)
+            }
+            attachment.localURL = localURL
+            model = attachment.asAnyModel()
+        }
+        guard let model else {
+            throw ClientError.AttachmentDoesNotExist(id: id)
+        }
+        return model
+    }
+}
+
 /// Observers the storage for attachments in a `.pendingUpload` state and uploads data from `localURL` to backend.
 ///
 /// Uploading of the attachment has the following phases:
@@ -24,15 +47,26 @@ import Photos
 ///
 class AttachmentQueueUploader: Worker {
     @Atomic private var pendingAttachmentIDs: Set<AttachmentId> = []
+    @Atomic private var pendingE2eeMessageIDs: Set<MessageId> = []
+    @Atomic private var observedE2eeTransferStates: [String: E2eeTransferProgress] = [:]
 
     private let observer: ListDatabaseObserver<AttachmentDTO, AttachmentDTO>
     private let attachmentPostProcessor: UploadedAttachmentPostProcessor?
     private let attachmentUpdater = AnyAttachmentUpdater()
     private let attachmentStorage = AttachmentStorage()
+    private let e2eePreparationCoordinator: E2eeAttachmentPreparationCoordinator?
+    private let currentUserId: () -> UserId?
+    private var e2eeTransferObserverId: UUID?
 
     var minSignificantUploadingProgressChange: Double = 0.05
 
-    init(database: DatabaseContainer, apiClient: APIClient, attachmentPostProcessor: UploadedAttachmentPostProcessor?) {
+    init(
+        database: DatabaseContainer,
+        apiClient: APIClient,
+        attachmentPostProcessor: UploadedAttachmentPostProcessor?,
+        e2eePreparationCoordinator: E2eeAttachmentPreparationCoordinator? = nil,
+        currentUserId: @escaping () -> UserId? = { nil }
+    ) {
         observer = .init(
             context: database.backgroundReadOnlyContext,
             fetchRequest: AttachmentDTO.pendingUploadFetchRequest(),
@@ -40,10 +74,19 @@ class AttachmentQueueUploader: Worker {
         )
         
         self.attachmentPostProcessor = attachmentPostProcessor
+        self.e2eePreparationCoordinator = e2eePreparationCoordinator
+        self.currentUserId = currentUserId
 
         super.init(database: database, apiClient: apiClient)
 
+        startObservingE2eeTransfers()
         startObserving()
+    }
+
+    deinit {
+        if let e2eeTransferObserverId {
+            e2eePreparationCoordinator?.removeTransferObserver(e2eeTransferObserverId)
+        }
     }
 
     // MARK: - Private
@@ -56,6 +99,71 @@ class AttachmentQueueUploader: Worker {
             handleChanges(changes: changes)
         } catch {
             log.error("Failed to start Uploader worker. \(error)")
+        }
+    }
+
+    private func startObservingE2eeTransfers() {
+        e2eeTransferObserverId = e2eePreparationCoordinator?.addTransferObserver { [weak self] attempt in
+            self?.applyE2eeTransferSnapshot(attempt)
+        }
+    }
+
+    private func applyE2eeTransferSnapshot(_ attempt: PendingE2eeTransferAttempt) {
+        guard attempt.accountId == currentUserId() else { return }
+        let progress = attempt.publicProgress
+        var shouldApply = false
+        _observedE2eeTransferStates.mutate { [minSignificantUploadingProgressChange] states in
+            let previous = states[attempt.attemptId]
+            let phaseChanged = previous?.phase != progress.phase
+                || previous?.failureReason != progress.failureReason
+            let progressChangedEnough = previous == nil
+                || progress.fractionCompleted >= 1
+                || progress.fractionCompleted - (previous?.fractionCompleted ?? 0)
+                    >= minSignificantUploadingProgressChange
+            guard phaseChanged || progressChangedEnough else { return }
+            states[attempt.attemptId] = progress
+            shouldApply = true
+        }
+        guard shouldApply else { return }
+
+        let isTerminal = attempt.phase == .failedRetryable
+            || attempt.phase == .failedTerminal
+            || attempt.phase == .canceled
+            || attempt.phase == .confirmed
+        if isTerminal {
+            _pendingE2eeMessageIDs.mutate { $0.remove(attempt.messageId) }
+        } else {
+            _pendingE2eeMessageIDs.mutate { $0.insert(attempt.messageId) }
+        }
+
+        let visibleProgress = progress.presentationFractionCompleted
+        let percent = Int((visibleProgress * 100).rounded(.down))
+        log.info("[E2EE_ATTACHMENT] stage=state phase=\(attempt.phase.rawValue) visible_progress=\(percent)")
+        database.write { [minSignificantUploadingProgressChange] session in
+            guard let message = session.message(id: attempt.messageId) else { return }
+            switch attempt.phase {
+            case .failedRetryable, .failedTerminal, .canceled:
+                message.localMessageState = .sendingFailed
+                message.attachments.forEach { $0.localState = .uploadingFailed }
+            case .confirmed:
+                message.attachments.forEach { $0.localState = .uploaded }
+            default:
+                for attachment in message.attachments {
+                    let currentProgress: Double
+                    if case let .uploading(value) = attachment.localState {
+                        currentProgress = value
+                    } else {
+                        currentProgress = 0
+                    }
+                    let newProgress = max(currentProgress, visibleProgress)
+                    let shouldPersist = newProgress >= 1
+                        || newProgress - currentProgress >= minSignificantUploadingProgressChange
+                        || attachment.localState != .uploading(progress: currentProgress)
+                    if shouldPersist {
+                        attachment.localState = .uploading(progress: newProgress)
+                    }
+                }
+            }
         }
     }
 
@@ -77,8 +185,56 @@ class AttachmentQueueUploader: Worker {
     }
 
     private func uploadAttachment(with id: AttachmentId) {
+        database.backgroundReadOnlyContext.perform { [weak self] in
+            guard let self,
+                  let attachment = self.database.backgroundReadOnlyContext.attachment(id: id) else {
+                self?.removePendingAttachment(with: id)
+                return
+            }
+            // Never downgrade an attachment to the standard plaintext lane just because its
+            // durable channel relationship is temporarily unavailable during reconciliation.
+            guard let channel = attachment.message.channel else {
+                log.error("[ATTACHMENT_ROUTE] lane=blocked reason=channel_unavailable")
+                self.updateAttachmentIfNeeded(
+                    attachmentId: id,
+                    uploadedAttachment: nil,
+                    newState: .uploadingFailed
+                ) {
+                    self.removePendingAttachment(with: id)
+                }
+                return
+            }
+            if channel.isE2eeEnabled {
+                log.debug("[ATTACHMENT_ROUTE] lane=e2ee")
+                if let accountId = self.currentUserId(),
+                   let coordinator = self.e2eePreparationCoordinator,
+                   coordinator.hasDurableAttempt(
+                       messageId: id.messageId,
+                       accountId: accountId
+                   ) {
+                    // MessageSender resets in-progress attachment rows to `pendingUpload` after a
+                    // process death. A durable E2EE attempt is authoritative here: replay its
+                    // phase and reconcile URLSession instead of reading an expired Photos picker
+                    // URL or creating a duplicate Bellboy attachment attempt.
+                    log.info(
+                        "[E2EE_ATTACHMENT] stage=relaunch_resume state=durable_attempt_found"
+                    )
+                    self.removePendingAttachment(with: id)
+                    coordinator.replayAndResumeDurableTransfers()
+                    return
+                }
+                self.prepareE2eeAttachmentSource(with: id)
+            } else {
+                log.debug("[ATTACHMENT_ROUTE] lane=standard")
+                self.uploadStandardAttachment(with: id)
+            }
+        }
+    }
+
+    private func uploadStandardAttachment(with id: AttachmentId) {
         prepareAttachmentForUpload(with: id) { [weak self] attachment, error in
             guard error == nil else {
+                log.error("Attachment source preparation failed before standard upload: \(String(describing: error))")
                 self?.updateAttachmentIfNeeded(attachmentId: id, uploadedAttachment: nil, newState: .uploadingFailed)
                 return
             }
@@ -131,6 +287,302 @@ class AttachmentQueueUploader: Worker {
         }
     }
 
+    /// E2EE must fail closed: this path materializes the Photos/item-provider URL but never calls
+    /// the legacy plaintext upload endpoint.
+    private func prepareE2eeAttachmentSource(with id: AttachmentId) {
+        guard e2eePreparationCoordinator != nil else {
+            log.error("[E2EE_ATTACHMENT] stage=route_failed reason=coordinator_unavailable")
+            updateAttachmentIfNeeded(
+                attachmentId: id,
+                uploadedAttachment: nil,
+                newState: .uploadingFailed
+            )
+            removePendingAttachment(with: id)
+            return
+        }
+
+        database.backgroundReadOnlyContext.perform { [weak self] in
+            guard let self,
+                  let dto = self.database.backgroundReadOnlyContext.attachment(id: id),
+                  let sourceURL = dto.localURL else {
+                self?.failE2eeAttachment(id, stage: "source_lookup", error: ClientError.AttachmentDoesNotExist(id: id))
+                return
+            }
+            let assetId = dto.assetId
+            let attachmentType = dto.attachmentType
+            let destination = self.attachmentStorage.sandboxedURL(for: id, temporaryURL: sourceURL)
+            if self.attachmentStorage.fileExists(at: destination) {
+                self.persistPreparedE2eeSource(id: id, localURL: destination)
+                return
+            }
+
+            if sourceURL.isTemporaryItemProviderURL, let assetId {
+                let result = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                guard let asset = result.firstObject,
+                      let resource = Self.preferredResource(for: asset) else {
+                    self.failE2eeAttachment(
+                        id,
+                        stage: "photos_resolve",
+                        error: ClientError.AttachmentDoesNotExist(id: id)
+                    )
+                    return
+                }
+                if attachmentType == .image {
+                    self.materializeE2eePhotoAsset(
+                        asset,
+                        id: id,
+                        destination: destination
+                    )
+                    return
+                }
+                let options = PHAssetResourceRequestOptions()
+                options.isNetworkAccessAllowed = true
+                let partialURL = self.attachmentStorage.partialURL(for: destination)
+                try? FileManager.default.removeItem(at: partialURL)
+                PHAssetResourceManager.default().writeData(
+                    for: resource,
+                    toFile: partialURL,
+                    options: options
+                ) { [weak self] error in
+                    guard let self else { return }
+                    if let error {
+                        try? FileManager.default.removeItem(at: partialURL)
+                        self.failE2eeAttachment(id, stage: "photos_copy", error: error)
+                    } else {
+                        do {
+                            try self.attachmentStorage.promotePreparedSource(
+                                partialURL,
+                                to: destination
+                            )
+                            self.persistPreparedE2eeSource(id: id, localURL: destination)
+                        } catch {
+                            try? FileManager.default.removeItem(at: partialURL)
+                            self.failE2eeAttachment(id, stage: "photos_promote", error: error)
+                        }
+                    }
+                }
+                return
+            }
+
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
+                do {
+                    try self.attachmentStorage.storeAttachmentPreservingOriginal(
+                        id: id,
+                        temporaryURL: sourceURL
+                    )
+                    self.persistPreparedE2eeSource(id: id, localURL: destination)
+                } catch {
+                    self.failE2eeAttachment(id, stage: "source_copy", error: error)
+                }
+            }
+        }
+    }
+
+    /// PhotoKit may expose the original HEIC/HEIF resource even when the composer metadata says
+    /// `image/jpeg`. Encrypting those raw bytes under a JPEG manifest makes the preview readable
+    /// but the original undecodable by Web and iOS viewers. The plaintext "original" for this
+    /// message is therefore materialized as an actual JPEG before E2EE framing.
+    private func materializeE2eePhotoAsset(
+        _ asset: PHAsset,
+        id: AttachmentId,
+        destination: URL
+    ) {
+        let partialURL = attachmentStorage.partialURL(for: destination)
+        try? FileManager.default.removeItem(at: partialURL)
+
+        let options = PHImageRequestOptions()
+        options.isSynchronous = true
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .none
+        options.isNetworkAccessAllowed = true
+        PHImageManager.default().requestImage(
+            for: asset,
+            targetSize: PHImageManagerMaximumSize,
+            contentMode: .aspectFit,
+            options: options
+        ) { [weak self] image, _ in
+            guard let self else { return }
+            do {
+                guard let jpegData = image?.jpegData(compressionQuality: 0.92) else {
+                    throw ClientError.AttachmentDoesNotExist(id: id)
+                }
+                try jpegData.write(to: partialURL, options: .atomic)
+                try self.attachmentStorage.promotePreparedSource(partialURL, to: destination)
+                self.persistPreparedE2eeSource(id: id, localURL: destination)
+            } catch {
+                try? FileManager.default.removeItem(at: partialURL)
+                self.failE2eeAttachment(id, stage: "photos_image_materialize", error: error)
+            }
+        }
+    }
+
+    private func persistPreparedE2eeSource(id: AttachmentId, localURL: URL) {
+        database.write({ session in
+            guard let attachment = session.attachment(id: id) else {
+                throw ClientError.AttachmentDoesNotExist(id: id)
+            }
+            attachment.localURL = localURL
+            attachment.localState = .uploading(progress: 0)
+        }, completion: { [weak self] error in
+            guard let self else { return }
+            if let error {
+                self.failE2eeAttachment(id, stage: "source_persist", error: error)
+                return
+            }
+            self.removePendingAttachment(with: id)
+            self.startE2eeMessageIfReady(messageId: id.messageId)
+        })
+    }
+
+    private struct E2eePendingMessageSnapshot {
+        let messageId: MessageId
+        let cid: String
+        let attachments: [AnyMessageAttachment]
+    }
+
+    private func startE2eeMessageIfReady(messageId: MessageId) {
+        database.backgroundReadOnlyContext.perform { [weak self] in
+            guard let self,
+                  let message = self.database.backgroundReadOnlyContext.message(id: messageId),
+                  let cid = message.cid,
+                  message.channel?.isE2eeEnabled == true else { return }
+            let ordered = message.attachments.sorted {
+                ($0.attachmentID?.rawValue ?? "") < ($1.attachmentID?.rawValue ?? "")
+            }
+            let models = ordered.compactMap { $0.asAnyModel() }
+            guard !ordered.isEmpty,
+                  ordered.allSatisfy({ $0.localState == .uploading(progress: 0) }),
+                  models.count == ordered.count else { return }
+            var shouldStart = false
+            self._pendingE2eeMessageIDs.mutate {
+                shouldStart = $0.insert(messageId).inserted
+            }
+            guard shouldStart else { return }
+            self.startE2eePreparation(
+                E2eePendingMessageSnapshot(
+                    messageId: messageId,
+                    cid: cid,
+                    attachments: models
+                )
+            )
+        }
+    }
+
+    private func startE2eePreparation(_ snapshot: E2eePendingMessageSnapshot) {
+        guard let accountId = currentUserId(),
+              let coordinator = e2eePreparationCoordinator else {
+            failE2eeMessage(
+                messageId: snapshot.messageId,
+                stage: "preflight",
+                error: ClientError.CurrentUserDoesNotExist()
+            )
+            return
+        }
+        let inputs = snapshot.attachments.compactMap(Self.e2eePreparationInput)
+        guard inputs.count == snapshot.attachments.count else {
+            failE2eeMessage(
+                messageId: snapshot.messageId,
+                stage: "metadata",
+                error: E2eeAttachmentPreparationError.sourceUnavailable
+            )
+            return
+        }
+        log.info("[E2EE_ATTACHMENT] stage=preparing count=\(inputs.count)")
+        coordinator.prepareAndSchedule(
+            accountId: accountId,
+            messageId: snapshot.messageId,
+            cid: snapshot.cid,
+            attachments: inputs
+        ) { [weak self] result in
+            switch result {
+            case .success:
+                log.info("[E2EE_ATTACHMENT] stage=background_upload_scheduled count=\(inputs.count)")
+            case .failure(let error):
+                self?.failE2eeMessage(
+                    messageId: snapshot.messageId,
+                    stage: "prepare_or_schedule",
+                    error: error
+                )
+            }
+        }
+    }
+
+    private static func e2eePreparationInput(
+        _ attachment: AnyMessageAttachment
+    ) -> E2eeAttachmentPreparationInput? {
+        guard let uploading = attachment.uploadingState else { return nil }
+        var display: [String: RawJSON] = [
+            "size": .number(Double(uploading.file.size))
+        ]
+        if let title = attachment.title { display["name"] = .string(title) }
+        if let mimeType = attachment.mimetype { display["mime_type"] = .string(mimeType) }
+        if let image = attachment.attachment(payloadType: ImageAttachmentPayload.self) {
+            if let width = image.originalWidth { display["width"] = .number(width) }
+            if let height = image.originalHeight { display["height"] = .number(height) }
+        } else if let video = attachment.attachment(payloadType: VideoAttachmentPayload.self),
+                  let duration = video.duration {
+            display["duration"] = .number(duration)
+        } else if let voice = attachment.attachment(payloadType: VoiceRecordingAttachmentPayload.self),
+                  let duration = voice.duration {
+            display["duration"] = .number(duration)
+        }
+        return E2eeAttachmentPreparationInput(
+            sourceURL: uploading.localFileURL,
+            title: attachment.title,
+            mimeType: attachment.mimetype,
+            display: display,
+            generatesImagePreview: attachment.type == .image,
+            generatesVideoPreview: attachment.type == .video,
+            videoDuration: attachment.attachment(payloadType: VideoAttachmentPayload.self)?.duration
+        )
+    }
+
+    /// A Live Photo or edited asset can expose several resources. E2EE must stage media bytes,
+    /// never an adjustment sidecar or paired resource selected only by array position.
+    private static func preferredResource(for asset: PHAsset) -> PHAssetResource? {
+        let resources = PHAssetResource.assetResources(for: asset)
+        let preferredTypes: [PHAssetResourceType]
+        switch asset.mediaType {
+        case .image:
+            preferredTypes = [.photo, .fullSizePhoto, .alternatePhoto]
+        case .video:
+            preferredTypes = [.video, .fullSizeVideo]
+        default:
+            preferredTypes = []
+        }
+        for type in preferredTypes {
+            if let resource = resources.first(where: { $0.type == type }) {
+                return resource
+            }
+        }
+        return resources.first(where: {
+            $0.type != .adjustmentData && $0.type != .pairedVideo
+        })
+    }
+
+    private func failE2eeAttachment(_ id: AttachmentId, stage: String, error: Error) {
+        log.error("[E2EE_ATTACHMENT] stage=\(stage) result=failed error=\(type(of: error))")
+        updateAttachmentIfNeeded(
+            attachmentId: id,
+            uploadedAttachment: nil,
+            newState: .uploadingFailed
+        ) {
+            self.removePendingAttachment(with: id)
+        }
+    }
+
+    private func failE2eeMessage(messageId: MessageId, stage: String, error: Error) {
+        log.error("[E2EE_ATTACHMENT] stage=\(stage) result=failed error=\(type(of: error))")
+        database.write({ session in
+            guard let message = session.message(id: messageId) else { return }
+            message.localMessageState = .sendingFailed
+            message.attachments.forEach { $0.localState = .uploadingFailed }
+        }, completion: { [weak self] _ in
+            self?._pendingE2eeMessageIDs.mutate { $0.remove(messageId) }
+        })
+    }
+
     private func uploadVideoThumbnail(of videoAttachment: AnyMessageAttachment,
                                       completion: @escaping (Result<UploadedAttachment, Error>) -> Void) {
         let commonError = NSError(domain: "Upload video thumbnail failed", code: 999)
@@ -163,84 +615,207 @@ class AttachmentQueueUploader: Worker {
     }
 
     private func prepareAttachmentForUpload(with id: AttachmentId, completion: @escaping (AnyMessageAttachment?, Error?) -> Void) {
-        let attachmentStorage = self.attachmentStorage
-        database.write { session in
-            guard let attachment = session.attachment(id: id) else { return }
-
-            let onCompletion: (Error?) -> Void = { error in
-                let model = attachment.asAnyModel()
-                DispatchQueue.main.async { 
-                    completion(model, error)
-                }
+        database.backgroundReadOnlyContext.perform { [weak self] in
+            guard let self,
+                  let attachment = self.database.backgroundReadOnlyContext.attachment(id: id),
+                  let sourceURL = attachment.localURL else {
+                self?.finishStandardSourcePreparation(
+                    completion: completion,
+                    model: nil,
+                    error: ClientError.AttachmentDoesNotExist(id: id)
+                )
+                return
             }
 
-            var temporaryURL = attachment.localURL
-            /// Check if local url exist, if not, we will fetch from asset id.
-            if let temporaryURL, temporaryURL.isTemporaryItemProviderURL, let assetId = attachment.assetId  {
+            // Snapshot only immutable values. A managed `AttachmentDTO` must never escape this
+            // context into a PhotoKit callback or a file-I/O queue.
+            let assetId = attachment.assetId
+            let attachmentType = attachment.attachmentType
+            let destination = self.attachmentStorage.sandboxedURL(
+                for: id,
+                temporaryURL: sourceURL
+            )
 
-                let fetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
-                guard let asset = fetchResult.firstObject, let resource = PHAssetResource.assetResources(for: asset).first else {
-                    log.error("Asset not exist", subsystems: .offlineSupport)
-                    onCompletion(ClientError.AttachmentDoesNotExist(id: id))
+            if self.attachmentStorage.fileExists(at: destination) {
+                self.persistPreparedStandardSource(
+                    id: id,
+                    localURL: destination,
+                    completion: completion
+                )
+                return
+            }
+
+            if sourceURL.isTemporaryItemProviderURL, let assetId {
+                let fetchResult = PHAsset.fetchAssets(
+                    withLocalIdentifiers: [assetId],
+                    options: nil
+                )
+                guard let asset = fetchResult.firstObject,
+                      let resource = Self.preferredResource(for: asset) else {
+                    log.error("Asset does not exist", subsystems: .offlineSupport)
+                    self.finishStandardSourcePreparation(
+                        completion: completion,
+                        model: nil,
+                        error: ClientError.AttachmentDoesNotExist(id: id)
+                    )
                     return
                 }
+                self.materializeStandardPhotoAsset(
+                    asset,
+                    resource: resource,
+                    id: id,
+                    destination: destination,
+                    completion: completion
+                )
+                return
+            }
 
-                let url = attachmentStorage.sandboxedURL(for: id, temporaryURL: temporaryURL)
-                if attachmentStorage.fileExists(at: url) {
-                    attachment.localURL = url
-                    onCompletion(nil)
-                    return
-                }
-
-                if asset.mediaType == .image {
-                    let options = PHImageRequestOptions()
-                    options.isSynchronous = true
-                    options.deliveryMode = .highQualityFormat
-                    options.isNetworkAccessAllowed = true
-                    PHImageManager.default().requestImage(for: asset,
-                                                          targetSize: PHImageManagerMaximumSize,
-                                                          contentMode: .aspectFit,
-                                                          options: options) { image, _ in
-                        guard let image else {
-                            onCompletion(ClientError.AttachmentDoesNotExist(id: id))
-                            return
-                        }
-                        let imageData = image.jpegData(compressionQuality: 0.5)
-                        do {
-                            try imageData?.write(to: url)
-                            attachment.localURL = url
-                            onCompletion(nil)
-                        } catch {
-                            onCompletion(ClientError.Unexpected("Faild to write data to fileURL: \(url)"))
-                        }
-                    }
-                } else {
-                    let options = PHAssetResourceRequestOptions()
-                    options.isNetworkAccessAllowed = true
-
-                    PHAssetResourceManager.default().writeData(for: resource, toFile: url, options: options) { error in
-                        if let error {
-                            log.error("File not exist", subsystems: .offlineSupport)
-                            onCompletion(ClientError.AttachmentDoesNotExist(id: id))
-                            return
-                        } else {
-                            attachment.localURL = url
-                            onCompletion(nil)
-                            return
-                        }
-                    }
-                }
-
-            } else if let temporaryURL = attachment.localURL {
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                guard let self else { return }
                 do {
-                    let localURL = try attachmentStorage.storeAttachment(id: id, temporaryURL: temporaryURL)
-                    attachment.localURL = localURL
-                    onCompletion(nil)
+                    let localURL: URL
+                    if attachmentType == .image {
+                        localURL = try self.attachmentStorage.storeAttachment(
+                            id: id,
+                            temporaryURL: sourceURL
+                        )
+                    } else {
+                        localURL = try self.attachmentStorage.storeAttachmentPreservingOriginal(
+                            id: id,
+                            temporaryURL: sourceURL
+                        )
+                    }
+                    self.persistPreparedStandardSource(
+                        id: id,
+                        localURL: localURL,
+                        completion: completion
+                    )
                 } catch {
-                    log.error("Could not copy attachment to local storage: \(error.localizedDescription)", subsystems: .offlineSupport)
-                    onCompletion(ClientError.AttachmentDoesNotExist(id: id))
+                    log.error(
+                        "Could not copy attachment to local storage: \(error.localizedDescription)",
+                        subsystems: .offlineSupport
+                    )
+                    self.finishStandardSourcePreparation(
+                        completion: completion,
+                        model: nil,
+                        error: ClientError.AttachmentDoesNotExist(id: id)
+                    )
                 }
             }
+        }
+    }
+
+    private func materializeStandardPhotoAsset(
+        _ asset: PHAsset,
+        resource: PHAssetResource,
+        id: AttachmentId,
+        destination: URL,
+        completion: @escaping (AnyMessageAttachment?, Error?) -> Void
+    ) {
+        let partialURL = attachmentStorage.partialURL(for: destination)
+        try? FileManager.default.removeItem(at: partialURL)
+
+        if asset.mediaType == .image {
+            let options = PHImageRequestOptions()
+            options.isSynchronous = true
+            options.deliveryMode = .highQualityFormat
+            options.isNetworkAccessAllowed = true
+            PHImageManager.default().requestImage(
+                for: asset,
+                targetSize: PHImageManagerMaximumSize,
+                contentMode: .aspectFit,
+                options: options
+            ) { [weak self] image, _ in
+                guard let self else { return }
+                do {
+                    guard let imageData = image?.jpegData(compressionQuality: 0.5) else {
+                        throw ClientError.AttachmentDoesNotExist(id: id)
+                    }
+                    try imageData.write(to: partialURL, options: .atomic)
+                    try self.attachmentStorage.promotePreparedSource(
+                        partialURL,
+                        to: destination
+                    )
+                    self.persistPreparedStandardSource(
+                        id: id,
+                        localURL: destination,
+                        completion: completion
+                    )
+                } catch {
+                    try? FileManager.default.removeItem(at: partialURL)
+                    self.finishStandardSourcePreparation(
+                        completion: completion,
+                        model: nil,
+                        error: error
+                    )
+                }
+            }
+            return
+        }
+
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        PHAssetResourceManager.default().writeData(
+            for: resource,
+            toFile: partialURL,
+            options: options
+        ) { [weak self] error in
+            guard let self else { return }
+            do {
+                if let error { throw error }
+                try self.attachmentStorage.promotePreparedSource(
+                    partialURL,
+                    to: destination
+                )
+                self.persistPreparedStandardSource(
+                    id: id,
+                    localURL: destination,
+                    completion: completion
+                )
+            } catch {
+                try? FileManager.default.removeItem(at: partialURL)
+                log.error("Photo asset copy failed: \(error.localizedDescription)", subsystems: .offlineSupport)
+                self.finishStandardSourcePreparation(
+                    completion: completion,
+                    model: nil,
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func persistPreparedStandardSource(
+        id: AttachmentId,
+        localURL: URL,
+        completion: @escaping (AnyMessageAttachment?, Error?) -> Void
+    ) {
+        do {
+            let model = try PreparedAttachmentSourcePersistence.persist(
+                database: database,
+                id: id,
+                localURL: localURL
+            )
+            finishStandardSourcePreparation(
+                completion: completion,
+                model: model,
+                error: nil
+            )
+        } catch {
+            finishStandardSourcePreparation(
+                completion: completion,
+                model: nil,
+                error: error
+            )
+        }
+    }
+
+    private func finishStandardSourcePreparation(
+        completion: @escaping (AnyMessageAttachment?, Error?) -> Void,
+        model: AnyMessageAttachment?,
+        error: Error?
+    ) {
+        DispatchQueue.main.async {
+            completion(model, error)
         }
     }
 
@@ -427,6 +1002,49 @@ private class AttachmentStorage {
             try Data(contentsOf: temporaryURL).write(to: sandboxedURL)
         }
         return sandboxedURL
+    }
+
+    /// E2EE source material must retain the original bytes and must not be loaded as one `Data`.
+    /// Photos assets use `PHAssetResourceManager`; file/item-provider inputs use this streaming
+    /// filesystem copy before the temporary provider URL can disappear.
+    @discardableResult
+    func storeAttachmentPreservingOriginal(id: AttachmentId, temporaryURL: URL) throws -> URL {
+        let destination = sandboxedURL(for: id, temporaryURL: temporaryURL)
+        if fileExists(at: destination) { return destination }
+        let partial = partialURL(for: destination)
+        try? fileManager.removeItem(at: partial)
+        do {
+            try fileManager.copyItem(at: temporaryURL, to: partial)
+            try promotePreparedSource(partial, to: destination)
+        } catch {
+            try? fileManager.removeItem(at: partial)
+            throw error
+        }
+        return destination
+    }
+
+    func partialURL(for destination: URL) -> URL {
+        destination
+            .deletingLastPathComponent()
+            .appendingPathComponent(destination.lastPathComponent + ".partial")
+    }
+
+    func promotePreparedSource(_ partial: URL, to destination: URL) throws {
+        if fileExists(at: destination) {
+            try? fileManager.removeItem(at: partial)
+            return
+        }
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var mutablePartial = partial
+        try mutablePartial.setResourceValues(values)
+#if os(iOS)
+        try fileManager.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: partial.path
+        )
+#endif
+        try fileManager.moveItem(at: partial, to: destination)
     }
 
     func sandboxedURL(for id: AttachmentId, temporaryURL: URL) -> URL {

@@ -109,6 +109,9 @@ class DefaultRequestEncoder: RequestEncoder {
                     forHTTPHeaderField: E2eeByteWireFormat.headerName
                 )
             }
+            for (field, value) in endpoint.headers {
+                request.setValue(value, forHTTPHeaderField: field)
+            }
 
             switch endpoint.path {
             case .users, .updateUsers:

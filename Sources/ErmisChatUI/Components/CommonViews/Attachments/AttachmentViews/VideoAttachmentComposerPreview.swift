@@ -99,8 +99,10 @@ open class VideoAttachmentComposerPreview: _View, UIProvider {
         if let thumbnailImage = content?.thumbnailImage {
             self.previewImageView.currentImageLoadingTask?.cancel()
             self.previewImageView.image = thumbnailImage
+            loadingIndicator.isHidden = true
         } else if let url = content?.url {
             components.videoLoader.loadPreviewForVideo(at: url) { [weak self] in
+                guard self?.content?.url == url else { return }
                 self?.loadingIndicator.isHidden = true
                 switch $0 {
                 case let .success(preview):
@@ -110,9 +112,12 @@ open class VideoAttachmentComposerPreview: _View, UIProvider {
                 }
             }
             if content?.duration == nil {
-                videoDurationLabel.text = formatters.videoDuration.format(
-                    components.videoLoader.videoAsset(at: url).duration.seconds
-                )
+                components.videoLoader.loadDurationForVideo(at: url) { [weak self] result in
+                    guard self?.content?.url == url,
+                          case let .success(duration) = result,
+                          duration.isFinite else { return }
+                    self?.videoDurationLabel.text = self?.formatters.videoDuration.format(duration)
+                }
             }
         }
     }

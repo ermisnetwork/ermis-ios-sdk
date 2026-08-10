@@ -368,6 +368,17 @@ protocol AttachmentDatabaseSession {
         id: AttachmentId
     ) throws -> AttachmentDTO
 
+    /// Materializes a renderable attachment after an E2EE preview has been authenticated and
+    /// decrypted into the process-local preview cache. Plaintext preview bytes are deliberately
+    /// not persisted in Core Data.
+    @discardableResult
+    func saveE2eePreviewAttachment(
+        id: AttachmentId,
+        type: AttachmentType,
+        payloadData: Data,
+        previewAssetId: String
+    ) throws -> AttachmentDTO
+
     /// Deletes the provided dto from a database
     /// - Parameter attachment: The DTO to be deleted
     func delete(attachment: AttachmentDTO)

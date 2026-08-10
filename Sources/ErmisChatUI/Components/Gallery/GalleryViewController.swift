@@ -368,6 +368,40 @@ open class GalleryViewController: _ViewController,
 
         guard let item = getItem(at: indexPath) else { return cell }
 
+        if let imageCell = cell as? ImageAttachmentGalleryCell {
+            imageCell.imageURLResolver = { [weak client] attachment, completion in
+                guard let client else {
+                    completion(.failure(URLError(.cancelled)))
+                    return
+                }
+                _Concurrency.Task {
+                    do {
+                        let url = try await client.prepareAttachmentForViewing(attachment)
+                        completion(.success(url))
+                    } catch {
+                        completion(.failure(error))
+                    }
+                }
+            }
+        }
+
+        if let videoCell = cell as? VideoAttachmentGalleryCell {
+            videoCell.videoURLResolver = { [weak client] attachment, completion in
+                guard let client else {
+                    completion(.failure(URLError(.cancelled)))
+                    return
+                }
+                _Concurrency.Task {
+                    do {
+                        let url = try await client.prepareAttachmentForViewing(attachment)
+                        completion(.success(url))
+                    } catch {
+                        completion(.failure(error))
+                    }
+                }
+            }
+        }
+
         cell.content = item
 
         cell.didTapOnce = { [weak self] in

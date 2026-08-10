@@ -48,6 +48,9 @@ enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
     case messageTextUpdatedAt = "message_text_updated_at"
     case forwardCid = "forward_cid"
     case forwardMessageId = "forward_message_id"
+    case forwardParentCid = "forward_parent_cid"
+    case e2eeGroupId = "e2ee_group_id"
+    case e2eeAttachmentIds = "e2ee_attachment_ids"
 }
 
 extension MessagePayload {
@@ -245,7 +248,7 @@ struct MessageRequestBody: Encodable {
     var mlsEpoch: Int?
     let type: MessageType?
     let oldTexts: [MessageEditHistoryPayload]?
-    let cid: ChannelId?
+    var cid: ChannelId?
     let command: String?
     let args: String?
     let parentId: String?
@@ -258,14 +261,19 @@ struct MessageRequestBody: Encodable {
     let createdAt: Date?
     var forwardCid: String?
     let forwardMessageId: String?
+    var forwardParentCid: String?
+    var e2eeGroupId: String?
+    var e2eeAttachmentIds: [String]
 
     /// The current no-AAD MLS lane is valid only for messages whose envelope carries no
     /// attachment/forward metadata. M2/M4 replace this fail-closed gate with the authenticated
     /// attachment/forward sender.
     var requiresE2eeAuthenticatedSendLane: Bool {
         !attachments.isEmpty ||
+            !e2eeAttachmentIds.isEmpty ||
             forwardCid?.isEmpty == false ||
-            forwardMessageId?.isEmpty == false
+            forwardMessageId?.isEmpty == false ||
+            forwardParentCid?.isEmpty == false
     }
 
     /// A sender retry must reuse this exact MLS generation. Creating another ciphertext for an
@@ -280,6 +288,50 @@ struct MessageRequestBody: Encodable {
         text = ""
         attachments = []
         stickerUrl = nil
+    }
+
+    mutating func bindE2eeAuthenticatedEnvelope(
+        destinationCid: ChannelId,
+        groupId: String,
+        attachmentIds: [String],
+        forwardParentCid: String? = nil
+    ) throws {
+        // The AAD must authenticate the same destination that the send endpoint targets. A
+        // locally-created MessageDTO does not always carry `cid` in its request snapshot, so bind
+        // the already-validated destination explicitly instead of relying on optional DTO state.
+        cid = destinationCid
+        e2eeGroupId = groupId
+        e2eeAttachmentIds = try E2eeMessageAADV1.canonicalAttachmentIds(attachmentIds)
+        self.forwardParentCid = forwardParentCid
+        _ = try authenticatedAAD()
+    }
+
+    func authenticatedAAD() throws -> E2eeMessageAADV1? {
+        guard attachments.isEmpty else {
+            // Standard attachment payloads have no encrypted V1 manifest and must remain on the
+            // fail-closed lane in an effective-E2EE channel.
+            throw E2eeMessageAADError.authenticatedSendLaneUnavailable
+        }
+        let requiresAAD = !e2eeAttachmentIds.isEmpty
+            || forwardCid?.isEmpty == false
+            || forwardMessageId?.isEmpty == false
+            || forwardParentCid?.isEmpty == false
+        guard requiresAAD else { return nil }
+        guard let e2eeGroupId, !e2eeGroupId.isEmpty else {
+            throw E2eeMessageAADError.missingE2eeGroupId
+        }
+        guard let cid else {
+            throw E2eeMessageAADError.missingEnvelopeCid
+        }
+        return E2eeMessageAADV1(
+            cid: cid.rawValue,
+            e2eeGroupId: e2eeGroupId,
+            messageId: id,
+            forwardCid: forwardCid,
+            forwardMessageId: forwardMessageId,
+            forwardParentCid: forwardParentCid,
+            attachmentIds: e2eeAttachmentIds
+        )
     }
 
     init(
@@ -302,7 +354,10 @@ struct MessageRequestBody: Encodable {
         mentionedAll: Bool = false,
         createdAt: Date? = nil,
         forwardCid: String? = nil,
-        forwardMessageId: String? = nil
+        forwardMessageId: String? = nil,
+        forwardParentCid: String? = nil,
+        e2eeGroupId: String? = nil,
+        e2eeAttachmentIds: [String] = []
     ) {
         self.id = id
         self.user = user
@@ -324,6 +379,9 @@ struct MessageRequestBody: Encodable {
         self.createdAt = createdAt
         self.forwardCid = forwardCid
         self.forwardMessageId = forwardMessageId
+        self.forwardParentCid = forwardParentCid
+        self.e2eeGroupId = e2eeGroupId
+        self.e2eeAttachmentIds = e2eeAttachmentIds
     }
 
     init(with message: ChatMessage) {
@@ -355,6 +413,9 @@ struct MessageRequestBody: Encodable {
         self.createdAt = message.createdAt
         self.forwardCid = nil
         self.forwardMessageId = nil
+        self.forwardParentCid = nil
+        self.e2eeGroupId = nil
+        self.e2eeAttachmentIds = []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -376,6 +437,12 @@ struct MessageRequestBody: Encodable {
         try container.encodeIfPresent(forwardCid, forKey: .forwardCid)
         try container.encodeIfPresent(stickerUrl, forKey: .stickerUrl)
         try container.encodeIfPresent(forwardMessageId, forKey: .forwardMessageId)
+        try container.encodeIfPresent(forwardParentCid, forKey: .forwardParentCid)
+        try container.encodeIfPresent(e2eeGroupId, forKey: .e2eeGroupId)
+        if !e2eeAttachmentIds.isEmpty {
+            let canonicalIds = try E2eeMessageAADV1.canonicalAttachmentIds(e2eeAttachmentIds)
+            try container.encode(canonicalIds, forKey: .e2eeAttachmentIds)
+        }
 
         if !attachments.isEmpty {
             try container.encode(attachments, forKey: .attachments)

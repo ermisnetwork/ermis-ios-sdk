@@ -19,6 +19,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
     let needToken: Bool
     let urlType: URLType
     let body: Encodable?
+    let headers: [String: String]
 
     init(
         path: EndpointPath,
@@ -28,7 +29,8 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         needConnectionId: Bool = false,
         needDeviceId: Bool = false,
         needToken: Bool = true,
-        urlType: URLType = .normal
+        urlType: URLType = .normal,
+        headers: [String: String] = [:]
     ) {
         self.path = path
         self.method = method
@@ -38,6 +40,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         self.needDeviceId = needDeviceId
         self.needToken = needToken
         self.urlType = urlType
+        self.headers = headers
     }
 
     // MARK: - Codable
@@ -51,6 +54,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         case requiresToken
         case body
         case urlType
+        case headers
     }
 
     init(from decoder: Decoder) throws {
@@ -63,6 +67,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         needToken = try container.decode(Bool.self, forKey: .requiresToken)
         body = try container.decodeIfPresent(Data.self, forKey: .body)
         urlType = try container.decode(URLType.self, forKey: .urlType)
+        headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
     }
 
     func encode(to encoder: Encoder) throws {
@@ -79,6 +84,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
             try container.encode(body, forKey: .body)
         }
         try container.encode(urlType, forKey: .urlType)
+        try container.encode(headers, forKey: .headers)
     }
 }
 

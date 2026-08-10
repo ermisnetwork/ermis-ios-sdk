@@ -90,13 +90,22 @@ extension MessageGalleryView {
             super.contentDidChanged()
             let attachment = content
 
-            if let uploadingState = attachment?.uploadingState,
-               uploadingState.state != .uploaded,
-               let thumbData = attachment?.thumbnailData, let thumbImage = UIImage(data: thumbData) {
+            if let thumbData = attachment?.thumbnailData, let thumbImage = UIImage(data: thumbData) {
                 imageView.currentImageLoadingTask?.cancel()
                 imageView.image = thumbImage
                 loadingIndicator.isVisible = false
             } else {
+                guard attachment?.payload.imageURL.scheme != "ermis-e2ee-attachment" else {
+                    // This opaque URL identifies the encrypted original; it is not a network URL
+                    // and must never reach the standard image loader. The E2EE receive coordinator
+                    // will update this attachment after its authenticated preview is rehydrated.
+                    imageView.currentImageLoadingTask?.cancel()
+                    imageView.image = nil
+                    loadingIndicator.isVisible = true
+                    uploadingOverlay.content = content?.uploadingState
+                    uploadingOverlay.isVisible = attachment?.uploadingState != nil
+                    return
+                }
                 loadingIndicator.isVisible = true
                 imageTask = sharedComponents.imageLoader.loadImage(
                     into: imageView,

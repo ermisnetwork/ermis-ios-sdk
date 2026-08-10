@@ -21,6 +21,10 @@ public protocol VideoLoading: AnyObject {
     ///   - completion: A completion that is called when a preview is loaded. Must be invoked on main queue.
     func loadPreviewForVideo(at url: URL, completion: @escaping (Result<UIImage, Error>) -> Void)
 
+    /// Loads video duration without synchronously resolving AVAsset properties on the main
+    /// thread. The completion is always delivered on the main queue.
+    func loadDurationForVideo(at url: URL, completion: @escaping (Result<TimeInterval, Error>) -> Void)
+
     /// Returns a video asset with the given URL.
     ///
     /// - Returns: The video asset.
@@ -30,6 +34,27 @@ public protocol VideoLoading: AnyObject {
 public extension VideoLoading {
     func videoAsset(at url: URL) -> AVURLAsset {
         .init(url: url)
+    }
+
+    func loadDurationForVideo(
+        at url: URL,
+        completion: @escaping (Result<TimeInterval, Error>) -> Void
+    ) {
+        let asset = videoAsset(at: url)
+        _Concurrency.Task {
+            let result: Result<TimeInterval, Error>
+            do {
+                let duration = try await asset.load(.duration)
+                result = .success(duration.seconds)
+            } catch {
+                result = .failure(error)
+            }
+            if Thread.isMainThread {
+                completion(result)
+            } else {
+                DispatchQueue.main.async { completion(result) }
+            }
+        }
     }
 }
 

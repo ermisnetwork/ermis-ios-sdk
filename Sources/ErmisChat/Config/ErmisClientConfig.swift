@@ -47,6 +47,13 @@ public struct ErmisClientConfig {
         Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier)
     }
 
+    /// E2EE attachment ciphertext and multipart staging are durable, non-evictable transfer
+    /// state. Keep them in Application Support, separate from the general attachment cache.
+    var e2eeAttachmentStorageFolderURL: URL? {
+        Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier)?
+            .appendingPathComponent("E2EEAttachments", isDirectory: true)
+    }
+
     /// Authentication-aware storage scope. Do not share one on-disk cache between users.
     public var localStorageScope: ErmisLocalStorageScope = .automatic
 
@@ -145,9 +152,20 @@ public struct ErmisClientConfig {
     /// This overrides the custom `UploadClient`. You should use 1 of them only.
     public var customUploader: Uploader?
 
-    /// Returns max possible attachment size in bytes.
+    /// Returns the largest attachment plaintext accepted by the client.
+    ///
+    /// Bellboy accepts attachment ciphertext up to 2 GiB. The client limit is slightly
+    /// smaller so the E2EE V1 frame headers and authentication tags still fit below that cap.
     public var maxAttachmentSize: Int64 {
-        return 104_857_600 // 100 * 1024 * 1024
+        2_147_287_040
+    }
+
+    /// Returns the largest E2EE attachment plaintext accepted by the V1 frame contract.
+    ///
+    /// The exact value accounts for the 24-byte authenticated framing overhead of every
+    /// 256 KiB frame under Bellboy's 2 GiB ciphertext cap.
+    public var maxE2eeAttachmentSize: Int64 {
+        2_147_287_040
     }
 
     /// Allows to inject a custom API client for downloading attachments, if not specified, `ErmisDownloadClient` is used.

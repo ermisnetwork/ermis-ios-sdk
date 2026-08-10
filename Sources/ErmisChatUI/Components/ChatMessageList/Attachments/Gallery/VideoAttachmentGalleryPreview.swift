@@ -92,12 +92,14 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
 
         if let thumbnailData = content?.thumbnailData, let thumbImage = UIImage(data: thumbnailData) {
             imageView.currentImageLoadingTask?.cancel()
-            imageView.image = thumbImage
-        }
-        if let thumbnailURL = content?.thumbnailURL {
+            showPreview(using: thumbImage)
+            loadingIndicator.isHidden = true
+        } else if let thumbnailURL = content?.thumbnailURL {
             showPreview(using: thumbnailURL)
-        } else if let url = content?.videoURL {
+        } else if let url = content?.videoURL,
+                  url.scheme != "ermis-e2ee-attachment" {
             components.videoLoader.loadPreviewForVideo(at: url) { [weak self] in
+                guard self?.content?.videoURL == url else { return }
                 self?.loadingIndicator.isHidden = true
                 switch $0 {
                 case let .success(preview):

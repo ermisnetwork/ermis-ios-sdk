@@ -309,7 +309,8 @@
 /// Show when user reject your friend request.
 "message.system.other-reject-add-friend-request" = "%@ rejected to join this channel.";
 /// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
-"attachment.max-size-exceeded" = "File size exceeds the limit. Maximum allowed: 100MB.";
+"attachment.max-size-exceeded" = "File size exceeds the configured limit.";
+"attachment.max-size-exceeded-format" = "File size exceeds the limit. Maximum allowed: %@.";
 
 /// Shown as title of pinned messages view.
 "pin.collapsed.title" = "Pinned messages";

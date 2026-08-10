@@ -28,12 +28,109 @@ struct ComposerDraftPersistenceGate {
     }
 }
 
+struct ComposerAttachmentSizePolicy {
+    static func maximumSize(
+        standardLimit: Int64,
+        e2eeLimit: Int64,
+        isE2ee: Bool
+    ) -> Int64 {
+        isE2ee ? e2eeLimit : standardLimit
+    }
+}
+
+struct ComposerPhotoPickerVideoSource {
+    /// `AttachmentQueueUploader` recognizes this opaque path and resolves the actual PHAsset
+    /// after the optimistic message is durable. No provider-owned video bytes need to be loaded
+    /// into composer memory or copied before the user taps Send.
+    static func placeholderURL(fileName: String) -> URL {
+        let safeName = URL(fileURLWithPath: fileName).lastPathComponent
+        return FileManager.default.temporaryDirectory
+            .appendingPathComponent("photospicker", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent(safeName.isEmpty ? "video.mov" : safeName)
+    }
+}
+
+private struct ComposerPhotoAssetMetadata {
+    let duration: TimeInterval
+    let width: Int
+    let height: Int
+    let fileSize: Int64
+    let fileName: String
+}
+
+private enum ComposerPhotoLibraryLookup {
+    static func metadata(assetId: String) async throws -> ComposerPhotoAssetMetadata {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                autoreleasepool {
+                    let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                    guard let asset = assets.firstObject,
+                          let resource = PHAssetResource.assetResources(for: asset).first else {
+                        continuation.resume(
+                            throwing: ClientError.Unexpected("Can't load Photos asset metadata")
+                        )
+                        return
+                    }
+                    let rawSize = resource.value(forKey: "fileSize") as? CLong ?? 0
+                    continuation.resume(
+                        returning: ComposerPhotoAssetMetadata(
+                            duration: asset.duration,
+                            width: asset.pixelWidth,
+                            height: asset.pixelHeight,
+                            fileSize: Int64(bitPattern: UInt64(rawSize)),
+                            fileName: normalizedFileName(resource.originalFilename)
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    static func unavailableAssetIds(_ assetIds: [String]) async -> [String] {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                autoreleasepool {
+                    var unavailable = assetIds
+                    let assets = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: nil)
+                    assets.enumerateObjects { asset, _, _ in
+                        unavailable.removeAll { $0 == asset.localIdentifier }
+                    }
+                    continuation.resume(returning: unavailable)
+                }
+            }
+        }
+    }
+
+    private static func normalizedFileName(_ original: String) -> String {
+        guard original.lowercased().hasSuffix(".heic") else { return original }
+        return String(original.dropLast(4)) + "jpg"
+    }
+}
+
+private final class ComposerThumbnailContinuation {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<UIImage?, Never>?
+
+    init(_ continuation: CheckedContinuation<UIImage?, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ image: UIImage?) {
+        let continuation = lock.withLock { () -> CheckedContinuation<UIImage?, Never>? in
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: image)
+    }
+}
+
 /// The possible errors that can occur in attachment validation
 public enum AttachmentValidationError: Error {
     /// The size of the attachment exceeds the max file size
     case maxFileSizeExceeded
 
-    internal static var fileSizeMaxLimitFallback: Int64 = 100 * 1024 * 1024
+    internal static var fileSizeMaxLimitFallback: Int64 = 2_147_287_040
 }
 
 public struct LocalAttachmentInfoKey: Hashable, Equatable, RawRepresentable {
@@ -1579,9 +1676,10 @@ open class ComposerViewController: _ViewController,
             return
         }
 
-        var fileSize: Int64! = info[.size] as? Int64
-        if fileSize == nil {
-            fileSize = try? AttachmentFile(url: url, fileSize: nil).size
+        let fileSize = (info[.size] as? Int64)
+            ?? (try? AttachmentFile(url: url, fileSize: nil).size)
+        guard let fileSize, fileSize >= 0 else {
+            throw ClientError.AttachmentURLNotFound()
         }
 
         let maxAttachmentSize = maxAttachmentSize(for: type)
@@ -1642,17 +1740,21 @@ open class ComposerViewController: _ViewController,
 
     /// The maximum upload file size depending on the attachment type.
     ///
-    /// The max attachment size can be set from the Ermis's Dashboard App Settings.
+    /// Effective-E2EE channels use the plaintext limit dictated by the E2EE
+    /// frame/ciphertext contract. Other channels use the configured SDK limit.
     /// - Parameter attachmentType: The attachment type that is being uploaded.
-    /// - Returns: The file size limit in bytes. The default value is 200MB.
+    /// - Returns: The applicable plaintext file-size limit in bytes.
     open func maxAttachmentSize(for attachmentType: AttachmentType) -> Int64 {
-        AttachmentValidationError.fileSizeMaxLimitFallback
         guard let client = channelController?.client else {
             log.assertionFailure("Channel controller must be set at this point")
             return AttachmentValidationError.fileSizeMaxLimitFallback
         }
-
-        return client.config.maxAttachmentSize
+        let isE2ee = channelController?.isE2eeEnabled == true
+        return ComposerAttachmentSizePolicy.maximumSize(
+            standardLimit: client.config.maxAttachmentSize,
+            e2eeLimit: client.config.maxE2eeAttachmentSize,
+            isE2ee: isE2ee
+        )
     }
 
     /// Shows an alert for the error thrown when adding attachment to a composer.
@@ -1667,7 +1769,7 @@ open class ComposerViewController: _ViewController,
     ) {
         switch error {
         case AttachmentValidationError.maxFileSizeExceeded:
-            showAttachmentExceedsMaxSizeAlert()
+            showAttachmentExceedsMaxSizeAlert(for: attachmentType)
         default:
             log.assertionFailure(error.localizedDescription)
         }
@@ -1814,7 +1916,7 @@ open class ComposerViewController: _ViewController,
     open func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         _Concurrency.Task {
             do {
-                let limitedAssetIds = limitedAssets(results)
+                let limitedAssetIds = await limitedAssets(results)
                 if !limitedAssetIds.isEmpty {
                     let aproveIds = await PHPhotoLibrary.shared().presentLimitedLibraryPicker(from: picker)
                     if !Set(limitedAssetIds).isSuperset(of: aproveIds) {
@@ -1822,40 +1924,35 @@ open class ComposerViewController: _ViewController,
                     }
                 }
 
+                // Return to the chat before PhotoKit metadata/thumbnail work. Large or iCloud-backed
+                // videos must never leave PHPicker covering the pending-message UI while processing.
+                await dismissPhotoPicker(picker)
                 let attachmentResults = try await self.handlePickerResults(results)
 
                 await MainActor.run {
                     let attachmentPickerResults = attachmentResults
                         .sorted { $0.0 < $1.0 }
                         .map(\.1)
-                    attachmentPickerResults.forEach({
+                    for result in attachmentPickerResults {
                         do {
                             try self.addAttachmentToContent(
-                                from: $0.url,
-                                type: $0.attachmentType,
-                                info: $0.attachmentInfo
+                                from: result.url,
+                                type: result.attachmentType,
+                                info: result.attachmentInfo
                             )
                         } catch {
                             self.handleAddAttachmentError(
-                                attachmentURL: $0.url,
-                                attachmentType: $0.attachmentType,
+                                attachmentURL: result.url,
+                                attachmentType: result.attachmentType,
                                 error: error
                             )
-                            return
-                        }
-                    })
-
-                    if #available(iOS 16, *) {
-                        let assetIdentifiers = results.compactMap(\.assetIdentifier)
-                        if !assetIdentifiers.isEmpty {
-                            picker.deselectAssets(withIdentifiers: results.compactMap(\.assetIdentifier))
+                            break
                         }
                     }
-
-                    picker.dismiss(animated: true)
                 }
             } catch(let error) {
-                picker.dismiss(animated: true) {
+                await dismissPhotoPicker(picker)
+                await MainActor.run {
                     self.presentAlert(title: "Error", message: "Failed to load attachment")
                 }
                 log.error(error)
@@ -1889,16 +1986,13 @@ open class ComposerViewController: _ViewController,
         var localAttachmentInfo = try await getAttachmentInfos(of: result)
 
         if prov.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
-            let item = try await prov.loadItem(forTypeIdentifier: UTType.movie.identifier)
-            if let url = item as? URL {
-                return .init(url: url, attachmentType: .video, attachmentInfo: localAttachmentInfo)
-            } else if let data = item as? Data {
-                let fileName = localAttachmentInfo[.name] as? String ?? fileName(of: prov, result: result, type: UTType.movie)
-                let tempURL = try data.copyToTemporaryLocalFileUrl(fileName)
-                return .init(url: tempURL, attachmentType: .video, attachmentInfo: localAttachmentInfo)
-            } else {
-                throw(ClientError("PHPickerResult return unexpected type: \(String(describing: type(of: item)))"))
-            }
+            let fileName = localAttachmentInfo[.name] as? String
+                ?? fileName(of: prov, result: result, type: UTType.movie)
+            return .init(
+                url: ComposerPhotoPickerVideoSource.placeholderURL(fileName: fileName),
+                attachmentType: .video,
+                attachmentInfo: localAttachmentInfo
+            )
         } else if prov.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
             let item = try await prov.loadItem(forTypeIdentifier: UTType.image.identifier)
             if let url = item as? URL {
@@ -1926,45 +2020,21 @@ open class ComposerViewController: _ViewController,
             throw ClientError.Unexpected("Can't asset with id: \(result.assetIdentifier ?? "nil")")
         }
         localAttachmentInfo[.assetId] = assetId
-        let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
-        if let asset = assets.firstObject {
-            localAttachmentInfo[.duration] = asset.duration
-            localAttachmentInfo[.width] = asset.pixelWidth
-            localAttachmentInfo[.height] = asset.pixelHeight
-            if let thumbnailImage = await getThumbnailImage(for: asset) {
-                localAttachmentInfo[.thumbnailImage] = thumbnailImage
-            }
-
-            let assetResources = PHAssetResource.assetResources(for: asset)
-            if let resource = assetResources.first {
-                let unsignedInt64 = resource.value(forKey: "fileSize") as? CLong ?? 0
-                let size = Int64(bitPattern: UInt64(unsignedInt64))
-                localAttachmentInfo[.size] = size
-                //
-                var fileName = resource.originalFilename
-                if fileName.hasSuffix(".heic") || fileName.hasSuffix(".HEIC") {
-                    fileName.removeLast(4)
-                    fileName = fileName + "jpg"
-                }
-                localAttachmentInfo[.name] = fileName
-            }
-        } else {
-            throw ClientError.Unexpected("Can't asset with id: \(result.assetIdentifier ?? "nil")")
+        let metadata = try await ComposerPhotoLibraryLookup.metadata(assetId: assetId)
+        localAttachmentInfo[.duration] = metadata.duration
+        localAttachmentInfo[.width] = metadata.width
+        localAttachmentInfo[.height] = metadata.height
+        localAttachmentInfo[.size] = metadata.fileSize
+        localAttachmentInfo[.name] = metadata.fileName
+        if let thumbnailImage = await getThumbnailImage(forAssetId: assetId) {
+            localAttachmentInfo[.thumbnailImage] = thumbnailImage
         }
         return localAttachmentInfo
     }
 
     private func fileName(of provider: NSItemProvider, result: PHPickerResult, type: UTType) -> String {
-        // 1. If Photos asset available, get the true filename
-        if let assetId = result.assetIdentifier {
-            let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
-            if let asset = assets.firstObject,
-               let resource = PHAssetResource.assetResources(for: asset).first {
-                return resource.originalFilename
-            }
-        }
-
-        // 2. Fallback: use suggestedName + extension
+        // Photos metadata is loaded off-main before this fallback is needed. Do not perform a
+        // second synchronous PHAsset lookup from the picker/UI path.
         var defaultFileExt: String = ""
         switch type {
         case .movie, .video: defaultFileExt = "mov"
@@ -1980,38 +2050,54 @@ open class ComposerViewController: _ViewController,
         }
     }
 
-    private func getThumbnailImage(for asset: PHAsset) async -> UIImage? {
-        try await withCheckedContinuation { continuation in
-            let options = PHImageRequestOptions()
-            options.deliveryMode = .highQualityFormat
-            options.isSynchronous = false
-            options.isNetworkAccessAllowed = true
+    private func getThumbnailImage(forAssetId assetId: String) async -> UIImage? {
+        await withCheckedContinuation { continuation in
+            let gate = ComposerThumbnailContinuation(continuation)
+            DispatchQueue.global(qos: .userInitiated).async {
+                let assets = PHAsset.fetchAssets(withLocalIdentifiers: [assetId], options: nil)
+                guard let asset = assets.firstObject else {
+                    gate.resolve(nil)
+                    return
+                }
+                let options = PHImageRequestOptions()
+                options.deliveryMode = .highQualityFormat
+                options.isSynchronous = false
+                options.isNetworkAccessAllowed = true
 
-            PHImageManager.default().requestImage(for: asset,
-                                                  targetSize: .init(width: 300, height: 300),
-                                                  contentMode: .aspectFit,
-                                                  options: options,
-                                                  resultHandler: { image, info in
-                guard let thumbnail = image else {
-                    return
+                let manager = PHImageManager.default()
+                let requestId = manager.requestImage(
+                    for: asset,
+                    targetSize: .init(width: 300, height: 300),
+                    contentMode: .aspectFit,
+                    options: options
+                ) { image, info in
+                    if (info?[PHImageResultIsDegradedKey] as? Bool) == true { return }
+                    gate.resolve(image)
                 }
-                if let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool), isDegraded {
-                    return
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
+                    manager.cancelImageRequest(requestId)
+                    gate.resolve(nil)
                 }
-                continuation.resume(returning: thumbnail)
-            })
+            }
         }
     }
 
-    private func limitedAssets(_ results: [PHPickerResult]) -> [String] {
-        var assetIds = results.compactMap { $0.assetIdentifier }
-        var results = PHAsset.fetchAssets(withLocalIdentifiers: assetIds, options: nil)
-        results.enumerateObjects { asset, index, _ in
-            if let index = assetIds.firstIndex(where: { $0 == asset.localIdentifier }) {
-                assetIds.remove(at: index)
+    private func limitedAssets(_ results: [PHPickerResult]) async -> [String] {
+        await ComposerPhotoLibraryLookup.unavailableAssetIds(results.compactMap(\.assetIdentifier))
+    }
+
+    private func dismissPhotoPicker(_ picker: PHPickerViewController) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async {
+                guard picker.presentingViewController != nil else {
+                    continuation.resume()
+                    return
+                }
+                picker.dismiss(animated: true) {
+                    continuation.resume()
+                }
             }
         }
-        return assetIds
     }
     // MARK: - UIDocumentPickerViewControllerDelegate
 
@@ -2036,7 +2122,20 @@ open class ComposerViewController: _ViewController,
 
     /// Shows an alert saying that attachment's size exceeds the limit.
     open func showAttachmentExceedsMaxSizeAlert() {
-        presentAlert(message: L10n.Attachment.maxSizeExceeded)
+        showAttachmentExceedsMaxSizeAlert(for: .file)
+    }
+
+    /// Shows an alert with the effective limit for the attachment type.
+    open func showAttachmentExceedsMaxSizeAlert(for attachmentType: AttachmentType) {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useGB]
+        formatter.countStyle = .binary
+        formatter.includesUnit = true
+        formatter.isAdaptive = false
+        let formattedLimit = formatter.string(
+            fromByteCount: maxAttachmentSize(for: attachmentType)
+        )
+        presentAlert(message: L10n.Attachment.maxSizeExceededFormat(formattedLimit))
     }
 
     // MARK: - InputTextViewClipboardAttachmentDelegate

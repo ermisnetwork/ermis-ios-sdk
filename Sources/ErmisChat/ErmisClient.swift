@@ -98,6 +98,18 @@ public class ErmisClient {
 
     let mlsClient: MlsClient
 
+    /// One SDK-owned background transfer session for this app/environment. It is intentionally
+    /// shared across accounts; durable opaque task mappings preserve account isolation.
+    let e2eeAttachmentTransferCoordinator: E2eeBackgroundTransferCoordinator?
+
+    /// User-initiated full-download fallback for E2EE originals. It is separate from the upload
+    /// worker and never holds the MLS mutation executor while performing network or file I/O.
+    private lazy var e2eeAttachmentOriginalDownloadCoordinator =
+        E2eeAttachmentOriginalDownloadCoordinator(
+            apiClient: apiClient,
+            database: databaseContainer
+        )
+
     func makeMessagesPaginationStateHandler() -> MessagesPaginationStateHandling {
         MessagesPaginationStateHandler()
     }
@@ -183,6 +195,22 @@ public class ErmisClient {
             applicationGroupIdentifier: config.applicationGroupIdentifier,
             deviceIdStore: deviceIdStore
         )
+        let e2eeAttachmentTransferCoordinator: E2eeBackgroundTransferCoordinator?
+        if !Bundle.main.isAppExtension,
+           let transferRootURL = config.e2eeAttachmentStorageFolderURL {
+            let descriptor = E2eeBackgroundSessionDescriptor(
+                bundleIdentifier: Bundle.main.bundleIdentifier ?? "network.ermis.host",
+                endpoint: config.endpointEnviroment.baseURL,
+                applicationGroupIdentifier: config.applicationGroupIdentifier
+            )
+            e2eeAttachmentTransferCoordinator = E2eeBackgroundTransferCoordinatorRegistry.coordinator(
+                descriptor: descriptor,
+                rootURL: transferRootURL,
+                applicationGroupIdentifier: config.applicationGroupIdentifier
+            )
+        } else {
+            e2eeAttachmentTransferCoordinator = nil
+        }
 
         urlSessionConfiguration = factory.makeUrlSessionConfiguration()
         var apiClientEncoder = factory.makeApiClientRequestEncoder()
@@ -267,6 +295,7 @@ public class ErmisClient {
         self.e2eRepository = e2eRepository
         self.notificationTokenProvider = notificationTokenProvider
         self.mlsClient = mlsClient
+        self.e2eeAttachmentTransferCoordinator = e2eeAttachmentTransferCoordinator
         authenticationRepository = authRepository
         extensionLifecycle = environment.extensionLifecycleBuilder(config.applicationGroupIdentifier)
         callRepository = environment.callRepositoryBuilder(apiClient)
@@ -283,6 +312,11 @@ public class ErmisClient {
         setupTokenRefresher()
         setupOfflineRequestQueue()
         setupConnectionRecoveryHandler(with: environment)
+        e2eeAttachmentTransferCoordinator?.configureCompletionClient(
+            apiClient,
+            messageBinding: messageRepository
+        )
+        e2eeAttachmentTransferCoordinator?.start()
 
         if let userId = currentUserId {
             do {
@@ -451,6 +485,7 @@ public class ErmisClient {
         localDataPolicy: LogoutLocalDataPolicy,
         completion: @escaping () -> Void
     ) {
+        let transferAccountId = currentUserId
         authenticationRepository.logOutUser()
         // Stop tracking active components
         activeChannelControllers.removeAllObjects()
@@ -466,24 +501,52 @@ public class ErmisClient {
                 log.debug("Logged out user with local data policy \(localDataPolicy).", subsystems: .all)
                 DispatchQueue.main.async(execute: completion)
             }
-            switch localDataPolicy {
-            case .preserve:
-                self.e2eRepository.reset()
-                finish()
-            case .purgeCurrentUser:
-                do {
-                    try self.e2eRepository.purgeCurrentUserState()
-                } catch {
-                    log.error("Purging current user's MLS state failed with error \(error)", subsystems: .mls)
-                }
-                self.databaseContainer.removeAllData { error in
-                    if let error {
-                        log.error("Purging current user's local database failed with error \(error)", subsystems: .database)
-                    }
+            let applyLocalDataPolicy = {
+                switch localDataPolicy {
+                case .preserve:
+                    self.e2eRepository.reset()
                     finish()
+                case .purgeCurrentUser:
+                    do {
+                        try self.e2eRepository.purgeCurrentUserState()
+                    } catch {
+                        log.error("Purging current user's MLS state failed with error \(error)", subsystems: .mls)
+                    }
+                    self.databaseContainer.removeAllData { error in
+                        if let error {
+                            log.error("Purging current user's local database failed with error \(error)", subsystems: .database)
+                        }
+                        finish()
+                    }
                 }
             }
+            guard let transferAccountId,
+                  let coordinator = self.e2eeAttachmentTransferCoordinator else {
+                applyLocalDataPolicy()
+                return
+            }
+            coordinator.cancelTasks(accountId: transferAccountId) { _ in
+                applyLocalDataPolicy()
+            }
         }
+    }
+
+    /// Forward this method from
+    /// `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
+    /// The SDK owns the handler exactly once and invokes it only after opaque callback events have
+    /// been persisted, drained into the durable transfer store, and reconciled with URLSession.
+    @discardableResult
+    public func handleE2eeBackgroundURLSessionEvents(
+        identifier: String,
+        completionHandler: @escaping () -> Void
+    ) -> E2eeBackgroundSessionEventHandlingResult {
+        guard let coordinator = e2eeAttachmentTransferCoordinator else {
+            return .unsupportedSessionIdentifier
+        }
+        return coordinator.handleEventsForBackgroundURLSession(
+            identifier: identifier,
+            completionHandler: completionHandler
+        )
     }
 
     public func downloadAttachments(attachments: [AnyMessageAttachment], completion: @escaping([DownloadedAttachment], Error?) -> Void) {
@@ -492,6 +555,21 @@ public class ErmisClient {
             let error = result.results.first(where: { $0.error != nil})?.error
             completion(downloadedAttachments, error)
         })
+    }
+
+    /// Returns a playable local URL for an E2EE attachment original.
+    ///
+    /// Standard attachments are returned unchanged. E2EE originals are downloaded only on this
+    /// explicit user action, globally hash-verified, frame-decrypted to a protected temporary file,
+    /// and then returned to the media viewer. Range streaming is intentionally not used here.
+    public func prepareAttachmentForViewing(_ attachment: AnyMessageAttachment) async throws -> URL {
+        try await e2eeAttachmentOriginalDownloadCoordinator.localOriginalURL(for: attachment)
+    }
+
+    /// Backwards-compatible video-specific spelling. Image and video viewers now share the same
+    /// authenticated original resolver.
+    public func prepareAttachmentForPlayback(_ attachment: AnyMessageAttachment) async throws -> URL {
+        try await prepareAttachmentForViewing(attachment)
     }
 
     /// Returns the readiness of the MLS group effectively used by `cid`.
@@ -523,7 +601,14 @@ public class ErmisClient {
             AttachmentQueueUploader(
                 database: databaseContainer,
                 apiClient: apiClient,
-                attachmentPostProcessor: config.uploadedAttachmentPostProcessor
+                attachmentPostProcessor: config.uploadedAttachmentPostProcessor,
+                e2eePreparationCoordinator: e2eeAttachmentTransferCoordinator.map {
+                    E2eeAttachmentPreparationCoordinator(
+                        transferCoordinator: $0,
+                        initializingClient: apiClient
+                    )
+                },
+                currentUserId: { [weak self] in self?.currentUserId }
             )
         ]
     }

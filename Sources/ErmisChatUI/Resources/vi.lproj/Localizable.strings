@@ -309,7 +309,8 @@
 /// Show when user reject your friend request.
 "message.system.other-reject-add-friend-request" = "%@ đã từ chối tham gia nhóm.";
 /// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
-"attachment.max-size-exceeded" = "Kích thước tệp vượt qua giới hạn 100MB.";
+"attachment.max-size-exceeded" = "Kích thước tệp vượt quá giới hạn đã cấu hình.";
+"attachment.max-size-exceeded-format" = "Kích thước tệp vượt quá giới hạn. Tối đa: %@.";
 
 /// Shown as title of pinned messages view.
 "pin.collapsed.title" = "Tin nhắn đã ghim";

@@ -59,6 +59,7 @@ extension VideoAttachmentPayload: Encodable {
         }
         values[AttachmentFile.CodingKeys.size.rawValue] = .number(Double(file.size))
         values[AttachmentFile.CodingKeys.mimeType.rawValue] = file.mimeType.map { .string($0) }
+        values["duration"] = duration.map { .number($0) }
         try values.encode(to: encoder)
     }
 }
@@ -68,6 +69,7 @@ extension VideoAttachmentPayload: Encodable {
 extension VideoAttachmentPayload: Decodable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: AttachmentCodingKeys.self)
+        let videoContainer = try decoder.container(keyedBy: VideoCodingKeys.self)
 
         self.init(
             title: try container.decodeIfPresent(String.self, forKey: .title),
@@ -76,5 +78,10 @@ extension VideoAttachmentPayload: Decodable {
             thumbnailData: try container.decodeIfPresent(Data.self, forKey: .thumbnailData),
             file: try AttachmentFile(from: decoder)
         )
+        duration = try videoContainer.decodeIfPresent(TimeInterval.self, forKey: .duration)
     }
+}
+
+private enum VideoCodingKeys: String, CodingKey {
+    case duration
 }

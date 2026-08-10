@@ -10,6 +10,8 @@ enum E2eeMessageAADError: Error, Equatable {
     case stringTooLong
     case authenticatedMetadataMismatch
     case authenticatedSendLaneUnavailable
+    case missingE2eeGroupId
+    case missingEnvelopeCid
 }
 
 /// Canonical authenticated metadata shared by Bellboy Web and iOS clients.

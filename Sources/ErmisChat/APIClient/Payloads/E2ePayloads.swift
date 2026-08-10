@@ -124,6 +124,10 @@ public class GroupInfoPayload: Decodable {
 public struct E2ePayload: Codable, Equatable {
     let text: String
     let attachments: [MessageAttachmentPayload]
+    /// Attachment manifests encrypted inside the MLS application payload. This is a distinct
+    /// lane from legacy `MessageAttachmentPayload`: mixing the two representations in one
+    /// message is rejected so a malformed E2EE manifest cannot silently become `.unknown`.
+    public let e2eeAttachments: [E2eeAttachmentManifestV1]
     let stickerUrl: URL?
 
     private enum CodingKeys: String, CodingKey {
@@ -140,19 +144,36 @@ public struct E2ePayload: Codable, Equatable {
     }
 
     public static func == (lhs: E2ePayload, rhs: E2ePayload) -> Bool {
-        lhs.text == rhs.text && lhs.attachments == rhs.attachments && lhs.stickerUrl == rhs.stickerUrl
+        lhs.text == rhs.text &&
+            lhs.attachments == rhs.attachments &&
+            lhs.e2eeAttachments == rhs.e2eeAttachments &&
+            lhs.stickerUrl == rhs.stickerUrl
     }
 
-    init(text: String, attachments: [MessageAttachmentPayload], stickerUrl: URL?) {
+    init(
+        text: String,
+        attachments: [MessageAttachmentPayload],
+        e2eeAttachments: [E2eeAttachmentManifestV1] = [],
+        stickerUrl: URL?
+    ) {
         self.text = text
         self.attachments = attachments
+        self.e2eeAttachments = e2eeAttachments
         self.stickerUrl = stickerUrl
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.text = try container.decode(String.self, forKey: .text)
-        self.attachments = try container.decodeIfPresent([MessageAttachmentPayload].self, forKey: .attachments) ?? []
+        let wireAttachments = try container.decodeIfPresent(
+            [E2ePayloadAttachmentWire].self,
+            forKey: .attachments
+        ) ?? []
+        self.attachments = wireAttachments.compactMap(\.legacyAttachment)
+        self.e2eeAttachments = wireAttachments.compactMap(\.e2eeManifest)
+        guard attachments.isEmpty || e2eeAttachments.isEmpty else {
+            throw E2ePayloadCodingError.mixedAttachmentLanes
+        }
         if let canonicalStickerUrl = try container.decodeIfPresent(URL.self, forKey: .stickerUrl) {
             self.stickerUrl = canonicalStickerUrl
         } else {
@@ -164,8 +185,52 @@ public struct E2ePayload: Codable, Equatable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(text, forKey: .text)
-        try container.encode(attachments, forKey: .attachments)
+        guard attachments.isEmpty || e2eeAttachments.isEmpty else {
+            throw E2ePayloadCodingError.mixedAttachmentLanes
+        }
+        if e2eeAttachments.isEmpty {
+            try container.encode(attachments, forKey: .attachments)
+        } else {
+            try container.encode(e2eeAttachments, forKey: .attachments)
+        }
         try container.encodeIfPresent(stickerUrl, forKey: .stickerUrl)
+    }
+}
+
+enum E2ePayloadCodingError: Error, Equatable {
+    case mixedAttachmentLanes
+}
+
+/// Decodes the shared `attachments` JSON field without allowing an E2EE manifest to fall through
+/// to the permissive legacy custom-attachment decoder. Presence of any V1 manifest discriminator
+/// makes manifest decoding authoritative and therefore fail-closed when the object is malformed.
+private enum E2ePayloadAttachmentWire: Decodable {
+    case legacy(MessageAttachmentPayload)
+    case e2ee(E2eeAttachmentManifestV1)
+
+    private enum ManifestKeys: String, CodingKey {
+        case version
+        case attachmentId = "attachment_id"
+        case assets
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: ManifestKeys.self)
+        if container.contains(.version) || container.contains(.attachmentId) || container.contains(.assets) {
+            self = .e2ee(try E2eeAttachmentManifestV1(from: decoder))
+        } else {
+            self = .legacy(try MessageAttachmentPayload(from: decoder))
+        }
+    }
+
+    var legacyAttachment: MessageAttachmentPayload? {
+        guard case .legacy(let attachment) = self else { return nil }
+        return attachment
+    }
+
+    var e2eeManifest: E2eeAttachmentManifestV1? {
+        guard case .e2ee(let manifest) = self else { return nil }
+        return manifest
     }
 }
 

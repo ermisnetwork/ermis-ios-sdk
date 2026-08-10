@@ -131,6 +131,31 @@ public extension MessageAttachment where Payload: AttachmentPayload {
 }
 
 public extension AnyMessageAttachment {
+    /// Repoints a local attachment snapshot at its durable sandbox file.
+    ///
+    /// Photo/item-provider URLs are short-lived. `AttachmentDTO.localURL` is updated after the
+    /// source is materialized, but the type-erased JSON payload can still contain the original
+    /// picker URL. Rendering that stale payload after the picker closes or after relaunch produces
+    /// an empty attachment even though the durable file is still present.
+    mutating func useDurableLocalFileURL(_ localURL: URL) {
+        let updater = AnyAttachmentUpdater()
+        updater.update(&self, forPayload: ImageAttachmentPayload.self) { payload in
+            payload.imageURL = localURL
+        }
+        updater.update(&self, forPayload: VideoAttachmentPayload.self) { payload in
+            payload.videoURL = localURL
+        }
+        updater.update(&self, forPayload: AudioAttachmentPayload.self) { payload in
+            payload.audioURL = localURL
+        }
+        updater.update(&self, forPayload: FileAttachmentPayload.self) { payload in
+            payload.assetURL = localURL
+        }
+        updater.update(&self, forPayload: VoiceRecordingAttachmentPayload.self) { payload in
+            payload.voiceRecordingURL = localURL
+        }
+    }
+
     var title: String? {
         switch type {
         case .image:

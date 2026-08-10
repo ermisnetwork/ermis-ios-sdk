@@ -16,6 +16,12 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     public weak var imageDownloadTask: (any Cancellable)?
 
+    /// Resolves encrypted opaque media URLs to verified local plaintext files before the image
+    /// loader sees them. Standard image URLs continue through the existing loader unchanged.
+    public var imageURLResolver: ((AnyMessageAttachment, @escaping (Result<URL, Error>) -> Void) -> Void)?
+
+    private var resolutionToken = UUID()
+
     override open func setUp() {
         super.setUp()
 
@@ -34,33 +40,52 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         super.contentDidChanged()
 
         let imageAttachment = content?.attachment(payloadType: ImageAttachmentPayload.self)
-        if imageAttachment?.isGif ?? false {
-            if let url = imageAttachment?.imageURL {
-                imageView.setGifFromURL(url, customLoader: nil)
-            }
-            return
-        } else {
-            guard let originalWidth = imageAttachment?.payload.originalWidth,
-                  let originalHeight = imageAttachment?.payload.originalHeight else {
-                loadImage(
-                    from: imageAttachment?.payload.imageURL,
-                    with: ImageLoaderOptions()
-                )
-                return
-            }
-
-            let imageSizeCalculator = ImageSizeCalculator()
-            let newSize = imageSizeCalculator.calculateSize(
-                originalWidthInPixels: originalWidth,
-                originalHeightInPixels: originalHeight,
-                maxResolutionTotalPixels: components.imageAttachmentMaxPixels
-            )
-
-            loadImage(
-                from: imageAttachment?.payload.imageURL,
-                with: ImageLoaderOptions(resize: .init(newSize))
-            )
+        if let thumbnailData = content?.thumbnailData ?? imageAttachment?.thumbnailData {
+            imageView.image = UIImage(data: thumbnailData)
         }
+
+        guard let imageAttachment else { return }
+        let imageURL = imageAttachment.imageURL
+        guard imageURL.scheme == "ermis-e2ee-attachment" else {
+            displayImage(at: imageURL, attachment: imageAttachment)
+            return
+        }
+
+        resolutionToken = UUID()
+        let token = resolutionToken
+        guard let content, let imageURLResolver else { return }
+        imageURLResolver(content) { [weak self] result in
+            DispatchQueue.main.async {
+                guard let self, self.resolutionToken == token else { return }
+                guard case let .success(localURL) = result else { return }
+                self.displayImage(at: localURL, attachment: imageAttachment)
+            }
+        }
+    }
+
+    private func displayImage(
+        at url: URL,
+        attachment: MessageAttachment<ImageAttachmentPayload>
+    ) {
+        if attachment.isGif {
+            imageView.setGifFromURL(url, customLoader: nil)
+            return
+        }
+
+        guard let originalWidth = attachment.payload.originalWidth,
+              let originalHeight = attachment.payload.originalHeight else {
+            loadImage(from: url, with: ImageLoaderOptions())
+            return
+        }
+
+        let imageSizeCalculator = ImageSizeCalculator()
+        let newSize = imageSizeCalculator.calculateSize(
+            originalWidthInPixels: originalWidth,
+            originalHeightInPixels: originalHeight,
+            maxResolutionTotalPixels: components.imageAttachmentMaxPixels
+        )
+
+        loadImage(from: url, with: ImageLoaderOptions(resize: .init(newSize)))
     }
 
     override open func viewForZooming(in scrollView: UIScrollView) -> UIView? {
@@ -69,6 +94,8 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     open override func prepareForReuse() {
         super.prepareForReuse()
+        resolutionToken = UUID()
         imageView.image = nil
+        imageURLResolver = nil
     }
 }

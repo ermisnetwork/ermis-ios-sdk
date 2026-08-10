@@ -16,6 +16,12 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         playerView.player
     }
 
+    /// Resolves encrypted opaque media URLs to verified local plaintext files before AVPlayer sees
+    /// them. Standard video URLs bypass this closure unchanged in `ErmisClient`.
+    public var videoURLResolver: ((AnyMessageAttachment, @escaping (Result<URL, Error>) -> Void) -> Void)?
+
+    private var resolutionToken = UUID()
+
     /// Image view to be used for zoom in/out animation.
     open private(set) lazy var animationPlaceholderImageView: UIImageView = UIImageView()
         .withoutAutoresizingMaskConstraints
@@ -52,18 +58,43 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
         let videoAttachment = content?.attachment(payloadType: VideoAttachmentPayload.self)
 
+        if let thumbnailData = content?.thumbnailData {
+            showPreview(using: UIImage(data: thumbnailData))
+        }
+
         let newAssetURL = videoAttachment?.videoURL
         let currentAssetURL = (player.currentItem?.asset as? AVURLAsset)?.url
 
         if newAssetURL != currentAssetURL {
-            let playerItem = newAssetURL.map {
-                AVPlayerItem(asset: components.videoLoader.videoAsset(at: $0))
+            resolutionToken = UUID()
+            let token = resolutionToken
+            player.replaceCurrentItem(with: nil)
+
+            if let content, let videoURLResolver, newAssetURL?.scheme == "ermis-e2ee-attachment" {
+                videoURLResolver(content) { [weak self] result in
+                    DispatchQueue.main.async {
+                        guard let self, self.resolutionToken == token else { return }
+                        switch result {
+                        case let .success(localURL):
+                            self.player.replaceCurrentItem(
+                                with: AVPlayerItem(asset: self.components.videoLoader.videoAsset(at: localURL))
+                            )
+                        case .failure:
+                            self.player.replaceCurrentItem(with: nil)
+                        }
+                    }
+                }
+            } else {
+                let playerItem = newAssetURL.map {
+                    AVPlayerItem(asset: components.videoLoader.videoAsset(at: $0))
+                }
+                player.replaceCurrentItem(with: playerItem)
             }
-            player.replaceCurrentItem(with: playerItem)
 
             if let thumbnailURL = videoAttachment?.thumbnailURL {
                 showPreview(using: thumbnailURL)
-            } else if let url = newAssetURL {
+            } else if content?.thumbnailData == nil, let url = newAssetURL,
+                      url.scheme != "ermis-e2ee-attachment" {
                 components.videoLoader.loadPreviewForVideo(at: url) { [weak self] in
                     switch $0 {
                     case let .success(preview):
@@ -90,8 +121,10 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     open override func prepareForReuse() {
         super.prepareForReuse()
+        resolutionToken = UUID()
         imageView.image = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
+        videoURLResolver = nil
     }
 }

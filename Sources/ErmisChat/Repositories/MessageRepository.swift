@@ -109,15 +109,53 @@ class MessageRepository {
             )
             // Encrypted message
             if isEncrypted {
-                guard !requestBody.requiresE2eeAuthenticatedSendLane else {
-                    let error = E2eeMessageAADError.authenticatedSendLaneUnavailable
+                let e2ePayload: E2ePayload
+                let authenticatedAAD: E2eeMessageAADV1?
+                do {
+                    if let cachedPayload = try dto.decryptedMessage?.asPayload(),
+                       !cachedPayload.e2eeAttachments.isEmpty {
+                        let attachmentIds = cachedPayload.e2eeAttachments.map(\.attachmentId)
+                        try requestBody.bindE2eeAuthenticatedEnvelope(
+                            destinationCid: cid,
+                            groupId: self.e2eRepository.mlsGroupCid(for: cid).rawValue,
+                            attachmentIds: attachmentIds,
+                            forwardParentCid: requestBody.forwardParentCid
+                        )
+                        try cachedPayload.e2eeAttachments.verifyCanonicalAttachmentIds(
+                            requestBody.e2eeAttachmentIds
+                        )
+                        e2ePayload = cachedPayload
+                    } else {
+                        e2ePayload = E2ePayload(
+                            text: requestBody.text,
+                            attachments: requestBody.attachments,
+                            stickerUrl: requestBody.stickerUrl
+                        )
+                        if requestBody.forwardCid?.isEmpty == false
+                            || requestBody.forwardMessageId?.isEmpty == false
+                            || requestBody.forwardParentCid?.isEmpty == false {
+                            try requestBody.bindE2eeAuthenticatedEnvelope(
+                                destinationCid: cid,
+                                groupId: self.e2eRepository.mlsGroupCid(for: cid).rawValue,
+                                attachmentIds: [],
+                                forwardParentCid: requestBody.forwardParentCid
+                            )
+                        }
+                    }
+                    authenticatedAAD = try requestBody.authenticatedAAD()
+                    if requestBody.requiresE2eeAuthenticatedSendLane && authenticatedAAD == nil {
+                        throw E2eeMessageAADError.authenticatedSendLaneUnavailable
+                    }
+                } catch {
                     e2eeTrace?.failure(stage: "authenticated_send_lane_unavailable", error: error)
-                    completion(.failure(.failedToEncryptedMessage(error)))
+                    // This is a deterministic local preflight failure. The sender worker removes
+                    // the completed request, so leaving the row in `.pendingSend` strands the
+                    // optimistic bubble at 100% until a later relaunch unexpectedly retries it.
+                    self.markMessageAsFailedToSend(id: messageId, trace: e2eeTrace) {
+                        completion(.failure(.failedToEncryptedMessage(error)))
+                    }
                     return
                 }
-                let e2ePayload = E2ePayload(text: requestBody.text,
-                                            attachments: requestBody.attachments,
-                                            stickerUrl: requestBody.stickerUrl)
                 do {
                     if let durableCiphertext = requestBody.encryptedData,
                        let durableEpoch = requestBody.mlsEpoch {
@@ -133,11 +171,22 @@ class MessageRepository {
                         )
                     } else {
                         e2eeTrace?.info(stage: "encrypt_requested", reusedIntent: false)
-                        let (encryptedData, epoch) = try e2eRepository.encryptedMessage(
-                            e2ePayload,
-                            in: cid,
-                            trace: e2eeTrace
-                        )
+                        let encryptedResult: ([UInt8], Int)
+                        if let authenticatedAAD {
+                            encryptedResult = try e2eRepository.encryptedMessage(
+                                e2ePayload,
+                                aad: authenticatedAAD,
+                                in: cid,
+                                trace: e2eeTrace
+                            )
+                        } else {
+                            encryptedResult = try e2eRepository.encryptedMessage(
+                                e2ePayload,
+                                in: cid,
+                                trace: e2eeTrace
+                            )
+                        }
+                        let (encryptedData, epoch) = encryptedResult
 
                         // `encryptedMessage` has already saved the OpenMLS provider state. The
                         // exact retry intent must now be durable before local state becomes
@@ -317,6 +366,7 @@ class MessageRepository {
     ) {
         let persistenceStartedAt = E2eeSendTrace.nowNanoseconds()
         trace?.info(stage: "response_persist_started")
+        var persistedMessage: ChatMessage?
         database.write({
             let messageDTO = try $0.saveMessage(payload: message, for: cid, syncOwnReactions: false, cache: nil)
             if messageDTO.localMessageState == .sending ||
@@ -325,8 +375,7 @@ class MessageRepository {
                 messageDTO.markMessageAsSent()
             }
 
-            let messageModel = try messageDTO.asModel()
-            completion(.success(messageModel))
+            persistedMessage = try messageDTO.asModel()
         }, completion: {
             if let error = $0 {
                 if let trace {
@@ -348,6 +397,11 @@ class MessageRepository {
                         since: persistenceStartedAt
                     )
                 )
+                guard let persistedMessage else {
+                    completion(.failure(MessageRepositoryError.messageDoesNotExist))
+                    return
+                }
+                completion(.success(persistedMessage))
             }
         })
         enqueueDecryptIfNeeded(messageId: message.id, payload: message, cid: cid)
@@ -549,5 +603,66 @@ class MessageRepository {
             encryptedData: Data(encryptedBytes),
             cid: cid
         )
+    }
+}
+
+extension MessageRepository: E2eeAttachmentMessageBinding {
+    func persistCompletedE2eeAttachmentManifests(
+        messageId: String,
+        manifests: [E2eeAttachmentManifestV1]
+    ) async throws {
+        try manifests.verifyCanonicalAttachmentIds(manifests.map(\.attachmentId))
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            database.write({ session in
+                guard let message = session.message(id: messageId) else {
+                    throw MessageRepositoryError.messageDoesNotExist
+                }
+                let existingPayload = try message.decryptedMessage?.asPayload()
+                let payload = E2ePayload(
+                    text: existingPayload?.text ?? message.text,
+                    attachments: [],
+                    e2eeAttachments: manifests,
+                    stickerUrl: existingPayload?.stickerUrl ?? message.stickerUrl
+                )
+                try session.saveMessageDecrypt(
+                    payload: payload,
+                    messageId: messageId,
+                    ciphertextHash: nil
+                )
+            }, completion: { error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: ())
+                }
+            })
+        }
+    }
+
+    func sendPreparedE2eeAttachmentMessage(messageId: String) async throws {
+        let requiresSend = try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Bool, Error>) in
+            database.backgroundReadOnlyContext.perform {
+                guard let message = self.database.backgroundReadOnlyContext.message(id: messageId) else {
+                    continuation.resume(throwing: MessageRepositoryError.messageDoesNotExist)
+                    return
+                }
+                // A nil local state after relaunch proves the authoritative response was already
+                // persisted. The transfer may safely close without issuing another POST.
+                continuation.resume(returning: message.localMessageState != nil)
+            }
+        }
+        guard requiresSend else { return }
+
+        try await withCheckedThrowingContinuation { continuation in
+            sendMessage(with: messageId) { result in
+                switch result {
+                case .success:
+                    continuation.resume(returning: ())
+                case let .failure(error):
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 }

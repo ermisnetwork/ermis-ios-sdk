@@ -849,7 +849,35 @@ extension NSManagedObjectContext: MessageDatabaseSession {
                 return dto
             }
         )
-        dto.attachments = attachments
+        let isOwnE2eeAttachmentResponse = payload.attachments.isEmpty
+            && payload.encryptedData != nil
+            && currentProjectUserId == payload.user.id
+        if attachments.isEmpty, isOwnE2eeAttachmentResponse {
+            let localAttachments = Set(dto.attachments.filter { $0.localURL != nil }).union(
+                AttachmentDTO.loadLocalAttachments(
+                    cid: cid,
+                    messageId: payload.id,
+                    context: self
+                )
+            )
+            if !localAttachments.isEmpty {
+                // The authoritative E2EE envelope references opaque attachment IDs while the
+                // manifest is inside MLS plaintext. Do not replace the optimistic file-backed
+                // relationship with the empty standard `attachments` array from Bellboy.
+                localAttachments.forEach {
+                    $0.message = dto
+                    $0.localState = .uploaded
+                }
+                dto.attachments = localAttachments
+                log.info(
+                    "[E2EE_ATTACHMENT] stage=response_persist state=preserved_local_rendering count=\(localAttachments.count)"
+                )
+            } else {
+                dto.attachments = attachments
+            }
+        } else {
+            dto.attachments = attachments
+        }
 
         if let stickerUrl = payload.stickerUrl {
             dto.stickerUrl = stickerUrl
@@ -1309,6 +1337,32 @@ private extension ChatMessage {
                 return AnyMessageAttachment(id: attachmentId, type: attachment.type, payload: data, thumbnailData: nil, uploadingState: nil)
             }
             $_attachments = ({ decryptedAttachments }, nil)
+        } else if let decryptedPayload = decryptedMessage,
+                  !decryptedPayload.e2eeAttachments.isEmpty,
+                  let cid {
+            let messageId = dto.id
+            let e2eeAttachments = decryptedPayload.e2eeAttachments.enumerated().compactMap {
+                index,
+                manifest -> AnyMessageAttachment? in
+                let previewAssetId = manifest.assets.first(where: { $0.kind == .preview })?.assetId
+                let cachedPreview = previewAssetId.flatMap(E2eeAttachmentPreviewCache.shared.value(for:))
+                guard let renderable = try? E2eeAttachmentReceiveCoordinator.renderablePayload(
+                    for: manifest,
+                    previewGeneration: cachedPreview?.generation
+                ) else { return nil }
+                return AnyMessageAttachment(
+                    id: AttachmentId(cid: cid, messageId: messageId, index: index),
+                    type: renderable.type,
+                    payload: renderable.data,
+                    thumbnailData: cachedPreview?.data,
+                    uploadingState: nil
+                )
+            }
+            // The encrypted manifest is the authoritative attachment projection. Build directly
+            // from it so WebSocket and scope_sync can render even when preview download completes
+            // before the standard MessageDTO exists, or while its AttachmentDTO is still being
+            // materialized asynchronously.
+            $_attachments = ({ e2eeAttachments }, nil)
         } else {
             $_attachments = ({
                 dto.attachments

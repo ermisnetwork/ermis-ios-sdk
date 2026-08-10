@@ -116,6 +116,11 @@ enum EndpointPath: Codable {
     case e2eSync
     case e2eChannelSync(ChannelId)
     case commitEviction(ChannelId)
+    case initE2eeAttachment(ChannelId)
+    case queryE2eeAttachments(ChannelId)
+    case completeE2eeAttachment(ChannelId, String)
+    case downloadE2eeAttachmentGrant(ChannelId, String, String)
+    case deleteE2eeAttachment(ChannelId, String)
 
     var value: String {
         switch self {
@@ -313,6 +318,16 @@ enum EndpointPath: Codable {
             return "v1/e2ee/channels/\(channelId.apiPath)/sync"
         case .commitEviction(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/commit_eviction"
+        case .initE2eeAttachment(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/init"
+        case .queryE2eeAttachments(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/query"
+        case .completeE2eeAttachment(let channelId, let attachmentId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/\(attachmentId)/complete"
+        case .downloadE2eeAttachmentGrant(let channelId, let attachmentId, let assetId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/\(attachmentId)/assets/\(assetId)/download-grant"
+        case .deleteE2eeAttachment(let channelId, let attachmentId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/\(attachmentId)"
         case .enableTopics(let channelId):
             return "channels/\(channelId.apiPath)/topics/enable"
         case .disableTopics(let channelId):

@@ -87,6 +87,14 @@ class ChannelUpdater: Worker {
                         completion?(.failure(error))
                         return
                     }
+                    // Preview plaintext is process-local and is intentionally cleared on app
+                    // relaunch. Rehydrate the visible page after its durable message/decrypt
+                    // records have been merged; a scope sync with no new events has nothing to
+                    // dispatch and cannot restore these previews on its own.
+                    self.e2eRepository.hydrateCachedAttachmentPreviews(
+                        messageIds: payload.messages.map(\.id),
+                        cid: payload.channel.cid
+                    )
                     completion?(.success(payload))
                 }
             } catch {
