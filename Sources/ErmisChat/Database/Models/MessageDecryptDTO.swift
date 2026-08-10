@@ -38,6 +38,19 @@ extension MessageDecryptDTO {
         return try? context.fetch(request).first
     }
 
+    /// Fetches decrypted message caches in a single Core Data query.
+    ///
+    /// Channel Info pages can contain up to 100 attachment projections. Loading them one by one
+    /// would turn a single paginated API response into `O(pageSize)` local database round trips.
+    static func load(messageIds: Set<String>, context: NSManagedObjectContext) throws -> [String: MessageDecryptDTO] {
+        guard !messageIds.isEmpty else { return [:] }
+        let request = NSFetchRequest<MessageDecryptDTO>(entityName: MessageDecryptDTO.entityName)
+        request.predicate = NSPredicate(format: "messageId IN %@", Array(messageIds))
+        return try context.fetch(request).reduce(into: [:]) { result, dto in
+            result[dto.messageId] = dto
+        }
+    }
+
     /// Fetches an existing `MessageDecryptDTO` for the given message ID, or creates a new one.
     static func loadOrCreate(messageId: String, context: NSManagedObjectContext) -> MessageDecryptDTO {
         if let existing = load(messageId: messageId, context: context) {

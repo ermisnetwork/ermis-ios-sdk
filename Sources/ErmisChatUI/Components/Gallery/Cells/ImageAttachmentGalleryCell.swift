@@ -18,9 +18,40 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     /// Resolves encrypted opaque media URLs to verified local plaintext files before the image
     /// loader sees them. Standard image URLs continue through the existing loader unchanged.
-    public var imageURLResolver: ((AnyMessageAttachment, @escaping (Result<URL, Error>) -> Void) -> Void)?
+    /// Returns a cancellation closure for the in-flight original resolver, if any. Gallery cells
+    /// must release full-download work immediately when they are reused or dismissed.
+    public var imageURLResolver: ((
+        AnyMessageAttachment,
+        @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void,
+        @escaping (Result<URL, Error>) -> Void
+    ) -> (() -> Void)?)?
+
+    /// Notifies the gallery when a full E2EE original is using an interactive download slot.
+    /// Thumbnails do not affect this state.
+    public var originalResolutionStateDidChange: ((Bool) -> Void)?
+
+    /// Emits progress for the visible original only. The gallery owns presentation of the value;
+    /// the cell deliberately keeps the encrypted preview visible while the original is verified.
+    public var originalResolutionProgressDidChange: ((E2eeAttachmentOriginalDownloadProgress) -> Void)?
+
+    public private(set) var isResolvingE2eeOriginal = false
+
+    /// Gallery pages beside the selected item keep their encrypted thumbnail only. Loading a full
+    /// original is reserved for the attachment the user is actively viewing.
+    public var isE2eeOriginalResolutionEnabled = true {
+        didSet {
+            guard oldValue != isE2eeOriginalResolutionEnabled else { return }
+            if isE2eeOriginalResolutionEnabled {
+                contentDidChanged()
+            } else {
+                cancelPendingOriginalResolution()
+                resolutionToken = UUID()
+            }
+        }
+    }
 
     private var resolutionToken = UUID()
+    private var cancelOriginalResolution: (() -> Void)?
 
     override open func setUp() {
         super.setUp()
@@ -50,17 +81,31 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
             displayImage(at: imageURL, attachment: imageAttachment)
             return
         }
+        guard isE2eeOriginalResolutionEnabled else { return }
 
+        cancelPendingOriginalResolution()
         resolutionToken = UUID()
         let token = resolutionToken
         guard let content, let imageURLResolver else { return }
-        imageURLResolver(content) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self, self.resolutionToken == token else { return }
-                guard case let .success(localURL) = result else { return }
-                self.displayImage(at: localURL, attachment: imageAttachment)
+        setResolvingE2eeOriginal(true)
+        cancelOriginalResolution = imageURLResolver(
+            content,
+            { [weak self] progress in
+                DispatchQueue.main.async {
+                    guard let self, self.resolutionToken == token else { return }
+                    self.originalResolutionProgressDidChange?(progress)
+                }
+            },
+            { [weak self] result in
+                DispatchQueue.main.async {
+                    guard let self, self.resolutionToken == token else { return }
+                    self.cancelOriginalResolution = nil
+                    self.setResolvingE2eeOriginal(false)
+                    guard case let .success(localURL) = result else { return }
+                    self.displayImage(at: localURL, attachment: imageAttachment)
+                }
             }
-        }
+        )
     }
 
     private func displayImage(
@@ -92,10 +137,25 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         imageView
     }
 
+    public func cancelPendingOriginalResolution() {
+        cancelOriginalResolution?()
+        cancelOriginalResolution = nil
+        setResolvingE2eeOriginal(false)
+    }
+
+    private func setResolvingE2eeOriginal(_ isResolving: Bool) {
+        guard isResolvingE2eeOriginal != isResolving else { return }
+        isResolvingE2eeOriginal = isResolving
+        originalResolutionStateDidChange?(isResolving)
+    }
+
     open override func prepareForReuse() {
         super.prepareForReuse()
+        cancelPendingOriginalResolution()
         resolutionToken = UUID()
         imageView.image = nil
         imageURLResolver = nil
+        originalResolutionStateDidChange = nil
+        originalResolutionProgressDidChange = nil
     }
 }

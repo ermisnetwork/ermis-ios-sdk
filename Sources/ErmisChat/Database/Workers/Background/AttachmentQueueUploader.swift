@@ -512,21 +512,7 @@ class AttachmentQueueUploader: Worker {
         _ attachment: AnyMessageAttachment
     ) -> E2eeAttachmentPreparationInput? {
         guard let uploading = attachment.uploadingState else { return nil }
-        var display: [String: RawJSON] = [
-            "size": .number(Double(uploading.file.size))
-        ]
-        if let title = attachment.title { display["name"] = .string(title) }
-        if let mimeType = attachment.mimetype { display["mime_type"] = .string(mimeType) }
-        if let image = attachment.attachment(payloadType: ImageAttachmentPayload.self) {
-            if let width = image.originalWidth { display["width"] = .number(width) }
-            if let height = image.originalHeight { display["height"] = .number(height) }
-        } else if let video = attachment.attachment(payloadType: VideoAttachmentPayload.self),
-                  let duration = video.duration {
-            display["duration"] = .number(duration)
-        } else if let voice = attachment.attachment(payloadType: VoiceRecordingAttachmentPayload.self),
-                  let duration = voice.duration {
-            display["duration"] = .number(duration)
-        }
+        let display = e2eeDisplayMetadata(for: attachment)
         return E2eeAttachmentPreparationInput(
             sourceURL: uploading.localFileURL,
             title: attachment.title,
@@ -536,6 +522,37 @@ class AttachmentQueueUploader: Worker {
             generatesVideoPreview: attachment.type == .video,
             videoDuration: attachment.attachment(payloadType: VideoAttachmentPayload.self)?.duration
         )
+    }
+
+    /// Builds the encrypted manifest display metadata for an outgoing attachment.
+    /// Voice classification must be explicit: MIME alone describes an audio file, not whether the
+    /// sender intended the compact voice-message playback experience.
+    static func e2eeDisplayMetadata(
+        for attachment: AnyMessageAttachment
+    ) -> [String: RawJSON] {
+        var display: [String: RawJSON] = [
+            "size": .number(Double(attachment.uploadingState?.file.size ?? 0))
+        ]
+        if let title = attachment.title { display["name"] = .string(title) }
+        if let mimeType = attachment.mimetype { display["mime_type"] = .string(mimeType) }
+        if let image = attachment.attachment(payloadType: ImageAttachmentPayload.self) {
+            if let width = image.originalWidth { display["width"] = .number(width) }
+            if let height = image.originalHeight { display["height"] = .number(height) }
+        } else if let video = attachment.attachment(payloadType: VideoAttachmentPayload.self),
+                  let duration = video.duration {
+            display["duration"] = .number(duration)
+        } else if let voice = attachment.attachment(payloadType: VoiceRecordingAttachmentPayload.self) {
+            display["attachment_type"] = .string("voiceRecording")
+            if let duration = voice.duration {
+                display["duration"] = .number(duration)
+            }
+            if let waveform = voice.waveformData {
+                display["waveform_data"] = .array(
+                    waveform.map { .number(Double($0)) }
+                )
+            }
+        }
+        return display
     }
 
     /// A Live Photo or edited asset can expose several resources. E2EE must stage media bytes,

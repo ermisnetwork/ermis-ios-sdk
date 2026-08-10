@@ -486,6 +486,12 @@ public class ErmisClient {
         completion: @escaping () -> Void
     ) {
         let transferAccountId = currentUserId
+        // Full originals are foreground-only plaintext files. They are never part of the
+        // durable upload store, so tear them down independently from account-scoped background
+        // transfer cancellation before this client can be reused by another authenticated user.
+        Task { [weak self] in
+            await self?.e2eeAttachmentOriginalDownloadCoordinator.shutdown()
+        }
         authenticationRepository.logOutUser()
         // Stop tracking active components
         activeChannelControllers.removeAllObjects()
@@ -563,7 +569,20 @@ public class ErmisClient {
     /// explicit user action, globally hash-verified, frame-decrypted to a protected temporary file,
     /// and then returned to the media viewer. Range streaming is intentionally not used here.
     public func prepareAttachmentForViewing(_ attachment: AnyMessageAttachment) async throws -> URL {
-        try await e2eeAttachmentOriginalDownloadCoordinator.localOriginalURL(for: attachment)
+        try await prepareAttachmentForViewing(attachment, progress: { _ in })
+    }
+
+    /// Resolves an attachment for an explicit viewer action and reports non-sensitive transfer
+    /// progress for that individual original. The byte count is ciphertext received from storage;
+    /// callers must keep the UI in a processing state while the phase is verifying/decrypting.
+    public func prepareAttachmentForViewing(
+        _ attachment: AnyMessageAttachment,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+    ) async throws -> URL {
+        try await e2eeAttachmentOriginalDownloadCoordinator.localOriginalURL(
+            for: attachment,
+            progress: progress
+        )
     }
 
     /// Backwards-compatible video-specific spelling. Image and video viewers now share the same

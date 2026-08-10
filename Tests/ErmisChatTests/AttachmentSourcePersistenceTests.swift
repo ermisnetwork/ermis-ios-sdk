@@ -140,6 +140,48 @@ final class AttachmentSourcePersistenceTests: XCTestCase {
         XCTAssertEqual(display["size"]?.numberValue, Double(jpeg.count))
     }
 
+    func testE2eeVoiceDisplayIncludesCrossPlatformClassificationAndPlaybackMetadata() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("aac")
+        try Data([1, 2, 3, 4]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let file = try AttachmentFile(url: url, fileSize: 4)
+        let payload = VoiceRecordingAttachmentPayload(
+            title: url.lastPathComponent,
+            voiceRecordingRemoteURL: url,
+            file: file,
+            duration: 2.5,
+            waveformData: [0.1, 0.7]
+        )
+        let attachment = MessageVoiceRecordingAttachment(
+            id: AttachmentId(
+                cid: try ChannelId(cid: cid),
+                messageId: "voice-message",
+                index: 0
+            ),
+            type: .voiceRecording,
+            payload: payload,
+            thumbnailData: nil,
+            uploadingState: AttachmentUploadingState(
+                localFileURL: url,
+                state: .uploading(progress: 0),
+                file: file
+            )
+        ).asAnyAttachment
+
+        let display = AttachmentQueueUploader.e2eeDisplayMetadata(for: attachment)
+
+        XCTAssertEqual(display["attachment_type"]?.stringValue, "voiceRecording")
+        XCTAssertEqual(display["mime_type"]?.stringValue, "audio/aac")
+        XCTAssertEqual(display["duration"]?.numberValue, 2.5)
+        let waveform = display["waveform_data"]?.numberArrayValue ?? []
+        XCTAssertEqual(waveform.count, 2)
+        XCTAssertEqual(waveform[0], 0.1, accuracy: 0.0001)
+        XCTAssertEqual(waveform[1], 0.7, accuracy: 0.0001)
+    }
+
     private func makeDatabase() throws -> DatabaseContainer {
         let database = DatabaseContainer(
             kind: .inMemory,

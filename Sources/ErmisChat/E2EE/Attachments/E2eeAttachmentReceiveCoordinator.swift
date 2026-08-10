@@ -250,7 +250,18 @@ final class E2eeAttachmentReceiveCoordinator {
         }
         let data: Data
         let type: AttachmentType
-        if mimeType?.hasPrefix("video/") == true {
+        if isVoiceRecording(display: display, mimeType: mimeType, duration: duration) {
+            let waveform = display["waveform_data"]?.numberArrayValue?.map(Float.init)
+            let payload = VoiceRecordingAttachmentPayload(
+                title: title,
+                voiceRecordingRemoteURL: opaqueURL,
+                file: file,
+                duration: duration,
+                waveformData: waveform
+            )
+            data = try JSONEncoder.ermis.encode(payload)
+            type = .voiceRecording
+        } else if mimeType?.hasPrefix("video/") == true {
             var payload = VideoAttachmentPayload(
                 title: title,
                 videoRemoteURL: opaqueURL,
@@ -273,9 +284,31 @@ final class E2eeAttachmentReceiveCoordinator {
             data = try JSONEncoder.ermis.encode(payload)
             type = .image
         } else {
-            throw E2eeAttachmentReceiveError.unsupportedMedia
+            let payload = FileAttachmentPayload(
+                title: title,
+                assetRemoteURL: opaqueURL,
+                file: file
+            )
+            data = try JSONEncoder.ermis.encode(payload)
+            type = .file
         }
         return (type, data)
+    }
+
+    /// The explicit marker is canonical. The fallback only repairs manifests emitted by the
+    /// initial iOS implementation, which included audio MIME + voice duration but omitted the
+    /// marker. Generic audio files do not carry this duration metadata and remain files.
+    private static func isVoiceRecording(
+        display: [String: RawJSON],
+        mimeType: String?,
+        duration: Double?
+    ) -> Bool {
+        if display["attachment_type"]?.stringValue == "voiceRecording" {
+            return true
+        }
+        return display["attachment_type"] == nil
+            && mimeType?.hasPrefix("audio/") == true
+            && duration != nil
     }
 
     private func begin(assetId: String) -> Bool {

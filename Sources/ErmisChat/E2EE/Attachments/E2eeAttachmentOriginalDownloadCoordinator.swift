@@ -5,6 +5,39 @@
 import CryptoKit
 import Foundation
 
+/// Public, non-sensitive progress for an explicit full-original E2EE attachment download.
+///
+/// `completedCiphertextBytes` measures bytes received from the attachment object store. The
+/// original is only safe to use after the coordinator advances through `.verifying` and
+/// `.decrypting`; callers must not treat `100%` network progress as a completed attachment.
+public struct E2eeAttachmentOriginalDownloadProgress: Equatable, Sendable {
+    public enum Phase: Equatable, Sendable {
+        case queued
+        case downloading
+        case verifying
+        case decrypting
+    }
+
+    public let phase: Phase
+    public let completedCiphertextBytes: UInt64
+    public let totalCiphertextBytes: UInt64
+
+    public var fractionCompleted: Double? {
+        guard totalCiphertextBytes > 0 else { return nil }
+        return min(1, Double(completedCiphertextBytes) / Double(totalCiphertextBytes))
+    }
+
+    public init(
+        phase: Phase,
+        completedCiphertextBytes: UInt64,
+        totalCiphertextBytes: UInt64
+    ) {
+        self.phase = phase
+        self.completedCiphertextBytes = completedCiphertextBytes
+        self.totalCiphertextBytes = totalCiphertextBytes
+    }
+}
+
 enum E2eeAttachmentOriginalDownloadError: Error {
     case invalidOpaqueURL
     case missingMessage
@@ -20,12 +53,216 @@ enum E2eeAttachmentOriginalDownloadError: Error {
     case invalidKeyMaterial
 }
 
+/// Owns a foreground `URLSessionDownloadTask` and reports byte progress using the download
+/// delegate callback. KVO on `URLSessionTask.progress` is intentionally avoided: it can publish
+/// an initial unit count without matching the task's byte stream and previously caused some media
+/// requests to remain stuck at that initial value.
+private final class E2eeAttachmentOriginalDownloadDelegate: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+    typealias DownloadResult = (URL, URLResponse)
+
+    private let lock = NSLock()
+    private let expectedCiphertextBytes: UInt64
+    private let progress: @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+
+    private var session: URLSession?
+    private var task: URLSessionDownloadTask?
+    private var continuation: CheckedContinuation<DownloadResult, Error>?
+    private var completedDownloadURL: URL?
+    private var isCancelled = false
+
+    init(
+        expectedCiphertextBytes: UInt64,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+    ) {
+        self.expectedCiphertextBytes = expectedCiphertextBytes
+        self.progress = progress
+        super.init()
+    }
+
+    func download(request: URLRequest) async throws -> DownloadResult {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+                let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+                let task = session.downloadTask(with: request)
+
+                lock.lock()
+                if isCancelled {
+                    lock.unlock()
+                    session.invalidateAndCancel()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                self.session = session
+                self.task = task
+                self.continuation = continuation
+                lock.unlock()
+
+                task.resume()
+            }
+        }, onCancel: {
+            self.cancel()
+        })
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesWritten >= 0 else { return }
+        progress(.init(
+            phase: .downloading,
+            completedCiphertextBytes: min(UInt64(totalBytesWritten), expectedCiphertextBytes),
+            totalCiphertextBytes: expectedCiphertextBytes
+        ))
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        let ownedTemporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ErmisE2eeDownload-\(UUID().uuidString)", isDirectory: false)
+        do {
+            try FileManager.default.moveItem(at: location, to: ownedTemporaryURL)
+            lock.lock()
+            completedDownloadURL = ownedTemporaryURL
+            lock.unlock()
+        } catch {
+            finish(.failure(error))
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        if let error {
+            finish(.failure(error))
+            return
+        }
+
+        lock.lock()
+        let downloadedURL = completedDownloadURL
+        lock.unlock()
+        guard let downloadedURL, let response = task.response else {
+            finish(.failure(E2eeAttachmentOriginalDownloadError.invalidHTTPResponse))
+            return
+        }
+        finish(.success((downloadedURL, response)))
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let task = task
+        let session = session
+        lock.unlock()
+        task?.cancel()
+        session?.invalidateAndCancel()
+    }
+
+    private func finish(_ result: Result<DownloadResult, Error>) {
+        lock.lock()
+        guard let continuation else {
+            lock.unlock()
+            return
+        }
+        self.continuation = nil
+        let session = session
+        let downloadedURL = completedDownloadURL
+        self.session = nil
+        task = nil
+        lock.unlock()
+
+        session?.finishTasksAndInvalidate()
+        if case .failure = result, let downloadedURL {
+            try? FileManager.default.removeItem(at: downloadedURL)
+        }
+        continuation.resume(with: result)
+    }
+}
+
+/// Scheduling is deliberately separate from the durable background upload coordinator. Originals
+/// are foreground viewer work: only visible media should occupy its small interactive budget.
+private actor E2eeAttachmentOriginalDownloadScheduler {
+    private struct Waiter {
+        let token: UUID
+        let sequence: UInt64
+        let continuation: CheckedContinuation<UUID, Error>
+    }
+
+    private let maximumConcurrentDownloads: Int
+    private var activeTokens = Set<UUID>()
+    private var waiters: [UUID: Waiter] = [:]
+    private var nextSequence: UInt64 = 0
+
+    init(maximumConcurrentDownloads: Int = 2) {
+        self.maximumConcurrentDownloads = max(1, maximumConcurrentDownloads)
+    }
+
+    func acquire() async throws -> UUID {
+        let token = UUID()
+        if activeTokens.count < maximumConcurrentDownloads, waiters.isEmpty {
+            activeTokens.insert(token)
+            return token
+        }
+
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                nextSequence &+= 1
+                waiters[token] = Waiter(
+                    token: token,
+                    sequence: nextSequence,
+                    continuation: continuation
+                )
+                resumeWaitersIfPossible()
+            }
+        }, onCancel: { [weak self] in
+            Task {
+                await self?.cancelWaiter(token)
+            }
+        })
+    }
+
+    func release(_ token: UUID) {
+        guard activeTokens.remove(token) != nil else { return }
+        resumeWaitersIfPossible()
+    }
+
+    private func cancelWaiter(_ token: UUID) {
+        guard let waiter = waiters.removeValue(forKey: token) else { return }
+        waiter.continuation.resume(throwing: CancellationError())
+    }
+
+    private func resumeWaitersIfPossible() {
+        while activeTokens.count < maximumConcurrentDownloads,
+              let next = waiters.values.min(by: { $0.sequence < $1.sequence }) {
+            waiters[next.token] = nil
+            activeTokens.insert(next.token)
+            next.continuation.resume(returning: next.token)
+        }
+    }
+}
+
 /// Resolves an authenticated E2EE attachment manifest into a verified local plaintext file.
 ///
 /// This is the full-download fallback required before range streaming is enabled. The original
 /// remains ciphertext on the network and on the download staging path. Only after its declared
 /// size and global SHA-256 match do we frame-decrypt it into the process-lifetime playback folder.
 actor E2eeAttachmentOriginalDownloadCoordinator {
+    typealias ProgressHandler = @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+
     private struct OpaqueAssetReference: Equatable {
         let attachmentId: String
         let assetId: String
@@ -35,8 +272,20 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
     private let database: DatabaseContainer
     private let fileManager: FileManager
     private let playbackDirectory: URL
+    private let scheduler: E2eeAttachmentOriginalDownloadScheduler
     private var completedURLs: [String: URL] = [:]
-    private var inFlight: [String: Task<URL, Error>] = [:]
+    /// A full original download can be shared by multiple gallery cells. Keep explicit request
+    /// ownership so dismissing one gallery can cancel its work without interrupting another
+    /// viewer that is resolving the same asset.
+    private struct InFlightDownload {
+        let id: UUID
+        let task: Task<URL, Error>
+        var requesterIds: Set<UUID>
+        var progressHandlers: [UUID: ProgressHandler]
+        var latestProgress: E2eeAttachmentOriginalDownloadProgress?
+    }
+
+    private var inFlight: [String: InFlightDownload] = [:]
 
     init(
         apiClient: APIClient,
@@ -46,6 +295,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         self.apiClient = apiClient
         self.database = database
         self.fileManager = fileManager
+        scheduler = E2eeAttachmentOriginalDownloadScheduler()
         playbackDirectory = fileManager.temporaryDirectory
             .appendingPathComponent("ErmisE2eeAttachmentPlayback", isDirectory: true)
 
@@ -55,7 +305,22 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         try? Self.prepareDirectory(playbackDirectory, fileManager: fileManager)
     }
 
-    func localOriginalURL(for attachment: AnyMessageAttachment) async throws -> URL {
+    /// Cancels foreground viewer work and removes process-lifetime plaintext originals.
+    ///
+    /// This is intentionally scoped to the original-download fallback. It does not touch durable
+    /// ciphertext upload staging or background URLSession work, which follow their own account
+    /// scoped lifecycle.
+    func shutdown() {
+        inFlight.values.forEach { $0.task.cancel() }
+        inFlight.removeAll()
+        completedURLs.removeAll()
+        try? fileManager.removeItem(at: playbackDirectory)
+    }
+
+    func localOriginalURL(
+        for attachment: AnyMessageAttachment,
+        progress: @escaping ProgressHandler
+    ) async throws -> URL {
         guard let remoteURL = attachment.remoteURL else {
             throw E2eeAttachmentOriginalDownloadError.invalidOpaqueURL
         }
@@ -67,36 +332,158 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
            fileManager.fileExists(atPath: completedURL.path) {
             return completedURL
         }
-        if let task = inFlight[cacheKey] {
-            return try await task.value
+
+        let requesterId = UUID()
+        return try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
+            return try await self.waitForOriginal(
+                attachment: attachment,
+                reference: reference,
+                cacheKey: cacheKey,
+                requesterId: requesterId,
+                progress: progress
+            )
+        }, onCancel: { [weak self] in
+            // `Task.value` does not by itself cancel the unstructured task stored by the actor.
+            // Hop back to the actor so the final viewer actively cancels the URLSession request.
+            Task {
+                await self?.cancelOriginalRequest(cacheKey: cacheKey, requesterId: requesterId)
+            }
+        })
+    }
+
+    private func waitForOriginal(
+        attachment: AnyMessageAttachment,
+        reference: OpaqueAssetReference,
+        cacheKey: String,
+        requesterId: UUID,
+        progress: @escaping ProgressHandler
+    ) async throws -> URL {
+        if let completedURL = completedURLs[cacheKey],
+           fileManager.fileExists(atPath: completedURL.path) {
+            return completedURL
         }
 
-        let apiClient = apiClient
-        let database = database
-        let fileManager = fileManager
-        let playbackDirectory = playbackDirectory
-        let attachmentId = attachment.id
-        let task = Task<URL, Error>(priority: .utility) {
-            try await Self.downloadOriginal(
-                attachmentId: attachmentId,
-                reference: reference,
-                apiClient: apiClient,
-                database: database,
-                fileManager: fileManager,
-                playbackDirectory: playbackDirectory
+        let activeDownload: InFlightDownload
+        if var existing = inFlight[cacheKey] {
+            existing.requesterIds.insert(requesterId)
+            existing.progressHandlers[requesterId] = progress
+            inFlight[cacheKey] = existing
+            if let latestProgress = existing.latestProgress {
+                progress(latestProgress)
+            }
+            activeDownload = existing
+        } else {
+            let apiClient = apiClient
+            let database = database
+            let fileManager = fileManager
+            let playbackDirectory = playbackDirectory
+            let attachmentId = attachment.id
+            let scheduler = scheduler
+            let downloadId = UUID()
+            let coordinator = self
+            let task = Task<URL, Error>(priority: .userInitiated) {
+                try Task.checkCancellation()
+                let schedulerToken = try await scheduler.acquire()
+                do {
+                    try Task.checkCancellation()
+                    let url = try await Self.downloadOriginal(
+                        attachmentId: attachmentId,
+                        reference: reference,
+                        apiClient: apiClient,
+                        database: database,
+                        fileManager: fileManager,
+                        playbackDirectory: playbackDirectory,
+                        progress: { update in
+                            Task {
+                                await coordinator.publishOriginalDownloadProgress(
+                                    update,
+                                    cacheKey: cacheKey,
+                                    downloadId: downloadId
+                                )
+                            }
+                        }
+                    )
+                    await scheduler.release(schedulerToken)
+                    return url
+                } catch {
+                    await scheduler.release(schedulerToken)
+                    throw error
+                }
+            }
+            activeDownload = InFlightDownload(
+                id: downloadId,
+                task: task,
+                requesterIds: [requesterId],
+                progressHandlers: [requesterId: progress],
+                latestProgress: .init(
+                    phase: .queued,
+                    completedCiphertextBytes: 0,
+                    totalCiphertextBytes: 0
+                )
             )
+            inFlight[cacheKey] = activeDownload
+            progress(activeDownload.latestProgress!)
         }
-        inFlight[cacheKey] = task
 
         do {
-            let url = try await task.value
-            inFlight[cacheKey] = nil
+            let url = try await activeDownload.task.value
+            try Task.checkCancellation()
+            if inFlight[cacheKey]?.id == activeDownload.id {
+                inFlight[cacheKey] = nil
+            }
             completedURLs[cacheKey] = url
             return url
         } catch {
-            inFlight[cacheKey] = nil
+            if inFlight[cacheKey]?.id == activeDownload.id {
+                inFlight[cacheKey] = nil
+            }
+
+            // A new viewer can arrive while the previous viewer's cancellation is still being
+            // propagated into URLSession. That new viewer must start a fresh request rather than
+            // inheriting the canceled task and remaining on an indefinite loading state.
+            if error is CancellationError, !Task.isCancelled {
+                return try await waitForOriginal(
+                    attachment: attachment,
+                    reference: reference,
+                    cacheKey: cacheKey,
+                    requesterId: requesterId,
+                    progress: progress
+                )
+            }
             throw error
         }
+    }
+
+    private func cancelOriginalRequest(cacheKey: String, requesterId: UUID) {
+        guard var activeDownload = inFlight[cacheKey],
+              activeDownload.requesterIds.remove(requesterId) != nil else {
+            return
+        }
+
+        activeDownload.progressHandlers[requesterId] = nil
+        inFlight[cacheKey] = activeDownload
+        guard activeDownload.requesterIds.isEmpty else { return }
+
+        log.info(
+            "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=canceling reason=no_active_viewer",
+            subsystems: .mls
+        )
+        activeDownload.task.cancel()
+    }
+
+    private func publishOriginalDownloadProgress(
+        _ progress: E2eeAttachmentOriginalDownloadProgress,
+        cacheKey: String,
+        downloadId: UUID
+    ) {
+        guard var activeDownload = inFlight[cacheKey], activeDownload.id == downloadId else {
+            return
+        }
+        activeDownload.latestProgress = progress
+        let handlers = activeDownload.progressHandlers.values
+        inFlight[cacheKey] = activeDownload
+        handlers.forEach { $0(progress) }
     }
 
     private static func downloadOriginal(
@@ -105,21 +492,29 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         apiClient: APIClient,
         database: DatabaseContainer,
         fileManager: FileManager,
-        playbackDirectory: URL
+        playbackDirectory: URL,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
     ) async throws -> URL {
         let startedAt = Date()
+        try Task.checkCancellation()
         let manifest = try await loadManifest(
             messageId: attachmentId.messageId,
             attachmentIndex: attachmentId.index,
             reference: reference,
             database: database
         )
+        try Task.checkCancellation()
         try manifest.validate()
         guard let original = manifest.assets.first(where: {
             $0.kind == .original && $0.assetId.caseInsensitiveCompare(reference.assetId) == .orderedSame
         }) else {
             throw E2eeAttachmentOriginalDownloadError.missingOriginal
         }
+        progress(.init(
+            phase: .downloading,
+            completedCiphertextBytes: 0,
+            totalCiphertextBytes: original.cipherSize
+        ))
         try preflightStorage(for: original, directory: playbackDirectory)
 
         log.info(
@@ -131,10 +526,16 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             attachmentId: manifest.attachmentId,
             assetId: original.assetId
         )
+        try Task.checkCancellation()
 
         var request = URLRequest(url: grant.downloadURL)
         request.httpMethod = "GET"
-        let (temporaryDownloadURL, response) = try await URLSession.shared.download(for: request)
+        let (temporaryDownloadURL, response) = try await downloadCiphertext(
+            request: request,
+            expectedCiphertextBytes: original.cipherSize,
+            progress: progress
+        )
+        try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse else {
             throw E2eeAttachmentOriginalDownloadError.invalidHTTPResponse
         }
@@ -162,14 +563,25 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                   size.uint64Value == original.cipherSize else {
                 throw E2eeAttachmentOriginalDownloadError.cipherSizeMismatch
             }
+            progress(.init(
+                phase: .verifying,
+                completedCiphertextBytes: original.cipherSize,
+                totalCiphertextBytes: original.cipherSize
+            ))
             guard try sha256Hex(of: cipherURL).caseInsensitiveCompare(original.cipherSha256) == .orderedSame else {
                 throw E2eeAttachmentOriginalDownloadError.cipherHashMismatch
             }
+            try Task.checkCancellation()
             guard let contentKey = Data(base64Encoded: original.contentKey),
                   let noncePrefix = Data(base64Encoded: original.noncePrefix) else {
                 throw E2eeAttachmentOriginalDownloadError.invalidKeyMaterial
             }
 
+            progress(.init(
+                phase: .decrypting,
+                completedCiphertextBytes: original.cipherSize,
+                totalCiphertextBytes: original.cipherSize
+            ))
             let result = try E2eeAttachmentFrameCryptoV1.decryptFile(
                 at: cipherURL,
                 to: plaintextURL,
@@ -177,6 +589,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                 noncePrefix: noncePrefix,
                 frameSize: Int(original.frameSize)
             )
+            try Task.checkCancellation()
             guard result.ciphertextSize == original.cipherSize,
                   result.ciphertextSha256.caseInsensitiveCompare(original.cipherSha256) == .orderedSame else {
                 throw E2eeAttachmentOriginalDownloadError.cipherHashMismatch
@@ -205,6 +618,18 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             )
             throw error
         }
+    }
+
+    private static func downloadCiphertext(
+        request: URLRequest,
+        expectedCiphertextBytes: UInt64,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+    ) async throws -> (URL, URLResponse) {
+        let delegate = E2eeAttachmentOriginalDownloadDelegate(
+            expectedCiphertextBytes: expectedCiphertextBytes,
+            progress: progress
+        )
+        return try await delegate.download(request: request)
     }
 
     private static func loadManifest(
@@ -269,6 +694,12 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         case "image/jpeg": return "jpg"
         case "image/png": return "png"
         case "image/heic", "image/heif": return "heic"
+        case "audio/aac": return "aac"
+        case "audio/mp4", "audio/x-m4a": return "m4a"
+        case "audio/mpeg": return "mp3"
+        case "audio/wav", "audio/x-wav": return "wav"
+        case "audio/ogg": return "ogg"
+        case "audio/webm": return "webm"
         default: return "mp4"
         }
     }
@@ -312,6 +743,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         defer { try? handle.close() }
         var hasher = SHA256()
         while let chunk = try handle.read(upToCount: 256 * 1024), !chunk.isEmpty {
+            try Task.checkCancellation()
             hasher.update(data: chunk)
         }
         return Data(hasher.finalize()).map { String(format: "%02x", $0) }.joined()

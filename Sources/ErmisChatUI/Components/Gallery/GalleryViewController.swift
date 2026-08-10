@@ -90,6 +90,15 @@ open class GalleryViewController: _ViewController,
         .withAdjustingFontForContentSizeCategory
         .withAccessibilityIdentifier(identifier: "dateLabel")
 
+    /// Visible only while the current E2EE original is being fetched. Network completion is not
+    /// treated as media readiness: `.verifying` and `.decrypting` stay explicit to avoid a false
+    /// "100% complete" state while authenticated processing is still running.
+    open private(set) lazy var originalDownloadProgressLabel = UILabel()
+        .withoutAutoresizingMaskConstraints
+        .withBidirectionalLanguagesSupport
+        .withAdjustingFontForContentSizeCategory
+        .withAccessibilityIdentifier(identifier: "originalDownloadProgressLabel")
+
     /// Bar view displayed at the bottom.
     open private(set) lazy var bottomBarView = UIView()
         .withoutAutoresizingMaskConstraints
@@ -164,10 +173,17 @@ open class GalleryViewController: _ViewController,
         dateLabel.adjustsFontForContentSizeCategory = true
         dateLabel.textAlignment = .center
 
+        originalDownloadProgressLabel.font = theme.fonts.footnote
+        originalDownloadProgressLabel.textColor = theme.colors.subtitleText
+        originalDownloadProgressLabel.adjustsFontForContentSizeCategory = true
+        originalDownloadProgressLabel.textAlignment = .center
+        originalDownloadProgressLabel.numberOfLines = 1
+
         currentPhotoLabel.font = theme.fonts.body.bold
         currentPhotoLabel.textColor = theme.colors.text
         currentPhotoLabel.adjustsFontForContentSizeCategory = true
         currentPhotoLabel.textAlignment = .center
+
     }
 
     override open func setUp() {
@@ -227,6 +243,9 @@ open class GalleryViewController: _ViewController,
 
         infoContainerStackView.addArrangedSubview(dateLabel)
 
+        originalDownloadProgressLabel.isHidden = true
+        infoContainerStackView.addArrangedSubview(originalDownloadProgressLabel)
+
         topBarContainerStackView.addArrangedSubview(UIView.spacer(axis: .horizontal))
         topBarContainerStackView.addArrangedSubview(downloadButton)
 
@@ -274,6 +293,15 @@ open class GalleryViewController: _ViewController,
         super.viewWillDisappear(animated)
 
         videoPlaybackBar.player?.pause()
+
+        // Full E2EE originals are downloaded only to satisfy an active gallery viewer. Do not let
+        // a quick open/close leave large downloads competing with the next attachment the user
+        // selects. Each cell releases a reference; shared downloads survive while another cell is
+        // still using the same asset.
+        attachmentsCollectionView.visibleCells.forEach { cell in
+            (cell as? ImageAttachmentGalleryCell)?.cancelPendingOriginalResolution()
+            (cell as? VideoAttachmentGalleryCell)?.cancelPendingOriginalResolution()
+        }
     }
 
     override open func contentDidChanged() {
@@ -301,10 +329,18 @@ open class GalleryViewController: _ViewController,
 
         videoPlaybackBar.player = videoCell?.player
         videoPlaybackBar.isHidden = videoPlaybackBar.player == nil
+        updateOriginalDownloadProgressPresentation()
     }
 
     /// Called whenever user pans with a given `gestureRecognizer`.
     @objc open func handlePan(with gestureRecognizer: UIPanGestureRecognizer) {
+        // `GalleryViewController` is also used outside `MessageListRouter` (for
+        // example from Channel Info). Those callers can intentionally use the
+        // system presentation transition and therefore do not provide a zoom
+        // transition controller. A pan must never make the gallery crash in
+        // that configuration; the close button remains the dismissal path.
+        guard let transitionController else { return }
+
         switch gestureRecognizer.state {
         case .began:
             transitionController.isInteractive = true
@@ -352,6 +388,8 @@ open class GalleryViewController: _ViewController,
     open func updateCurrentPage() {
         content.currentPage = Int(attachmentsCollectionView.contentOffset.x + attachmentsCollectionView.bounds.width / 2) /
             Int(attachmentsCollectionView.bounds.width)
+        updateVisibleE2eeOriginalResolution()
+        contentDidChanged()
     }
 
     open func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
@@ -369,36 +407,90 @@ open class GalleryViewController: _ViewController,
         guard let item = getItem(at: indexPath) else { return cell }
 
         if let imageCell = cell as? ImageAttachmentGalleryCell {
-            imageCell.imageURLResolver = { [weak client] attachment, completion in
+            imageCell.imageURLResolver = { [weak client] attachment, progress, completion in
                 guard let client else {
                     completion(.failure(URLError(.cancelled)))
-                    return
+                    return nil
                 }
-                _Concurrency.Task {
+                let task = _Concurrency.Task {
                     do {
-                        let url = try await client.prepareAttachmentForViewing(attachment)
+                        let url = try await client.prepareAttachmentForViewing(
+                            attachment,
+                            progress: progress
+                        )
+                        guard !_Concurrency.Task.isCancelled else { return }
                         completion(.success(url))
+                    } catch is CancellationError {
+                        // A gallery close is an expected cancellation, not a render failure.
                     } catch {
+                        guard !_Concurrency.Task.isCancelled else { return }
                         completion(.failure(error))
                     }
                 }
+                return { task.cancel() }
+            }
+            imageCell.isE2eeOriginalResolutionEnabled = indexPath == currentItemIndexPath
+            imageCell.originalResolutionStateDidChange = { [weak self, weak imageCell] _ in
+                DispatchQueue.main.async {
+                    guard let self,
+                          let imageCell,
+                          self.attachmentsCollectionView.indexPath(for: imageCell) == self.currentItemIndexPath else {
+                        return
+                    }
+                    self.updateOriginalDownloadProgressPresentation()
+                }
+            }
+            imageCell.originalResolutionProgressDidChange = { [weak self, weak imageCell] progress in
+                guard let self,
+                      let imageCell,
+                      self.attachmentsCollectionView.indexPath(for: imageCell) == self.currentItemIndexPath else {
+                    return
+                }
+                self.updateOriginalDownloadProgress(progress)
             }
         }
 
         if let videoCell = cell as? VideoAttachmentGalleryCell {
-            videoCell.videoURLResolver = { [weak client] attachment, completion in
+            videoCell.videoURLResolver = { [weak client] attachment, progress, completion in
                 guard let client else {
                     completion(.failure(URLError(.cancelled)))
-                    return
+                    return nil
                 }
-                _Concurrency.Task {
+                let task = _Concurrency.Task {
                     do {
-                        let url = try await client.prepareAttachmentForViewing(attachment)
+                        let url = try await client.prepareAttachmentForViewing(
+                            attachment,
+                            progress: progress
+                        )
+                        guard !_Concurrency.Task.isCancelled else { return }
                         completion(.success(url))
+                    } catch is CancellationError {
+                        // A gallery close is an expected cancellation, not a render failure.
                     } catch {
+                        guard !_Concurrency.Task.isCancelled else { return }
                         completion(.failure(error))
                     }
                 }
+                return { task.cancel() }
+            }
+            videoCell.isE2eeOriginalResolutionEnabled = indexPath == currentItemIndexPath
+            videoCell.originalResolutionStateDidChange = { [weak self, weak videoCell] _ in
+                DispatchQueue.main.async {
+                    guard let self,
+                          let videoCell,
+                          self.attachmentsCollectionView.indexPath(for: videoCell) == self.currentItemIndexPath else {
+                        return
+                    }
+                    self.updateOriginalDownloadProgressPresentation()
+                }
+            }
+            videoCell.originalResolutionProgressDidChange = { [weak self, weak videoCell] progress in
+                guard let self,
+                      let videoCell,
+                      self.attachmentsCollectionView.indexPath(for: videoCell) == self.currentItemIndexPath else {
+                    return
+                }
+                self.updateOriginalDownloadProgress(progress)
             }
         }
 
@@ -433,6 +525,11 @@ open class GalleryViewController: _ViewController,
         updateCurrentPage()
     }
 
+    open func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard !decelerate else { return }
+        updateCurrentPage()
+    }
+
     open func scrollViewDidScroll(_ scrollView: UIScrollView) {
         videoPlaybackBar.player?.pause()
     }
@@ -451,6 +548,57 @@ open class GalleryViewController: _ViewController,
     open var currentItem: AnyMessageAttachment {
         items.assertIndexIsPresent(currentItemIndexPath.item)
         return items[currentItemIndexPath.item]
+    }
+
+    /// Only the page the user is actually viewing may resolve a full E2EE original. Adjacent
+    /// collection-view cells retain their already-decrypted thumbnail, which prevents a quick
+    /// swipe through a media list from queueing several large foreground downloads.
+    private func updateVisibleE2eeOriginalResolution() {
+        let activeIndexPath = currentItemIndexPath
+        attachmentsCollectionView.visibleCells.forEach { cell in
+            let isActive = attachmentsCollectionView.indexPath(for: cell) == activeIndexPath
+            (cell as? ImageAttachmentGalleryCell)?.isE2eeOriginalResolutionEnabled = isActive
+            (cell as? VideoAttachmentGalleryCell)?.isE2eeOriginalResolutionEnabled = isActive
+        }
+    }
+
+    /// Closing a gallery cancels its visible original request, so an additional gallery-level
+    /// cancel button would duplicate the close action. This method only owns the transient
+    /// progress label while the currently visible cell resolves its original.
+    private func updateOriginalDownloadProgressPresentation() {
+        let currentCell = attachmentsCollectionView.cellForItem(at: currentItemIndexPath)
+        let isResolving = (currentCell as? ImageAttachmentGalleryCell)?.isResolvingE2eeOriginal == true
+            || (currentCell as? VideoAttachmentGalleryCell)?.isResolvingE2eeOriginal == true
+        if !isResolving {
+            originalDownloadProgressLabel.isHidden = true
+            originalDownloadProgressLabel.text = nil
+        }
+    }
+
+    private func updateOriginalDownloadProgress(_ progress: E2eeAttachmentOriginalDownloadProgress) {
+        let text: String
+        switch progress.phase {
+        case .queued:
+            text = "Đang chờ tải"
+        case .downloading:
+            let completed = ByteCountFormatter.string(
+                fromByteCount: Int64(progress.completedCiphertextBytes),
+                countStyle: .file
+            )
+            let total = ByteCountFormatter.string(
+                fromByteCount: Int64(progress.totalCiphertextBytes),
+                countStyle: .file
+            )
+            let percentage = Int((progress.fractionCompleted ?? 0) * 100)
+            text = "Đang tải \(completed) / \(total) · \(percentage)%"
+        case .verifying:
+            text = "Đang kiểm tra tệp"
+        case .decrypting:
+            text = "Đang giải mã tệp"
+        }
+        originalDownloadProgressLabel.text = text
+        originalDownloadProgressLabel.accessibilityLabel = text
+        originalDownloadProgressLabel.isHidden = false
     }
 
     /// Returns a share item for the gallery item at given index path.

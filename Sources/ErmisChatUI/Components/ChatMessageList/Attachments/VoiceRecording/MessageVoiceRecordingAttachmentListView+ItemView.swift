@@ -17,6 +17,14 @@ extension MessageVoiceRecordingAttachmentListView {
     /// |-----------------------------------------------------------------------|
     /// ```
     open class ItemView: _View, UIProvider, MessageBubbleProvidable {
+        /// A neutral visual fallback for Web/legacy voice messages that do not contain waveform
+        /// samples. It is presentation-only and is never written back into authenticated metadata.
+        static let fallbackWaveform: [Float] = [
+            0.24, 0.42, 0.68, 0.36, 0.78, 0.52, 0.88, 0.44,
+            0.72, 0.34, 0.62, 0.82, 0.48, 0.70, 0.38, 0.58,
+            0.76, 0.46, 0.66, 0.32, 0.54, 0.80, 0.40, 0.64
+        ]
+
         // MARK: - Properties
 
         /// Content of the attachment `MessageFileAttachment`
@@ -128,7 +136,7 @@ extension MessageVoiceRecordingAttachmentListView {
             bottomContainerStackView.axis = .horizontal
             bottomContainerStackView.spacing = 4
             bottomContainerStackView.alignment = .center
-            [loadingIndicator, fileSizeLabel, playbackLoadingClampedView, waveformView]
+            [loadingIndicator, fileSizeLabel, waveformView, playbackLoadingClampedView]
                 .forEach { bottomContainerStackView.addArrangedSubview($0) }
 
             centerContainerStackView.axis = .vertical
@@ -147,8 +155,20 @@ extension MessageVoiceRecordingAttachmentListView {
                 .forEach { mainContainerStackView.addArrangedSubview($0) }
 
             durationLabel.setContentHuggingPriority(.ermisRequire, for: .vertical)
+            durationLabel.setContentHuggingPriority(.ermisRequire, for: .horizontal)
             waveformView.setContentHuggingPriority(.ermisLow, for: .vertical)
+            waveformView.setContentCompressionResistancePriority(.ermisLow, for: .horizontal)
             fileIconImageView.setContentHuggingPriority(.ermisRequire, for: .horizontal)
+
+            let preferredWaveformWidth = waveformView.widthAnchor.constraint(equalToConstant: 168)
+            preferredWaveformWidth.priority = .defaultHigh
+
+            NSLayoutConstraint.activate([
+                preferredWaveformWidth,
+                waveformView.widthAnchor.constraint(greaterThanOrEqualToConstant: 80),
+                waveformView.heightAnchor.constraint(equalToConstant: 36),
+                durationLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 38)
+            ])
         }
 
         override open func setUpTheme() {
@@ -215,6 +235,7 @@ extension MessageVoiceRecordingAttachmentListView {
                 let content = content,
                 content.uploadingState?.state == .uploaded || content.uploadingState == nil
             else {
+                fileNameLabel.isHidden = false
                 playPauseButton.isHidden = true
                 durationLabel.isHidden = true
                 fileSizeLabel.isHidden = false
@@ -224,19 +245,42 @@ extension MessageVoiceRecordingAttachmentListView {
                 return
             }
 
+            fileNameLabel.isHidden = true
             playPauseButton.isHidden = false
             durationLabel.isHidden = false
             fileSizeLabel.isHidden = true
             waveformView.isHidden = false
             playbackLoadingClampedView.isHidden = false
             playbackLoadingIndicator.isHidden = true
+            fileIconAndPlaybackRateClampedView.isHidden = true
+
+            // The manifest already carries the authenticated voice duration. Show it before the
+            // audio player is first loaded so an idle E2EE voice bubble has the same information
+            // as a standard one. Playback updates below may replace this with the current time.
+            durationLabel.text = formatters.videoDuration.format(content.duration ?? 0)
+
+            let foregroundColor = isIncomingMessage
+                ? theme.colors.primary
+                : theme.colors.outgoingMessageText
+            let inactiveWaveformColor = foregroundColor.withAlphaComponent(0.55)
+            playPauseButton.tintColor = foregroundColor
+            durationLabel.textColor = foregroundColor
+            waveformView.audioVisualizationView.highlightedBarColor = foregroundColor
+            waveformView.audioVisualizationView.barColor = inactiveWaveformColor
 
             waveformView.content = .init(
                 isRecording: false,
                 duration: content.duration ?? 0,
                 currentTime: TimeInterval(waveformView.slider.value),
-                waveform: content.waveformData ?? []
+                waveform: Self.displayWaveform(content.waveformData)
             )
+        }
+
+        static func displayWaveform(_ waveform: [Float]?) -> [Float] {
+            guard let waveform, waveform.contains(where: { $0 > 0 }) else {
+                return fallbackWaveform
+            }
+            return waveform
         }
 
         // MARK: - View updates

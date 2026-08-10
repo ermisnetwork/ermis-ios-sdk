@@ -131,6 +131,14 @@ open class MessageListViewController: _ViewController,
     /// The audioPlayer that will be used for the playback of VoiceRecordings.
     public var audioPlayer: AudioPlaying?
 
+    /// Resolves an opaque E2EE voice asset to an authenticated local file before playback.
+    /// A newer tap cancels the obsolete resolver so an older download cannot replace it later.
+    private var voicePlaybackResolutionTask: _Concurrency.Task<Void, Never>?
+
+    /// Stable message attachment identity for the active voice bubble. E2EE playback resolves the
+    /// model's opaque URL to a different local URL, so URL equality cannot identify the active cell.
+    private var activeVoiceRecordingAttachmentId: AttachmentId?
+
     /// The feedbackGenerator that will be used to provide haptic feedback when the UI elements
     /// of audio playback are being interacted with.
     public private(set) lazy var audioSessionFeedbackGenerator: AudioSessionFeedbackGenerator = components
@@ -1099,10 +1107,40 @@ open class MessageListViewController: _ViewController,
         _ attachment: MessageVoiceRecordingAttachment
     ) {
         audioSessionFeedbackGenerator.feedbackForPlay()
-        audioPlayer?.loadAsset(from: attachment.voiceRecordingURL)
+        voicePlaybackResolutionTask?.cancel()
+        activeVoiceRecordingAttachmentId = attachment.id
+        guard attachment.voiceRecordingURL.scheme == "ermis-e2ee-attachment" else {
+            audioPlayer?.loadAsset(from: attachment.voiceRecordingURL)
+            return
+        }
+        guard let client else { return }
+        let anyAttachment = attachment.asAnyAttachment
+        voicePlaybackResolutionTask = _Concurrency.Task { [weak self, weak client] in
+            guard let self, let client else { return }
+            do {
+                let localURL = try await client.prepareAttachmentForPlayback(anyAttachment)
+                guard !_Concurrency.Task.isCancelled else { return }
+                await MainActor.run {
+                    self.audioPlayer?.loadAsset(from: localURL)
+                }
+            } catch {
+                guard !_Concurrency.Task.isCancelled else { return }
+                await MainActor.run {
+                    if self.activeVoiceRecordingAttachmentId == attachment.id {
+                        self.activeVoiceRecordingAttachmentId = nil
+                    }
+                }
+                log.error(
+                    "[E2EE_ATTACHMENT_PLAYBACK] operation=voice state=failed category=prepare_original",
+                    subsystems: .mls
+                )
+            }
+        }
     }
 
     open func voiceRecordingAttachmentPresentationViewPausePayback() {
+        voicePlaybackResolutionTask?.cancel()
+        voicePlaybackResolutionTask = nil
         audioSessionFeedbackGenerator.feedbackForPause()
         audioPlayer?.pause()
     }
@@ -1119,6 +1157,13 @@ open class MessageListViewController: _ViewController,
     ) {
         audioSessionFeedbackGenerator.feedbackForSeeking()
         audioPlayer?.seek(to: timeInterval)
+    }
+
+    open func voiceRecordingAttachmentPresentationView(
+        _ attachment: MessageVoiceRecordingAttachment,
+        matchesPlaybackURL playbackURL: URL?
+    ) -> Bool {
+        activeVoiceRecordingAttachmentId == attachment.id
     }
 }
 

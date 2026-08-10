@@ -1160,6 +1160,26 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
                               attachmentTypes: attachmentTypes,
                               completion: completion)
     }
+
+    /// Queries the E2EE Channel Info attachment projection. This path must be used for an
+    /// effectively encrypted channel; the standard attachment endpoint cannot provide the
+    /// authenticated local manifest required to render encrypted assets.
+    public func queryE2eeAttachments(
+        limit: Int = 50,
+        cursor: E2eeChannelAttachmentListCursor? = nil,
+        completion: @escaping (Result<E2eeChannelAttachmentListPage, Error>) -> Void
+    ) {
+        guard let cid else {
+            completion(.failure(ClientError.InvalidChannelId()))
+            return
+        }
+        client.queryE2eeChannelAttachments(
+            in: cid,
+            limit: limit,
+            cursor: cursor,
+            completion: completion
+        )
+    }
     
     public
     func search(term: String,

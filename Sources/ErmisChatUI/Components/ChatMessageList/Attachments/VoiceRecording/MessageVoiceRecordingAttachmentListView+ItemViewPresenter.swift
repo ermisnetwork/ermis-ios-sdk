@@ -10,7 +10,12 @@ extension MessageVoiceRecordingAttachmentListView {
     /// The Presenter that drives interactions and events for
     internal class ItemViewPresenter: AudioPlayingDelegate {
         /// The delegate to which the Presenter will forward all audioPlayback events.
-        internal weak var delegate: VoiceRecordingAttachmentPresentationViewDelegate?
+        internal weak var delegate: VoiceRecordingAttachmentPresentationViewDelegate? {
+            didSet {
+                guard delegate !== oldValue else { return }
+                delegate?.voiceRecordingAttachmentPresentationViewConnect(delegate: self)
+            }
+        }
 
         /// The view that holds the reference to this Presenter.
         internal weak var view: MessageVoiceRecordingAttachmentListView.ItemView?
@@ -31,10 +36,6 @@ extension MessageVoiceRecordingAttachmentListView {
         }
 
         internal func setUp() {
-            delegate?.voiceRecordingAttachmentPresentationViewConnect(
-                delegate: self
-            )
-
             guard let view = view else { return }
 
             view.playPauseButton.addTarget(
@@ -128,7 +129,10 @@ extension MessageVoiceRecordingAttachmentListView {
                 return
             }
 
-            let isCurrentItemActive = context.assetLocation == content.voiceRecordingURL
+            let isCurrentItemActive = delegate?.voiceRecordingAttachmentPresentationView(
+                content,
+                matchesPlaybackURL: context.assetLocation
+            ) ?? (context.assetLocation == content.voiceRecordingURL)
             let contextForViewUpdate = isCurrentItemActive ? context : .notLoaded
             let contentDuration = content.duration ?? contextForViewUpdate.duration
 

@@ -37,6 +37,12 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
     open private(set) lazy var playButton = UIButton()
         .withoutAutoresizingMaskConstraints
 
+    /// Displays the authenticated video duration before the user opens the gallery player.
+    /// This avoids probing/downloading E2EE originals just to populate a timeline thumbnail.
+    open private(set) lazy var durationLabel = UILabel()
+        .withoutAutoresizingMaskConstraints
+        .withAccessibilityIdentifier(identifier: "videoDurationLabel")
+
     override open func setUpTheme() {
         super.setUpTheme()
 
@@ -45,6 +51,16 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
         imageView.layer.masksToBounds = true
 
         playButton.setImage(theme.icons.bigPlay, for: .normal)
+
+        durationLabel.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        durationLabel.textColor = .white
+        durationLabel.font = .monospacedDigitSystemFont(
+            ofSize: theme.fonts.caption1.pointSize,
+            weight: .semibold
+        )
+        durationLabel.layer.cornerRadius = 4
+        durationLabel.layer.masksToBounds = true
+        durationLabel.textAlignment = .center
     }
 
     override open func setUp() {
@@ -76,6 +92,11 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
 
         addSubview(playButton)
         playButton.pin(anchors: [.centerY, .centerX], to: self)
+
+        addSubview(durationLabel)
+        durationLabel.pin(anchors: [.trailing, .bottom], to: self, contant: -8)
+        durationLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+        durationLabel.heightAnchor.constraint(equalToConstant: 22).isActive = true
     }
 
     override open func contentDidChanged() {
@@ -83,12 +104,17 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
 
         if content == nil {
             imageView.image = nil
+            durationLabel.isHidden = true
             return
         }
 
         loadingIndicator.isHidden = false
         imageView.image = nil
         playButton.isVisible = false
+
+        let duration = content?.payload.duration
+        durationLabel.text = duration.flatMap(formatters.videoDuration.format)
+        durationLabel.isHidden = durationLabel.text == nil || content?.uploadingState != nil
 
         if let thumbnailData = content?.thumbnailData, let thumbImage = UIImage(data: thumbnailData) {
             imageView.currentImageLoadingTask?.cancel()

@@ -50,7 +50,7 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(payload.imageURL.host, "asset")
     }
 
-    func testUnsupportedOriginalMimeTypeIsRejected() {
+    func testGenericMimeTypeBuildsRenderableFileAttachment() throws {
         let manifest = makeManifest(
             mimeType: "application/pdf",
             name: "document.pdf",
@@ -59,7 +59,87 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
             duration: nil
         )
 
-        XCTAssertThrowsError(try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest))
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest)
+        let payload = try JSONDecoder.ermis.decode(FileAttachmentPayload.self, from: renderable.data)
+
+        XCTAssertEqual(renderable.type, .file)
+        XCTAssertEqual(payload.title, "document.pdf")
+        XCTAssertEqual(payload.file.mimeType, "application/pdf")
+        XCTAssertEqual(payload.assetURL.scheme, "ermis-e2ee-attachment")
+    }
+
+    func testExplicitVoiceRecordingBuildsRenderableVoiceAttachment() throws {
+        var manifest = makeManifest(
+            mimeType: "audio/mp4",
+            name: "voice.m4a",
+            width: nil,
+            height: nil,
+            duration: 12.5
+        )
+        let original = manifest.assets[0]
+        var display = original.display ?? [:]
+        display["attachment_type"] = .string("voiceRecording")
+        display["waveform_data"] = .array([.number(0.1), .number(0.8)])
+        manifest = E2eeAttachmentManifestV1(
+            attachmentId: manifest.attachmentId,
+            assets: [
+                E2eeAttachmentManifestAssetV1(
+                    assetId: original.assetId,
+                    kind: original.kind,
+                    cipherSize: original.cipherSize,
+                    cipherSha256: original.cipherSha256,
+                    frameSize: original.frameSize,
+                    contentKey: original.contentKey,
+                    noncePrefix: original.noncePrefix,
+                    plaintextSize: original.plaintextSize,
+                    plaintextSha256: original.plaintextSha256,
+                    display: display
+                ),
+                manifest.assets[1]
+            ]
+        )
+
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest)
+        let payload = try JSONDecoder.ermis.decode(VoiceRecordingAttachmentPayload.self, from: renderable.data)
+
+        XCTAssertEqual(renderable.type, .voiceRecording)
+        XCTAssertEqual(payload.title, "voice.m4a")
+        XCTAssertEqual(payload.duration, 12.5)
+        XCTAssertEqual(payload.waveformData?.count, 2)
+        XCTAssertEqual(payload.waveformData?[0] ?? 0, 0.1, accuracy: 0.0001)
+        XCTAssertEqual(payload.waveformData?[1] ?? 0, 0.8, accuracy: 0.0001)
+    }
+
+    func testLegacyIOSVoiceManifestUsesAudioDurationCompatibilityLane() throws {
+        let manifest = makeManifest(
+            mimeType: "audio/aac",
+            name: "legacy-ios-voice.aac",
+            width: nil,
+            height: nil,
+            duration: 3.25
+        )
+
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest)
+        let payload = try JSONDecoder.ermis.decode(VoiceRecordingAttachmentPayload.self, from: renderable.data)
+
+        XCTAssertEqual(renderable.type, .voiceRecording)
+        XCTAssertEqual(payload.file.mimeType, "audio/aac")
+        XCTAssertEqual(payload.duration, 3.25)
+    }
+
+    func testGenericAudioWithoutVoiceMarkerOrDurationRemainsFile() throws {
+        let manifest = makeManifest(
+            mimeType: "audio/mpeg",
+            name: "song.mp3",
+            width: nil,
+            height: nil,
+            duration: nil
+        )
+
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest)
+
+        XCTAssertEqual(renderable.type, .file)
+        XCTAssertNoThrow(try JSONDecoder.ermis.decode(FileAttachmentPayload.self, from: renderable.data))
     }
 
     func testDecodedPreviewCacheHasBoundedMemoryBudget() {
