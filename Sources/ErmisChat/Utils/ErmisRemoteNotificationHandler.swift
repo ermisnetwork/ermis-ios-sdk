@@ -178,21 +178,29 @@ public class RemoteNotificationHandler {
         func getContent(from event: Event, completion: @escaping (PushNotificationContent) -> Void) {
             switch event {
             case let event as MessageNewEventDTO:
-                // Get user'name first
+                // Get user's name first
                 getUserInfo(userId: event.user.userId, projectId: event.cid.projectId) { user in
                     self.database.write { session in
+                        let message = try? session.saveMessage(payload: event.message,
+                                                             for: event.cid,
+                                                             syncOwnReactions: false,
+                                                             cache: nil).asModel()
+                        let channel = try? session.channel(cid: event.cid)?.asModel()
 
-                        guard let message = try? session.message(id: event.message.id)?.asModel(),
-                              let channel = try? session.channel(cid: event.cid)?.asModel() else {
-                            return
+                        if let message {
+                            completion(PushNotificationContent(type: .message,
+                                                               cid: event.cid,
+                                                               message: message,
+                                                               channel: channel,
+                                                               user: user,
+                                                               event: event,
+                                                               content: self.content))
+                        } else {
+                            completion(PushNotificationContent(type: .unknown,
+                                                               cid: event.cid,
+                                                               event: event,
+                                                               content: self.content))
                         }
-                        completion(PushNotificationContent(type: .message,
-                                                           cid: event.cid,
-                                                           message: message,
-                                                           channel: channel,
-                                                           user: user,
-                                                           event: event,
-                                                           content: self.content))
                     }
                 }
             case let event as NotificationChannelCreatedEventDTO:
