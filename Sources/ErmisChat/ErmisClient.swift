@@ -585,6 +585,12 @@ public class ErmisClient {
         )
     }
 
+    /// Returns whether the attachment URL is an opaque E2EE reference that must never be passed
+    /// directly to a generic downloader, media library, document picker, or share sheet.
+    public func requiresVerifiedE2eeOriginal(_ attachment: AnyMessageAttachment) -> Bool {
+        E2eeAttachmentOriginalDownloadCoordinator.isOpaqueE2eeAttachment(attachment)
+    }
+
     /// Backwards-compatible video-specific spelling. Image and video viewers now share the same
     /// authenticated original resolver.
     public func prepareAttachmentForPlayback(_ attachment: AnyMessageAttachment) async throws -> URL {

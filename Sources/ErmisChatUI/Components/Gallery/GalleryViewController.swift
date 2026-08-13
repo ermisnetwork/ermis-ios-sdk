@@ -148,7 +148,16 @@ open class GalleryViewController: _ViewController,
 
     open private(set) lazy var alertRouter = components.alertsRouter.init(rootViewController: self)
 
-    open private(set) lazy var attachmentSaver = client?.attachmentSaver(presentingFrom: self)
+    /// Explicit Save may outlive this gallery. Use its stable presenting owner for document export
+    /// so a completed file download never tries to present a picker from a detached gallery.
+    open private(set) lazy var attachmentSaver = client?.attachmentSaver(
+        presentingFrom: presentingViewController ?? self
+    )
+
+    /// Share is viewer-scoped: if the gallery disappears before the verified original is ready,
+    /// do not present a share sheet from a detached view controller. Explicit Save deliberately
+    /// has independent ownership and is therefore not stored here.
+    private var sharePreparationTask: _Concurrency.Task<Void, Never>?
 
     override open func setUpTheme() {
         super.setUpTheme()
@@ -302,6 +311,9 @@ open class GalleryViewController: _ViewController,
             (cell as? ImageAttachmentGalleryCell)?.cancelPendingOriginalResolution()
             (cell as? VideoAttachmentGalleryCell)?.cancelPendingOriginalResolution()
         }
+        sharePreparationTask?.cancel()
+        sharePreparationTask = nil
+        shareButton.isEnabled = true
     }
 
     override open func contentDidChanged() {
@@ -362,20 +374,104 @@ open class GalleryViewController: _ViewController,
 
     /// Called when `downloadButton` is tapped.
     @objc open func downloadButtonTapped() {
+        guard let client, let attachmentSaver else { return }
         downloadButton.isEnabled = false
-        attachmentSaver?.downloadAttachments(attachments: [currentItem], completion: { [weak self] error in
-            self?.alertRouter.showDownloadAttachmentAlertResult(isSuccess: error == nil)
-            self?.downloadButton.isEnabled = true
-        })
+        let attachment = currentItem
+        guard client.requiresVerifiedE2eeOriginal(attachment) else {
+            attachmentSaver.downloadAttachments(attachments: [attachment], completion: { [weak self] error in
+                self?.alertRouter.showDownloadAttachmentAlertResult(isSuccess: error == nil)
+                self?.downloadButton.isEnabled = true
+            })
+            return
+        }
+
+        // Explicit Save owns a requester independently from the visible cell. Closing the viewer
+        // cancels only the viewer requester; Save still receives one verified local plaintext URL.
+        _Concurrency.Task { [weak self, client, attachmentSaver] in
+            do {
+                let localURL = try await client.prepareAttachmentForViewing(
+                    attachment,
+                    progress: { [weak self] progress in
+                        DispatchQueue.main.async { self?.updateOriginalDownloadProgress(progress) }
+                    }
+                )
+                try _Concurrency.Task.checkCancellation()
+                await withCheckedContinuation { continuation in
+                    attachmentSaver.saveVerifiedAttachment(
+                        at: localURL,
+                        attachment: attachment
+                    ) { [weak self] error in
+                        self?.alertRouter.showDownloadAttachmentAlertResult(isSuccess: error == nil)
+                        self?.downloadButton.isEnabled = true
+                        self?.updateOriginalDownloadProgressPresentation()
+                        continuation.resume()
+                    }
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self?.downloadButton.isEnabled = true
+                    self?.updateOriginalDownloadProgressPresentation()
+                }
+            } catch {
+                await MainActor.run {
+                    self?.alertRouter.showDownloadAttachmentAlertResult(isSuccess: false)
+                    self?.downloadButton.isEnabled = true
+                    self?.updateOriginalDownloadProgressPresentation()
+                }
+            }
+        }
     }
 
     /// Called when `shareButton` is tapped.
     @objc open func shareButtonTapped() {
-        guard let shareItem = shareItem(at: currentItemIndexPath) else {
-            log.assertionFailure("Share item is missing for item at \(currentItemIndexPath).")
+        guard let client else { return }
+        let attachment = currentItem
+        guard client.requiresVerifiedE2eeOriginal(attachment) else {
+            presentShareSheet(for: shareItem(at: currentItemIndexPath))
             return
         }
 
+        shareButton.isEnabled = false
+        sharePreparationTask?.cancel()
+        sharePreparationTask = _Concurrency.Task { [weak self, client] in
+            defer {
+                DispatchQueue.main.async { [weak self] in
+                    self?.sharePreparationTask = nil
+                }
+            }
+            do {
+                let localURL = try await client.prepareAttachmentForViewing(
+                    attachment,
+                    progress: { [weak self] progress in
+                        DispatchQueue.main.async { self?.updateOriginalDownloadProgress(progress) }
+                    }
+                )
+                try _Concurrency.Task.checkCancellation()
+                await MainActor.run {
+                    self?.shareButton.isEnabled = true
+                    self?.updateOriginalDownloadProgressPresentation()
+                    self?.presentShareSheet(for: localURL)
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self?.shareButton.isEnabled = true
+                    self?.updateOriginalDownloadProgressPresentation()
+                }
+            } catch {
+                await MainActor.run {
+                    self?.shareButton.isEnabled = true
+                    self?.updateOriginalDownloadProgressPresentation()
+                    self?.alertRouter.showDownloadAttachmentAlertResult(isSuccess: false)
+                }
+            }
+        }
+    }
+
+    private func presentShareSheet(for shareItem: Any?) {
+        guard let shareItem else {
+            log.assertionFailure("Share item is missing for item at \(currentItemIndexPath).")
+            return
+        }
         let activityViewController = UIActivityViewController(
             activityItems: [shareItem],
             applicationActivities: nil

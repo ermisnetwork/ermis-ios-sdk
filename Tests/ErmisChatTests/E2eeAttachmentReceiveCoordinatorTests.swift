@@ -147,6 +147,61 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(E2eeAttachmentPreviewCache.countLimit, 32)
     }
 
+    func testConcurrentPreviewHydrationCoalescesAllMessageTargets() throws {
+        let registry = E2eeAttachmentPreviewFlightRegistry()
+        let manifest = makeManifest(
+            mimeType: "video/mp4",
+            name: "clip.mp4",
+            width: 1080,
+            height: 1920,
+            duration: 20
+        )
+        let previewAssetId = try XCTUnwrap(
+            manifest.assets.first(where: { $0.kind == .preview })?.assetId
+        )
+        let cid = try ChannelId(cid: "messaging:preview-project:preview-flight")
+        let first = E2eeAttachmentPreviewPersistenceTarget(
+            manifest: manifest,
+            previewAssetId: previewAssetId,
+            attachmentId: AttachmentId(cid: cid, messageId: "message-1", index: 0)
+        )
+        let second = E2eeAttachmentPreviewPersistenceTarget(
+            manifest: manifest,
+            previewAssetId: previewAssetId,
+            attachmentId: AttachmentId(cid: cid, messageId: "message-2", index: 0)
+        )
+
+        XCTAssertTrue(registry.register(assetId: previewAssetId, target: first))
+        XCTAssertFalse(registry.register(assetId: previewAssetId, target: second))
+
+        let targets = registry.finish(assetId: previewAssetId)
+        XCTAssertEqual(Set(targets.map(\.attachmentId)), Set([first.attachmentId, second.attachmentId]))
+        XCTAssertTrue(registry.finish(assetId: previewAssetId).isEmpty)
+    }
+
+    func testPreviewModelPersistenceRetriesOnlyWhileMessageIsNotMaterialized() {
+        let missingMessage = ClientError.MessageDoesNotExist(messageId: "message-1")
+
+        XCTAssertTrue(
+            E2eeAttachmentReceiveCoordinator.shouldRetryModelPersistence(
+                error: missingMessage,
+                attempt: 0
+            )
+        )
+        XCTAssertFalse(
+            E2eeAttachmentReceiveCoordinator.shouldRetryModelPersistence(
+                error: missingMessage,
+                attempt: 7
+            )
+        )
+        XCTAssertFalse(
+            E2eeAttachmentReceiveCoordinator.shouldRetryModelPersistence(
+                error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut),
+                attempt: 0
+            )
+        )
+    }
+
     private func makeManifest(
         mimeType: String,
         name: String,

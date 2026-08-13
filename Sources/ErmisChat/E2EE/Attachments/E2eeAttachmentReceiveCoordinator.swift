@@ -27,6 +27,43 @@ private enum E2eeAttachmentReceiveError: Error {
     case unsupportedMedia
 }
 
+/// A preview can be requested more than once while websocket, scope-sync and the channel query
+/// converge on the same message. Keep every render target attached to the single network flight;
+/// dropping a later target can leave its cell spinning until the channel is queried again.
+struct E2eeAttachmentPreviewPersistenceTarget {
+    let manifest: E2eeAttachmentManifestV1
+    let previewAssetId: String
+    let attachmentId: AttachmentId
+}
+
+final class E2eeAttachmentPreviewFlightRegistry {
+    private let lock = NSLock()
+    private var targetsByAssetId: [String: [AttachmentId: E2eeAttachmentPreviewPersistenceTarget]] = [:]
+
+    /// Returns `true` only for the caller that must start the network request. Other callers join
+    /// the existing request and are persisted when that request completes.
+    func register(
+        assetId: String,
+        target: E2eeAttachmentPreviewPersistenceTarget
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if targetsByAssetId[assetId] != nil {
+            targetsByAssetId[assetId]?[target.attachmentId] = target
+            return false
+        }
+        targetsByAssetId[assetId] = [target.attachmentId: target]
+        return true
+    }
+
+    func finish(assetId: String) -> [E2eeAttachmentPreviewPersistenceTarget] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let targets = targetsByAssetId.removeValue(forKey: assetId) else { return [] }
+        return Array(targets.values)
+    }
+}
+
 /// Hydrates only encrypted preview assets for confirmed incoming E2EE messages. Original media is
 /// intentionally not auto-downloaded; full original download/playback remains an explicit user
 /// action and range streaming stays behind its independent feature gate.
@@ -35,8 +72,7 @@ final class E2eeAttachmentReceiveCoordinator {
     private let database: DatabaseContainer
     private let previewCache: E2eeAttachmentPreviewCache
     private let operationQueue: OperationQueue
-    private let stateLock = NSLock()
-    private var activeAssetIds = Set<String>()
+    private let flightRegistry = E2eeAttachmentPreviewFlightRegistry()
 
     init(
         apiClient: APIClient,
@@ -70,21 +106,28 @@ final class E2eeAttachmentReceiveCoordinator {
                 )
                 continue
             }
+            let target = E2eeAttachmentPreviewPersistenceTarget(
+                manifest: manifest,
+                previewAssetId: preview.assetId,
+                attachmentId: AttachmentId(cid: cid, messageId: messageId, index: index)
+            )
             if let cached = previewCache.value(for: preview.assetId) {
-                persistRenderableAttachment(
-                    manifest: manifest,
-                    previewAssetId: preview.assetId,
+                persistRenderableAttachments(
+                    [target],
                     previewGeneration: cached.generation,
-                    messageId: messageId,
-                    cid: cid,
-                    index: index
+                    source: source
                 )
                 continue
             }
-            guard begin(assetId: preview.assetId) else { continue }
+            guard flightRegistry.register(assetId: preview.assetId, target: target) else {
+                log.info(
+                    "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=joined_existing_flight",
+                    subsystems: .mls
+                )
+                continue
+            }
             operationQueue.addOperation { [weak self] in
                 guard let self else { return }
-                defer { self.finish(assetId: preview.assetId) }
                 let semaphore = DispatchSemaphore(value: 0)
                 Task {
                     defer { semaphore.signal() }
@@ -95,19 +138,18 @@ final class E2eeAttachmentReceiveCoordinator {
                             cid: cid
                         )
                         let previewGeneration = self.previewCache.insert(data, for: preview.assetId)
-                        self.persistRenderableAttachment(
-                            manifest: manifest,
-                            previewAssetId: preview.assetId,
+                        let targets = self.flightRegistry.finish(assetId: preview.assetId)
+                        await self.persistRenderableAttachmentsWithRetry(
+                            targets,
                             previewGeneration: previewGeneration,
-                            messageId: messageId,
-                            cid: cid,
-                            index: index
+                            source: source
                         )
                         log.info(
-                            "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=succeeded bytes=\(data.count)",
+                            "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=succeeded bytes=\(data.count) target_count=\(targets.count)",
                             subsystems: .mls
                         )
                     } catch {
+                        _ = self.flightRegistry.finish(assetId: preview.assetId)
                         log.error(
                             "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=failed category=\(Self.errorCategory(error))",
                             subsystems: .mls
@@ -184,34 +226,89 @@ final class E2eeAttachmentReceiveCoordinator {
         return data
     }
 
-    private func persistRenderableAttachment(
-        manifest: E2eeAttachmentManifestV1,
-        previewAssetId: String,
+    private func persistRenderableAttachments(
+        _ targets: [E2eeAttachmentPreviewPersistenceTarget],
         previewGeneration: String,
-        messageId: MessageId,
-        cid: ChannelId,
-        index: Int
+        source: E2eeAttachmentReceiveSource
     ) {
-        do {
-            let renderable = try Self.renderablePayload(
-                for: manifest,
-                previewGeneration: previewGeneration
-            )
-            try database.writeAndWait { session in
-                let id = AttachmentId(cid: cid, messageId: messageId, index: index)
-                try session.saveE2eePreviewAttachment(
-                    id: id,
-                    type: renderable.type,
-                    payloadData: renderable.data,
-                    previewAssetId: previewAssetId
-                )
-            }
-        } catch {
-            log.error(
-                "[E2EE_ATTACHMENT_RECEIVE] operation=model state=failed category=rendering",
-                subsystems: .mls
+        Task { [weak self] in
+            await self?.persistRenderableAttachmentsWithRetry(
+                targets,
+                previewGeneration: previewGeneration,
+                source: source
             )
         }
+    }
+
+    private func persistRenderableAttachmentsWithRetry(
+        _ targets: [E2eeAttachmentPreviewPersistenceTarget],
+        previewGeneration: String,
+        source: E2eeAttachmentReceiveSource
+    ) async {
+        for target in targets {
+            var attempt = 0
+            while true {
+                do {
+                    try persistRenderableAttachment(
+                        target,
+                        previewGeneration: previewGeneration
+                    )
+                    if attempt > 0 {
+                        log.info(
+                            "[E2EE_ATTACHMENT_RECEIVE] operation=model source=\(source.rawValue) state=recovered attempt=\(attempt + 1)",
+                            subsystems: .mls
+                        )
+                    }
+                    break
+                } catch {
+                    guard Self.shouldRetryModelPersistence(error: error, attempt: attempt) else {
+                        log.error(
+                            "[E2EE_ATTACHMENT_RECEIVE] operation=model source=\(source.rawValue) state=failed category=\(Self.modelErrorCategory(error)) attempt=\(attempt + 1)",
+                            subsystems: .mls
+                        )
+                        break
+                    }
+                    let delay = Self.modelPersistenceRetryDelayNanoseconds(attempt: attempt)
+                    log.info(
+                        "[E2EE_ATTACHMENT_RECEIVE] operation=model source=\(source.rawValue) state=waiting_for_message attempt=\(attempt + 1)",
+                        subsystems: .mls
+                    )
+                    attempt += 1
+                    try? await Task.sleep(nanoseconds: delay)
+                }
+            }
+        }
+    }
+
+    private func persistRenderableAttachment(
+        _ target: E2eeAttachmentPreviewPersistenceTarget,
+        previewGeneration: String
+    ) throws {
+        let renderable = try Self.renderablePayload(
+            for: target.manifest,
+            previewGeneration: previewGeneration
+        )
+        try database.writeAndWait { session in
+            try session.saveE2eePreviewAttachment(
+                id: target.attachmentId,
+                type: renderable.type,
+                payloadData: renderable.data,
+                previewAssetId: target.previewAssetId
+            )
+        }
+    }
+
+    static func shouldRetryModelPersistence(error: Error, attempt: Int) -> Bool {
+        error is ClientError.MessageDoesNotExist && attempt < 7
+    }
+
+    static func modelPersistenceRetryDelayNanoseconds(attempt: Int) -> UInt64 {
+        let delaysMilliseconds: [UInt64] = [50, 100, 200, 400, 800, 1_000, 1_000]
+        return delaysMilliseconds[min(max(attempt, 0), delaysMilliseconds.count - 1)] * 1_000_000
+    }
+
+    private static func modelErrorCategory(_ error: Error) -> String {
+        error is ClientError.MessageDoesNotExist ? "message_not_materialized" : "rendering"
     }
 
     static func renderablePayload(
@@ -309,18 +406,6 @@ final class E2eeAttachmentReceiveCoordinator {
         return display["attachment_type"] == nil
             && mimeType?.hasPrefix("audio/") == true
             && duration != nil
-    }
-
-    private func begin(assetId: String) -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return activeAssetIds.insert(assetId).inserted
-    }
-
-    private func finish(assetId: String) {
-        stateLock.lock()
-        activeAssetIds.remove(assetId)
-        stateLock.unlock()
     }
 
     private func downloadFile(from url: URL) async throws -> URL {

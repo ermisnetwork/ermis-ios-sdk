@@ -191,7 +191,7 @@ private final class E2eeAttachmentOriginalDownloadDelegate: NSObject, URLSession
 
 /// Scheduling is deliberately separate from the durable background upload coordinator. Originals
 /// are foreground viewer work: only visible media should occupy its small interactive budget.
-private actor E2eeAttachmentOriginalDownloadScheduler {
+actor E2eeAttachmentOriginalDownloadScheduler {
     private struct Waiter {
         let token: UUID
         let sequence: UInt64
@@ -352,6 +352,14 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         })
     }
 
+    nonisolated static func isOpaqueE2eeAttachment(_ attachment: AnyMessageAttachment) -> Bool {
+        attachment.remoteURL?.scheme?.lowercased() == opaqueScheme
+    }
+
+    nonisolated static func shouldRenewGrant(afterHTTPStatus statusCode: Int, grantAttempt: Int) -> Bool {
+        (statusCode == 401 || statusCode == 403) && grantAttempt == 0
+    }
+
     private func waitForOriginal(
         attachment: AnyMessageAttachment,
         reference: OpaqueAssetReference,
@@ -423,7 +431,9 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                 )
             )
             inFlight[cacheKey] = activeDownload
-            progress(activeDownload.latestProgress!)
+            if let initialProgress = activeDownload.latestProgress {
+                progress(initialProgress)
+            }
         }
 
         do {
@@ -517,31 +527,15 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         ))
         try preflightStorage(for: original, directory: playbackDirectory)
 
-        log.info(
-            "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=grant_requesting cipher_bytes=\(original.cipherSize)",
-            subsystems: .mls
-        )
-        let grant = try await apiClient.e2eeAttachmentDownloadGrant(
-            cid: attachmentId.cid,
-            attachmentId: manifest.attachmentId,
-            assetId: original.assetId
-        )
-        try Task.checkCancellation()
-
-        var request = URLRequest(url: grant.downloadURL)
-        request.httpMethod = "GET"
-        let (temporaryDownloadURL, response) = try await downloadCiphertext(
-            request: request,
+        let temporaryDownloadURL = try await downloadCiphertextWithGrantRenewal(
+            attachmentId: attachmentId,
+            manifestAttachmentId: manifest.attachmentId,
+            assetId: original.assetId,
             expectedCiphertextBytes: original.cipherSize,
+            apiClient: apiClient,
             progress: progress
         )
         try Task.checkCancellation()
-        guard let http = response as? HTTPURLResponse else {
-            throw E2eeAttachmentOriginalDownloadError.invalidHTTPResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw E2eeAttachmentOriginalDownloadError.invalidHTTPStatus(http.statusCode)
-        }
 
         try prepareDirectory(playbackDirectory, fileManager: fileManager)
         let opaqueName = SHA256.hash(data: Data(original.assetId.utf8))
@@ -552,8 +546,10 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         let plaintextURL = playbackDirectory.appendingPathComponent(
             opaqueName + "." + preferredExtension(for: original)
         )
+        let plaintextPartialURL = plaintextURL.appendingPathExtension("partial")
         try? fileManager.removeItem(at: cipherURL)
         try? fileManager.removeItem(at: plaintextURL)
+        try? fileManager.removeItem(at: plaintextPartialURL)
         do {
             try fileManager.moveItem(at: temporaryDownloadURL, to: cipherURL)
             try applyFileProtection(to: cipherURL, fileManager: fileManager)
@@ -584,7 +580,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             ))
             let result = try E2eeAttachmentFrameCryptoV1.decryptFile(
                 at: cipherURL,
-                to: plaintextURL,
+                to: plaintextPartialURL,
                 contentKey: contentKey,
                 noncePrefix: noncePrefix,
                 frameSize: Int(original.frameSize)
@@ -602,7 +598,10 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                result.plaintextSha256.caseInsensitiveCompare(expectedHash) != .orderedSame {
                 throw E2eeAttachmentOriginalDownloadError.plaintextHashMismatch
             }
-            try applyFileProtection(to: plaintextURL, fileManager: fileManager)
+            try applyFileProtection(to: plaintextPartialURL, fileManager: fileManager)
+            // Plaintext becomes visible to gallery/export consumers only after every authenticated
+            // size/hash check succeeds. The rename is atomic because both paths share a volume.
+            try fileManager.moveItem(at: plaintextPartialURL, to: plaintextURL)
             try? fileManager.removeItem(at: cipherURL)
             log.info(
                 "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=succeeded plaintext_bytes=\(result.plaintextSize) elapsed_ms=\(Int(Date().timeIntervalSince(startedAt) * 1000))",
@@ -612,12 +611,69 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         } catch {
             try? fileManager.removeItem(at: cipherURL)
             try? fileManager.removeItem(at: plaintextURL)
+            try? fileManager.removeItem(at: plaintextPartialURL)
             log.error(
                 "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=failed category=\(errorCategory(error))",
                 subsystems: .mls
             )
             throw error
         }
+    }
+
+    /// A presigned GET that reaches 401/403 may have expired between grant issuance and storage
+    /// access. Renew once and restart the complete GET; partial ciphertext is never reused without
+    /// range proof. Other failures keep their exact category and are not retried here.
+    private static func downloadCiphertextWithGrantRenewal(
+        attachmentId: AttachmentId,
+        manifestAttachmentId: String,
+        assetId: String,
+        expectedCiphertextBytes: UInt64,
+        apiClient: APIClient,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+    ) async throws -> URL {
+        for grantAttempt in 0...1 {
+            try Task.checkCancellation()
+            log.info(
+                "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=grant_requesting attempt=\(grantAttempt + 1) cipher_bytes=\(expectedCiphertextBytes)",
+                subsystems: .mls
+            )
+            let grant = try await apiClient.e2eeAttachmentDownloadGrant(
+                cid: attachmentId.cid,
+                attachmentId: manifestAttachmentId,
+                assetId: assetId
+            )
+            try Task.checkCancellation()
+
+            var request = URLRequest(url: grant.downloadURL)
+            request.httpMethod = "GET"
+            let (temporaryURL, response) = try await downloadCiphertext(
+                request: request,
+                expectedCiphertextBytes: expectedCiphertextBytes,
+                progress: progress
+            )
+            do {
+                try Task.checkCancellation()
+                guard let http = response as? HTTPURLResponse else {
+                    throw E2eeAttachmentOriginalDownloadError.invalidHTTPResponse
+                }
+                if (200..<300).contains(http.statusCode) {
+                    return temporaryURL
+                }
+                if shouldRenewGrant(afterHTTPStatus: http.statusCode, grantAttempt: grantAttempt) {
+                    try? FileManager.default.removeItem(at: temporaryURL)
+                    log.info(
+                        "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=grant_renewing reason=unauthorized",
+                        subsystems: .mls
+                    )
+                    continue
+                }
+                throw E2eeAttachmentOriginalDownloadError.invalidHTTPStatus(http.statusCode)
+            } catch {
+                try? FileManager.default.removeItem(at: temporaryURL)
+                throw error
+            }
+        }
+        throw E2eeAttachmentOriginalDownloadError.invalidHTTPStatus(403)
     }
 
     private static func downloadCiphertext(
