@@ -16,12 +16,10 @@ public class HealthCheckEvent: ConnectionEvent, EventDTO {
     let payload: EventPayload
 
     init(from eventResponse: EventPayload) throws {
-//        guard let connectionId = eventResponse.connectionId else {
-//            throw ClientError.EventDecoding(missingValue: "connectionId", for: Self.self)
-//        }
-
-        //self.connectionId = connectionId
-        self.connectionId = UUID().uuidString
+        // Current Bellboy `health.check` payloads intentionally do not contain a
+        // `connection_id`. Keep accepting it for older deployments, while allowing the
+        // WebSocket client to use this opaque fallback as its connection-generation token.
+        self.connectionId = eventResponse.connectionId ?? UUID().uuidString
         self.currentUser = eventResponse.currentUser
         self.projectId = eventResponse.projectId
         self.keyPackagesRemaining = eventResponse.currentUser?.keyPackagesRemaining

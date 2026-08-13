@@ -23,7 +23,7 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
     public var imageURLResolver: ((
         AnyMessageAttachment,
         @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void,
-        @escaping (Result<URL, Error>) -> Void
+        @escaping (Result<E2eeAttachmentOriginalLease, Error>) -> Void
     ) -> (() -> Void)?)?
 
     /// Notifies the gallery when a full E2EE original is using an interactive download slot.
@@ -52,6 +52,8 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     private var resolutionToken = UUID()
     private var cancelOriginalResolution: (() -> Void)?
+    private var originalLease: E2eeAttachmentOriginalLease?
+    private var resolvedOpaqueURL: URL?
 
     override open func setUp() {
         super.setUp()
@@ -82,12 +84,17 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
             return
         }
         guard isE2eeOriginalResolutionEnabled else { return }
+        if resolvedOpaqueURL == imageURL,
+           originalLease != nil || isResolvingE2eeOriginal {
+            return
+        }
 
         cancelPendingOriginalResolution()
         resolutionToken = UUID()
         let token = resolutionToken
         guard let content, let imageURLResolver else { return }
         setResolvingE2eeOriginal(true)
+        resolvedOpaqueURL = imageURL
         cancelOriginalResolution = imageURLResolver(
             content,
             { [weak self] progress in
@@ -101,8 +108,13 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
                     guard let self, self.resolutionToken == token else { return }
                     self.cancelOriginalResolution = nil
                     self.setResolvingE2eeOriginal(false)
-                    guard case let .success(localURL) = result else { return }
-                    self.displayImage(at: localURL, attachment: imageAttachment)
+                    guard case let .success(lease) = result else {
+                        self.resolvedOpaqueURL = nil
+                        return
+                    }
+                    self.originalLease?.release()
+                    self.originalLease = lease
+                    self.displayImage(at: lease.localURL, attachment: imageAttachment)
                 }
             }
         )
@@ -140,6 +152,11 @@ open class ImageAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
     public func cancelPendingOriginalResolution() {
         cancelOriginalResolution?()
         cancelOriginalResolution = nil
+        imageDownloadTask?.cancel()
+        imageDownloadTask = nil
+        originalLease?.release()
+        originalLease = nil
+        resolvedOpaqueURL = nil
         setResolvingE2eeOriginal(false)
     }
 

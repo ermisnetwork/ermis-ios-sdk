@@ -92,21 +92,28 @@ public class AttachmentSaver: NSObject, UIDocumentPickerDelegate {
                 return
             }
             do {
-                var resolved: [(URL, AnyMessageAttachment)] = []
+                var resolved: [(E2eeAttachmentOriginalLease, AnyMessageAttachment)] = []
                 resolved.reserveCapacity(attachments.count)
                 // Keep full-original downloads sequential. A message can contain ten assets and
                 // each one can approach the 2 GiB cap, so unbounded parallel resolution would
                 // amplify disk and network pressure for an explicit "download all" action.
                 for attachment in attachments {
-                    let localURL = try await client.prepareAttachmentForViewing(attachment)
+                    let lease = try await client.acquireAttachmentForViewing(attachment)
                     try _Concurrency.Task.checkCancellation()
-                    resolved.append((localURL, attachment))
+                    resolved.append((lease, attachment))
                 }
                 log.info(
                     "[ATTACHMENT_EXPORT] source=message_action route=verified_e2ee " +
                     "state=resolved attachment_count=\(resolved.count)"
                 )
-                saveVerifiedAttachments(resolved, completion: completion)
+                let leases = resolved.map(\.0)
+                saveVerifiedAttachments(
+                    resolved.map { ($0.0.localURL, $0.1) },
+                    completion: { error in
+                        leases.forEach { $0.release() }
+                        completion(error)
+                    }
+                )
             } catch {
                 log.error("[E2EE_ATTACHMENT_EXPORT] state=failed error=\(type(of: error))")
                 callback { completion(error) }

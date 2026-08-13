@@ -5,7 +5,9 @@
 import Foundation
 
 class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
-    private weak var task: URLSessionWebSocketTask? {
+    /// Keep the task alive for the whole engine lifetime. Relying on URLSession's internal
+    /// retention makes the receive loop timing-dependent during login/reconnect.
+    private var task: URLSessionWebSocketTask? {
         didSet {
             oldValue?.cancel()
         }
@@ -40,16 +42,27 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
             delegateQueue: delegateOperationQueue
         )
 
-        log.debug(
-            "Making Websocket upgrade request: \(String(describing: request.url?.absoluteString))\n"
-                + "Headers:\n\(String(describing: request.allHTTPHeaderFields))\n"
-                + "Query items:\n\(request.queryItems.prettyPrinted)",
-            subsystems: .httpRequests
+        // Do not log the full URL, query, or header values here. They contain the bearer token,
+        // API key, device id, and user id. Host/path are sufficient to trace the handshake.
+        let host = request.url?.host ?? "unknown"
+        let path = request.url?.path ?? "/"
+        log.info(
+            "[WebSocket] state=upgrade_requested host=\(host) path=\(path)",
+            subsystems: .webSocket
         )
 
         task = session?.webSocketTask(with: request)
-        doRead()
+
+        // A receive registered while the task is still suspended can fail immediately with
+        // "socket is not connected". The old implementation then stopped the read loop, so the
+        // initial Bellboy health.check was never observed and connectUser timed out waiting for
+        // the connection id. Start the transport first, then arm the recursive receive loop.
         task?.resume()
+        log.info(
+            "[WebSocket] state=task_resumed host=\(host) path=\(path)",
+            subsystems: .webSocket
+        )
+        doRead()
     }
 
     func disconnect() {
@@ -98,12 +111,17 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
     private func makeURLSessionDelegateHandler() -> URLSessionDelegateHandler {
         let urlSessionDelegateHandler = URLSessionDelegateHandler()
         urlSessionDelegateHandler.onOpen = { [weak self] _ in
+            log.info("[WebSocket] state=transport_opened", subsystems: .webSocket)
             self?.callbackQueue.async {
                 self?.delegate?.webSocketDidConnect()
             }
         }
 
         urlSessionDelegateHandler.onClose = { [weak self] closeCode, reason in
+            log.info(
+                "[WebSocket] state=transport_closed code=\(closeCode.rawValue)",
+                subsystems: .webSocket
+            )
             var error: WebSocketEngineError?
             var reasonString: String?
             // Token expired
@@ -135,6 +153,12 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
             // Delegate is already informed with `didCloseWith` callback,
             // so we don't need to call delegate again.
             guard let error = error else { return }
+
+            let nsError = error as NSError
+            log.error(
+                "[WebSocket] state=transport_completed domain=\(nsError.domain) code=\(nsError.code)",
+                subsystems: .webSocket
+            )
 
             self?.callbackQueue.async { [weak self] in
                 self?.delegate?.webSocketDidDisconnect(error: WebSocketEngineError(error: error))

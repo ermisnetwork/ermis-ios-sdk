@@ -38,6 +38,11 @@ class WebSocketClient {
         }
     }
 
+    /// Bellboy no longer exposes a connection id in `health.check`. Retain one opaque token for
+    /// the current WebSocket generation so request encoding and connection waiters observe a
+    /// stable value instead of a new UUID on every heartbeat.
+    @Atomic private var activeConnectionId: ConnectionId?
+
     weak var connectionStateDelegate: ConnectionStateDelegate?
 
     /// The endpoint used for creating a web socket connection.
@@ -74,7 +79,10 @@ class WebSocketClient {
         do {
             request = try requestEncoder.encodeRequest(for: connectEndpoint)
         } catch {
-            log.log(.error, message: error.localizedDescription)
+            log.error(
+                "[WebSocket] state=request_encoding_failed error=\(type(of: error))",
+                subsystems: .webSocket
+            )
             throw error
         }
 
@@ -122,10 +130,22 @@ class WebSocketClient {
         do {
             engine = try createEngineIfNeeded(for: endpoint)
         } catch {
+            log.error(
+                "[WebSocket] state=connect_aborted reason=request_encoding_failed error=\(type(of: error))",
+                subsystems: .webSocket
+            )
             return
         }
 
+        activeConnectionId = nil
         connectionState = .connecting
+
+        let host = engine?.request.url?.host ?? "unknown"
+        let path = engine?.request.url?.path ?? "/"
+        log.info(
+            "[WebSocket] state=transport_starting host=\(host) path=\(path)",
+            subsystems: .webSocket
+        )
 
         engineQueue.async { [weak engine] in
             engine?.connect()
@@ -195,8 +215,12 @@ extension WebSocketClient: WebSocketEngineDelegate {
             let event = try eventDecoder.decode(from: messageData)
             if let healthCheckEvent = event as? HealthCheckEvent {
                 self.engineQueue.async { [weak self] in
-                    self?.pingController.pongReceived()
-                    self?.connectionState = .connected(connectionId: healthCheckEvent.connectionId)
+                    guard let self else { return }
+                    self.pingController.pongReceived()
+
+                    let connectionId = self.activeConnectionId ?? healthCheckEvent.connectionId
+                    self.activeConnectionId = connectionId
+                    self.connectionState = .connected(connectionId: connectionId)
                 }
                 eventNotificationCenter.process(healthCheckEvent, postNotification: true)
             } else {

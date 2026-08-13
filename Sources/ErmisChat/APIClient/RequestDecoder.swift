@@ -106,6 +106,11 @@ public extension ClientError {
     class ExpiredToken: ClientError {}
     class RefreshingToken: ClientError {}
     class TokenRefreshed: ClientError {}
+    class TokenRefreshRetryLimitExceeded: ClientError {
+        public override var localizedDescription: String {
+            "The server rejected the token after the maximum number of refresh attempts."
+        }
+    }
     class RefreshTokenExpired: ClientError {}
     class ConnectionError: ClientError {}
     class ResponseBodyEmpty: ClientError {

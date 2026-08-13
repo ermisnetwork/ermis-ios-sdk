@@ -303,7 +303,7 @@ final class E2eeAttachmentSecureStorageTests: XCTestCase {
         preparation.prepareAndSchedule(
             accountId: "account-a",
             messageId: UUID().uuidString,
-            cid: "messaging:\(UUID().uuidString)",
+            cid: "messaging:preflight-tests:\(UUID().uuidString)",
             attachments: [
                 E2eeAttachmentPreparationInput(
                     sourceURL: source,
@@ -336,6 +336,51 @@ final class E2eeAttachmentSecureStorageTests: XCTestCase {
         let canceled = expectation(description: "cancel prepared upload")
         coordinator.cancelTasks(accountId: "account-a") { _ in canceled.fulfill() }
         wait(for: [canceled], timeout: 2)
+    }
+
+    func testPreparationEstimatesCiphertextAndPreviewBeforeStaging() throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let source = directory.appendingPathComponent("early-preflight.jpg")
+        try Data(repeating: 0x2a, count: 512).write(to: source)
+
+        let capacity = try E2eeAttachmentPreparationCoordinator.estimatedCiphertextCapacity(
+            for: [
+                E2eeAttachmentPreparationInput(
+                    sourceURL: source,
+                    title: "early-preflight.jpg",
+                    mimeType: "image/jpeg",
+                    display: [:],
+                    generatesImagePreview: true
+                )
+            ]
+        )
+
+        XCTAssertEqual(
+            capacity.original,
+            try E2eeAttachmentFrameCryptoV1.estimatedCiphertextSize(plaintextSize: 512)
+        )
+        XCTAssertEqual(capacity.preview, E2eeAttachmentFrameCryptoV1.previewCiphertextLimit)
+    }
+
+    func testPreparationEarlyEstimateRejectsMissingSource() {
+        let missing = directory.appendingPathComponent("missing.mov")
+
+        XCTAssertThrowsError(
+            try E2eeAttachmentPreparationCoordinator.estimatedCiphertextCapacity(
+                for: [
+                    E2eeAttachmentPreparationInput(
+                        sourceURL: missing,
+                        title: "missing.mov",
+                        mimeType: "video/quicktime",
+                        display: [:],
+                        generatesImagePreview: false,
+                        generatesVideoPreview: true
+                    )
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? E2eeAttachmentPreparationError, .sourceUnavailable)
+        }
     }
 
     private func makeMaterial() throws -> E2eeAttachmentSecretMaterial {

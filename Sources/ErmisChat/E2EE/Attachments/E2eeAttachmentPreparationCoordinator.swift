@@ -164,6 +164,16 @@ final class E2eeAttachmentPreparationCoordinator {
 
         let attemptId = UUID().uuidString
         let staging = transferCoordinator.stagingStore
+        let estimatedCapacity = try Self.estimatedCiphertextCapacity(for: attachments)
+        // Fail before copying Photos/files into SDK-owned storage or writing any ciphertext.
+        // The exact-size preflight below remains the authoritative boundary before Bellboy init.
+        try staging.preflight(
+            originalCipherSize: estimatedCapacity.original,
+            previewCipherSize: estimatedCapacity.preview,
+            partCount: 0,
+            concurrency: 0,
+            partSize: 0
+        )
         try staging.prepareEncryptedDirectories()
         var pendingAssets: [PendingE2eeAsset] = []
         var logicalAttachments: [PreparedLogicalAttachment] = []
@@ -209,7 +219,7 @@ final class E2eeAttachmentPreparationCoordinator {
             )
             pendingAssets.append(original)
             if let url = original.canonicalCiphertextURL { stagedCiphertexts.append(url) }
-            totalBytes = try add(totalBytes, original.ciphertextSize ?? 0)
+            totalBytes = try Self.add(totalBytes, original.ciphertextSize ?? 0)
 
             if (input.generatesImagePreview || input.generatesVideoPreview),
                let previewData = Self.makePreview(
@@ -245,7 +255,7 @@ final class E2eeAttachmentPreparationCoordinator {
                     }
                     pendingAssets.append(preview)
                     if let url = preview.canonicalCiphertextURL { stagedCiphertexts.append(url) }
-                    totalBytes = try add(totalBytes, preview.ciphertextSize ?? 0)
+                    totalBytes = try Self.add(totalBytes, preview.ciphertextSize ?? 0)
                 } catch E2eeAttachmentPreparationError.previewTooLarge {
                     // V1 explicitly permits original-only when preview preparation exceeds its cap.
                 } catch {
@@ -282,6 +292,37 @@ final class E2eeAttachmentPreparationCoordinator {
         transferCoordinator.notifyTransferStoreChanged()
         inserted = true
         return (attemptId, logicalAttachments)
+    }
+
+    static func estimatedCiphertextCapacity(
+        for attachments: [E2eeAttachmentPreparationInput]
+    ) throws -> (original: UInt64, preview: UInt64) {
+        var originalTotal: UInt64 = 0
+        var previewTotal: UInt64 = 0
+        for input in attachments {
+            guard FileManager.default.fileExists(atPath: input.sourceURL.path),
+                  let values = try? input.sourceURL.resourceValues(forKeys: [.fileSizeKey]),
+                  let fileSize = values.fileSize,
+                  fileSize >= 0 else {
+                throw E2eeAttachmentPreparationError.sourceUnavailable
+            }
+            let estimated = try E2eeAttachmentFrameCryptoV1.estimatedCiphertextSize(
+                plaintextSize: UInt64(fileSize)
+            )
+            guard estimated <= E2eeAttachmentFrameCryptoV1.originalCiphertextLimit else {
+                throw E2eeAttachmentPreparationError.attachmentTooLarge
+            }
+            originalTotal = try Self.add(originalTotal, estimated)
+            if input.generatesImagePreview || input.generatesVideoPreview {
+                // Preview generation is optional and occurs after this early gate. Reserve its
+                // complete wire cap so preparation cannot cross the free-space boundary later.
+                previewTotal = try Self.add(
+                    previewTotal,
+                    E2eeAttachmentFrameCryptoV1.previewCiphertextLimit
+                )
+            }
+        }
+        return (originalTotal, previewTotal)
     }
 
     /// Derives wire metadata from the exact staged plaintext bytes, not from the item-provider
@@ -513,7 +554,7 @@ final class E2eeAttachmentPreparationCoordinator {
         transferCoordinator.notifyTransferStoreChanged()
     }
 
-    private func add(_ lhs: UInt64, _ rhs: UInt64) throws -> UInt64 {
+    private static func add(_ lhs: UInt64, _ rhs: UInt64) throws -> UInt64 {
         let (sum, overflow) = lhs.addingReportingOverflow(rhs)
         guard !overflow else { throw E2eeAttachmentFrameCryptoError.sizeOverflow }
         return sum

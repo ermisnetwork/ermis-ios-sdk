@@ -8,6 +8,9 @@ import ErmisShared
 
 class ConnectionRepository {
     private let connectionQueue: DispatchQueue = DispatchQueue(label: "network.ermis.connection-repository", attributes: .concurrent)
+    /// Connection waiters are integration callbacks and may immediately request a token or start
+    /// another connection. Always detach them from the WebSocket/state-update stack.
+    private let callbackQueue = DispatchQueue(label: "network.ermis.connection-repository.callbacks")
     private var _connectionIdWaiters: [String: (Result<ConnectionId, Error>) -> Void] = [:]
     private var _connectionId: ConnectionId?
     private var _connectionStatus: ConnectionStatus = .initialized
@@ -53,27 +56,41 @@ class ConnectionRepository {
     @objc func connect(completion: ((Error?) -> Void)? = nil) {
         // Connecting is not possible in connectionless mode (duh)
         guard isClientInActiveMode else {
-            completion?(ClientError.ClientIsNotInActiveMode())
+            callbackQueue.async {
+                completion?(ClientError.ClientIsNotInActiveMode())
+            }
             return
         }
 
         guard connectionId == nil else {
             log.warning("The client is already connected. Skipping the `connect` call.")
-            completion?(nil)
+            callbackQueue.async {
+                completion?(nil)
+            }
             return
         }
+
+        log.info(
+            "[WebSocket] state=connect_requested socket_state=\(String(describing: webSocketClient?.connectionState))",
+            subsystems: .webSocket
+        )
 
         // Set up a waiter for the new connection id to know when the connection process is finished
         provideConnectionId { [weak webSocketClient] result in
             switch result {
             case .success:
                 completion?(nil)
-            case .failure:
+            case let .failure(waiterError):
                 // Try to get a concrete error
                 if case let .disconnected(source) = webSocketClient?.connectionState {
                     completion?(ClientError.ConnectionNotSuccessful(with: source.serverError))
                 } else {
-                    completion?(ClientError.ConnectionNotSuccessful())
+                    log.error(
+                        "Web socket connection did not become healthy: state=\(String(describing: webSocketClient?.connectionState)) "
+                            + "error=\(type(of: waiterError))",
+                        subsystems: .webSocket
+                    )
+                    completion?(ClientError.ConnectionNotSuccessful(with: waiterError))
                 }
             }
         }
@@ -165,42 +182,40 @@ class ConnectionRepository {
     }
 
     func provideConnectionId(timeout: TimeInterval = 10, completion: @escaping (Result<ConnectionId, Error>) -> Void) {
-        if true {
-            completion(.success(UUID().uuidString))
-            return
-        }
-
-        if let connectionId = connectionId {
-            completion(.success(connectionId))
-            return
-        } else if !isClientInActiveMode {
-            // We're in passive mode
-            // We will never have connectionId
-            completion(.failure(ClientError.ClientIsNotInActiveMode()))
-            return
-        }
-
         let waiterToken = String.newUniqueId
-        connectionQueue.async(flags: .barrier) {
-            self._connectionIdWaiters[waiterToken] = completion
+        let immediateResult: Result<ConnectionId, Error>? = connectionQueue.sync(flags: .barrier) {
+            if let connectionId = _connectionId {
+                return .success(connectionId)
+            }
+            guard isClientInActiveMode else {
+                return .failure(ClientError.ClientIsNotInActiveMode())
+            }
+
+            // Register in the same barrier that checks `_connectionId`. Otherwise a connected
+            // event can drain the waiter set between the read and the later asynchronous insert,
+            // leaving this request waiting until its timeout despite a live socket.
+            _connectionIdWaiters[waiterToken] = completion
+            return nil
         }
 
-        let globalQueue = DispatchQueue.global()
-        timerType.schedule(timeInterval: timeout, queue: globalQueue) { [weak self] in
+        if let immediateResult {
+            // The synchronous request encoder can ask for an existing connection id while its
+            // caller is already running on `callbackQueue`. Dispatching the immediate value back
+            // to that serial queue would make the encoder wait on itself. The state barrier has
+            // already been released, so deliver an existing value/error on the caller's stack.
+            completion(immediateResult)
+            return
+        }
+
+        timerType.schedule(timeInterval: timeout, queue: callbackQueue) { [weak self] in
             guard let self = self else { return }
 
-            // Not the nicest, but we need to ensure the read and write below are treated as an atomic operation,
-            // in a queue that is concurrent, whilst the completion needs to be called outside of the barrier'ed operation.
-            // If we call the block as part of the barrier'ed operation, and by any chance this ends up synchronously
-            // calling any queue protected property in this class before the operation is completed, we can potentially crash the app.
-            self.connectionQueue.async(flags: .barrier) {
-                guard let completion = self._connectionIdWaiters[waiterToken] else { return }
-
-                globalQueue.async {
-                    completion(.failure(ClientError.WaiterTimeout()))
-                }
-
-                self._connectionIdWaiters[waiterToken] = nil
+            let timedOutCompletion = self.connectionQueue.sync(flags: .barrier) {
+                self._connectionIdWaiters.removeValue(forKey: waiterToken)
+            }
+            if let timedOutCompletion {
+                // The timer already executes on `callbackQueue`, outside the state barrier.
+                timedOutCompletion(.failure(ClientError.WaiterTimeout()))
             }
         }
     }
@@ -230,11 +245,14 @@ class ConnectionRepository {
             return waiters
         }
 
-        waiters.forEach { waiter in
-            if let connectionId = connectionId {
-                waiter.value(.success(connectionId))
-            } else {
-                waiter.value(.failure(ClientError.MissingConnectionId()))
+        guard !waiters.isEmpty else { return }
+        callbackQueue.async {
+            waiters.forEach { waiter in
+                if let connectionId = connectionId {
+                    waiter.value(.success(connectionId))
+                } else {
+                    waiter.value(.failure(ClientError.MissingConnectionId()))
+                }
             }
         }
     }

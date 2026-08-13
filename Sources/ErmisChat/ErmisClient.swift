@@ -107,7 +107,9 @@ public class ErmisClient {
     private lazy var e2eeAttachmentOriginalDownloadCoordinator =
         E2eeAttachmentOriginalDownloadCoordinator(
             apiClient: apiClient,
-            database: databaseContainer
+            database: databaseContainer,
+            ciphertextDirectory: config.e2eeAttachmentStorageFolderURL?
+                .appendingPathComponent("OriginalDownloads", isDirectory: true)
         )
 
     func makeMessagesPaginationStateHandler() -> MessagesPaginationStateHandling {
@@ -188,6 +190,12 @@ public class ErmisClient {
         self.rootProjectid = rootProjectId
         self.chainId = chainId
         self.environment = environment
+        if !Bundle.main.isAppExtension {
+            // Playback plaintext belongs to a process-local gallery session. A previous process
+            // cannot still own it, so remove stale files eagerly even if this launch never opens
+            // an attachment. The cleanup helper is safe when multiple clients share a process.
+            try? E2eeAttachmentOriginalDownloadCoordinator.cleanupStalePlaintextAtMainAppLaunch()
+        }
         let deviceIdStore = MlsDeviceIdStore(applicationGroupIdentifier: config.applicationGroupIdentifier)
         let mlsClient = MlsClient(
             storageFolderURL: config.mlsStorageFolderURL,
@@ -333,10 +341,13 @@ public class ErmisClient {
     }
 
     func setupTokenRefresher() {
-        apiClient.tokenRefresher = { [weak self] completion in
-            self?.refreshToken { error in
-                completion(error)
+        log.info("[AuthRefresh] implementation=single_flight_v2 state=installed", subsystems: .authentication)
+        apiClient.tokenRefresher = { [weak repository = authenticationRepository] completion in
+            guard let repository else {
+                completion(ClientError.MissingTokenProvider())
+                return
             }
+            repository.refreshToken(completion: completion)
         }
     }
 
@@ -585,6 +596,21 @@ public class ErmisClient {
         )
     }
 
+    /// Acquires explicit ownership of a playable attachment original.
+    ///
+    /// SDK viewers should retain this lease for as long as they read `localURL` and release it on
+    /// close, reuse, export completion, or error. Different consumers can safely share the same
+    /// verified plaintext without invalidating one another.
+    public func acquireAttachmentForViewing(
+        _ attachment: AnyMessageAttachment,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void = { _ in }
+    ) async throws -> E2eeAttachmentOriginalLease {
+        try await e2eeAttachmentOriginalDownloadCoordinator.localOriginalLease(
+            for: attachment,
+            progress: progress
+        )
+    }
+
     /// Returns whether the attachment URL is an opaque E2EE reference that must never be passed
     /// directly to a generic downloader, media library, document picker, or share sheet.
     public func requiresVerifiedE2eeOriginal(_ attachment: AnyMessageAttachment) -> Bool {
@@ -659,14 +685,6 @@ public class ErmisClient {
     /// You should only use this in special cases like a notification service or other background process
     public func setToken(token: Token) {
         authenticationRepository.setToken(token: token, completeTokenWaiters: true)
-    }
-
-    /// Starts the process to  refresh the token
-    /// - Parameter completion: A block to be executed when the process is completed. Contains an error if something went wrong
-    private func refreshToken(completion: ((Error?) -> Void)?) {
-        authenticationRepository.refreshToken {
-            completion?($0)
-        }
     }
 
     public func subscribe() {
@@ -754,10 +772,11 @@ public class ErmisClient {
     func getTokenProvider(_ refreshTokenHelper: ErmisRefreshTokenHelper) -> TokenProvider? {
         { [weak self] completion in
             guard let self else {
+                completion(.failure(ClientError.ClientHasBeenDeallocated()))
                 return
             }
-            guard refreshTokenHelper.token.isExpired else {
-                completion(.success(refreshTokenHelper.token))
+            if let initialToken = refreshTokenHelper.consumeInitialTokenIfValid() {
+                completion(.success(initialToken))
                 return
             }
 
@@ -771,6 +790,10 @@ public class ErmisClient {
                 switch result {
                 case .success(let authResponse):
                     if let token = try? Token(rawValue: authResponse.token) {
+                        refreshTokenHelper.update(
+                            token: token,
+                            refreshToken: authResponse.refreshToken
+                        )
                         refreshTokenHelper.onAuthorizationChanged?(authResponse)
                         completion(.success(token))
                     } else {
@@ -1011,9 +1034,11 @@ extension ErmisClient: ConnectionStateDelegate {
     func webSocketClient(_ client: WebSocketClient, didUpdateConnectionState state: WebSocketConnectionState) {
         connectionRepository.handleConnectionUpdate(
             state: state,
-            onExpiredToken: { [weak self] in
-                self?.refreshToken(completion: { error in
-                })
+            onExpiredToken: { [weak repository = authenticationRepository] in
+                repository?.refreshToken { _ in
+                    // The connection recovery path observes the resulting connection state.
+                    // It does not need to forward this completion through `ErmisClient`.
+                }
             }
         )
         connectionRecoveryHandler?.webSocketClient(client, didUpdateConnectionState: state)

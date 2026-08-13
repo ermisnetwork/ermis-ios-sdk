@@ -23,7 +23,7 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
     public var videoURLResolver: ((
         AnyMessageAttachment,
         @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void,
-        @escaping (Result<URL, Error>) -> Void
+        @escaping (Result<E2eeAttachmentOriginalLease, Error>) -> Void
     ) -> (() -> Void)?)?
 
     /// Notifies the gallery when a full E2EE original is using an interactive download slot.
@@ -52,6 +52,8 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
     private var resolutionToken = UUID()
     private var cancelOriginalResolution: (() -> Void)?
+    private var originalLease: E2eeAttachmentOriginalLease?
+    private var resolvedOpaqueURL: URL?
 
     /// Image view to be used for zoom in/out animation.
     open private(set) lazy var animationPlaceholderImageView: UIImageView = UIImageView()
@@ -96,7 +98,10 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         let newAssetURL = videoAttachment?.videoURL
         let currentAssetURL = (player.currentItem?.asset as? AVURLAsset)?.url
 
-        if newAssetURL != currentAssetURL {
+        let representedURL = newAssetURL?.scheme == "ermis-e2ee-attachment"
+            ? resolvedOpaqueURL
+            : currentAssetURL
+        if newAssetURL != representedURL {
             cancelPendingOriginalResolution()
             resolutionToken = UUID()
             let token = resolutionToken
@@ -105,6 +110,7 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
             if let content, let videoURLResolver, newAssetURL?.scheme == "ermis-e2ee-attachment" {
                 guard isE2eeOriginalResolutionEnabled else { return }
                 setResolvingE2eeOriginal(true)
+                resolvedOpaqueURL = newAssetURL
                 cancelOriginalResolution = videoURLResolver(
                     content,
                     { [weak self] progress in
@@ -119,11 +125,14 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
                             self.cancelOriginalResolution = nil
                             self.setResolvingE2eeOriginal(false)
                             switch result {
-                            case let .success(localURL):
+                            case let .success(lease):
+                                self.originalLease?.release()
+                                self.originalLease = lease
                                 self.player.replaceCurrentItem(
-                                    with: AVPlayerItem(asset: self.components.videoLoader.videoAsset(at: localURL))
+                                    with: AVPlayerItem(asset: self.components.videoLoader.videoAsset(at: lease.localURL))
                                 )
                             case .failure:
+                                self.resolvedOpaqueURL = nil
                                 self.player.replaceCurrentItem(with: nil)
                             }
                         }
@@ -167,6 +176,11 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
     public func cancelPendingOriginalResolution() {
         cancelOriginalResolution?()
         cancelOriginalResolution = nil
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        originalLease?.release()
+        originalLease = nil
+        resolvedOpaqueURL = nil
         setResolvingE2eeOriginal(false)
     }
 

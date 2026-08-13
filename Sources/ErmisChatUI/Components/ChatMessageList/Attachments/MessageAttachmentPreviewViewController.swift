@@ -25,6 +25,7 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
     )
 
     private var previewResolutionTask: _Concurrency.Task<Void, Never>?
+    private var previewOriginalLease: E2eeAttachmentOriginalLease?
 
     public private(set) lazy var alertRouter = components.alertsRouter.init(rootViewController: self)
 
@@ -102,6 +103,8 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
         previewResolutionTask?.cancel()
         previewResolutionTask = nil
         webView.stopLoading()
+        previewOriginalLease?.release()
+        previewOriginalLease = nil
         goBackButton.isEnabled = false
         goForwardButton.isEnabled = false
         title = content?.title
@@ -139,6 +142,8 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
         previewResolutionTask?.cancel()
         previewResolutionTask = nil
         webView.stopLoading()
+        previewOriginalLease?.release()
+        previewOriginalLease = nil
         dismiss(animated: true)
     }
 
@@ -166,12 +171,15 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
             // export after its verified plaintext is ready.
             _Concurrency.Task { [weak self, client, attachmentSaver] in
                 do {
-                    let localURL = try await client.prepareAttachmentForViewing(attachment)
+                    let lease = try await client.acquireAttachmentForViewing(attachment)
                     try _Concurrency.Task.checkCancellation()
                     attachmentSaver.saveVerifiedAttachment(
-                        at: localURL,
+                        at: lease.localURL,
                         attachment: attachment,
-                        completion: handleDownloadResult
+                        completion: { error in
+                            lease.release()
+                            handleDownloadResult(error)
+                        }
                     )
                 } catch {
                     log.error("[E2EE_FILE_PREVIEW] operation=save state=failed error=\(type(of: error))")
@@ -200,14 +208,19 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
         downloadButton.isEnabled = true
         previewResolutionTask = _Concurrency.Task { [weak self, client] in
             do {
-                let localURL = try await client.prepareAttachmentForViewing(attachment)
+                let lease = try await client.acquireAttachmentForViewing(attachment)
                 try _Concurrency.Task.checkCancellation()
                 await MainActor.run {
-                    guard let self else { return }
+                    guard let self else {
+                        lease.release()
+                        return
+                    }
                     self.previewResolutionTask = nil
+                    self.previewOriginalLease?.release()
+                    self.previewOriginalLease = lease
                     self.webView.loadFileURL(
-                        localURL,
-                        allowingReadAccessTo: localURL.deletingLastPathComponent()
+                        lease.localURL,
+                        allowingReadAccessTo: lease.localURL.deletingLastPathComponent()
                     )
                 }
             } catch is CancellationError {
@@ -272,6 +285,7 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
 
     deinit {
         previewResolutionTask?.cancel()
+        previewOriginalLease?.release()
     }
 }
 

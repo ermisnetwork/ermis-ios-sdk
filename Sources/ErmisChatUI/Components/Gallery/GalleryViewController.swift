@@ -389,16 +389,17 @@ open class GalleryViewController: _ViewController,
         // cancels only the viewer requester; Save still receives one verified local plaintext URL.
         _Concurrency.Task { [weak self, client, attachmentSaver] in
             do {
-                let localURL = try await client.prepareAttachmentForViewing(
+                let lease = try await client.acquireAttachmentForViewing(
                     attachment,
                     progress: { [weak self] progress in
                         DispatchQueue.main.async { self?.updateOriginalDownloadProgress(progress) }
                     }
                 )
+                defer { lease.release() }
                 try _Concurrency.Task.checkCancellation()
                 await withCheckedContinuation { continuation in
                     attachmentSaver.saveVerifiedAttachment(
-                        at: localURL,
+                        at: lease.localURL,
                         attachment: attachment
                     ) { [weak self] error in
                         self?.alertRouter.showDownloadAttachmentAlertResult(isSuccess: error == nil)
@@ -440,7 +441,7 @@ open class GalleryViewController: _ViewController,
                 }
             }
             do {
-                let localURL = try await client.prepareAttachmentForViewing(
+                let lease = try await client.acquireAttachmentForViewing(
                     attachment,
                     progress: { [weak self] progress in
                         DispatchQueue.main.async { self?.updateOriginalDownloadProgress(progress) }
@@ -448,9 +449,13 @@ open class GalleryViewController: _ViewController,
                 )
                 try _Concurrency.Task.checkCancellation()
                 await MainActor.run {
-                    self?.shareButton.isEnabled = true
-                    self?.updateOriginalDownloadProgressPresentation()
-                    self?.presentShareSheet(for: localURL)
+                    guard let self else {
+                        lease.release()
+                        return
+                    }
+                    self.shareButton.isEnabled = true
+                    self.updateOriginalDownloadProgressPresentation()
+                    self.presentShareSheet(for: lease.localURL, lease: lease)
                 }
             } catch is CancellationError {
                 await MainActor.run {
@@ -467,8 +472,12 @@ open class GalleryViewController: _ViewController,
         }
     }
 
-    private func presentShareSheet(for shareItem: Any?) {
+    private func presentShareSheet(
+        for shareItem: Any?,
+        lease: E2eeAttachmentOriginalLease? = nil
+    ) {
         guard let shareItem else {
+            lease?.release()
             log.assertionFailure("Share item is missing for item at \(currentItemIndexPath).")
             return
         }
@@ -476,6 +485,9 @@ open class GalleryViewController: _ViewController,
             activityItems: [shareItem],
             applicationActivities: nil
         )
+        activityViewController.completionWithItemsHandler = { _, _, _, _ in
+            lease?.release()
+        }
         activityViewController.popoverPresentationController?.sourceView = shareButton
         present(activityViewController, animated: true)
     }
@@ -510,12 +522,15 @@ open class GalleryViewController: _ViewController,
                 }
                 let task = _Concurrency.Task {
                     do {
-                        let url = try await client.prepareAttachmentForViewing(
+                        let lease = try await client.acquireAttachmentForViewing(
                             attachment,
                             progress: progress
                         )
-                        guard !_Concurrency.Task.isCancelled else { return }
-                        completion(.success(url))
+                        guard !_Concurrency.Task.isCancelled else {
+                            lease.release()
+                            return
+                        }
+                        completion(.success(lease))
                     } catch is CancellationError {
                         // A gallery close is an expected cancellation, not a render failure.
                     } catch {
@@ -554,12 +569,15 @@ open class GalleryViewController: _ViewController,
                 }
                 let task = _Concurrency.Task {
                     do {
-                        let url = try await client.prepareAttachmentForViewing(
+                        let lease = try await client.acquireAttachmentForViewing(
                             attachment,
                             progress: progress
                         )
-                        guard !_Concurrency.Task.isCancelled else { return }
-                        completion(.success(url))
+                        guard !_Concurrency.Task.isCancelled else {
+                            lease.release()
+                            return
+                        }
+                        completion(.success(lease))
                     } catch is CancellationError {
                         // A gallery close is an expected cancellation, not a render failure.
                     } catch {
@@ -689,6 +707,8 @@ open class GalleryViewController: _ViewController,
             text = "Đang tải \(completed) / \(total) · \(percentage)%"
         case .verifying:
             text = "Đang kiểm tra tệp"
+        case .waitingForUnlock:
+            text = "Mở khóa thiết bị để tiếp tục"
         case .decrypting:
             text = "Đang giải mã tệp"
         }
