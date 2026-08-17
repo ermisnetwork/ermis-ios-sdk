@@ -2216,6 +2216,45 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
+    /// Loads the authenticated preview for one Channel Info projection item.
+    ///
+    /// The public item intentionally does not expose its manifest or key material. Resolve those
+    /// bytes again from the durable decrypted-message cache, then join the same bounded preview
+    /// flight used by websocket/scope-sync hydration. A manifest without a preview is a valid
+    /// original-only attachment and returns `nil`; it must never trigger an original download.
+    func loadChannelInfoAttachmentPreview(
+        for item: E2eeChannelAttachmentListItem
+    ) async throws -> Data? {
+        let messageId = item.messageId
+        let attachmentId = item.attachmentId
+        let cid = item.cid
+        let manifest: E2eeAttachmentManifestV1 = try await withCheckedThrowingContinuation { continuation in
+            e2eReadContext.perform { [e2eReadContext] in
+                do {
+                    guard let payload = try MessageDecryptDTO.load(
+                        messageId: messageId,
+                        context: e2eReadContext
+                    ).flatMap({ try $0.asPayload() }),
+                    let manifest = payload.e2eeAttachments.first(where: {
+                        $0.attachmentId == attachmentId
+                    }) else {
+                        throw E2eeChannelAttachmentProjectionError.missingManifest
+                    }
+                    try manifest.validate()
+                    continuation.resume(returning: manifest)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+        try Task.checkCancellation()
+        return try await e2eeAttachmentReceiveCoordinator.loadPreview(
+            manifest: manifest,
+            cid: cid,
+            source: .channelInfo
+        )
+    }
+
     private func retryPendingGroupApplications(in cid: ChannelId) {
         guard let accountId = mlsClient.userId else { return }
         let scopeCid = cid.rawValue

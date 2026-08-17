@@ -12,6 +12,7 @@ enum E2eeAttachmentReceiveSource: String {
     case replayRecovery = "replay_recovery"
     case cachedModel = "cached_model"
     case directDecrypt = "direct_decrypt"
+    case channelInfo = "channel_info"
 }
 
 private enum E2eeAttachmentReceiveError: Error {
@@ -37,42 +38,192 @@ struct E2eeAttachmentPreviewPersistenceTarget {
 }
 
 final class E2eeAttachmentPreviewFlightRegistry {
+    struct Registration {
+        let flightId: UUID
+        let shouldStartFlight: Bool
+    }
+
+    struct WaiterRegistration {
+        let id: UUID
+        let flightId: UUID
+        let shouldStartFlight: Bool
+    }
+
+    struct Waiter {
+        let id: UUID
+        let completion: (Result<Data, Error>) -> Void
+    }
+
+    struct FinishedFlight {
+        let targets: [E2eeAttachmentPreviewPersistenceTarget]
+        let waiters: [Waiter]
+    }
+
+    struct CancelledWaiter {
+        let waiter: Waiter?
+        let shouldCancelFlight: Bool
+    }
+
+    private struct Flight {
+        let id: UUID
+        var targets: [AttachmentId: E2eeAttachmentPreviewPersistenceTarget] = [:]
+        var waiters: [UUID: Waiter] = [:]
+    }
+
     private let lock = NSLock()
-    private var targetsByAssetId: [String: [AttachmentId: E2eeAttachmentPreviewPersistenceTarget]] = [:]
+    private var flightsByAssetId: [String: Flight] = [:]
 
     /// Returns `true` only for the caller that must start the network request. Other callers join
     /// the existing request and are persisted when that request completes.
     func register(
         assetId: String,
         target: E2eeAttachmentPreviewPersistenceTarget
-    ) -> Bool {
+    ) -> Registration {
         lock.lock()
         defer { lock.unlock() }
-        if targetsByAssetId[assetId] != nil {
-            targetsByAssetId[assetId]?[target.attachmentId] = target
-            return false
+        if var flight = flightsByAssetId[assetId] {
+            flight.targets[target.attachmentId] = target
+            flightsByAssetId[assetId] = flight
+            return Registration(flightId: flight.id, shouldStartFlight: false)
         }
-        targetsByAssetId[assetId] = [target.attachmentId: target]
-        return true
+        let flight = Flight(id: UUID(), targets: [target.attachmentId: target])
+        flightsByAssetId[assetId] = flight
+        return Registration(flightId: flight.id, shouldStartFlight: true)
     }
 
-    func finish(assetId: String) -> [E2eeAttachmentPreviewPersistenceTarget] {
+    func registerWaiter(
+        assetId: String,
+        completion: @escaping (Result<Data, Error>) -> Void
+    ) -> WaiterRegistration {
         lock.lock()
         defer { lock.unlock() }
-        guard let targets = targetsByAssetId.removeValue(forKey: assetId) else { return [] }
-        return Array(targets.values)
+        let id = UUID()
+        let waiter = Waiter(id: id, completion: completion)
+        if var flight = flightsByAssetId[assetId] {
+            flight.waiters[id] = waiter
+            flightsByAssetId[assetId] = flight
+            return WaiterRegistration(id: id, flightId: flight.id, shouldStartFlight: false)
+        }
+        let flight = Flight(id: UUID(), waiters: [id: waiter])
+        flightsByAssetId[assetId] = flight
+        return WaiterRegistration(id: id, flightId: flight.id, shouldStartFlight: true)
     }
+
+    func cancelWaiter(assetId: String, flightId: UUID, id: UUID) -> CancelledWaiter {
+        lock.lock()
+        defer { lock.unlock() }
+        guard var flight = flightsByAssetId[assetId], flight.id == flightId else {
+            return CancelledWaiter(waiter: nil, shouldCancelFlight: false)
+        }
+        let waiter = flight.waiters.removeValue(forKey: id)
+        let shouldCancelFlight = flight.waiters.isEmpty && flight.targets.isEmpty
+        if shouldCancelFlight {
+            flightsByAssetId.removeValue(forKey: assetId)
+        } else {
+            flightsByAssetId[assetId] = flight
+        }
+        return CancelledWaiter(waiter: waiter, shouldCancelFlight: shouldCancelFlight)
+    }
+
+    func finish(assetId: String, flightId: UUID) -> [E2eeAttachmentPreviewPersistenceTarget] {
+        finishFlight(assetId: assetId, flightId: flightId).targets
+    }
+
+    func finishFlight(assetId: String, flightId: UUID) -> FinishedFlight {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let flight = flightsByAssetId[assetId], flight.id == flightId else {
+            return FinishedFlight(targets: [], waiters: [])
+        }
+        flightsByAssetId.removeValue(forKey: assetId)
+        return FinishedFlight(
+            targets: Array(flight.targets.values),
+            waiters: Array(flight.waiters.values)
+        )
+    }
+}
+
+private final class E2eeAttachmentPreviewCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var action: (() -> Void)?
+    private var isCancelled = false
+
+    func install(_ action: @escaping () -> Void) {
+        lock.lock()
+        if isCancelled {
+            lock.unlock()
+            action()
+            return
+        }
+        self.action = action
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        guard !isCancelled else {
+            lock.unlock()
+            return
+        }
+        isCancelled = true
+        let action = self.action
+        self.action = nil
+        lock.unlock()
+        action?()
+    }
+}
+
+private final class E2eeAttachmentPreviewFlightWork: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var operation: Operation?
+    private var task: Task<Void, Never>?
+    private var isCancelled = false
+
+    func install(operation: Operation) {
+        lock.lock()
+        self.operation = operation
+        let shouldCancel = isCancelled
+        lock.unlock()
+        if shouldCancel { operation.cancel() }
+    }
+
+    func install(task: Task<Void, Never>) {
+        lock.lock()
+        self.task = task
+        let shouldCancel = isCancelled
+        lock.unlock()
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let operation = self.operation
+        let task = self.task
+        lock.unlock()
+        operation?.cancel()
+        task?.cancel()
+    }
+}
+
+private struct E2eeAttachmentPreviewStoredFlightWork {
+    let flightId: UUID
+    let work: E2eeAttachmentPreviewFlightWork
 }
 
 /// Hydrates only encrypted preview assets for confirmed incoming E2EE messages. Original media is
 /// intentionally not auto-downloaded; full original download/playback remains an explicit user
 /// action and range streaming stays behind its independent feature gate.
 final class E2eeAttachmentReceiveCoordinator {
+    static let maximumConcurrentPreviewOperations = 3
+
     private let apiClient: APIClient
     private let database: DatabaseContainer
     private let previewCache: E2eeAttachmentPreviewCache
     private let operationQueue: OperationQueue
     private let flightRegistry = E2eeAttachmentPreviewFlightRegistry()
+    private let flightWorkLock = NSLock()
+    private var flightWorkByAssetId: [String: E2eeAttachmentPreviewStoredFlightWork] = [:]
 
     init(
         apiClient: APIClient,
@@ -85,7 +236,7 @@ final class E2eeAttachmentReceiveCoordinator {
         operationQueue = OperationQueue()
         operationQueue.name = "network.ermis.e2ee.attachment-preview"
         operationQueue.qualityOfService = .utility
-        operationQueue.maxConcurrentOperationCount = 3
+        operationQueue.maxConcurrentOperationCount = Self.maximumConcurrentPreviewOperations
     }
 
     func hydratePreviews(
@@ -119,46 +270,170 @@ final class E2eeAttachmentReceiveCoordinator {
                 )
                 continue
             }
-            guard flightRegistry.register(assetId: preview.assetId, target: target) else {
+            let registration = flightRegistry.register(assetId: preview.assetId, target: target)
+            guard registration.shouldStartFlight else {
                 log.info(
                     "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=joined_existing_flight",
                     subsystems: .mls
                 )
                 continue
             }
-            operationQueue.addOperation { [weak self] in
-                guard let self else { return }
-                let semaphore = DispatchSemaphore(value: 0)
-                Task {
-                    defer { semaphore.signal() }
-                    do {
-                        let data = try await self.downloadAndDecryptPreview(
-                            manifest: manifest,
-                            preview: preview,
-                            cid: cid
-                        )
-                        let previewGeneration = self.previewCache.insert(data, for: preview.assetId)
-                        let targets = self.flightRegistry.finish(assetId: preview.assetId)
-                        await self.persistRenderableAttachmentsWithRetry(
-                            targets,
-                            previewGeneration: previewGeneration,
-                            source: source
-                        )
-                        log.info(
-                            "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=succeeded bytes=\(data.count) target_count=\(targets.count)",
-                            subsystems: .mls
-                        )
-                    } catch {
-                        _ = self.flightRegistry.finish(assetId: preview.assetId)
-                        log.error(
-                            "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=failed category=\(Self.errorCategory(error))",
-                            subsystems: .mls
-                        )
-                    }
-                }
-                semaphore.wait()
-            }
+            startPreviewFlight(
+                manifest: manifest,
+                preview: preview,
+                cid: cid,
+                source: source,
+                flightId: registration.flightId
+            )
         }
+    }
+
+    /// Loads exactly one manifest preview for a visible Channel Info cell. This joins the same
+    /// bounded flight used by timeline/scope-sync hydration, and never falls back to the original.
+    func loadPreview(
+        manifest: E2eeAttachmentManifestV1,
+        cid: ChannelId,
+        source: E2eeAttachmentReceiveSource = .channelInfo
+    ) async throws -> Data? {
+        try manifest.validate()
+        guard let preview = manifest.assets.first(where: { $0.kind == .preview }) else {
+            return nil
+        }
+        if let cached = previewCache.value(for: preview.assetId) {
+            return cached.data
+        }
+
+        let cancellation = E2eeAttachmentPreviewCancellation()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                let registration = flightRegistry.registerWaiter(
+                    assetId: preview.assetId,
+                    completion: { result in
+                        switch result {
+                        case let .success(data):
+                            continuation.resume(returning: data)
+                        case let .failure(error):
+                            continuation.resume(throwing: error)
+                        }
+                    }
+                )
+                cancellation.install { [weak self] in
+                    self?.cancelPreviewWaiter(
+                        assetId: preview.assetId,
+                        flightId: registration.flightId,
+                        id: registration.id
+                    )
+                }
+                if registration.shouldStartFlight {
+                    startPreviewFlight(
+                        manifest: manifest,
+                        preview: preview,
+                        cid: cid,
+                        source: source,
+                        flightId: registration.flightId
+                    )
+                }
+                if Task.isCancelled { cancellation.cancel() }
+            }
+        }, onCancel: {
+            cancellation.cancel()
+        })
+    }
+
+    private func startPreviewFlight(
+        manifest: E2eeAttachmentManifestV1,
+        preview: E2eeAttachmentManifestAssetV1,
+        cid: ChannelId,
+        source: E2eeAttachmentReceiveSource,
+        flightId: UUID
+    ) {
+        let work = E2eeAttachmentPreviewFlightWork()
+        let operation = BlockOperation()
+        operation.addExecutionBlock { [weak self, weak operation, weak work] in
+            guard let self, let operation, let work, !operation.isCancelled else { return }
+            let semaphore = DispatchSemaphore(value: 0)
+            let task = Task { [weak self] in
+                guard let self else {
+                    semaphore.signal()
+                    return
+                }
+                defer { semaphore.signal() }
+                do {
+                    let data = try await self.downloadAndDecryptPreview(
+                        manifest: manifest,
+                        preview: preview,
+                        cid: cid
+                    )
+                    try Task.checkCancellation()
+                    let previewGeneration = self.previewCache.insert(data, for: preview.assetId)
+                    let finished = self.flightRegistry.finishFlight(
+                        assetId: preview.assetId,
+                        flightId: flightId
+                    )
+                    self.removeFlightWork(assetId: preview.assetId, flightId: flightId)
+                    await self.persistRenderableAttachmentsWithRetry(
+                        finished.targets,
+                        previewGeneration: previewGeneration,
+                        source: source
+                    )
+                    finished.waiters.forEach { $0.completion(.success(data)) }
+                    log.info(
+                        "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=succeeded bytes=\(data.count) target_count=\(finished.targets.count) waiter_count=\(finished.waiters.count)",
+                        subsystems: .mls
+                    )
+                } catch {
+                    let finished = self.flightRegistry.finishFlight(
+                        assetId: preview.assetId,
+                        flightId: flightId
+                    )
+                    self.removeFlightWork(assetId: preview.assetId, flightId: flightId)
+                    finished.waiters.forEach { $0.completion(.failure(error)) }
+                    log.error(
+                        "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=failed category=\(Self.errorCategory(error))",
+                        subsystems: .mls
+                    )
+                }
+            }
+            work.install(task: task)
+            semaphore.wait()
+        }
+        work.install(operation: operation)
+        flightWorkLock.lock()
+        flightWorkByAssetId[preview.assetId] = E2eeAttachmentPreviewStoredFlightWork(
+            flightId: flightId,
+            work: work
+        )
+        flightWorkLock.unlock()
+        operationQueue.addOperation(operation)
+    }
+
+    private func cancelPreviewWaiter(assetId: String, flightId: UUID, id: UUID) {
+        let cancelled = flightRegistry.cancelWaiter(
+            assetId: assetId,
+            flightId: flightId,
+            id: id
+        )
+        cancelled.waiter?.completion(.failure(CancellationError()))
+        guard cancelled.shouldCancelFlight else { return }
+        flightWorkLock.lock()
+        let storedWork = flightWorkByAssetId[assetId]
+        let workToCancel: E2eeAttachmentPreviewFlightWork?
+        if storedWork?.flightId == flightId {
+            flightWorkByAssetId.removeValue(forKey: assetId)
+            workToCancel = storedWork?.work
+        } else {
+            workToCancel = nil
+        }
+        flightWorkLock.unlock()
+        workToCancel?.cancel()
+    }
+
+    private func removeFlightWork(assetId: String, flightId: UUID) {
+        flightWorkLock.lock()
+        if flightWorkByAssetId[assetId]?.flightId == flightId {
+            flightWorkByAssetId.removeValue(forKey: assetId)
+        }
+        flightWorkLock.unlock()
     }
 
     private func downloadAndDecryptPreview(
@@ -409,34 +684,18 @@ final class E2eeAttachmentReceiveCoordinator {
     }
 
     private func downloadFile(from url: URL) async throws -> URL {
-        try await withCheckedThrowingContinuation { continuation in
-            URLSession.shared.downloadTask(with: url) { location, response, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                guard let http = response as? HTTPURLResponse else {
-                    continuation.resume(throwing: E2eeAttachmentReceiveError.invalidHTTPResponse)
-                    return
-                }
-                guard (200..<300).contains(http.statusCode) else {
-                    continuation.resume(throwing: E2eeAttachmentReceiveError.invalidHTTPStatus(http.statusCode))
-                    return
-                }
-                guard let location else {
-                    continuation.resume(throwing: E2eeAttachmentReceiveError.invalidHTTPResponse)
-                    return
-                }
-                let retained = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString + ".download")
-                do {
-                    try FileManager.default.moveItem(at: location, to: retained)
-                    continuation.resume(returning: retained)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }.resume()
+        let (location, response) = try await URLSession.shared.download(from: url)
+        guard let http = response as? HTTPURLResponse else {
+            throw E2eeAttachmentReceiveError.invalidHTTPResponse
         }
+        guard (200..<300).contains(http.statusCode) else {
+            throw E2eeAttachmentReceiveError.invalidHTTPStatus(http.statusCode)
+        }
+        try Task.checkCancellation()
+        let retained = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".download")
+        try FileManager.default.moveItem(at: location, to: retained)
+        return retained
     }
 
     private func sha256Hex(of url: URL) throws -> String {

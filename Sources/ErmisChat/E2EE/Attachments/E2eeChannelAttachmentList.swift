@@ -71,10 +71,25 @@ enum E2eeChannelAttachmentProjectionMapper {
         let manifest = payload.e2eeAttachments[manifestIndex]
         try manifest.validate()
 
-        let projectedAssets = projection.assets.map {
+        // Bellboy may add projection-only asset kinds in the future. V1 clients authenticate and
+        // compare only the kinds they understand, but still fail closed on duplicate IDs and a
+        // missing canonical original. Unknown rows must never become renderable metadata.
+        let projectedAssetIds = projection.assets.map(\.assetId)
+        guard Set(projectedAssetIds).count == projectedAssetIds.count else {
+            throw E2eeChannelAttachmentProjectionError.projectionMismatch
+        }
+        let knownKinds = Set([
+            E2eeAttachmentAssetKind.original.rawValue,
+            E2eeAttachmentAssetKind.preview.rawValue
+        ])
+        let knownProjectedAssets = projection.assets.filter { knownKinds.contains($0.kind) }
+        guard knownProjectedAssets.filter({ $0.kind == E2eeAttachmentAssetKind.original.rawValue }).count == 1 else {
+            throw E2eeChannelAttachmentProjectionError.projectionMismatch
+        }
+        let projectedAssets = knownProjectedAssets.map {
             "\($0.assetId)|\($0.kind)|\($0.cipherSize)"
         }
-        let manifestAssets = manifest.assets.map {
+        let manifestAssets = manifest.assets.filter { knownKinds.contains($0.kind.rawValue) }.map {
             "\($0.assetId)|\($0.kind.rawValue)|\($0.cipherSize)"
         }
         guard Set(projectedAssets) == Set(manifestAssets),
@@ -191,6 +206,18 @@ extension ErmisClient {
             hasMore: response.hasMore,
             unavailableCount: unavailableCount
         )
+    }
+
+    /// Loads only the encrypted preview for one visible E2EE Channel Info item.
+    ///
+    /// Calls for the same asset are coalesced with timeline/scope-sync hydration and globally
+    /// bounded by the preview coordinator. Cancelling the caller removes its waiter; when no
+    /// other consumer remains, the underlying preview request is cancelled as well. `nil` means
+    /// the authenticated manifest is original-only and is not an error.
+    public func loadE2eeChannelAttachmentPreview(
+        for item: E2eeChannelAttachmentListItem
+    ) async throws -> Data? {
+        try await e2eRepository.loadChannelInfoAttachmentPreview(for: item)
     }
 
     /// Completion-based convenience for UIKit consumers.

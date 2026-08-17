@@ -147,6 +147,10 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(E2eeAttachmentPreviewCache.countLimit, 32)
     }
 
+    func testPreviewWorkHasMaximumThreeConcurrentOperations() {
+        XCTAssertEqual(E2eeAttachmentReceiveCoordinator.maximumConcurrentPreviewOperations, 3)
+    }
+
     func testConcurrentPreviewHydrationCoalescesAllMessageTargets() throws {
         let registry = E2eeAttachmentPreviewFlightRegistry()
         let manifest = makeManifest(
@@ -171,12 +175,120 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
             attachmentId: AttachmentId(cid: cid, messageId: "message-2", index: 0)
         )
 
-        XCTAssertTrue(registry.register(assetId: previewAssetId, target: first))
-        XCTAssertFalse(registry.register(assetId: previewAssetId, target: second))
+        let firstRegistration = registry.register(assetId: previewAssetId, target: first)
+        let secondRegistration = registry.register(assetId: previewAssetId, target: second)
+        XCTAssertTrue(firstRegistration.shouldStartFlight)
+        XCTAssertFalse(secondRegistration.shouldStartFlight)
+        XCTAssertEqual(firstRegistration.flightId, secondRegistration.flightId)
 
-        let targets = registry.finish(assetId: previewAssetId)
+        let targets = registry.finish(assetId: previewAssetId, flightId: firstRegistration.flightId)
         XCTAssertEqual(Set(targets.map(\.attachmentId)), Set([first.attachmentId, second.attachmentId]))
-        XCTAssertTrue(registry.finish(assetId: previewAssetId).isEmpty)
+        XCTAssertTrue(
+            registry.finish(assetId: previewAssetId, flightId: firstRegistration.flightId).isEmpty
+        )
+    }
+
+    func testChannelInfoWaiterJoinsExistingPreviewFlight() throws {
+        let registry = E2eeAttachmentPreviewFlightRegistry()
+        let manifest = makeManifest(
+            mimeType: "image/jpeg",
+            name: "photo.jpg",
+            width: 480,
+            height: 320,
+            duration: nil
+        )
+        let assetId = try XCTUnwrap(manifest.assets.first(where: { $0.kind == .preview })?.assetId)
+        let cid = try ChannelId(cid: "messaging:preview-project:preview-waiter")
+        let target = E2eeAttachmentPreviewPersistenceTarget(
+            manifest: manifest,
+            previewAssetId: assetId,
+            attachmentId: AttachmentId(cid: cid, messageId: "message-1", index: 0)
+        )
+        var receivedData: Data?
+
+        let targetRegistration = registry.register(assetId: assetId, target: target)
+        XCTAssertTrue(targetRegistration.shouldStartFlight)
+        let waiter = registry.registerWaiter(assetId: assetId) { result in
+            receivedData = try? result.get()
+        }
+        XCTAssertFalse(waiter.shouldStartFlight)
+        XCTAssertEqual(targetRegistration.flightId, waiter.flightId)
+
+        let finished = registry.finishFlight(assetId: assetId, flightId: waiter.flightId)
+        XCTAssertEqual(finished.targets.map(\.attachmentId), [target.attachmentId])
+        XCTAssertEqual(finished.waiters.count, 1)
+        let expected = Data([1, 2, 3])
+        finished.waiters.forEach { $0.completion(.success(expected)) }
+        XCTAssertEqual(receivedData, expected)
+    }
+
+    func testCancellingLastChannelInfoWaiterCancelsPreviewFlight() {
+        let registry = E2eeAttachmentPreviewFlightRegistry()
+        var receivedCancellation = false
+        let registration = registry.registerWaiter(assetId: "preview-1") { result in
+            if case .failure(_) = result { receivedCancellation = true }
+        }
+
+        let cancelled = registry.cancelWaiter(
+            assetId: "preview-1",
+            flightId: registration.flightId,
+            id: registration.id
+        )
+        XCTAssertNotNil(cancelled.waiter)
+        XCTAssertTrue(cancelled.shouldCancelFlight)
+        cancelled.waiter?.completion(.failure(CancellationError()))
+        XCTAssertTrue(receivedCancellation)
+        XCTAssertTrue(
+            registry.finishFlight(assetId: "preview-1", flightId: registration.flightId).waiters.isEmpty
+        )
+    }
+
+    func testCancellingOneOfMultipleChannelInfoWaitersKeepsPreviewFlight() {
+        let registry = E2eeAttachmentPreviewFlightRegistry()
+        let first = registry.registerWaiter(assetId: "preview-1") { _ in }
+        let second = registry.registerWaiter(assetId: "preview-1") { _ in }
+
+        let cancelled = registry.cancelWaiter(
+            assetId: "preview-1",
+            flightId: first.flightId,
+            id: first.id
+        )
+        XCTAssertNotNil(cancelled.waiter)
+        XCTAssertFalse(cancelled.shouldCancelFlight)
+
+        let finished = registry.finishFlight(assetId: "preview-1", flightId: second.flightId)
+        XCTAssertEqual(finished.waiters.map(\.id), [second.id])
+    }
+
+    func testCancelledFlightCompletionCannotConsumeReplacementFlight() {
+        let registry = E2eeAttachmentPreviewFlightRegistry()
+        let cancelledRegistration = registry.registerWaiter(assetId: "preview-1") { _ in }
+        _ = registry.cancelWaiter(
+            assetId: "preview-1",
+            flightId: cancelledRegistration.flightId,
+            id: cancelledRegistration.id
+        )
+
+        var replacementReceivedData: Data?
+        let replacement = registry.registerWaiter(assetId: "preview-1") { result in
+            replacementReceivedData = try? result.get()
+        }
+        XCTAssertTrue(replacement.shouldStartFlight)
+        XCTAssertNotEqual(cancelledRegistration.flightId, replacement.flightId)
+
+        let staleFinished = registry.finishFlight(
+            assetId: "preview-1",
+            flightId: cancelledRegistration.flightId
+        )
+        XCTAssertTrue(staleFinished.waiters.isEmpty)
+
+        let replacementFinished = registry.finishFlight(
+            assetId: "preview-1",
+            flightId: replacement.flightId
+        )
+        let expected = Data([4, 5, 6])
+        replacementFinished.waiters.forEach { $0.completion(.success(expected)) }
+        XCTAssertEqual(replacementReceivedData, expected)
     }
 
     func testPreviewModelPersistenceRetriesOnlyWhileMessageIsNotMaterialized() {
