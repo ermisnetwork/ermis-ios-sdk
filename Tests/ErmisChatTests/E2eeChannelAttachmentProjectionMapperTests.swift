@@ -31,6 +31,37 @@ final class E2eeChannelAttachmentProjectionMapperTests: XCTestCase {
         XCTAssertEqual(item.plaintextSize, 1_024)
     }
 
+    func testOriginalOnlyManifestBuildsSafePlaceholderWithoutOriginalBytes() throws {
+        let manifestWithPreview = makeManifest()
+        let manifest = E2eeAttachmentManifestV1(
+            attachmentId: manifestWithPreview.attachmentId,
+            assets: manifestWithPreview.assets.filter { $0.kind == .original }
+        )
+        let item = try E2eeChannelAttachmentProjectionMapper.makeItem(
+            projection: makeProjection(manifest: manifest),
+            expectedCid: cid,
+            payload: makePayload(manifest: manifest)
+        )
+
+        XCTAssertEqual(item.attachment.type, .image)
+        XCTAssertNil(item.attachment.thumbnailData)
+        XCTAssertEqual(item.attachment.remoteURL?.scheme, "ermis-e2ee-attachment")
+        let payloadJSON = String(decoding: item.attachment.payload, as: UTF8.self)
+        XCTAssertFalse(payloadJSON.contains(Data(repeating: 1, count: 32).base64EncodedString()))
+        XCTAssertFalse(payloadJSON.contains(Data(repeating: 2, count: 8).base64EncodedString()))
+    }
+
+    func testPreviewAccessGateDistinguishesDeviceLockFromIntegrityFailure() throws {
+        XCTAssertNoThrow(
+            try E2eeChannelAttachmentPreviewAccessGate.requireProtectedData(isAvailable: true)
+        )
+        XCTAssertThrowsError(
+            try E2eeChannelAttachmentPreviewAccessGate.requireProtectedData(isAvailable: false)
+        ) { error in
+            XCTAssertEqual(error as? E2eeChannelAttachmentPreviewError, .waitingForUnlock)
+        }
+    }
+
     func testMissingLocalManifestIsRejected() {
         let manifest = makeManifest()
         let projection = makeProjection(manifest: manifest)
@@ -243,6 +274,77 @@ final class E2eeChannelAttachmentProjectionMapperTests: XCTestCase {
             XCTAssertEqual(item.displayName, testCase.name)
             XCTAssertEqual(item.mimeType, testCase.mime)
         }
+    }
+
+    func testProjectionMetadataCannotRouteAnE2eeAttachmentIntoLinksTab() throws {
+        let manifest = makeManifest(
+            display: [
+                "name": .string("https://example.invalid"),
+                "mime_type": .string("text/html"),
+                "attachment_type": .string("linkPreview")
+            ]
+        )
+        let projection = makeProjection(manifest: manifest)
+
+        let item = try E2eeChannelAttachmentProjectionMapper.makeItem(
+            projection: projection,
+            expectedCid: cid,
+            payload: makePayload(manifest: manifest)
+        )
+
+        XCTAssertEqual(item.attachment.type, .file)
+        XCTAssertNotEqual(item.attachment.type, .linkPreview)
+        XCTAssertEqual(item.displayName, "https://example.invalid")
+        XCTAssertEqual(item.mimeType, "text/html")
+    }
+
+    func testPublicChannelInfoItemExposesOnlyOpaqueOriginalReference() throws {
+        let manifest = makeManifest()
+        let previewGeneration = "non-sensitive-preview-generation"
+        let item = try E2eeChannelAttachmentProjectionMapper.makeItem(
+            projection: makeProjection(manifest: manifest),
+            expectedCid: cid,
+            payload: makePayload(manifest: manifest),
+            cachedPreview: (Data([9, 8, 7]), previewGeneration)
+        )
+
+        let remoteURL = try XCTUnwrap(item.attachment.remoteURL)
+        let components = try XCTUnwrap(
+            URLComponents(url: remoteURL, resolvingAgainstBaseURL: false)
+        )
+        let original = try XCTUnwrap(manifest.assets.first(where: { $0.kind == .original }))
+
+        XCTAssertEqual(components.scheme, "ermis-e2ee-attachment")
+        XCTAssertEqual(components.host, "asset")
+        XCTAssertEqual(
+            components.path,
+            "/\(manifest.attachmentId)/\(original.assetId)"
+        )
+        XCTAssertNil(components.user)
+        XCTAssertNil(components.password)
+        XCTAssertNil(components.port)
+        XCTAssertEqual(
+            components.queryItems,
+            [URLQueryItem(name: "preview_generation", value: previewGeneration)]
+        )
+
+        let publicPayload = String(decoding: item.attachment.payload, as: UTF8.self)
+        let sensitiveValues = manifest.assets.flatMap { asset in
+            [
+                asset.contentKey,
+                asset.noncePrefix,
+                asset.cipherSha256,
+                asset.plaintextSha256
+            ].compactMap { $0 }
+        }
+        for sensitiveValue in sensitiveValues {
+            XCTAssertFalse(publicPayload.contains(sensitiveValue))
+            XCTAssertFalse(remoteURL.absoluteString.contains(sensitiveValue))
+        }
+        XCTAssertFalse(publicPayload.contains("https://"))
+        XCTAssertFalse(publicPayload.contains("http://"))
+        XCTAssertFalse(publicPayload.contains("task_token"))
+        XCTAssertFalse(publicPayload.contains("grant"))
     }
 
     private func makePayload(manifest: E2eeAttachmentManifestV1) -> E2ePayload {

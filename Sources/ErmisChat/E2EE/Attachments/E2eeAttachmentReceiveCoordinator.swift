@@ -365,7 +365,7 @@ final class E2eeAttachmentReceiveCoordinator {
                         cid: cid
                     )
                     try Task.checkCancellation()
-                    let previewGeneration = self.previewCache.insert(data, for: preview.assetId)
+                    let previewGeneration = try self.previewCache.insert(data, for: preview.assetId)
                     let finished = self.flightRegistry.finishFlight(
                         assetId: preview.assetId,
                         flightId: flightId

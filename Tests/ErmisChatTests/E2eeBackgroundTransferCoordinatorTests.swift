@@ -112,6 +112,141 @@ final class E2eeBackgroundTransferCoordinatorTests: XCTestCase {
         )
     }
 
+    func testScheduleBackgroundDownloadPersistsOpaqueMappingBeforeTaskRuns() throws {
+        let descriptor = E2eeBackgroundSessionDescriptor(
+            bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",
+            endpoint: try XCTUnwrap(URL(string: "https://chat.example.test")),
+            applicationGroupIdentifier: nil
+        )
+        let coordinator = E2eeBackgroundTransferCoordinator(
+            descriptor: descriptor,
+            rootURL: directory,
+            applicationGroupIdentifier: nil,
+            sessionConfigurationBuilder: { _, _ in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [HoldingUploadURLProtocol.self]
+                return configuration
+            }
+        )
+        var request = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://download.example.test/ciphertext"))
+        )
+        request.httpMethod = "GET"
+
+        let scheduled = try coordinator.scheduleBackgroundDownload(
+            accountId: "account-a",
+            cid: "messaging:\(UUID().uuidString)",
+            attachmentId: UUID().uuidString,
+            assetId: UUID().uuidString,
+            request: request,
+            expectedCiphertextSize: 128,
+            expectedCiphertextSha256: String(repeating: "a", count: 64)
+        )
+        let durable = try XCTUnwrap(
+            coordinator.backgroundDownloadStore.record(taskToken: scheduled.taskToken)
+        )
+
+        // The durable JSON round-trip can trim sub-millisecond `Date` precision. Assert the
+        // correctness-critical mapping instead of relying on exact timestamp equality.
+        XCTAssertEqual(durable.downloadId, scheduled.downloadId)
+        XCTAssertEqual(durable.accountId, scheduled.accountId)
+        XCTAssertEqual(durable.cid, scheduled.cid)
+        XCTAssertEqual(durable.attachmentId, scheduled.attachmentId)
+        XCTAssertEqual(durable.assetId, scheduled.assetId)
+        XCTAssertEqual(durable.taskToken, scheduled.taskToken)
+        XCTAssertEqual(durable.taskIdentifier, scheduled.taskIdentifier)
+        XCTAssertEqual(durable.expectedCiphertextSize, scheduled.expectedCiphertextSize)
+        XCTAssertEqual(durable.expectedCiphertextSha256, scheduled.expectedCiphertextSha256)
+        XCTAssertEqual(durable.completedCiphertextBytes, scheduled.completedCiphertextBytes)
+        XCTAssertEqual(durable.phase, scheduled.phase)
+        XCTAssertEqual(durable.fixedError, scheduled.fixedError)
+        XCTAssertEqual(durable.verifiedCiphertextURL, scheduled.verifiedCiphertextURL)
+        XCTAssertEqual(durable.phase, .scheduled)
+        XCTAssertNotNil(durable.taskIdentifier)
+        XCTAssertNotEqual(durable.taskToken, durable.accountId)
+        XCTAssertNotEqual(durable.taskToken, durable.attachmentId)
+        XCTAssertNotEqual(durable.taskToken, durable.assetId)
+    }
+
+    func testCancelBackgroundDownloadCancelsOnlyExactAsset() throws {
+        let descriptor = E2eeBackgroundSessionDescriptor(
+            bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",
+            endpoint: try XCTUnwrap(URL(string: "https://chat.example.test")),
+            applicationGroupIdentifier: nil
+        )
+        let coordinator = E2eeBackgroundTransferCoordinator(
+            descriptor: descriptor,
+            rootURL: directory,
+            applicationGroupIdentifier: nil,
+            sessionConfigurationBuilder: { _, _ in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [HoldingUploadURLProtocol.self]
+                return configuration
+            }
+        )
+        let accountId = "account-a"
+        let cid = "messaging:\(UUID().uuidString)"
+        let attachmentId = UUID().uuidString
+        let targetAssetId = UUID().uuidString
+        let siblingAssetId = UUID().uuidString
+        var targetRequest = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://download.example.test/target"))
+        )
+        targetRequest.httpMethod = "GET"
+        var siblingRequest = URLRequest(
+            url: try XCTUnwrap(URL(string: "https://download.example.test/sibling"))
+        )
+        siblingRequest.httpMethod = "GET"
+        let target = try coordinator.scheduleBackgroundDownload(
+            accountId: accountId,
+            cid: cid,
+            attachmentId: attachmentId,
+            assetId: targetAssetId,
+            request: targetRequest,
+            expectedCiphertextSize: 128,
+            expectedCiphertextSha256: String(repeating: "a", count: 64)
+        )
+        let sibling = try coordinator.scheduleBackgroundDownload(
+            accountId: accountId,
+            cid: cid,
+            attachmentId: attachmentId,
+            assetId: siblingAssetId,
+            request: siblingRequest,
+            expectedCiphertextSize: 256,
+            expectedCiphertextSha256: String(repeating: "b", count: 64)
+        )
+
+        let canceled = expectation(description: "exact background download canceled")
+        coordinator.cancelBackgroundDownload(
+            accountId: accountId,
+            cid: cid,
+            attachmentId: attachmentId,
+            assetId: targetAssetId
+        ) { result in
+            if case .failure(let error) = result {
+                XCTFail("Unexpected exact cancel failure: \(error)")
+            }
+            canceled.fulfill()
+        }
+        wait(for: [canceled], timeout: 2)
+
+        let canceledTarget = try XCTUnwrap(
+            coordinator.backgroundDownloadStore.record(downloadId: target.downloadId)
+        )
+        let untouchedSibling = try XCTUnwrap(
+            coordinator.backgroundDownloadStore.record(downloadId: sibling.downloadId)
+        )
+        XCTAssertEqual(canceledTarget.phase, .canceled)
+        XCTAssertEqual(canceledTarget.fixedError, .canceled)
+        XCTAssertNil(canceledTarget.verifiedCiphertextURL)
+        XCTAssertNotEqual(untouchedSibling.phase, .canceled)
+        XCTAssertNil(untouchedSibling.fixedError)
+
+        let cleanup = expectation(description: "remaining background task cleanup")
+        coordinator.cancelTasks(accountId: accountId) { _ in cleanup.fulfill() }
+        wait(for: [cleanup], timeout: 2)
+    }
+
     func testSinglePutRejectsFileOutsideCanonicalCiphertextStaging() throws {
         let coordinator = try makeCoordinator()
         let source = directory.appendingPathComponent("plaintext.txt")

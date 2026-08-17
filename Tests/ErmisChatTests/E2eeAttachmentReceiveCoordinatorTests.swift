@@ -4,6 +4,7 @@
 
 import Foundation
 @testable import ErmisChat
+import UIKit
 import XCTest
 
 final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
@@ -145,6 +146,67 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
     func testDecodedPreviewCacheHasBoundedMemoryBudget() {
         XCTAssertEqual(E2eeAttachmentPreviewCache.totalCostLimit, 24 * 1_024 * 1_024)
         XCTAssertEqual(E2eeAttachmentPreviewCache.countLimit, 32)
+        XCTAssertEqual(E2eeAttachmentPreviewCache.maximumEntryCost, 4 * 1_024 * 1_024)
+    }
+
+    func testPreviewCacheChargesDecodedBitmapCostInsteadOfCompressedByteCount() throws {
+        let size = CGSize(width: 64, height: 32)
+        let image = UIGraphicsImageRenderer(size: size).image { context in
+            UIColor.systemPurple.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        let compressed = try XCTUnwrap(image.jpegData(compressionQuality: 0.2))
+        let decodedCost = try XCTUnwrap(E2eeAttachmentPreviewCache.decodedCost(for: compressed))
+
+        XCTAssertGreaterThanOrEqual(decodedCost, 64 * 32 * 4)
+        XCTAssertGreaterThan(decodedCost, compressed.count)
+    }
+
+    func testPreviewCacheRejectsInvalidImageBytes() {
+        XCTAssertThrowsError(
+            try E2eeAttachmentPreviewCache.shared.insert(Data("not-an-image".utf8), for: UUID().uuidString)
+        ) { error in
+            guard case E2eeAttachmentPreviewCache.CacheError.invalidImage = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testPreviewCacheRejectsDecodedBitmapLargerThanPerEntryBudget() throws {
+        let size = CGSize(width: 1_100, height: 1_100)
+        let image = UIGraphicsImageRenderer(size: size).image { context in
+            UIColor.systemIndigo.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+        }
+        let compressed = try XCTUnwrap(image.jpegData(compressionQuality: 0.1))
+
+        XCTAssertThrowsError(
+            try E2eeAttachmentPreviewCache.shared.insert(compressed, for: UUID().uuidString)
+        ) { error in
+            guard case E2eeAttachmentPreviewCache.CacheError.decodedImageTooLarge = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testPreviewCacheClearsPlaintextOnMemoryWarningAndBackground() throws {
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 32, height: 32)).image { context in
+            UIColor.systemTeal.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        }
+        let compressed = try XCTUnwrap(image.jpegData(compressionQuality: 0.5))
+        let memoryWarningAssetId = UUID().uuidString
+        let backgroundAssetId = UUID().uuidString
+
+        try E2eeAttachmentPreviewCache.shared.insert(compressed, for: memoryWarningAssetId)
+        XCTAssertNotNil(E2eeAttachmentPreviewCache.shared.data(for: memoryWarningAssetId))
+        NotificationCenter.default.post(name: UIApplication.didReceiveMemoryWarningNotification, object: nil)
+        XCTAssertNil(E2eeAttachmentPreviewCache.shared.data(for: memoryWarningAssetId))
+
+        try E2eeAttachmentPreviewCache.shared.insert(compressed, for: backgroundAssetId)
+        XCTAssertNotNil(E2eeAttachmentPreviewCache.shared.data(for: backgroundAssetId))
+        NotificationCenter.default.post(name: UIApplication.didEnterBackgroundNotification, object: nil)
+        XCTAssertNil(E2eeAttachmentPreviewCache.shared.data(for: backgroundAssetId))
     }
 
     func testPreviewWorkHasMaximumThreeConcurrentOperations() {

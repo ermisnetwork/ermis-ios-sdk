@@ -21,11 +21,19 @@ enum BackgroundTransferEventKind: String, Codable, Sendable {
     case completion
 }
 
+enum BackgroundTransferOperation: String, Codable, Sendable {
+    case upload
+    case download
+}
+
 /// Deliberately contains no account/user/CID/message/attachment IDs, URL, filename, or request.
 struct BackgroundTransferEvent: Codable, Equatable, Sendable {
     let eventId: String
     let taskToken: String
     let taskIdentifier: Int
+    /// Optional for backward compatibility with journals written before background downloads
+    /// were introduced. A missing value always means the legacy upload operation.
+    let operation: BackgroundTransferOperation?
     let kind: BackgroundTransferEventKind
     let completedBytes: Int64
     let totalBytes: Int64
@@ -37,6 +45,7 @@ struct BackgroundTransferEvent: Codable, Equatable, Sendable {
         eventId: String = UUID().uuidString,
         taskToken: String,
         taskIdentifier: Int,
+        operation: BackgroundTransferOperation = .upload,
         kind: BackgroundTransferEventKind = .completion,
         completedBytes: Int64,
         totalBytes: Int64,
@@ -47,12 +56,17 @@ struct BackgroundTransferEvent: Codable, Equatable, Sendable {
         self.eventId = eventId
         self.taskToken = taskToken
         self.taskIdentifier = taskIdentifier
+        self.operation = operation
         self.kind = kind
         self.completedBytes = completedBytes
         self.totalBytes = totalBytes
         self.httpStatus = httpStatus
         self.eTag = eTag
         self.error = error
+    }
+
+    var resolvedOperation: BackgroundTransferOperation {
+        operation ?? .upload
     }
 }
 

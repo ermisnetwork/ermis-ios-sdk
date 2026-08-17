@@ -13,7 +13,7 @@ public struct E2eeChannelAttachmentListCursor: Equatable {
     fileprivate let createdAt: String
     fileprivate let attachmentId: String
 
-    fileprivate init(createdAt: String, attachmentId: String) {
+    init(createdAt: String, attachmentId: String) {
         self.createdAt = createdAt
         self.attachmentId = attachmentId
     }
@@ -43,6 +43,313 @@ public struct E2eeChannelAttachmentListPage {
     /// Number of server projections deliberately omitted because their local authenticated
     /// manifest was unavailable or did not match the projection.
     public let unavailableCount: Int
+}
+
+/// Stable, non-sensitive failures that Channel Info can present without exposing storage,
+/// Keychain or transport implementation details.
+public enum E2eeChannelAttachmentPreviewError: Error, Equatable {
+    /// The encrypted manifest/preview cannot be accessed until protected data is available.
+    /// This is temporary and must not be presented as integrity failure or missing key material.
+    case waitingForUnlock
+}
+
+enum E2eeChannelAttachmentPreviewAccessGate {
+    static func requireProtectedData(isAvailable: Bool) throws {
+        guard isAvailable else {
+            throw E2eeChannelAttachmentPreviewError.waitingForUnlock
+        }
+    }
+}
+
+/// Builds the privacy-safe Channel Info attachment telemetry vocabulary.
+///
+/// Keep this formatter separate from the logger call sites so tests can prove that arbitrary
+/// transport and persistence errors never put identifiers, filenames, URLs or key material into
+/// logs. Only bounded counts, booleans and fixed categories are emitted.
+enum E2eeChannelAttachmentTelemetry {
+    enum Operation: String {
+        case query
+        case join
+    }
+
+    enum FailureCategory: String {
+        case networkUnavailable
+        case serviceTemporarilyUnavailable
+        case attachmentBusy
+        case retryConflict
+        case attachmentTooLarge
+        case invalidAttachment
+        case attachmentAlreadyBound
+        case multipartRequired
+        case permissionDenied
+        case contractViolation
+        case localStateUnavailable
+        case unknown
+    }
+
+    static func queryStarted(limit: Int, hasCursor: Bool) -> String {
+        "[E2EE_CHANNEL_ATTACHMENTS] operation=query state=started limit=\(limit) has_cursor=\(hasCursor)"
+    }
+
+    static func querySucceeded(projectionCount: Int, hasMore: Bool) -> String {
+        "[E2EE_CHANNEL_ATTACHMENTS] operation=query state=succeeded projection_count=\(projectionCount) has_more=\(hasMore)"
+    }
+
+    static func joinSucceeded(
+        projectionCount: Int,
+        renderableCount: Int,
+        unavailableCount: Int
+    ) -> String {
+        "[E2EE_CHANNEL_ATTACHMENTS] operation=join state=succeeded projection_count=\(projectionCount) renderable_count=\(renderableCount) unavailable_count=\(unavailableCount)"
+    }
+
+    static func failed(operation: Operation, error: Error) -> String {
+        let failure = failureMetadata(operation: operation, error: error)
+        return "[E2EE_CHANNEL_ATTACHMENTS] operation=\(operation.rawValue) state=failed category=\(failure.category.rawValue) retryable=\(failure.retryable)"
+    }
+
+    private static func failureMetadata(
+        operation: Operation,
+        error: Error
+    ) -> (category: FailureCategory, retryable: Bool) {
+        if operation == .join {
+            return (.localStateUnavailable, true)
+        }
+        if error is E2eeAttachmentAPIContractError {
+            return (.contractViolation, false)
+        }
+
+        let remote = E2eeAttachmentRemoteError.classify(error)
+        let category = FailureCategory(rawValue: remote.category.rawValue) ?? .unknown
+        return (category, remote.isRetryable)
+    }
+}
+
+/// Durable, SDK-owned pagination state for the E2EE attachment projection shown in Channel Info.
+///
+/// A Channel Info screen has separate Media, File and Voice tabs, but Bellboy exposes one ordered
+/// attachment projection. Sharing this controller prevents the tabs from issuing three independent
+/// pagination streams and from synthesizing or racing opaque cursors in application code.
+@MainActor
+public final class E2eeChannelAttachmentListController {
+    /// Presentation state derived independently by each Channel Info tab from the shared
+    /// projection snapshot. The tab supplies only its filtered row count, so a page failure can
+    /// surface without discarding rows already loaded by that tab or its siblings.
+    public enum TabPresentationState: Equatable {
+        case hidden
+        case loading
+        case empty
+        case retryableFailure
+        case terminalFailure
+    }
+
+    public enum Phase: Equatable {
+        case idle
+        case loading
+        case loaded
+        case failed
+    }
+
+    /// Stable failure semantics for Channel Info pagination. A retryable failure may safely
+    /// request the exact same opaque cursor; a terminal failure requires a refresh, permission
+    /// change or a newer client contract and must not loop automatically.
+    public enum FailureKind: Equatable {
+        case retryable
+        case terminal
+    }
+
+    public struct Snapshot {
+        public let items: [E2eeChannelAttachmentListItem]
+        public let phase: Phase
+        public let hasMore: Bool
+        public let unavailableCount: Int
+        public let failureKind: FailureKind?
+
+        /// Derives one tab's UI state without mutating or copying the shared pagination stream.
+        /// Existing filtered rows remain renderable while another page loads or fails.
+        public func tabPresentationState(filteredItemCount: Int) -> TabPresentationState {
+            switch phase {
+            case .idle, .loading:
+                return filteredItemCount == 0 ? .loading : .hidden
+            case .loaded:
+                return filteredItemCount == 0 && !hasMore ? .empty : .hidden
+            case .failed:
+                return failureKind == .retryable ? .retryableFailure : .terminalFailure
+            }
+        }
+    }
+
+    typealias PageLoader = (
+        _ cid: ChannelId,
+        _ limit: Int,
+        _ cursor: E2eeChannelAttachmentListCursor?
+    ) async throws -> E2eeChannelAttachmentListPage
+
+    typealias FailureClassifier = (Error) -> FailureKind
+
+    public private(set) var snapshot = Snapshot(
+        items: [],
+        phase: .idle,
+        hasMore: true,
+        unavailableCount: 0,
+        failureKind: nil
+    )
+
+    private let cid: ChannelId
+    private let pageSize: Int
+    private let pageLoader: PageLoader
+    private let failureClassifier: FailureClassifier
+    private var cursor: E2eeChannelAttachmentListCursor?
+    private var pageTask: Task<Void, Never>?
+    private var generation: UInt64 = 0
+    private var observers: [UUID: (Snapshot) -> Void] = [:]
+
+    init(
+        cid: ChannelId,
+        pageSize: Int = 50,
+        failureClassifier: @escaping FailureClassifier = E2eeChannelAttachmentListController.classifyFailure,
+        pageLoader: @escaping PageLoader
+    ) {
+        self.cid = cid
+        self.pageSize = min(max(pageSize, 1), 100)
+        self.failureClassifier = failureClassifier
+        self.pageLoader = pageLoader
+    }
+
+    /// Registers a snapshot observer. The current snapshot is delivered synchronously so a tab
+    /// created after another tab loaded pages can render without starting a duplicate query.
+    @discardableResult
+    public func observe(_ observer: @escaping (Snapshot) -> Void) -> UUID {
+        let id = UUID()
+        observers[id] = observer
+        observer(snapshot)
+        return id
+    }
+
+    public func removeObserver(_ id: UUID) {
+        observers[id] = nil
+    }
+
+    /// Starts the first page only when no request or previously loaded snapshot exists.
+    public func startIfNeeded() {
+        guard snapshot.phase == .idle, snapshot.items.isEmpty else { return }
+        loadNextPage()
+    }
+
+    /// Discards the current projection and restarts from Bellboy's first page. Results from a
+    /// cancelled generation are ignored even if the underlying transport completes later.
+    public func refresh() {
+        pageTask?.cancel()
+        pageTask = nil
+        generation &+= 1
+        cursor = nil
+        snapshot = Snapshot(
+            items: [],
+            phase: .idle,
+            hasMore: true,
+            unavailableCount: 0,
+            failureKind: nil
+        )
+        notifyObservers()
+        loadNextPage()
+    }
+
+    /// Loads one ordered keyset page. Repeated calls while a page is active are coalesced.
+    public func loadNextPage() {
+        guard pageTask == nil,
+              snapshot.hasMore,
+              snapshot.phase != .failed else { return }
+
+        let requestCursor = cursor
+        let requestGeneration = generation
+        snapshot = Snapshot(
+            items: snapshot.items,
+            phase: .loading,
+            hasMore: snapshot.hasMore,
+            unavailableCount: snapshot.unavailableCount,
+            failureKind: nil
+        )
+        notifyObservers()
+
+        pageTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let page = try await pageLoader(cid, pageSize, requestCursor)
+                guard !Task.isCancelled, requestGeneration == generation else { return }
+                apply(page, previousCursor: requestCursor)
+            } catch is CancellationError {
+                guard requestGeneration == generation else { return }
+                pageTask = nil
+            } catch {
+                guard !Task.isCancelled, requestGeneration == generation else { return }
+                pageTask = nil
+                snapshot = Snapshot(
+                    items: snapshot.items,
+                    phase: .failed,
+                    hasMore: snapshot.hasMore,
+                    unavailableCount: snapshot.unavailableCount,
+                    failureKind: failureClassifier(error)
+                )
+                notifyObservers()
+            }
+        }
+    }
+
+    /// Retries the same cursor after a page failure without discarding already loaded items.
+    public func retry() {
+        guard snapshot.phase == .failed, snapshot.failureKind == .retryable else { return }
+        snapshot = Snapshot(
+            items: snapshot.items,
+            phase: .loaded,
+            hasMore: snapshot.hasMore,
+            unavailableCount: snapshot.unavailableCount,
+            failureKind: nil
+        )
+        loadNextPage()
+    }
+
+    public func cancel() {
+        pageTask?.cancel()
+        pageTask = nil
+        generation &+= 1
+        snapshot = Snapshot(
+            items: snapshot.items,
+            phase: .idle,
+            hasMore: snapshot.hasMore,
+            unavailableCount: snapshot.unavailableCount,
+            failureKind: nil
+        )
+        notifyObservers()
+    }
+
+    private func apply(
+        _ page: E2eeChannelAttachmentListPage,
+        previousCursor: E2eeChannelAttachmentListCursor?
+    ) {
+        pageTask = nil
+        var knownIds = Set(snapshot.items.map(\.attachmentId))
+        let uniqueItems = page.items.filter { knownIds.insert($0.attachmentId).inserted }
+        let nextCursor = page.nextCursor
+        let canContinue = page.hasMore && nextCursor != nil && nextCursor != previousCursor
+        cursor = nextCursor
+        snapshot = Snapshot(
+            items: snapshot.items + uniqueItems,
+            phase: .loaded,
+            hasMore: canContinue,
+            unavailableCount: snapshot.unavailableCount + page.unavailableCount,
+            failureKind: nil
+        )
+        notifyObservers()
+    }
+
+    static func classifyFailure(_ error: Error) -> FailureKind {
+        E2eeAttachmentRemoteError.classify(error).isRetryable ? .retryable : .terminal
+    }
+
+    private func notifyObservers() {
+        let currentSnapshot = snapshot
+        observers.values.forEach { $0(currentSnapshot) }
+    }
 }
 
 enum E2eeChannelAttachmentProjectionError: Error, Equatable {
@@ -129,7 +436,86 @@ enum E2eeChannelAttachmentProjectionMapper {
     }
 }
 
+/// Loads the authenticated attachment manifests for one Bellboy projection page in a single
+/// Core Data fetch. Keeping this operation page-scoped avoids an N+1 fetch for Channel Info and
+/// makes the durable `message_id` boundary explicit before any projection can be rendered.
+enum E2eeChannelAttachmentDurableManifestStore {
+    static func loadPayloads(
+        messageIds: Set<String>,
+        databaseContainer: DatabaseContainer
+    ) async throws -> [String: E2ePayload] {
+        try await withCheckedThrowingContinuation { continuation in
+            databaseContainer.backgroundReadOnlyContext.perform { [databaseContainer] in
+                do {
+                    let dtos = try MessageDecryptDTO.load(
+                        messageIds: messageIds,
+                        context: databaseContainer.backgroundReadOnlyContext
+                    )
+                    let payloads = dtos.reduce(into: [String: E2ePayload]()) { result, entry in
+                        // A corrupt durable payload is treated exactly like a missing manifest:
+                        // fail closed for that projection while allowing other rows in the page.
+                        result[entry.key] = try? entry.value.asPayload()
+                    }
+                    continuation.resume(returning: payloads)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+}
+
+/// Performs the exact projection-to-manifest join after the page's durable payloads have been
+/// loaded. The join is keyed by `message_id`, then `attachment_id`; the mapper additionally
+/// authenticates CID and the complete known asset ID/kind/cipher-size set.
+enum E2eeChannelAttachmentProjectionJoiner {
+    typealias CachedPreview = (data: Data, generation: String)
+
+    static func makeItems(
+        projections: [QueryE2eeAttachmentProjection],
+        expectedCid: ChannelId,
+        payloadsByMessageId: [String: E2ePayload],
+        cachedPreview: (_ previewAssetId: String) -> CachedPreview?
+    ) -> (items: [E2eeChannelAttachmentListItem], unavailableCount: Int) {
+        var unavailableCount = 0
+        let items = projections.compactMap { projection -> E2eeChannelAttachmentListItem? in
+            do {
+                let payload = payloadsByMessageId[projection.messageId]
+                let previewAssetId = payload?
+                    .e2eeAttachments
+                    .first(where: { $0.attachmentId == projection.attachmentId })?
+                    .assets
+                    .first(where: { $0.kind == .preview })?
+                    .assetId
+                let preview = previewAssetId.flatMap { cachedPreview($0) }
+                return try E2eeChannelAttachmentProjectionMapper.makeItem(
+                    projection: projection,
+                    expectedCid: expectedCid,
+                    payload: payload,
+                    cachedPreview: preview
+                )
+            } catch {
+                unavailableCount += 1
+                return nil
+            }
+        }
+        return (items, unavailableCount)
+    }
+}
+
 extension ErmisClient {
+    /// Creates the shared Channel Info projection controller for one E2EE channel.
+    /// Media, File and Voice tabs should observe the same instance.
+    @MainActor
+    public func e2eeChannelAttachmentListController(
+        for cid: ChannelId,
+        pageSize: Int = 50
+    ) -> E2eeChannelAttachmentListController {
+        E2eeChannelAttachmentListController(cid: cid, pageSize: pageSize) { cid, limit, cursor in
+            return try await self.queryE2eeChannelAttachments(in: cid, limit: limit, cursor: cursor)
+        }
+    }
+
     /// Queries confirmed E2EE attachments for Channel Info and joins the server projection with
     /// locally persisted decrypted manifests.
     ///
@@ -145,58 +531,64 @@ extension ErmisClient {
         let requestCursor = cursor.map {
             QueryE2eeAttachmentsCursor(createdAt: $0.createdAt, attachmentId: $0.attachmentId)
         }
-        let response = try await apiClient.queryE2eeAttachments(
-            cid: cid,
-            request: QueryE2eeAttachmentsRequest(limit: boundedLimit, cursor: requestCursor)
+        log.info(
+            E2eeChannelAttachmentTelemetry.queryStarted(
+                limit: boundedLimit,
+                hasCursor: requestCursor != nil
+            ),
+            subsystems: .mls
         )
-
-        let payloads: [String: E2ePayload] = try await withCheckedThrowingContinuation { continuation in
-            databaseContainer.backgroundReadOnlyContext.perform { [databaseContainer] in
-                do {
-                    let messageIds = Set(response.attachments.map(\.messageId))
-                    let dtos = try MessageDecryptDTO.load(
-                        messageIds: messageIds,
-                        context: databaseContainer.backgroundReadOnlyContext
-                    )
-                    let payloads = dtos.reduce(into: [String: E2ePayload]()) { result, entry in
-                        result[entry.key] = try? entry.value.asPayload()
-                    }
-                    continuation.resume(returning: payloads)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
+        let response: QueryE2eeAttachmentsResponse
+        do {
+            response = try await apiClient.queryE2eeAttachments(
+                cid: cid,
+                request: QueryE2eeAttachmentsRequest(limit: boundedLimit, cursor: requestCursor)
+            )
+            log.info(
+                E2eeChannelAttachmentTelemetry.querySucceeded(
+                    projectionCount: response.attachments.count,
+                    hasMore: response.hasMore
+                ),
+                subsystems: .mls
+            )
+        } catch {
+            log.error(
+                E2eeChannelAttachmentTelemetry.failed(operation: .query, error: error),
+                subsystems: .mls
+            )
+            throw error
         }
 
-        var unavailableCount = 0
-        let items = response.attachments.compactMap { projection -> E2eeChannelAttachmentListItem? in
-            do {
-                let previewAssetId = payloads[projection.messageId]?
-                    .e2eeAttachments
-                    .first(where: { $0.attachmentId == projection.attachmentId })?
-                    .assets
-                    .first(where: { $0.kind == .preview })?
-                    .assetId
-                let cachedPreview = previewAssetId.flatMap {
-                    E2eeAttachmentPreviewCache.shared.value(for: $0)
-                }
-                return try E2eeChannelAttachmentProjectionMapper.makeItem(
-                    projection: projection,
-                    expectedCid: cid,
-                    payload: payloads[projection.messageId],
-                    cachedPreview: cachedPreview
-                )
-            } catch {
-                unavailableCount += 1
-                return nil
+        let joined: (items: [E2eeChannelAttachmentListItem], unavailableCount: Int)
+        do {
+            let payloads = try await E2eeChannelAttachmentDurableManifestStore.loadPayloads(
+                messageIds: Set(response.attachments.map(\.messageId)),
+                databaseContainer: databaseContainer
+            )
+            joined = E2eeChannelAttachmentProjectionJoiner.makeItems(
+                projections: response.attachments,
+                expectedCid: cid,
+                payloadsByMessageId: payloads
+            ) { previewAssetId in
+                E2eeAttachmentPreviewCache.shared.value(for: previewAssetId)
             }
+        } catch {
+            log.error(
+                E2eeChannelAttachmentTelemetry.failed(operation: .join, error: error),
+                subsystems: .mls
+            )
+            throw error
         }
         log.info(
-            "[E2EE_CHANNEL_ATTACHMENTS] operation=query state=succeeded projection_count=\(response.attachments.count) renderable_count=\(items.count) unavailable_count=\(unavailableCount) has_more=\(response.hasMore)",
+            E2eeChannelAttachmentTelemetry.joinSucceeded(
+                projectionCount: response.attachments.count,
+                renderableCount: joined.items.count,
+                unavailableCount: joined.unavailableCount
+            ),
             subsystems: .mls
         )
         return E2eeChannelAttachmentListPage(
-            items: items,
+            items: joined.items,
             nextCursor: response.nextCursor.map {
                 E2eeChannelAttachmentListCursor(
                     createdAt: $0.createdAt,
@@ -204,7 +596,7 @@ extension ErmisClient {
                 )
             },
             hasMore: response.hasMore,
-            unavailableCount: unavailableCount
+            unavailableCount: joined.unavailableCount
         )
     }
 

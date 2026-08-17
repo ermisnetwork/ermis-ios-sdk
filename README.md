@@ -253,6 +253,70 @@ The four seed invocations intentionally report an XCTest process failure because
 `SIGKILL` after its durable boundary. The script succeeds only when every following invocation
 reopens the same on-disk OpenMLS/Core Data state and verifies TCR-005 through TCR-008.
 
+#### E2EE attachment original download and export
+
+An E2EE attachment's `remoteURL` is an opaque SDK reference, not a storage URL. Do not pass it to a
+generic downloader, `AVPlayer`, Photos, a document picker, or a share sheet. Resolve an original
+through the SDK so its declared ciphertext size and global SHA-256 are checked before authenticated
+frame decryption exposes a protected local file:
+
+```swift
+let lease = try await client.acquireAttachmentForViewing(attachment) { progress in
+    // `fractionCompleted` is network ciphertext progress only. Keep processing UI visible while
+    // the phase is `.verifying`, `.waitingForUnlock`, or `.decrypting`.
+    updateTransferUI(progress)
+}
+defer { lease.release() }
+
+let localURL = lease.localURL
+// Keep `lease` alive while AVPlayer, WebKit, Photos, Files, or the share sheet reads `localURL`.
+```
+
+The foreground resolver coalesces requests for the same asset and bounds interactive full-file
+downloads. Cancelling a viewer releases only that viewer; the underlying request is cancelled when
+no requester remains. A download-grant-related `401`/`403` obtains one fresh grant and restarts the
+whole GET. It never trusts an unproven partial response. Plaintext is atomically published only after
+all size/hash/frame-GCM checks pass.
+
+If protected data is unavailable after the ciphertext has been downloaded and globally verified,
+the resolver reports `.waitingForUnlock`, keeps that verified ciphertext in protected SDK staging,
+and creates no plaintext. It automatically continues authenticated frame decryption after the device
+is unlocked. A foreground download that is still partial when the process is killed is not yet a
+durable resume point; process-death recovery for partial bytes belongs to the background-download
+journal/reconciliation milestone.
+
+Every viewer/exporter must own a separate `E2eeAttachmentOriginalLease`. Releasing one lease cannot
+delete a plaintext file while another gallery, Save, or Share operation still uses it. After the last
+lease is released, the SDK removes that plaintext original. The older
+`prepareAttachmentForViewing` URL-only API remains source-compatible, but because it cannot observe
+consumer lifetime, its plaintext is retained until client shutdown; new integrations should use the
+lease API.
+
+The built-in gallery keeps standard attachments on the existing download path. For opaque E2EE
+attachments, Save and Share consume only the verified local file. Save owns an independent request,
+whereas Share is viewer-scoped and is cancelled if the gallery closes. This foreground Save remains
+process-scoped; durable background download/export recovery is a separate follow-up milestone.
+
+The built-in file preview follows the same boundary: an opaque E2EE file reference is resolved to a
+size/SHA/frame-GCM-verified local file before WebKit preview or Files export. The opaque URL must not
+be handed to `WKWebView` or the standard attachment downloader (`NSURLErrorUnsupportedURL`).
+
+The message long-press **Download** action uses this same verified-original boundary. For an E2EE
+file it resolves the opaque reference first and presents the verified plaintext copy in the Files
+document picker; it never forwards `ermis-e2ee-attachment://...` to the generic HTTP downloader.
+Standard attachment downloads keep their existing behavior.
+
+#### E2EE attachments in Channel Info
+
+Channel Info for an effectively encrypted channel must use Bellboy's E2EE attachment projection
+query and join each projection to the durable decrypted message manifest. The encrypted manifest,
+not the projection, object key, URL, or filename extension, is authoritative for display metadata
+and image/video/file/voice classification. Visible cells may resolve only the encrypted preview;
+opening, saving, or sharing an original must use the verified-original pipeline above.
+
+See [E2EE Channel Info attachment integration](E2EE_CHANNEL_INFO_ATTACHMENTS.md) for pagination,
+join validation, unavailable-state, preview, and original-download requirements.
+
 <br />
 
 ### Step 6: Sending your first message

@@ -161,6 +161,22 @@ struct QueryE2eeAttachmentsCursor: Codable, Equatable, Sendable {
 struct QueryE2eeAttachmentsRequest: Codable, Equatable, Sendable {
     let limit: Int
     let cursor: QueryE2eeAttachmentsCursor?
+
+    enum CodingKeys: String, CodingKey {
+        case limit
+        case cursor
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(limit, forKey: .limit)
+        if let cursor {
+            try container.encode(cursor, forKey: .cursor)
+        } else {
+            // Bellboy's first-page contract is explicit: { "limit": 50, "cursor": null }.
+            try container.encodeNil(forKey: .cursor)
+        }
+    }
 }
 
 struct QueryE2eeAttachmentAssetProjection: Codable, Equatable, Sendable {

@@ -21,6 +21,10 @@ final class E2eeBackgroundTransferEventDrainer {
         let events = try journal.readAll()
         var applied = Set<String>()
         for event in events {
+            // Download callbacks share the same append-only journal so URLSession can persist
+            // them before protected state is available. Their owner drains them separately;
+            // consuming them here would lose a completed background download after relaunch.
+            guard event.resolvedOperation == .upload else { continue }
             guard let attempt = try store.attempt(taskToken: event.taskToken) else {
                 // A callback from a replaced/canceled attempt is intentionally consumed without
                 // mutating any current attempt.

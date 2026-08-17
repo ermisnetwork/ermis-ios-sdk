@@ -6,6 +6,9 @@ import Foundation
 import open_mls_ios
 import CoreData
 import CryptoKit
+#if canImport(UIKit)
+import UIKit
+#endif
 
 private enum E2eeSyncApplyError: LocalizedError {
     case missingAccount
@@ -2225,6 +2228,14 @@ class E2eRepository: EventsControllerDelegate {
     func loadChannelInfoAttachmentPreview(
         for item: E2eeChannelAttachmentListItem
     ) async throws -> Data? {
+#if canImport(UIKit)
+        let protectedDataAvailable = await MainActor.run {
+            UIApplication.shared.isProtectedDataAvailable
+        }
+        try E2eeChannelAttachmentPreviewAccessGate.requireProtectedData(
+            isAvailable: protectedDataAvailable
+        )
+#endif
         let messageId = item.messageId
         let attachmentId = item.attachmentId
         let cid = item.cid
@@ -3405,6 +3416,18 @@ class E2eRepository: EventsControllerDelegate {
             throw error
         }
         scopedTrace?.info(stage: "payload_encoded", payloadBytes: data.count)
+
+        #if DEBUG
+        if !message.e2eeAttachments.isEmpty {
+            // This is the exact JSON plaintext passed to OpenMLS below; its ciphertext becomes
+            // `mls_ciphertext` in the send-message request. Keep it out of non-Debug builds because
+            // attachment manifests contain confidential metadata, CEKs, and nonce prefixes.
+            log.debug(
+                "[E2EE_ATTACHMENT_PLAINTEXT_BEFORE_MLS_ENCRYPT] bytes=\(data.count) json=\(String(decoding: data, as: UTF8.self))",
+                subsystems: .mls
+            )
+        }
+        #endif
 
         var result: Result<([UInt8], Int), Error>?
         let enqueuedAt = E2eeSendTrace.nowNanoseconds()

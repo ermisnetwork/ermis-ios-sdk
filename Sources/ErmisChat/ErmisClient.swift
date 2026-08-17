@@ -109,7 +109,46 @@ public class ErmisClient {
             apiClient: apiClient,
             database: databaseContainer,
             ciphertextDirectory: config.e2eeAttachmentStorageFolderURL?
-                .appendingPathComponent("OriginalDownloads", isDirectory: true)
+                .appendingPathComponent("OriginalDownloads", isDirectory: true),
+            durableCiphertextProvider: { [weak self] input in
+                guard let self,
+                      let accountId = self.currentUserId,
+                      let transferCoordinator = self.e2eeAttachmentTransferCoordinator else {
+                    throw E2eeAttachmentOriginalDownloadError.backgroundTransferUnavailable
+                }
+
+                let lease = try await transferCoordinator.acquireVerifiedBackgroundCiphertext(
+                    accountId: accountId,
+                    cid: input.cid.rawValue,
+                    attachmentId: input.attachmentId,
+                    assetId: input.assetId,
+                    expectedCiphertextSize: Int64(clamping: input.expectedCiphertextBytes),
+                    expectedCiphertextSha256: input.expectedCiphertextSha256,
+                    requestProvider: { [weak self] in
+                        guard let self else {
+                            throw E2eeAttachmentOriginalDownloadError.backgroundTransferUnavailable
+                        }
+                        let grant = try await self.apiClient.e2eeAttachmentDownloadGrant(
+                            cid: input.cid,
+                            attachmentId: input.attachmentId,
+                            assetId: input.assetId
+                        )
+                        var request = URLRequest(url: grant.downloadURL)
+                        request.httpMethod = "GET"
+                        return request
+                    },
+                    progress: { completed, total in
+                        input.progress(.init(
+                            phase: .downloading,
+                            completedCiphertextBytes: UInt64(clamping: completed),
+                            totalCiphertextBytes: UInt64(clamping: total)
+                        ))
+                    }
+                )
+                return .init(localURL: lease.localURL) {
+                    await lease.consume()
+                }
+            }
         )
 
     func makeMessagesPaginationStateHandler() -> MessagesPaginationStateHandling {
@@ -609,6 +648,34 @@ public class ErmisClient {
             for: attachment,
             progress: progress
         )
+    }
+
+    /// Explicitly cancels the durable background GET for one E2EE original.
+    ///
+    /// Releasing or closing a viewer intentionally does not call this API: it only detaches that
+    /// consumer so the transfer can survive navigation and app relaunch. Use this method only for
+    /// a user-visible Cancel action. Other attachments and accounts are not affected.
+    public func cancelAttachmentOriginalDownload(
+        _ attachment: AnyMessageAttachment,
+        in cid: ChannelId
+    ) async throws {
+        guard let accountId = currentUserId,
+              let transferCoordinator = e2eeAttachmentTransferCoordinator else {
+            throw E2eeAttachmentOriginalDownloadError.backgroundTransferUnavailable
+        }
+        let reference = try E2eeAttachmentOriginalDownloadCoordinator.opaqueAssetReference(
+            for: attachment
+        )
+        try await withCheckedThrowingContinuation { continuation in
+            transferCoordinator.cancelBackgroundDownload(
+                accountId: accountId,
+                cid: cid.rawValue,
+                attachmentId: reference.attachmentId,
+                assetId: reference.assetId
+            ) { result in
+                continuation.resume(with: result)
+            }
+        }
     }
 
     /// Returns whether the attachment URL is an opaque E2EE reference that must never be passed

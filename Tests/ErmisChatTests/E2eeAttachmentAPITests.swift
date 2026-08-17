@@ -162,6 +162,26 @@ final class E2eeAttachmentAPITests: XCTestCase {
         XCTAssertTrue(delete.needDeviceId)
     }
 
+    func testChannelInfoKeepsStandardAndE2eeRoutesDistinct() throws {
+        let cid = try ChannelId(cid: "team:project:channel")
+        let standard = Endpoint<ChannelAttachmentListPayload>.channelAttachment(
+            cid: cid,
+            body: .init(attachmentTypes: [.image, .video])
+        )
+        let e2ee = Endpoint<QueryE2eeAttachmentsResponse>.queryE2eeAttachments(
+            cid: cid,
+            body: .init(limit: 50, cursor: nil)
+        )
+
+        XCTAssertEqual(standard.method, .post)
+        XCTAssertEqual(standard.path.value, "channels/team/project:channel/attachment")
+        XCTAssertFalse(standard.needDeviceId)
+
+        XCTAssertEqual(e2ee.method, .post)
+        XCTAssertEqual(e2ee.path.value, "v1/e2ee/channels/team/project:channel/attachments/query")
+        XCTAssertTrue(e2ee.needDeviceId)
+    }
+
     func testQueryRetainsUnknownFutureAssetKindAndValidatesCursor() throws {
         let data = Data(
             """
@@ -192,6 +212,35 @@ final class E2eeAttachmentAPITests: XCTestCase {
         XCTAssertEqual(response.attachments.first?.assets.first?.kind, "future-poster")
         XCTAssertNoThrow(try response.validate())
         XCTAssertThrowsError(try QueryE2eeAttachmentsRequest(limit: 101, cursor: nil).validate())
+    }
+
+    func testQueryFirstPageAndOpaqueCursorEncodeExactly() throws {
+        let firstPage = try JSONEncoder.ermis.encode(
+            QueryE2eeAttachmentsRequest(limit: 50, cursor: nil)
+        )
+        let firstPageJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: firstPage) as? [String: Any]
+        )
+
+        XCTAssertEqual(firstPageJSON["limit"] as? Int, 50)
+        XCTAssertTrue(firstPageJSON.keys.contains("cursor"))
+        XCTAssertTrue(firstPageJSON["cursor"] is NSNull)
+
+        let cursor = QueryE2eeAttachmentsCursor(
+            createdAt: "2026-08-17T10:00:00.123Z",
+            attachmentId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+        )
+        let nextPage = try JSONEncoder.ermis.encode(
+            QueryE2eeAttachmentsRequest(limit: 100, cursor: cursor)
+        )
+        let nextPageJSON = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: nextPage) as? [String: Any]
+        )
+        let encodedCursor = try XCTUnwrap(nextPageJSON["cursor"] as? [String: Any])
+
+        XCTAssertEqual(nextPageJSON["limit"] as? Int, 100)
+        XCTAssertEqual(encodedCursor["created_at"] as? String, cursor.createdAt)
+        XCTAssertEqual(encodedCursor["attachment_id"] as? String, cursor.attachmentId)
     }
 
     func testDownloadGrantMustMatchRequestedIdsAndUseHTTPS() throws {

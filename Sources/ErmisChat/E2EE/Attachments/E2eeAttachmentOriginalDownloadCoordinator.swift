@@ -86,6 +86,7 @@ enum E2eeAttachmentOriginalDownloadError: Error {
     case plaintextHashMismatch
     case invalidKeyMaterial
     case protectedDataUnavailable
+    case backgroundTransferUnavailable
 }
 
 #if canImport(UIKit)
@@ -396,15 +397,48 @@ actor E2eeAttachmentOriginalDownloadScheduler {
 /// size and global SHA-256 match do we frame-decrypt it into the process-lifetime playback folder.
 actor E2eeAttachmentOriginalDownloadCoordinator {
     typealias ProgressHandler = @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+    typealias GrantURLProvider = @Sendable (ChannelId, String, String) async throws -> URL
+    struct CiphertextDownloadInput: @unchecked Sendable {
+        let request: URLRequest
+        let expectedCiphertextBytes: UInt64
+        let progress: ProgressHandler
+    }
+    typealias CiphertextDownloader = @Sendable (CiphertextDownloadInput) async throws -> (URL, URLResponse)
+    struct DurableCiphertextInput: @unchecked Sendable {
+        let cid: ChannelId
+        let attachmentId: String
+        let assetId: String
+        let expectedCiphertextBytes: UInt64
+        let expectedCiphertextSha256: String
+        let progress: ProgressHandler
+    }
+    struct DurableCiphertextLease: @unchecked Sendable {
+        let localURL: URL
+        private let consumeHandler: @Sendable () async -> Void
 
-    private struct OpaqueAssetReference: Equatable {
+        init(localURL: URL, consumeHandler: @escaping @Sendable () async -> Void) {
+            self.localURL = localURL
+            self.consumeHandler = consumeHandler
+        }
+
+        func consume() async {
+            await consumeHandler()
+        }
+    }
+    typealias DurableCiphertextProvider = @Sendable (DurableCiphertextInput) async throws -> DurableCiphertextLease
+    typealias PlaintextPermissionWaiter = @Sendable (UInt64, ProgressHandler) async throws -> Void
+
+    struct OpaqueAssetReference: Equatable, Sendable {
         let attachmentId: String
         let assetId: String
     }
 
-    private let apiClient: APIClient
     private let database: DatabaseContainer
     private let fileManager: FileManager
+    private let grantURLProvider: GrantURLProvider
+    private let ciphertextDownloader: CiphertextDownloader
+    private let durableCiphertextProvider: DurableCiphertextProvider?
+    private let plaintextPermissionWaiter: PlaintextPermissionWaiter
     private let playbackDirectory: URL
     private let ciphertextDirectory: URL
     private let scheduler: E2eeAttachmentOriginalDownloadScheduler
@@ -430,20 +464,70 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         apiClient: APIClient,
         database: DatabaseContainer,
         fileManager: FileManager = .default,
-        ciphertextDirectory: URL? = nil
+        ciphertextDirectory: URL? = nil,
+        playbackDirectory: URL? = nil,
+        grantURLProvider: GrantURLProvider? = nil,
+        ciphertextDownloader: CiphertextDownloader? = nil,
+        durableCiphertextProvider: DurableCiphertextProvider? = nil,
+        plaintextPermissionWaiter: PlaintextPermissionWaiter? = nil
     ) {
-        self.apiClient = apiClient
+        self.init(
+            database: database,
+            fileManager: fileManager,
+            ciphertextDirectory: ciphertextDirectory,
+            playbackDirectory: playbackDirectory,
+            grantURLProvider: grantURLProvider ?? { cid, attachmentId, assetId in
+                try await apiClient.e2eeAttachmentDownloadGrant(
+                    cid: cid,
+                    attachmentId: attachmentId,
+                    assetId: assetId
+                ).downloadURL
+            },
+            ciphertextDownloader: ciphertextDownloader ?? { input in
+                try await Self.downloadCiphertext(
+                    request: input.request,
+                    expectedCiphertextBytes: input.expectedCiphertextBytes,
+                    progress: input.progress
+                )
+            },
+            durableCiphertextProvider: durableCiphertextProvider,
+            plaintextPermissionWaiter: plaintextPermissionWaiter ?? { ciphertextSize, progress in
+                try await Self.waitForPlaintextCreationPermission(
+                    ciphertextSize: ciphertextSize,
+                    progress: progress
+                )
+            }
+        )
+    }
+
+    /// Internal construction seam for deterministic full-download contract tests. The live SDK
+    /// initializer above still owns Bellboy grants and URLSession; this overload only replaces
+    /// those two I/O boundaries and never changes the public attachment API.
+    init(
+        database: DatabaseContainer,
+        fileManager: FileManager = .default,
+        ciphertextDirectory: URL? = nil,
+        playbackDirectory: URL? = nil,
+        grantURLProvider: @escaping GrantURLProvider,
+        ciphertextDownloader: @escaping CiphertextDownloader,
+        durableCiphertextProvider: DurableCiphertextProvider? = nil,
+        plaintextPermissionWaiter: @escaping PlaintextPermissionWaiter
+    ) {
         self.database = database
         self.fileManager = fileManager
+        self.grantURLProvider = grantURLProvider
+        self.ciphertextDownloader = ciphertextDownloader
+        self.durableCiphertextProvider = durableCiphertextProvider
+        self.plaintextPermissionWaiter = plaintextPermissionWaiter
         scheduler = E2eeAttachmentOriginalDownloadScheduler()
-        playbackDirectory = Self.defaultPlaybackDirectory(fileManager: fileManager)
+        self.playbackDirectory = playbackDirectory ?? Self.defaultPlaybackDirectory(fileManager: fileManager)
         self.ciphertextDirectory = ciphertextDirectory ?? fileManager.temporaryDirectory
             .appendingPathComponent("ErmisE2eeAttachmentCiphertext", isDirectory: true)
 
         // Startup cleanup is wired eagerly from ErmisClient. The lazy coordinator must only
         // ensure the directory exists; resetting it here could delete an active second client's
         // plaintext in the same process.
-        try? Self.prepareDirectory(playbackDirectory, fileManager: fileManager)
+        try? Self.prepareDirectory(self.playbackDirectory, fileManager: fileManager)
     }
 
     /// Cancels foreground viewer work and removes process-lifetime plaintext originals.
@@ -571,11 +655,14 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             }
             activeDownload = existing
         } else {
-            let apiClient = apiClient
             let database = database
             let fileManager = fileManager
             let playbackDirectory = playbackDirectory
             let ciphertextDirectory = ciphertextDirectory
+            let grantURLProvider = grantURLProvider
+            let ciphertextDownloader = ciphertextDownloader
+            let durableCiphertextProvider = durableCiphertextProvider
+            let plaintextPermissionWaiter = plaintextPermissionWaiter
             let attachmentId = attachment.id
             let scheduler = scheduler
             let downloadId = UUID()
@@ -588,11 +675,14 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                     let url = try await Self.downloadOriginal(
                         attachmentId: attachmentId,
                         reference: reference,
-                        apiClient: apiClient,
                         database: database,
                         fileManager: fileManager,
                         playbackDirectory: playbackDirectory,
                         ciphertextDirectory: ciphertextDirectory,
+                        grantURLProvider: grantURLProvider,
+                        ciphertextDownloader: ciphertextDownloader,
+                        durableCiphertextProvider: durableCiphertextProvider,
+                        plaintextPermissionWaiter: plaintextPermissionWaiter,
                         progress: { update in
                             Task {
                                 await coordinator.publishOriginalDownloadProgress(
@@ -667,9 +757,12 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         guard activeDownload.requesterIds.isEmpty else { return }
 
         log.info(
-            "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=canceling reason=no_active_viewer",
+            "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=detaching reason=no_active_viewer durable_transport=\(durableCiphertextProvider != nil)",
             subsystems: .mls
         )
+        // This only cancels the current consumer and its polling/decrypt wrapper. When the live
+        // durable provider is configured, the SDK-owned background URLSession task keeps running
+        // and will be reused by the next viewer or after process relaunch.
         activeDownload.task.cancel()
     }
 
@@ -714,11 +807,14 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
     private static func downloadOriginal(
         attachmentId: AttachmentId,
         reference: OpaqueAssetReference,
-        apiClient: APIClient,
         database: DatabaseContainer,
         fileManager: FileManager,
         playbackDirectory: URL,
         ciphertextDirectory: URL,
+        grantURLProvider: @escaping GrantURLProvider,
+        ciphertextDownloader: @escaping CiphertextDownloader,
+        durableCiphertextProvider: DurableCiphertextProvider?,
+        plaintextPermissionWaiter: @escaping PlaintextPermissionWaiter,
         progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
     ) async throws -> URL {
         let startedAt = Date()
@@ -760,6 +856,8 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         // A verified ciphertext is intentionally durable across viewer cancellation, lock state,
         // decrypt ENOSPC, and process relaunch. Validate it again after relaunch before reuse.
         var hasVerifiedCiphertext = false
+        var ciphertextForDecryptionURL = verifiedCipherURL
+        var durableCiphertextLease: DurableCiphertextLease?
         if fileManager.fileExists(atPath: verifiedCipherURL.path) {
             do {
                 try validateCiphertext(
@@ -785,7 +883,29 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             requiresCiphertextStaging: !hasVerifiedCiphertext
         )
 
-        if !hasVerifiedCiphertext {
+        if !hasVerifiedCiphertext, let durableCiphertextProvider {
+            do {
+                let lease = try await durableCiphertextProvider(.init(
+                    cid: attachmentId.cid,
+                    attachmentId: manifest.attachmentId,
+                    assetId: original.assetId,
+                    expectedCiphertextBytes: original.cipherSize,
+                    expectedCiphertextSha256: original.cipherSha256,
+                    progress: progress
+                ))
+                try Task.checkCancellation()
+                durableCiphertextLease = lease
+                ciphertextForDecryptionURL = lease.localURL
+                hasVerifiedCiphertext = true
+            } catch {
+                let classifiedError = classifyDiskError(error, stage: .download)
+                log.error(
+                    "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=failed stage=background_download category=\(errorCategory(classifiedError))",
+                    subsystems: .mls
+                )
+                throw classifiedError
+            }
+        } else if !hasVerifiedCiphertext {
             try? fileManager.removeItem(at: cipherPartialURL)
             do {
                 let temporaryDownloadURL = try await downloadCiphertextWithGrantRenewal(
@@ -793,7 +913,8 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                     manifestAttachmentId: manifest.attachmentId,
                     assetId: original.assetId,
                     expectedCiphertextBytes: original.cipherSize,
-                    apiClient: apiClient,
+                    grantURLProvider: grantURLProvider,
+                    ciphertextDownloader: ciphertextDownloader,
                     progress: progress
                 )
                 // URLSession owns its original location. The delegate moved it to an operation-
@@ -826,10 +947,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             }
         }
 
-        try await waitForPlaintextCreationPermission(
-            ciphertextSize: original.cipherSize,
-            progress: progress
-        )
+        try await plaintextPermissionWaiter(original.cipherSize, progress)
         do {
             try Task.checkCancellation()
             guard let contentKey = Data(base64Encoded: original.contentKey),
@@ -843,7 +961,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                 totalCiphertextBytes: original.cipherSize
             ))
             let result = try E2eeAttachmentFrameCryptoV1.decryptFile(
-                at: verifiedCipherURL,
+                at: ciphertextForDecryptionURL,
                 to: plaintextPartialURL,
                 contentKey: contentKey,
                 noncePrefix: noncePrefix,
@@ -866,7 +984,11 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             // Plaintext becomes visible to gallery/export consumers only after every authenticated
             // size/hash check succeeds. The rename is atomic because both paths share a volume.
             try fileManager.moveItem(at: plaintextPartialURL, to: plaintextURL)
-            try? fileManager.removeItem(at: verifiedCipherURL)
+            if let durableCiphertextLease {
+                await durableCiphertextLease.consume()
+            } else {
+                try? fileManager.removeItem(at: verifiedCipherURL)
+            }
             log.info(
                 "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=succeeded plaintext_bytes=\(result.plaintextSize) elapsed_ms=\(Int(Date().timeIntervalSince(startedAt) * 1000))",
                 subsystems: .mls
@@ -877,7 +999,11 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             try? fileManager.removeItem(at: plaintextPartialURL)
             let classifiedError = classifyDiskError(error, stage: .export)
             if !shouldRetainVerifiedCiphertext(after: classifiedError) {
-                try? fileManager.removeItem(at: verifiedCipherURL)
+                if let durableCiphertextLease {
+                    await durableCiphertextLease.consume()
+                } else {
+                    try? fileManager.removeItem(at: verifiedCipherURL)
+                }
             }
             log.error(
                 "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=failed stage=decrypt category=\(errorCategory(classifiedError)) retained_cipher=\(shouldRetainVerifiedCiphertext(after: classifiedError))",
@@ -895,7 +1021,8 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         manifestAttachmentId: String,
         assetId: String,
         expectedCiphertextBytes: UInt64,
-        apiClient: APIClient,
+        grantURLProvider: @escaping GrantURLProvider,
+        ciphertextDownloader: @escaping CiphertextDownloader,
         progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
     ) async throws -> URL {
         for grantAttempt in 0...1 {
@@ -904,20 +1031,20 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
                 "[E2EE_ATTACHMENT_DOWNLOAD] operation=original state=grant_requesting attempt=\(grantAttempt + 1) cipher_bytes=\(expectedCiphertextBytes)",
                 subsystems: .mls
             )
-            let grant = try await apiClient.e2eeAttachmentDownloadGrant(
-                cid: attachmentId.cid,
-                attachmentId: manifestAttachmentId,
-                assetId: assetId
+            let grantURL = try await grantURLProvider(
+                attachmentId.cid,
+                manifestAttachmentId,
+                assetId
             )
             try Task.checkCancellation()
 
-            var request = URLRequest(url: grant.downloadURL)
+            var request = URLRequest(url: grantURL)
             request.httpMethod = "GET"
-            let (temporaryURL, response) = try await downloadCiphertext(
+            let (temporaryURL, response) = try await ciphertextDownloader(.init(
                 request: request,
                 expectedCiphertextBytes: expectedCiphertextBytes,
                 progress: progress
-            )
+            ))
             do {
                 try Task.checkCancellation()
                 guard let http = response as? HTTPURLResponse else {
@@ -992,7 +1119,16 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
 
     private static let opaqueScheme = "ermis-e2ee-attachment"
 
-    private static func parseReference(_ url: URL) throws -> OpaqueAssetReference {
+    nonisolated static func opaqueAssetReference(
+        for attachment: AnyMessageAttachment
+    ) throws -> OpaqueAssetReference {
+        guard let remoteURL = attachment.remoteURL else {
+            throw E2eeAttachmentOriginalDownloadError.invalidOpaqueURL
+        }
+        return try parseReference(remoteURL)
+    }
+
+    nonisolated private static func parseReference(_ url: URL) throws -> OpaqueAssetReference {
         guard url.scheme == opaqueScheme,
               url.host == "asset" else {
             throw E2eeAttachmentOriginalDownloadError.invalidOpaqueURL
@@ -1108,7 +1244,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
 
     private static func waitForPlaintextCreationPermission(
         ciphertextSize: UInt64,
-        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+        progress: @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
     ) async throws {
 #if canImport(UIKit)
         let isAvailable = await MainActor.run { UIApplication.shared.isProtectedDataAvailable }

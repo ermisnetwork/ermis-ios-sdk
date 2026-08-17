@@ -16,6 +16,10 @@ public enum E2eeBackgroundSessionEventHandlingResult: Equatable, Sendable {
 
 enum E2eeBackgroundTransferCoordinatorError: Error, Equatable {
     case invalidUploadRequest
+    case invalidDownloadRequest
+    case backgroundDownloadFailedRetryable
+    case backgroundDownloadFailedTerminal
+    case verifiedCiphertextUnavailable
     case sourceFileUnavailable
     case nonCanonicalUploadSource
     case attemptNotFound
@@ -27,6 +31,27 @@ enum E2eeBackgroundTransferCoordinatorError: Error, Equatable {
     case invalidMultipartPartFile
     case multipartStateChanged
     case appExtensionCannotSchedule
+}
+
+struct E2eeVerifiedBackgroundCiphertextLease: @unchecked Sendable {
+    let localURL: URL
+    let downloadId: String
+    private let consumeHandler: @Sendable () async -> Void
+
+    init(
+        localURL: URL,
+        downloadId: String,
+        consumeHandler: @escaping @Sendable () async -> Void
+    ) {
+        self.localURL = localURL
+        self.downloadId = downloadId
+        self.consumeHandler = consumeHandler
+    }
+
+    /// Deletes verified ciphertext only after authenticated plaintext has been persisted.
+    func consume() async {
+        await consumeHandler()
+    }
 }
 
 struct E2eeBackgroundSessionDescriptor: Equatable, Sendable {
@@ -72,9 +97,12 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
     /// must use the exact same durable store instance as callback reconciliation.
     let store: E2eeDurableTransferStore
     let stagingStore: E2eeAttachmentStagingStore
+    let backgroundDownloadStore: E2eeDurableBackgroundDownloadStore
     private let multipartPartFileStore: E2eeMultipartPartFileStore
     private let journal: BackgroundTransferEventJournal
     private let drainer: E2eeBackgroundTransferEventDrainer
+    private let backgroundDownloadFileStore: E2eeBackgroundDownloadFileStore
+    private let backgroundDownloadDrainer: E2eeBackgroundDownloadEventDrainer
     private let stateQueue = DispatchQueue(label: "network.ermis.e2ee.background-transfer-state")
     private let delegateQueue: OperationQueue
     private var session: URLSession!
@@ -89,6 +117,10 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
     private var attachmentFinalizer: E2eeAttachmentFinalizer?
     private var progressJournalThrottle = E2eeTransferProgressJournalThrottle()
     private var bodySentReconcileGate = E2eeBodySentReconcileGate()
+    /// `didFinishDownloadingTo` must move the temporary file before returning. If that synchronous
+    /// capture fails, remember the opaque token until `didCompleteWithError` writes the durable
+    /// terminal callback. This set is delegate-queue confined.
+    private var downloadCaptureFailedTokens = Set<String>()
     /// A missing single PUT is retried at most once per asset/process with the same presigned URL
     /// and byte-identical canonical ciphertext. This repairs a lost URLSession task without ever
     /// minting a new attachment ID, CEK, nonce, or message intent.
@@ -105,6 +137,10 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent(descriptor.storageNamespace, isDirectory: true)
         store = E2eeDurableTransferStore(rootURL: scopedRootURL)
+        let backgroundDownloadStore = E2eeDurableBackgroundDownloadStore(rootURL: scopedRootURL)
+        self.backgroundDownloadStore = backgroundDownloadStore
+        let backgroundDownloadFileStore = E2eeBackgroundDownloadFileStore(rootURL: scopedRootURL)
+        self.backgroundDownloadFileStore = backgroundDownloadFileStore
         let stagingStore = E2eeAttachmentStagingStore(rootURL: scopedRootURL)
         self.stagingStore = stagingStore
         multipartPartFileStore = E2eeMultipartPartFileStore(stagingStore: stagingStore)
@@ -115,6 +151,11 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
         )
         self.journal = journal
         drainer = E2eeBackgroundTransferEventDrainer(store: store, journal: journal)
+        backgroundDownloadDrainer = E2eeBackgroundDownloadEventDrainer(
+            store: backgroundDownloadStore,
+            fileStore: backgroundDownloadFileStore,
+            journal: journal
+        )
         let delegateQueue = OperationQueue()
         delegateQueue.name = "network.ermis.e2ee.background-transfer-delegate"
         delegateQueue.maxConcurrentOperationCount = 1
@@ -204,6 +245,232 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
     func notifyTransferStoreChanged() {
         stateQueue.async { [weak self] in
             self?.publishTransferSnapshotsLocked()
+        }
+    }
+
+    /// Persists the protected logical mapping before starting the shared background session task.
+    /// Only opaque task metadata is exposed to URLSession callbacks and the unprotected journal.
+    @discardableResult
+    func scheduleBackgroundDownload(
+        accountId: String,
+        cid: String,
+        attachmentId: String,
+        assetId: String,
+        request: URLRequest,
+        expectedCiphertextSize: Int64,
+        expectedCiphertextSha256: String
+    ) throws -> E2eeDurableBackgroundDownload {
+        guard !Bundle.main.isAppExtension else {
+            throw E2eeBackgroundTransferCoordinatorError.appExtensionCannotSchedule
+        }
+        guard request.url != nil,
+              request.httpMethod?.uppercased() == "GET",
+              expectedCiphertextSize > 0 else {
+            throw E2eeBackgroundTransferCoordinatorError.invalidDownloadRequest
+        }
+
+        let taskToken = UUID().uuidString
+        let task = session.downloadTask(with: request)
+        task.taskDescription = taskToken
+        let record = E2eeDurableBackgroundDownload(
+            accountId: accountId,
+            cid: cid,
+            attachmentId: attachmentId,
+            assetId: assetId,
+            taskToken: taskToken,
+            taskIdentifier: task.taskIdentifier,
+            expectedCiphertextSize: expectedCiphertextSize,
+            expectedCiphertextSha256: expectedCiphertextSha256
+        )
+        do {
+            let result = try backgroundDownloadStore.insertOrExisting(record)
+            guard result.inserted else {
+                task.cancel()
+                return result.record
+            }
+        } catch {
+            task.cancel()
+            throw error
+        }
+        task.resume()
+        log.info(
+            "[E2EE_ATTACHMENT_GET] transport=background state=scheduled expected_bytes=\(expectedCiphertextSize)",
+            subsystems: .mls
+        )
+        return record
+    }
+
+    /// Returns globally verified ciphertext for one logical original. Closing a viewer only
+    /// cancels this polling waiter; it never cancels the SDK-owned background URLSession task.
+    /// A retryable terminal attempt receives one fresh grant/GET while preserving logical IDs.
+    func acquireVerifiedBackgroundCiphertext(
+        accountId: String,
+        cid: String,
+        attachmentId: String,
+        assetId: String,
+        expectedCiphertextSize: Int64,
+        expectedCiphertextSha256: String,
+        requestProvider: @escaping @Sendable () async throws -> URLRequest,
+        progress: @escaping @Sendable (Int64, Int64) -> Void
+    ) async throws -> E2eeVerifiedBackgroundCiphertextLease {
+        var retryCount = 0
+
+        // A canceled record is a durable tombstone for waiters that were already polling when
+        // the user pressed Cancel. A later explicit open is a new user intent, so retire old
+        // tombstones before scheduling a fresh grant/GET.
+        try? backgroundDownloadDrainer.drain()
+        for canceled in try backgroundDownloadStore.records(
+            accountId: accountId,
+            cid: cid,
+            attachmentId: attachmentId,
+            assetId: assetId
+        ) where canceled.phase == .canceled {
+            try removeBackgroundDownload(canceled)
+        }
+
+        while true {
+            try Task.checkCancellation()
+            try? backgroundDownloadDrainer.drain()
+
+            let current = try backgroundDownloadStore.newestRecord(
+                accountId: accountId,
+                cid: cid,
+                attachmentId: attachmentId,
+                assetId: assetId,
+                expectedCiphertextSize: expectedCiphertextSize,
+                expectedCiphertextSha256: expectedCiphertextSha256
+            )
+
+            if let current {
+                progress(current.completedCiphertextBytes, current.expectedCiphertextSize)
+                switch current.phase {
+                case .waitingForUnlock:
+                    guard let localURL = current.verifiedCiphertextURL,
+                          backgroundDownloadFileStore.verifiedFileURL(
+                              downloadId: current.downloadId
+                          ) == localURL else {
+                        try removeBackgroundDownload(current)
+                        if retryCount >= 1 {
+                            throw E2eeBackgroundTransferCoordinatorError.verifiedCiphertextUnavailable
+                        }
+                        retryCount += 1
+                        continue
+                    }
+                    return E2eeVerifiedBackgroundCiphertextLease(
+                        localURL: localURL,
+                        downloadId: current.downloadId
+                    ) { [weak self] in
+                        self?.consumeBackgroundDownload(downloadId: current.downloadId)
+                    }
+
+                case .scheduled, .downloading:
+                    break
+
+                case .failedRetryable:
+                    try removeBackgroundDownload(current)
+                    guard retryCount < 1 else {
+                        throw E2eeBackgroundTransferCoordinatorError.backgroundDownloadFailedRetryable
+                    }
+                    retryCount += 1
+                    continue
+
+                case .failedTerminal:
+                    throw E2eeBackgroundTransferCoordinatorError.backgroundDownloadFailedTerminal
+
+                case .canceled:
+                    throw CancellationError()
+
+                case .completed:
+                    try removeBackgroundDownload(current)
+                    continue
+                }
+            } else {
+                let request = try await requestProvider()
+                try Task.checkCancellation()
+                _ = try scheduleBackgroundDownload(
+                    accountId: accountId,
+                    cid: cid,
+                    attachmentId: attachmentId,
+                    assetId: assetId,
+                    request: request,
+                    expectedCiphertextSize: expectedCiphertextSize,
+                    expectedCiphertextSha256: expectedCiphertextSha256
+                )
+            }
+
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    private func consumeBackgroundDownload(downloadId: String) {
+        guard let record = try? backgroundDownloadStore.record(downloadId: downloadId) else {
+            return
+        }
+        backgroundDownloadFileStore.removeFiles(for: record)
+        try? backgroundDownloadStore.remove(downloadId: downloadId)
+        log.info(
+            "[E2EE_ATTACHMENT_GET] transport=background state=consumed",
+            subsystems: .mls
+        )
+    }
+
+    private func removeBackgroundDownload(_ record: E2eeDurableBackgroundDownload) throws {
+        backgroundDownloadFileStore.removeFiles(for: record)
+        try backgroundDownloadStore.remove(downloadId: record.downloadId)
+    }
+
+    /// Cancels only the exact receive-side original selected by the user.
+    ///
+    /// The durable canceled tombstone remains long enough to stop existing polling waiters from
+    /// recreating the GET. A later explicit open retires that tombstone and starts a fresh grant.
+    func cancelBackgroundDownload(
+        accountId: String,
+        cid: String,
+        attachmentId: String,
+        assetId: String,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let downloads = try self.backgroundDownloadStore.records(
+                    accountId: accountId,
+                    cid: cid,
+                    attachmentId: attachmentId,
+                    assetId: assetId
+                )
+                let tokens = Set(downloads.map(\.taskToken))
+                self.session.getAllTasks { [weak self] tasks in
+                    guard let self else { return }
+                    self.stateQueue.async {
+                        tasks.filter { task in
+                            task.taskDescription.map(tokens.contains) == true
+                        }.forEach { $0.cancel() }
+
+                        do {
+                            for download in downloads {
+                                self.backgroundDownloadFileStore.removeFiles(for: download)
+                                _ = try self.backgroundDownloadStore.update(
+                                    downloadId: download.downloadId
+                                ) { record in
+                                    record.phase = .canceled
+                                    record.fixedError = .canceled
+                                    record.verifiedCiphertextURL = nil
+                                }
+                            }
+                            log.info(
+                                "[E2EE_ATTACHMENT_GET] transport=background state=canceled_exact",
+                                subsystems: .mls
+                            )
+                            completion(.success(()))
+                        } catch {
+                            completion(.failure(error))
+                        }
+                    }
+                }
+            } catch {
+                completion(.failure(error))
+            }
         }
     }
 
@@ -439,6 +706,7 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
         dispatchPrecondition(condition: .onQueue(stateQueue))
         do {
             _ = try drainer.drain()
+            _ = try backgroundDownloadDrainer.drain()
         } catch {
             log.error(
                 "[E2EE_ATTACHMENT] stage=reconcile_journal_drain state=failed error=\(e2eeTransferDiagnostic(error))",
@@ -514,7 +782,8 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
             guard let self else { return }
             do {
                 let attempts = try self.store.hydrate().filter { $0.accountId == accountId }
-                let tokens = Set(attempts.flatMap(Self.taskTokens))
+                let downloads = try self.backgroundDownloadStore.records(accountId: accountId)
+                let tokens = Set(attempts.flatMap(Self.taskTokens) + downloads.map(\.taskToken))
                 self.session.getAllTasks { [weak self] tasks in
                     guard let self else { return }
                     self.stateQueue.async {
@@ -541,6 +810,10 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
                                         }
                                     }
                                 }
+                            }
+                            for download in downloads {
+                                self.backgroundDownloadFileStore.removeFiles(for: download)
+                                try self.backgroundDownloadStore.remove(downloadId: download.downloadId)
                             }
                             self.publishTransferSnapshotsLocked()
                             completion(.success(()))
@@ -664,19 +937,32 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
 
     private func applyReconciliation(osTasks: [URLSessionTask]) throws {
         _ = try drainer.drain()
+        _ = try backgroundDownloadDrainer.drain()
         try cleanupUploadedMultipartPartFiles()
         try cleanupConfirmedAttemptsIfNeeded()
         try expireUploadAttemptsIfNeeded(osTasks: osTasks)
         var activeTokens = Set<String>()
+        var activeDownloadTokens = Set<String>()
         for task in osTasks {
-            guard let token = task.taskDescription,
-                  UUID(uuidString: token) != nil,
-                  let attempt = try store.attempt(taskToken: token),
-                  Self.matches(taskIdentifier: task.taskIdentifier, token: token, attempt: attempt) else {
+            guard let token = task.taskDescription, UUID(uuidString: token) != nil else {
                 task.cancel()
                 continue
             }
-            activeTokens.insert(token)
+            if task is URLSessionDownloadTask {
+                guard let record = try backgroundDownloadStore.record(taskToken: token),
+                      record.taskIdentifier == task.taskIdentifier else {
+                    task.cancel()
+                    continue
+                }
+                activeDownloadTokens.insert(token)
+            } else {
+                guard let attempt = try store.attempt(taskToken: token),
+                      Self.matches(taskIdentifier: task.taskIdentifier, token: token, attempt: attempt) else {
+                    task.cancel()
+                    continue
+                }
+                activeTokens.insert(token)
+            }
         }
 
         var activeAttemptCount = 0
@@ -723,7 +1009,35 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
             "[E2EE_ATTACHMENT] stage=reconcile state=evaluated os_task_count=\(osTasks.count) active_attempt_count=\(activeAttemptCount) missing_attempt_count=\(missingAttemptCount) finalizing_attempt_count=\(finalizingAttemptCount)",
             subsystems: .mls
         )
+        try reconcileBackgroundDownloads(activeTokens: activeDownloadTokens)
         triggerAttachmentFinalizationLocked()
+    }
+
+    private func reconcileBackgroundDownloads(activeTokens: Set<String>) throws {
+        var activeCount = 0
+        var missingCount = 0
+        for record in try backgroundDownloadStore.hydrate() where !record.phase.isTerminal {
+            if record.phase == .waitingForUnlock {
+                continue
+            }
+            if activeTokens.contains(record.taskToken) {
+                activeCount += 1
+                _ = try backgroundDownloadStore.update(downloadId: record.downloadId) { updated in
+                    updated.phase = .downloading
+                    updated.fixedError = nil
+                }
+            } else {
+                missingCount += 1
+                _ = try backgroundDownloadStore.update(downloadId: record.downloadId) { updated in
+                    updated.phase = .failedRetryable
+                    updated.fixedError = .unknown
+                }
+            }
+        }
+        log.info(
+            "[E2EE_ATTACHMENT_GET] stage=reconcile state=evaluated active_count=\(activeCount) missing_count=\(missingCount)",
+            subsystems: .mls
+        )
     }
 
     /// Replays a disappeared single PUT exactly once. PUT to the same opaque object key with the
@@ -1070,7 +1384,11 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
     }
 }
 
-extension E2eeBackgroundTransferCoordinator: URLSessionTaskDelegate, URLSessionDelegate {
+extension E2eeBackgroundTransferCoordinator:
+    URLSessionTaskDelegate,
+    URLSessionDownloadDelegate,
+    URLSessionDelegate
+{
     func urlSession(
         _ session: URLSession,
         task: URLSessionTask,
@@ -1148,38 +1466,149 @@ extension E2eeBackgroundTransferCoordinator: URLSessionTaskDelegate, URLSessionD
 
     func urlSession(
         _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard let token = downloadTask.taskDescription, UUID(uuidString: token) != nil else {
+            downloadTask.cancel()
+            return
+        }
+        guard progressJournalThrottle.shouldPersist(
+            taskToken: token,
+            completedBytes: totalBytesWritten,
+            totalBytes: totalBytesExpectedToWrite
+        ) else { return }
+        appendDelegateEvent(
+            BackgroundTransferEvent(
+                taskToken: token,
+                taskIdentifier: downloadTask.taskIdentifier,
+                operation: .download,
+                kind: .progress,
+                completedBytes: max(0, totalBytesWritten),
+                totalBytes: max(0, totalBytesExpectedToWrite),
+                httpStatus: nil,
+                eTag: nil,
+                error: .none
+            )
+        )
+        let percent = totalBytesExpectedToWrite > 0
+            ? min(100, Int((Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)) * 100))
+            : 0
+        log.debug(
+            "[E2EE_ATTACHMENT_GET] transport=background state=progress percent=\(percent) bytes_received=\(max(0, totalBytesWritten)) total_bytes=\(max(0, totalBytesExpectedToWrite))",
+            subsystems: .mls
+        )
+        stateQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try self.backgroundDownloadDrainer.drain()
+            } catch {
+                // Before first unlock, the protected mapping may not hydrate. The callback remains
+                // in the unprotected journal and will be replayed after protected data is available.
+                log.info(
+                    "[E2EE_ATTACHMENT_GET] transport=background state=progress_drain_deferred error=\(type(of: error))",
+                    subsystems: .mls
+                )
+            }
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard let token = downloadTask.taskDescription, UUID(uuidString: token) != nil else {
+            downloadTask.cancel()
+            return
+        }
+        do {
+            _ = try backgroundDownloadFileStore.captureTemporaryFile(
+                at: location,
+                taskToken: token,
+                taskIdentifier: downloadTask.taskIdentifier
+            )
+            log.info(
+                "[E2EE_ATTACHMENT_GET] transport=background state=ciphertext_captured bytes_received=\(max(0, downloadTask.countOfBytesReceived))",
+                subsystems: .mls
+            )
+        } catch {
+            downloadCaptureFailedTokens.insert(token)
+            log.error(
+                "[E2EE_ATTACHMENT_GET] transport=background state=ciphertext_capture_failed error=\(type(of: error))",
+                subsystems: .mls
+            )
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
         guard let token = task.taskDescription, UUID(uuidString: token) != nil else { return }
+        let isDownload = task is URLSessionDownloadTask
         progressJournalThrottle.remove(taskToken: token)
-        stateQueue.async { [weak self] in
-            self?.bodySentReconcileGate.cancel(taskToken: token)
+        if !isDownload {
+            stateQueue.async { [weak self] in
+                self?.bodySentReconcileGate.cancel(taskToken: token)
+            }
         }
         let response = task.response as? HTTPURLResponse
+        let callbackError: BackgroundTransferFixedError
+        if isDownload, downloadCaptureFailedTokens.remove(token) != nil, error == nil {
+            callbackError = .unknown
+        } else {
+            callbackError = Self.fixedError(error)
+        }
+        let completedBytes = isDownload ? task.countOfBytesReceived : task.countOfBytesSent
+        let totalBytes = isDownload
+            ? task.countOfBytesExpectedToReceive
+            : task.countOfBytesExpectedToSend
         let becameDurable = appendDelegateEvent(
             BackgroundTransferEvent(
                 taskToken: token,
                 taskIdentifier: task.taskIdentifier,
+                operation: isDownload ? .download : .upload,
                 kind: .completion,
-                completedBytes: max(0, task.countOfBytesSent),
-                totalBytes: max(0, task.countOfBytesExpectedToSend),
+                completedBytes: max(0, completedBytes),
+                totalBytes: max(0, totalBytes),
                 httpStatus: response?.statusCode,
                 eTag: response?.value(forHTTPHeaderField: "ETag"),
-                error: Self.fixedError(error)
+                error: callbackError
             )
         )
-        log.info(
-            "[E2EE_ATTACHMENT_PUT] transport=background state=completed http_status=\(response?.statusCode ?? 0) error=\(Self.fixedError(error).rawValue) bytes_sent=\(max(0, task.countOfBytesSent)) total_bytes=\(max(0, task.countOfBytesExpectedToSend))",
-            subsystems: .mls
-        )
+        if isDownload {
+            log.info(
+                "[E2EE_ATTACHMENT_GET] transport=background state=completed http_status=\(response?.statusCode ?? 0) error=\(callbackError.rawValue) bytes_received=\(max(0, completedBytes)) total_bytes=\(max(0, totalBytes))",
+                subsystems: .mls
+            )
+        } else {
+            log.info(
+                "[E2EE_ATTACHMENT_PUT] transport=background state=completed http_status=\(response?.statusCode ?? 0) error=\(callbackError.rawValue) bytes_sent=\(max(0, completedBytes)) total_bytes=\(max(0, totalBytes))",
+                subsystems: .mls
+            )
+        }
         if becameDurable {
-            resumeMultipartUploads { result in
-                if case .failure(let error) = result {
-                    log.error(
-                        "[E2EE_ATTACHMENT] stage=completion_reconcile state=failed error=\(e2eeTransferDiagnostic(error))",
-                        subsystems: .mls
-                    )
+            if isDownload {
+                reconcile { result in
+                    if case .failure(let error) = result {
+                        log.error(
+                            "[E2EE_ATTACHMENT_GET] stage=completion_reconcile state=failed error=\(e2eeTransferDiagnostic(error))",
+                            subsystems: .mls
+                        )
+                    }
+                }
+            } else {
+                resumeMultipartUploads { result in
+                    if case .failure(let error) = result {
+                        log.error(
+                            "[E2EE_ATTACHMENT] stage=completion_reconcile state=failed error=\(e2eeTransferDiagnostic(error))",
+                            subsystems: .mls
+                        )
+                    }
                 }
             }
         } else {
