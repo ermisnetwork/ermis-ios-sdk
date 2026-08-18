@@ -562,14 +562,14 @@ open class GalleryViewController: _ViewController,
         }
 
         if let videoCell = cell as? VideoAttachmentGalleryCell {
-            videoCell.videoURLResolver = { [weak client] attachment, progress, completion in
+            videoCell.videoPlaybackResolver = { [weak client] attachment, progress, completion in
                 guard let client else {
                     completion(.failure(URLError(.cancelled)))
                     return nil
                 }
                 let task = _Concurrency.Task {
                     do {
-                        let lease = try await client.acquireAttachmentForViewing(
+                        let lease = try await client.acquireVideoAttachmentForPlayback(
                             attachment,
                             progress: progress
                         )

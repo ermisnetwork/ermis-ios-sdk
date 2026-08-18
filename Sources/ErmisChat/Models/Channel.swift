@@ -506,4 +506,9 @@ public extension Channel {
     var canPinMessage: Bool {
         membership != nil && memberCapabilities.contains(.pinMessage)
     }
+
+    /// Whether this channel resolves to an MLS group. Topics inherit the parent channel flag.
+    public var isE2eeEnabled: Bool {
+        mlsEnabled || (parentCid != nil && parent?.mlsEnabled == true)
+    }
 }

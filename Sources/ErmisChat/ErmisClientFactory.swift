@@ -49,7 +49,9 @@ class ErmisClientFactory {
             uploadClient: config.customUploadClient ?? ErmisUploadClient(
                 encoder: encoder,
                 decoder: decoder,
-                sessionConfiguration: urlSessionConfiguration
+                sessionConfiguration: urlSessionConfiguration,
+                isStandardPresignedUploadEnabled: config.isStandardPresignedUploadEnabled,
+                allowsLegacyStandardUploadFallback: config.allowsLegacyStandardUploadFallback
             )
         )
 

@@ -87,6 +87,9 @@ class MessagePayload: Decodable {
     let quotedMessage: MessagePayload?
     let quotedMessageId: MessageId?
     let forwardChannelId: ChannelId?
+    let forwardMessageId: String?
+    let forwardParentCid: String?
+    let e2eeAttachmentIds: [String]
     let mentionedUsers: [String]
     let threadParticipants: [UserPayload]
     let replyCount: Int
@@ -103,6 +106,15 @@ class MessagePayload: Decodable {
     let translations: [TranslationLanguage: String]?
     let originalLanguage: String?
     let moderationDetails: MessageModerationDetailsPayload?
+
+    var e2eeReceivedEnvelope: E2eeReceivedMessageEnvelope {
+        .init(
+            forwardCid: forwardChannelId?.rawValue,
+            forwardMessageId: forwardMessageId,
+            forwardParentCid: forwardParentCid,
+            attachmentIds: e2eeAttachmentIds
+        )
+    }
 
     /// Only message payload from `getMessage` endpoint contains channel data. It's a convenience workaround for having to
     /// make an extra call do get channel details.
@@ -128,6 +140,9 @@ class MessagePayload: Decodable {
         parentId = try container.decodeIfPresent(String.self, forKey: .parentId)
         quotedMessage = try container.decodeIfPresent(MessagePayload.self, forKey: .quotedMessage)
         forwardChannelId = try container.decodeIfPresent(ChannelId.self, forKey: .forwardCid)
+        forwardMessageId = try container.decodeIfPresent(String.self, forKey: .forwardMessageId)
+        forwardParentCid = try container.decodeIfPresent(String.self, forKey: .forwardParentCid)
+        e2eeAttachmentIds = try container.decodeIfPresent([String].self, forKey: .e2eeAttachmentIds) ?? []
         mentionedUsers = try container.decodeArrayIfPresentIgnoringFailures([String].self, forKey: .mentionedUsers) ?? []
         mentionedAll = try container.decodeIfPresent(Bool.self, forKey: .mentionedAll) ?? false
         pinnedAt = try container.decodeIfPresent(Date.self, forKey: .pinnedAt)
@@ -176,6 +191,9 @@ class MessagePayload: Decodable {
         quotedMessageId: String? = nil,
         quotedMessage: MessagePayload? = nil,
         forwardChannelId: ChannelId?,
+        forwardMessageId: String? = nil,
+        forwardParentCid: String? = nil,
+        e2eeAttachmentIds: [String] = [],
         mentionedUsers: [String],
         mentionedAll: Bool = false,
         pinnedAt: Date? = nil,
@@ -213,6 +231,9 @@ class MessagePayload: Decodable {
         self.parentId = parentId
         self.quotedMessage = quotedMessage
         self.forwardChannelId = forwardChannelId
+        self.forwardMessageId = forwardMessageId
+        self.forwardParentCid = forwardParentCid
+        self.e2eeAttachmentIds = e2eeAttachmentIds
         self.mentionedUsers = mentionedUsers
         self.mentionedAll = mentionedAll
         self.pinnedAt = pinnedAt
@@ -264,6 +285,14 @@ struct MessageRequestBody: Encodable {
     var forwardParentCid: String?
     var e2eeGroupId: String?
     var e2eeAttachmentIds: [String]
+
+    /// Core Data's historical `forwardCid` default is an empty string. Treat that sentinel as
+    /// absent at the request boundary so an ordinary message cannot accidentally enter Bellboy's
+    /// forwarding validation path.
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
 
     /// The current no-AAD MLS lane is valid only for messages whose envelope carries no
     /// attachment/forward metadata. M2/M4 replace this fail-closed gate with the authenticated
@@ -377,9 +406,9 @@ struct MessageRequestBody: Encodable {
         self.stickerUrl = stickerUrl
         self.mentionedUserIds = mentionedUserIds
         self.createdAt = createdAt
-        self.forwardCid = forwardCid
-        self.forwardMessageId = forwardMessageId
-        self.forwardParentCid = forwardParentCid
+        self.forwardCid = Self.nonEmpty(forwardCid)
+        self.forwardMessageId = Self.nonEmpty(forwardMessageId)
+        self.forwardParentCid = Self.nonEmpty(forwardParentCid)
         self.e2eeGroupId = e2eeGroupId
         self.e2eeAttachmentIds = e2eeAttachmentIds
     }
@@ -434,10 +463,10 @@ struct MessageRequestBody: Encodable {
         try container.encodeIfPresent(quotedMessageId, forKey: .quotedMessageId)
         try container.encode(isSilent, forKey: .isSilent)
         try container.encodeIfPresent(createdAt, forKey: .createdAt)
-        try container.encodeIfPresent(forwardCid, forKey: .forwardCid)
+        try container.encodeIfPresent(Self.nonEmpty(forwardCid), forKey: .forwardCid)
         try container.encodeIfPresent(stickerUrl, forKey: .stickerUrl)
-        try container.encodeIfPresent(forwardMessageId, forKey: .forwardMessageId)
-        try container.encodeIfPresent(forwardParentCid, forKey: .forwardParentCid)
+        try container.encodeIfPresent(Self.nonEmpty(forwardMessageId), forKey: .forwardMessageId)
+        try container.encodeIfPresent(Self.nonEmpty(forwardParentCid), forKey: .forwardParentCid)
         try container.encodeIfPresent(e2eeGroupId, forKey: .e2eeGroupId)
         if !e2eeAttachmentIds.isEmpty {
             let canonicalIds = try E2eeMessageAADV1.canonicalAttachmentIds(e2eeAttachmentIds)

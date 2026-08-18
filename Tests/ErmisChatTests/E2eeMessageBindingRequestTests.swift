@@ -7,6 +7,56 @@ import Foundation
 import XCTest
 
 final class E2eeMessageBindingRequestTests: XCTestCase {
+    func testNonForwardBodyOmitsLegacyEmptyForwardMetadata() throws {
+        let request = MessageRequestBody(
+            id: UUID().uuidString,
+            user: UserRequestBody(id: "user", name: nil, imageURL: nil),
+            text: "",
+            forwardCid: "",
+            forwardMessageId: "",
+            forwardParentCid: ""
+        )
+
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder.default.encode(request))
+                as? [String: Any]
+        )
+
+        XCTAssertNil(request.forwardCid)
+        XCTAssertNil(request.forwardMessageId)
+        XCTAssertNil(request.forwardParentCid)
+        XCTAssertFalse(request.requiresE2eeAuthenticatedSendLane)
+        XCTAssertNil(object["forward_cid"])
+        XCTAssertNil(object["forward_message_id"])
+        XCTAssertNil(object["forward_parent_cid"])
+    }
+
+    func testAttachmentEnvelopeDoesNotEncodeLegacyEmptyForwardCid() throws {
+        let attachmentId = "00000000-0000-4000-8000-000000000001"
+        var request = MessageRequestBody(
+            id: UUID().uuidString,
+            user: UserRequestBody(id: "user", name: nil, imageURL: nil),
+            text: "",
+            forwardCid: ""
+        )
+
+        try request.bindE2eeAuthenticatedEnvelope(
+            destinationCid: ChannelId(type: .team, id: "destination"),
+            groupId: "team:destination",
+            attachmentIds: [attachmentId]
+        )
+        let aad = try XCTUnwrap(request.authenticatedAAD())
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder.default.encode(request))
+                as? [String: Any]
+        )
+
+        XCTAssertNil(aad.forwardCid)
+        XCTAssertEqual(aad.attachmentIds, [attachmentId])
+        XCTAssertNil(object["forward_cid"])
+        XCTAssertEqual(object["e2ee_attachment_ids"] as? [String], [attachmentId])
+    }
+
     func testAttachmentEnvelopeAndAADUseSameCanonicalIdSet() throws {
         let messageId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         let first = "ffffffff-ffff-4fff-8fff-ffffffffffff"

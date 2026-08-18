@@ -433,6 +433,12 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         let assetId: String
     }
 
+    struct RangeStreamingDescriptor: Sendable {
+        let cid: String
+        let attachmentId: String
+        let asset: E2eeAttachmentManifestAssetV1
+    }
+
     private let database: DatabaseContainer
     private let fileManager: FileManager
     private let grantURLProvider: GrantURLProvider
@@ -623,6 +629,30 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         })
         legacyRetainedCacheKeys.insert(cacheKey)
         return url
+    }
+
+    func rangeStreamingDescriptor(
+        for attachment: AnyMessageAttachment
+    ) async throws -> RangeStreamingDescriptor {
+        let reference = try Self.opaqueAssetReference(for: attachment)
+        let manifest = try await Self.loadManifest(
+            messageId: attachment.id.messageId,
+            attachmentIndex: attachment.id.index,
+            reference: reference,
+            database: database
+        )
+        try manifest.validate()
+        guard let original = manifest.assets.first(where: {
+            $0.kind == .original &&
+                $0.assetId.caseInsensitiveCompare(reference.assetId) == .orderedSame
+        }), original.plaintextSize != nil else {
+            throw E2eeAttachmentOriginalDownloadError.missingOriginal
+        }
+        return .init(
+            cid: attachment.id.cid.rawValue,
+            attachmentId: reference.attachmentId,
+            asset: original
+        )
     }
 
     nonisolated static func isOpaqueE2eeAttachment(_ attachment: AnyMessageAttachment) -> Bool {

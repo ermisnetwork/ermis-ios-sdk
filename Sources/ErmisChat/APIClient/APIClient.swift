@@ -507,10 +507,13 @@ class APIClient {
         operationQueue.addOperation(uploadOperation)
     }
     
-    func uploadVideoThumbnail(attachment: AnyMessageAttachment,
-                              completion: @escaping (Result<UploadedAttachment, Error>) -> Void) {
+    func uploadVideoThumbnail(
+        attachment: AnyMessageAttachment,
+        progress: ((Double) -> Void)? = nil,
+        completion: @escaping (Result<UploadedAttachment, Error>) -> Void
+    ) {
         let uploadOperation = AsyncOperation(maxRetries: 0) { [weak self] operation, done in
-            self?.uploader.upload(attachment, progress: nil) { result in
+            self?.uploader.upload(attachment, progress: progress) { result in
                 switch result {
                 case let .failure(error) where self?.isConnectionError(error) == true:
                     // Do not retry unless its a connection problem and we stil     l have retries left

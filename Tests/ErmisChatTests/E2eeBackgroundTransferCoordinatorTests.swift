@@ -866,6 +866,49 @@ final class E2eeBackgroundTransferCoordinatorTests: XCTestCase {
         return attempt
     }
 
+    func testMultipartProgressExposesUnscheduledPartsForUiGuidance() throws {
+        let canonicalURL = directory.appendingPathComponent("canonical.cipher")
+        try Data(repeating: 0x42, count: 100).write(to: canonicalURL)
+
+        var attempt = PendingE2eeTransferAttempt(
+            accountId: "account-ui",
+            messageId: "message-ui",
+            cid: "messaging:\(UUID().uuidString)",
+            phase: .uploading,
+            totalBytes: 100
+        )
+        attempt.assets = [
+            PendingE2eeAsset(
+                attachmentId: UUID().uuidString,
+                assetId: UUID().uuidString,
+                kind: .original,
+                sourceURL: nil,
+                canonicalCiphertextURL: canonicalURL,
+                ciphertextSize: 100,
+                ciphertextSha256: String(repeating: "b", count: 64),
+                sealedSecret: nil,
+                uploadMode: .multipart,
+                multipartPartSize: 25,
+                parts: [
+                    PendingE2eeMultipartPart(number: 1, offset: 0, size: 25, eTag: "etag-1"),
+                    PendingE2eeMultipartPart(number: 2, offset: 25, size: 25, taskToken: UUID().uuidString),
+                    PendingE2eeMultipartPart(number: 3, offset: 50, size: 25), // unscheduled
+                    PendingE2eeMultipartPart(number: 4, offset: 75, size: 25)  // unscheduled
+                ]
+            )
+        ]
+
+        XCTAssertTrue(attempt.hasUnscheduledParts)
+        XCTAssertTrue(attempt.publicProgress.hasUnscheduledParts)
+
+        // Once all parts are scheduled or uploaded:
+        attempt.assets[0].parts[2].taskToken = UUID().uuidString
+        attempt.assets[0].parts[3].eTag = "etag-4"
+
+        XCTAssertFalse(attempt.hasUnscheduledParts)
+        XCTAssertFalse(attempt.publicProgress.hasUnscheduledParts)
+    }
+
     private func makeCoordinator() throws -> E2eeBackgroundTransferCoordinator {
         let descriptor = E2eeBackgroundSessionDescriptor(
             bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",

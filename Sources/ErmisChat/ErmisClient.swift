@@ -2,6 +2,7 @@
 // Copyright 2025 Ermis Inc.
 //
 
+import AVFoundation
 import CoreData
 import Foundation
 import ErmisShared
@@ -648,6 +649,105 @@ public class ErmisClient {
             for: attachment,
             progress: progress
         )
+    }
+
+    /// Acquires a lease-owned local source suitable for a fresh forwarded upload.
+    ///
+    /// E2EE opaque originals keep their verified decrypt/download lane. Pending local files are
+    /// reused while present. Standard and legacy HTTP(S) attachments are streamed to protected
+    /// temporary storage because upload payloads must never be initialized with a remote URL.
+    public func acquireAttachmentForForwarding(
+        _ attachment: AnyMessageAttachment
+    ) async throws -> E2eeAttachmentOriginalLease {
+        if let localURL = attachment.uploadingState?.localFileURL,
+           localURL.isFileURL,
+           FileManager.default.fileExists(atPath: localURL.path) {
+            return E2eeAttachmentOriginalLease(localURL: localURL, releaseHandler: {})
+        }
+        guard let sourceURL = attachment.remoteURL else {
+            throw ForwardAttachmentSourceMaterializationError.invalidRemoteURL
+        }
+        if sourceURL.isFileURL {
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw ForwardAttachmentSourceMaterializationError.downloadedFileUnavailable
+            }
+            return E2eeAttachmentOriginalLease(localURL: sourceURL, releaseHandler: {})
+        }
+        if E2eeAttachmentOriginalDownloadCoordinator.isOpaqueE2eeAttachment(attachment) {
+            return try await acquireAttachmentForViewing(attachment)
+        }
+
+        log.info(
+            "[ATTACHMENT_FORWARD] stage=source_materialization state=remote_download_started"
+        )
+        let lease = try await ForwardAttachmentRemoteSourceMaterializer(
+            maximumBytes: config.maxAttachmentSize
+        ).materialize(
+            remoteURL: sourceURL,
+            preferredFileExtension: ForwardAttachmentRemoteSourceMaterializer
+                .preferredFileExtension(for: attachment)
+        )
+        log.info(
+            "[ATTACHMENT_FORWARD] stage=source_materialization state=remote_download_completed"
+        )
+        return lease
+    }
+
+    /// Returns an AVAsset-backed playback lease. When the independent range flag is disabled or
+    /// the attachment is not an E2EE opaque asset this simply wraps the verified local-original
+    /// lane. When enabled, AVFoundation receives authenticated plaintext ranges and transparently
+    /// falls back to that same full download if range transport fails.
+    public func acquireVideoAttachmentForPlayback(
+        _ attachment: AnyMessageAttachment,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void = { _ in }
+    ) async throws -> E2eeAttachmentPlaybackLease {
+        guard E2eeRangeStreamingFeatureFlag.isEnabled,
+              E2eeAttachmentOriginalDownloadCoordinator.isOpaqueE2eeAttachment(attachment) else {
+            let original = try await acquireAttachmentForViewing(attachment, progress: progress)
+            return E2eeAttachmentPlaybackLease(
+                asset: AVURLAsset(url: original.localURL),
+                releaseHandler: { original.release() }
+            )
+        }
+
+        let descriptor = try await e2eeAttachmentOriginalDownloadCoordinator
+            .rangeStreamingDescriptor(for: attachment)
+        let loader = try E2eeRangeStreamingResourceLoader(
+            asset: descriptor.asset,
+            grantProvider: { [weak self] assetId in
+                guard let self else { throw URLError(.cancelled) }
+                let issuedAt = Date()
+                guard let cid = try? ChannelId(cid: descriptor.cid) else {
+                    throw E2eeAttachmentOriginalDownloadError.invalidOpaqueURL
+                }
+                let response = try await self.apiClient.e2eeAttachmentDownloadGrant(
+                    cid: cid,
+                    attachmentId: descriptor.attachmentId,
+                    assetId: assetId
+                )
+                guard let expiresAt = DateFormatter.Ermis.rfc3339Date(from: response.expiresAt) else {
+                    throw E2eeAttachmentAPIContractError.invalidExpiry
+                }
+                return E2eeRangeStreamingGrant(
+                    assetId: assetId,
+                    grantURL: response.downloadURL,
+                    expiresAt: expiresAt,
+                    issuedAt: issuedAt
+                )
+            },
+            fallbackProvider: { [weak self] in
+                guard let self else { throw URLError(.cancelled) }
+                return try await self.acquireAttachmentForViewing(attachment, progress: progress)
+            }
+        )
+        let asset = loader.makeAsset()
+        asset.resourceLoader.setDelegate(
+            loader,
+            queue: DispatchQueue(label: "network.ermis.e2ee.range-loader")
+        )
+        return E2eeAttachmentPlaybackLease(asset: asset) {
+            loader.invalidate()
+        }
     }
 
     /// Explicitly cancels the durable background GET for one E2EE original.

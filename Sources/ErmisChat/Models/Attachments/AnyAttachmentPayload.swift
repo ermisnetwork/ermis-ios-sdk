@@ -31,6 +31,22 @@ public struct AnyAttachmentPayload {
     public let thumbnailData: Data?
     /// The size of attachment
     public let fileSize: Int?
+
+    init(
+        type: AttachmentType,
+        assetId: String? = nil,
+        payload: Encodable,
+        localFileURL: URL? = nil,
+        thumbnailData: Data? = nil,
+        fileSize: Int? = nil
+    ) {
+        self.type = type
+        self.assetId = assetId
+        self.payload = payload
+        self.localFileURL = localFileURL
+        self.thumbnailData = thumbnailData
+        self.fileSize = fileSize
+    }
 }
 
 /// Local Metadata related to an attachment.
@@ -41,6 +57,9 @@ public struct AnyAttachmentLocalMetadata {
 
     /// The title of attachment.
     public var title: String?
+
+    /// The authenticated/detected MIME type of the local attachment.
+    public var mimeType: String?
 
     /// The original width and height of an image or video attachment in Pixels.
     public var originalResolution: (width: Double, height: Double)?
@@ -128,12 +147,17 @@ public extension AnyAttachmentPayload {
     ///   - attachmentType: The type of resulting attachment exposed on the message.
     ///   - localMetadata: The metadata related to the local attachment.
     /// - Throws: The error if `localFileURL` is not the file URL.
-    init(
+    public init(
         localFileURL: URL,
         attachmentType: AttachmentType,
         localMetadata: AnyAttachmentLocalMetadata? = nil
     ) throws {
-        let file = try AttachmentFile(url: localFileURL, fileSize: localMetadata?.fileSize)
+        let detectedFile = try AttachmentFile(url: localFileURL, fileSize: localMetadata?.fileSize)
+        let file = AttachmentFile(
+            type: detectedFile.type,
+            size: detectedFile.size,
+            mimeType: localMetadata?.mimeType ?? detectedFile.mimeType
+        )
 
         let payload: AttachmentPayload
         switch attachmentType {
@@ -147,13 +171,15 @@ public extension AnyAttachmentPayload {
                 originalHeight: localMetadata?.originalResolution?.height,
             )
         case .video:
-            payload = VideoAttachmentPayload(
+            var videoPayload = VideoAttachmentPayload(
                 title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 videoRemoteURL: localFileURL,
                 thumbnailURL: nil,
                 thumbnailData: localMetadata?.thumbnailData,
                 file: file
             )
+            videoPayload.duration = localMetadata?.duration
+            payload = videoPayload
         case .audio:
             payload = AudioAttachmentPayload(
                 title: localMetadata?.title ?? localFileURL.lastPathComponent,
@@ -168,7 +194,7 @@ public extension AnyAttachmentPayload {
             )
         case .voiceRecording:
             payload = VoiceRecordingAttachmentPayload(
-                title: localFileURL.lastPathComponent,
+                title: localMetadata?.title ?? localFileURL.lastPathComponent,
                 voiceRecordingRemoteURL: localFileURL,
                 file: file,
                 duration: localMetadata?.duration,

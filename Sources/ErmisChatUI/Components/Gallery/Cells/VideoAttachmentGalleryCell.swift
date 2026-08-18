@@ -26,6 +26,14 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         @escaping (Result<E2eeAttachmentOriginalLease, Error>) -> Void
     ) -> (() -> Void)?)?
 
+    /// Preferred E2EE video path. Its AVAsset may be backed by authenticated byte-range
+    /// decryption or by the verified full-download fallback, depending on the rollout flag.
+    public var videoPlaybackResolver: ((
+        AnyMessageAttachment,
+        @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void,
+        @escaping (Result<E2eeAttachmentPlaybackLease, Error>) -> Void
+    ) -> (() -> Void)?)?
+
     /// Notifies the gallery when a full E2EE original is using an interactive download slot.
     /// The poster thumbnail remains available independently from this state.
     public var originalResolutionStateDidChange: ((Bool) -> Void)?
@@ -53,6 +61,7 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
     private var resolutionToken = UUID()
     private var cancelOriginalResolution: (() -> Void)?
     private var originalLease: E2eeAttachmentOriginalLease?
+    private var playbackLease: E2eeAttachmentPlaybackLease?
     private var resolvedOpaqueURL: URL?
 
     /// Image view to be used for zoom in/out animation.
@@ -107,7 +116,38 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
             let token = resolutionToken
             player.replaceCurrentItem(with: nil)
 
-            if let content, let videoURLResolver, newAssetURL?.scheme == "ermis-e2ee-attachment" {
+            if let content,
+               let videoPlaybackResolver,
+               newAssetURL?.scheme == "ermis-e2ee-attachment" {
+                guard isE2eeOriginalResolutionEnabled else { return }
+                setResolvingE2eeOriginal(true)
+                resolvedOpaqueURL = newAssetURL
+                cancelOriginalResolution = videoPlaybackResolver(
+                    content,
+                    { [weak self] progress in
+                        DispatchQueue.main.async {
+                            guard let self, self.resolutionToken == token else { return }
+                            self.originalResolutionProgressDidChange?(progress)
+                        }
+                    },
+                    { [weak self] result in
+                        DispatchQueue.main.async {
+                            guard let self, self.resolutionToken == token else { return }
+                            self.cancelOriginalResolution = nil
+                            self.setResolvingE2eeOriginal(false)
+                            switch result {
+                            case let .success(lease):
+                                self.playbackLease?.release()
+                                self.playbackLease = lease
+                                self.player.replaceCurrentItem(with: AVPlayerItem(asset: lease.asset))
+                            case .failure:
+                                self.resolvedOpaqueURL = nil
+                                self.player.replaceCurrentItem(with: nil)
+                            }
+                        }
+                    }
+                )
+            } else if let content, let videoURLResolver, newAssetURL?.scheme == "ermis-e2ee-attachment" {
                 guard isE2eeOriginalResolutionEnabled else { return }
                 setResolvingE2eeOriginal(true)
                 resolvedOpaqueURL = newAssetURL
@@ -180,6 +220,8 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         player.replaceCurrentItem(with: nil)
         originalLease?.release()
         originalLease = nil
+        playbackLease?.release()
+        playbackLease = nil
         resolvedOpaqueURL = nil
         setResolvingE2eeOriginal(false)
     }
@@ -198,6 +240,7 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         player.pause()
         player.replaceCurrentItem(with: nil)
         videoURLResolver = nil
+        videoPlaybackResolver = nil
         originalResolutionStateDidChange = nil
         originalResolutionProgressDidChange = nil
     }

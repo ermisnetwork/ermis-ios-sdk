@@ -12,6 +12,16 @@ protocol E2eeAttachmentCompletionClient: AnyObject {
     ) async throws
 }
 
+/// Deletes a completed-but-unbound attachment after the local wrapping key has been proven lost.
+/// This is intentionally separate from completion: deletion is best effort and must never make a
+/// terminal local-key-loss record retryable.
+protocol E2eeAttachmentUnboundDeletionClient: AnyObject {
+    func deleteUnboundE2eeAttachment(
+        cid: ChannelId,
+        attachmentId: String
+    ) async throws
+}
+
 protocol E2eeAttachmentMessageBinding: AnyObject {
     func persistCompletedE2eeAttachmentManifests(
         messageId: String,
@@ -36,6 +46,15 @@ extension APIClient: E2eeAttachmentCompletionClient {
     }
 }
 
+extension APIClient: E2eeAttachmentUnboundDeletionClient {
+    func deleteUnboundE2eeAttachment(
+        cid: ChannelId,
+        attachmentId: String
+    ) async throws {
+        _ = try await deleteE2eeAttachment(cid: cid, attachmentId: attachmentId)
+    }
+}
+
 enum E2eeAttachmentFinalizerError: Error, Equatable {
     case invalidChannelId
     case attemptNotReady
@@ -49,8 +68,10 @@ final class E2eeAttachmentFinalizer {
     private let store: E2eeDurableTransferStore
     private let stagingStore: E2eeAttachmentStagingStore
     private let client: E2eeAttachmentCompletionClient
+    private let deletionClient: E2eeAttachmentUnboundDeletionClient?
     private let manifestBuilder: E2eeAttachmentManifestBuilder?
     private weak var messageBinding: E2eeAttachmentMessageBinding?
+    private let cancelScheduledTasks: ((PendingE2eeTransferAttempt) async -> Void)?
     private let stateDidChange: () -> Void
     private let inFlightLock = NSLock()
     private var inFlightAttemptIds = Set<String>()
@@ -59,23 +80,35 @@ final class E2eeAttachmentFinalizer {
         store: E2eeDurableTransferStore,
         stagingStore: E2eeAttachmentStagingStore,
         client: E2eeAttachmentCompletionClient,
+        deletionClient: E2eeAttachmentUnboundDeletionClient? = nil,
         manifestBuilder: E2eeAttachmentManifestBuilder? = nil,
         messageBinding: E2eeAttachmentMessageBinding? = nil,
+        cancelScheduledTasks: ((PendingE2eeTransferAttempt) async -> Void)? = nil,
         stateDidChange: @escaping () -> Void = {}
     ) {
         self.store = store
         self.stagingStore = stagingStore
         self.client = client
+        self.deletionClient = deletionClient
         self.manifestBuilder = manifestBuilder
         self.messageBinding = messageBinding
+        self.cancelScheduledTasks = cancelScheduledTasks
         self.stateDidChange = stateDidChange
     }
 
     func finalizeReadyAttempts() async {
         guard let attempts = try? store.hydrate() else { return }
-        for attempt in attempts where attempt.phase == .finalizing
-            || attempt.phase == .waitingForUnlock
-            || attempt.phase == .sending {
+        for attempt in attempts {
+            if attempt.phase == .failedTerminal,
+               attempt.failureReason == .localKeyUnavailableAfterReinstall,
+               Self.hasWrappingKeyLossArtifacts(attempt),
+               let cid = try? ChannelId(cid: attempt.cid) {
+                await finishWrappingKeyLossCleanup(attempt: attempt, cid: cid)
+                continue
+            }
+            guard attempt.phase == .finalizing
+                || attempt.phase == .waitingForUnlock
+                || attempt.phase == .sending else { continue }
             do {
                 _ = try await finalize(attemptId: attempt.attemptId)
             } catch {
@@ -203,11 +236,7 @@ final class E2eeAttachmentFinalizer {
                 }
                 stateDidChange()
             case .localKeyUnavailableAfterReinstall:
-                try markFailure(
-                    attemptId: attemptId,
-                    reason: .localKeyUnavailableAfterReinstall,
-                    retryable: false
-                )
+                await handleWrappingKeyLoss(attempt: attempt, cid: cid)
             default:
                 try markFailure(attemptId: attemptId, reason: .integrityFailure, retryable: false)
             }
@@ -324,6 +353,132 @@ final class E2eeAttachmentFinalizer {
             }
         }
         stateDidChange()
+    }
+
+    /// The keychain marker proves the app was previously initialized, but its installation-bound
+    /// key is now unavailable. The ciphertext cannot be reused safely, so cancel any late OS
+    /// work before clearing task mappings, remove local staging, and best-effort delete the
+    /// completed attachment which has not yet been bound into a message.
+    private func handleWrappingKeyLoss(
+        attempt: PendingE2eeTransferAttempt,
+        cid: ChannelId
+    ) async {
+        await cancelScheduledTasks?(attempt)
+
+        let terminalAttempt: PendingE2eeTransferAttempt
+        do {
+            terminalAttempt = try store.update(attemptId: attempt.attemptId) { record in
+                record.phase = .failedTerminal
+                record.failureReason = .localKeyUnavailableAfterReinstall
+                for assetIndex in record.assets.indices {
+                    record.assets[assetIndex].taskIdentifier = nil
+                    record.assets[assetIndex].taskToken = nil
+                    for partIndex in record.assets[assetIndex].parts.indices {
+                        record.assets[assetIndex].parts[partIndex].taskIdentifier = nil
+                        record.assets[assetIndex].parts[partIndex].taskToken = nil
+                    }
+                }
+            }
+            stateDidChange()
+        } catch {
+            log.error(
+                "[E2EE_ATTACHMENT] stage=wrapping_key_loss state=durable_failure_failed error=\(type(of: error))",
+                subsystems: .mls
+            )
+            return
+        }
+
+        await finishWrappingKeyLossCleanup(attempt: terminalAttempt, cid: cid)
+    }
+
+    /// Runs after the terminal record is durable. Retaining file URLs until every remove succeeds
+    /// gives launch reconciliation enough information to retry cleanup after a process crash.
+    private func finishWrappingKeyLossCleanup(
+        attempt: PendingE2eeTransferAttempt,
+        cid: ChannelId
+    ) async {
+        var didCleanAllArtifacts = true
+        for asset in attempt.assets {
+            if let sourceURL = asset.sourceURL {
+                didCleanAllArtifacts = removeWrappingKeyLossArtifact {
+                    try stagingStore.removeSource(sourceURL)
+                } && didCleanAllArtifacts
+            }
+            if let canonicalURL = asset.canonicalCiphertextURL {
+                didCleanAllArtifacts = removeWrappingKeyLossArtifact {
+                    try stagingStore.removeCanonicalCiphertext(canonicalURL)
+                } && didCleanAllArtifacts
+            }
+            didCleanAllArtifacts = removeWrappingKeyLossArtifact {
+                try stagingStore.removeMultipartAssetDirectory(
+                    attemptId: attempt.attemptId,
+                    assetId: asset.assetId
+                )
+            } && didCleanAllArtifacts
+        }
+
+        if didCleanAllArtifacts {
+            do {
+                _ = try store.update(attemptId: attempt.attemptId) { record in
+                    for assetIndex in record.assets.indices {
+                        record.assets[assetIndex].sourceURL = nil
+                        record.assets[assetIndex].canonicalCiphertextURL = nil
+                        for partIndex in record.assets[assetIndex].parts.indices {
+                            record.assets[assetIndex].parts[partIndex].localFileURL = nil
+                        }
+                    }
+                }
+                stateDidChange()
+            } catch {
+                // The terminal record still retains the paths, so launch reconciliation retries
+                // this idempotent cleanup and durable acknowledgement.
+                log.error(
+                    "[E2EE_ATTACHMENT] stage=wrapping_key_loss state=cleanup_ack_failed error=\(type(of: error))",
+                    subsystems: .mls
+                )
+            }
+        }
+
+        // Never delete the service object while the durable record can still look live.
+        guard let deletionClient else { return }
+        for attachmentId in Set(attempt.assets.map(\.attachmentId)) {
+            do {
+                try await deletionClient.deleteUnboundE2eeAttachment(
+                    cid: cid,
+                    attachmentId: attachmentId
+                )
+            } catch {
+                // Server cleanup is deliberately best effort: local state must remain terminal if
+                // the request is offline or the attachment has already expired.
+                log.error(
+                    "[E2EE_ATTACHMENT] stage=wrapping_key_loss state=remote_cleanup_failed error=\(type(of: error))",
+                    subsystems: .mls
+                )
+            }
+        }
+    }
+
+    private func removeWrappingKeyLossArtifact(_ operation: () throws -> Void) -> Bool {
+        do {
+            try operation()
+            return true
+        } catch {
+            // Continue through every owned artifact. One failed remove must not leave the other
+            // sources, ciphertexts, or multipart directories behind.
+            log.error(
+                "[E2EE_ATTACHMENT] stage=wrapping_key_loss state=staging_cleanup_failed error=\(type(of: error))",
+                subsystems: .mls
+            )
+            return false
+        }
+    }
+
+    private static func hasWrappingKeyLossArtifacts(_ attempt: PendingE2eeTransferAttempt) -> Bool {
+        attempt.assets.contains { asset in
+            asset.sourceURL != nil
+                || asset.canonicalCiphertextURL != nil
+                || asset.parts.contains { $0.localFileURL != nil }
+        }
     }
 
     private func markFailure(

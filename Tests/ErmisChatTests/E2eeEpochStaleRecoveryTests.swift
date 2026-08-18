@@ -210,6 +210,7 @@ final class E2eeEpochStaleRecoveryTests: XCTestCase {
             let retryBody = message.asRequestBody() as MessageRequestBody
             XCTAssertEqual(retryBody.encryptedData, ciphertext.uint8Array)
             XCTAssertEqual(retryBody.mlsEpoch, 12)
+            XCTAssertNil(retryBody.forwardCid)
         }
     }
 

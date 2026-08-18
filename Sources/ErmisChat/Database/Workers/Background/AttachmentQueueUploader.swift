@@ -8,6 +8,18 @@ import UIKit
 import AVFoundation
 import Photos
 
+enum StandardVideoUploadProgress {
+    private static let originalWeight = 0.9
+
+    static func original(_ progress: Double) -> Double {
+        min(originalWeight, max(0, progress) * originalWeight)
+    }
+
+    static func thumbnail(_ progress: Double) -> Double {
+        min(1, originalWeight + max(0, progress) * (1 - originalWeight))
+    }
+}
+
 enum PreparedAttachmentSourcePersistence {
     /// Persists the prepared file URL on Core Data's single writable context and returns only an
     /// immutable model snapshot. This is safe to call from PhotoKit and file-I/O callbacks.
@@ -246,45 +258,86 @@ class AttachmentQueueUploader: Worker {
             self?.apiClient.uploadAttachment(
                 attachment,
                 progress: {
+                    let visibleProgress = attachment.type == .video
+                        ? StandardVideoUploadProgress.original($0)
+                        : $0
                     self?.updateAttachmentIfNeeded(
                         attachmentId: id,
                         uploadedAttachment: nil,
-                        newState: .uploading(progress: $0),
+                        newState: .uploading(progress: visibleProgress),
                         completion: {}
                     )
                 },
                 completion: { result in
-                    // If attachment type video, manual upload thumbnail and replace content with new thumbnail url
-                    if attachment.type == .video,
-                       var uploadedAttachment = result.value {
-                        self?.uploadVideoThumbnail(of: attachment, completion: { [weak self] result in
-                            if let uploadedThumbnailAttachment = result.value {
-                                uploadedAttachment = UploadedAttachment(attachment: uploadedAttachment.attachment,
-                                                                        remoteURL: uploadedAttachment.remoteURL,
-                                                                        thumbnailURL: uploadedThumbnailAttachment.remoteURL)
-                            }
-                            self?.updateAttachmentIfNeeded(
+                    if attachment.type == .video {
+                        guard var uploadedAttachment = result.value else {
+                            self?.finishStandardUpload(
                                 attachmentId: id,
-                                uploadedAttachment: uploadedAttachment,
-                                newState: .uploaded,
-                                completion: {
-                                    self?.removePendingAttachment(with: id)
-                                }
+                                uploadedAttachment: nil,
+                                state: .uploadingFailed
                             )
-                        })
+                            return
+                        }
+                        self?.uploadVideoThumbnail(
+                            of: attachment,
+                            progress: { thumbnailProgress in
+                                self?.updateAttachmentIfNeeded(
+                                    attachmentId: id,
+                                    uploadedAttachment: nil,
+                                    newState: .uploading(
+                                        progress: StandardVideoUploadProgress.thumbnail(
+                                            thumbnailProgress
+                                        )
+                                    ),
+                                    completion: {}
+                                )
+                            },
+                            completion: { [weak self] thumbnailResult in
+                                guard let uploadedThumbnail = thumbnailResult.value else {
+                                    self?.finishStandardUpload(
+                                        attachmentId: id,
+                                        uploadedAttachment: nil,
+                                        state: .uploadingFailed
+                                    )
+                                    return
+                                }
+                                uploadedAttachment = UploadedAttachment(
+                                    attachment: uploadedAttachment.attachment,
+                                    remoteURL: uploadedAttachment.remoteURL,
+                                    thumbnailURL: uploadedThumbnail.remoteURL
+                                )
+                                self?.finishStandardUpload(
+                                    attachmentId: id,
+                                    uploadedAttachment: uploadedAttachment,
+                                    state: .uploaded
+                                )
+                            }
+                        )
                     } else {
-                        self?.updateAttachmentIfNeeded(
+                        self?.finishStandardUpload(
                             attachmentId: id,
                             uploadedAttachment: result.value,
-                            newState: result.error == nil ? .uploaded : .uploadingFailed,
-                            completion: {
-                                self?.removePendingAttachment(with: id)
-                            }
+                            state: result.error == nil ? .uploaded : .uploadingFailed
                         )
                     }
                 }
             )
         }
+    }
+
+    private func finishStandardUpload(
+        attachmentId: AttachmentId,
+        uploadedAttachment: UploadedAttachment?,
+        state: LocalAttachmentState
+    ) {
+        updateAttachmentIfNeeded(
+            attachmentId: attachmentId,
+            uploadedAttachment: uploadedAttachment,
+            newState: state,
+            completion: { [weak self] in
+                self?.removePendingAttachment(with: attachmentId)
+            }
+        )
     }
 
     /// E2EE must fail closed: this path materializes the Photos/item-provider URL but never calls
@@ -600,8 +653,11 @@ class AttachmentQueueUploader: Worker {
         })
     }
 
-    private func uploadVideoThumbnail(of videoAttachment: AnyMessageAttachment,
-                                      completion: @escaping (Result<UploadedAttachment, Error>) -> Void) {
+    private func uploadVideoThumbnail(
+        of videoAttachment: AnyMessageAttachment,
+        progress: ((Double) -> Void)?,
+        completion: @escaping (Result<UploadedAttachment, Error>) -> Void
+    ) {
         let commonError = NSError(domain: "Upload video thumbnail failed", code: 999)
         guard let localVideoUrl = videoAttachment.uploadingState?.localFileURL else {
             completion(.failure(commonError))
@@ -624,7 +680,18 @@ class AttachmentQueueUploader: Worker {
                                                                uploadingState: .init(localFileURL: url,
                                                                                      state: .pendingUpload,
                                                                                      file: attachmentFile))
-                self?.apiClient.uploadVideoThumbnail(attachment: thumbnailAttachment, completion: completion)
+                guard let self else {
+                    try? FileManager.default.removeItem(at: url)
+                    completion(.failure(commonError))
+                    return
+                }
+                self.apiClient.uploadVideoThumbnail(
+                    attachment: thumbnailAttachment,
+                    progress: progress
+                ) { result in
+                    try? FileManager.default.removeItem(at: url)
+                    completion(result)
+                }
             case .failure(let error):
                 completion(.failure(error))
             }
@@ -979,21 +1046,21 @@ private extension Array where Element == ListChange<AttachmentDTO> {
     }
 }
 
-private class AttachmentStorage {
+final class AttachmentStorage {
     enum Constants {
         static let path = "LocalAttachments"
     }
 
     private let fileManager: FileManager
-    private lazy var baseURL: URL = {
-        let base = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first ?? fileManager.temporaryDirectory
-        return base.appendingPathComponent(Constants.path)
-    }()
+    private let baseURL: URL
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, baseURL: URL? = nil) {
         self.fileManager = fileManager
+        let documentsURL = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fileManager.temporaryDirectory
+        self.baseURL = baseURL ?? documentsURL.appendingPathComponent(Constants.path)
         do {
-            try fileManager.createDirectory(at: baseURL, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: self.baseURL, withIntermediateDirectories: true)
         } catch {
             log.error("Could not create a directory to store attachments: \(error.localizedDescription)")
         }
@@ -1078,7 +1145,10 @@ private class AttachmentStorage {
         do {
             try fileManager.removeItem(at: localURL)
         } catch {
-            log.info("Unable to remove attachment at \(localURL): \(error.localizedDescription)")
+            log.info(
+                "[ATTACHMENT_STORAGE] stage=cleanup state=failed " +
+                "error_type=\(String(reflecting: type(of: error)))"
+            )
         }
     }
 

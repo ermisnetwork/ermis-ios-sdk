@@ -1189,6 +1189,9 @@ extension MessageDTO {
             .sorted { ($0.attachmentID?.index ?? 0) < ($1.attachmentID?.index ?? 0) }
             .compactMap { $0.asRequestPayload() }
 
+        let authenticatedMetadata = (try? decryptedMessage?.asPayload())?
+            .authenticatedMetadata
+
         return .init(
             id: id,
             user: user.asRequestBody(),
@@ -1204,7 +1207,14 @@ extension MessageDTO {
             attachments: uploadedAttachments,
             stickerUrl: stickerUrl,
             mentionedUserIds: mentionedUserIds,
-            mentionedAll: mentionedAll
+            mentionedAll: mentionedAll,
+            // `forwardCid` historically defaults to `""` in the Core Data model. The request
+            // model canonicalizes that legacy sentinel to nil so non-forward attachment sends do
+            // not emit `forward_cid` and trigger Bellboy's forward validation.
+            forwardCid: authenticatedMetadata?.forwardCid ?? forwardCid,
+            forwardMessageId: authenticatedMetadata?.forwardMessageId,
+            forwardParentCid: authenticatedMetadata?.forwardParentCid,
+            e2eeAttachmentIds: authenticatedMetadata?.attachmentIds ?? []
         )
     }
 

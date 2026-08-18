@@ -99,8 +99,11 @@ final class VoiceRecordingAttachmentItemViewTests: XCTestCase {
             uploadingState: nil
         )
 
-        let preview = VideoAttachmentGalleryPreview()
+        let hostView = UIView(frame: CGRect(x: 0, y: 0, width: 240, height: 180))
+        let preview = VideoAttachmentGalleryPreview(frame: hostView.bounds)
+        hostView.addSubview(preview)
         preview.content = attachment
+        hostView.layoutIfNeeded()
 
         XCTAssertFalse(preview.durationLabel.isHidden)
         XCTAssertEqual(preview.durationLabel.text, DefaultVideoDurationFormatter().format(24))

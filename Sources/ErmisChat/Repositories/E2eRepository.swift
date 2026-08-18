@@ -748,7 +748,7 @@ class E2eRepository: EventsControllerDelegate {
         do {
             let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
             let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
-            try persistProcessedApplicationMessage(
+            _ = try persistProcessedApplicationMessage(
                 processed,
                 messageId: messageId,
                 encryptedData: encryptedData,
@@ -791,30 +791,84 @@ class E2eRepository: EventsControllerDelegate {
     /// Persists plaintext first and only then advances the OpenMLS receiver ratchet on disk.
     /// The two stores cannot share a transaction; replay recovery distinguishes a stale provider
     /// from an already-saved provider through `MlsError.MessageAlreadyConsumed`.
+    @discardableResult
     private func persistProcessedApplicationMessage(
         _ processed: MlsProcessedApplicationMessage,
         messageId: MessageId,
         encryptedData: Data,
         cid: ChannelId,
         group: Group,
-        receiveSource: E2eeAttachmentReceiveSource
-    ) throws {
+        receiveSource: E2eeAttachmentReceiveSource,
+        expectedEnvelope: E2eeReceivedMessageEnvelope? = nil
+    ) throws -> E2ePayload {
+        let authenticatedPayload = try validatedPayload(
+            processed.payload,
+            processedAAD: processed.aad,
+            messageId: messageId,
+            cid: cid,
+            expectedEnvelope: expectedEnvelope
+        )
         let ciphertextHash = Data(SHA256.hash(data: encryptedData))
         try database.writeAndWait { session in
             try session.saveMessageDecrypt(
-                payload: processed.payload,
+                payload: authenticatedPayload,
                 messageId: messageId,
                 ciphertextHash: ciphertextHash
             )
-            session.message(id: messageId)?.text = processed.payload.text
+            let message = session.message(id: messageId)
+            message?.text = authenticatedPayload.text
+            message?.forwardCid = authenticatedPayload.authenticatedMetadata?.forwardCid
         }
         try mlsClient.saveState(of: group)
         e2eeAttachmentReceiveCoordinator.hydratePreviews(
-            payload: processed.payload,
+            payload: authenticatedPayload,
             messageId: messageId,
             cid: cid,
             source: receiveSource
         )
+        return authenticatedPayload
+    }
+
+    private func validatedPayload(
+        _ payload: E2ePayload,
+        processedAAD: Data,
+        messageId: MessageId,
+        cid: ChannelId,
+        expectedEnvelope: E2eeReceivedMessageEnvelope?
+    ) throws -> E2ePayload {
+        guard !processedAAD.isEmpty else {
+            guard payload.e2eeAttachments.isEmpty,
+                  expectedEnvelope?.requiresAAD != true else {
+                throw E2eeMessageAADError.authenticatedMetadataMismatch
+            }
+            return payload.withAuthenticatedMetadata(nil)
+        }
+
+        let aad = try E2eeMessageAADV1.decoded(from: processedAAD)
+        guard aad.isRequired,
+              aad.cid == cid.rawValue,
+              aad.e2eeGroupId == mlsGroupCid(for: cid).rawValue,
+              aad.messageId.caseInsensitiveCompare(messageId) == .orderedSame else {
+            throw E2eeMessageAADError.authenticatedMetadataMismatch
+        }
+        try payload.e2eeAttachments.verifyCanonicalAttachmentIds(aad.attachmentIds)
+        if let expectedEnvelope {
+            let canonicalEnvelopeIds = try E2eeMessageAADV1.canonicalAttachmentIds(
+                expectedEnvelope.attachmentIds
+            )
+            guard expectedEnvelope.forwardCid == aad.forwardCid,
+                  expectedEnvelope.forwardMessageId == aad.forwardMessageId,
+                  expectedEnvelope.forwardParentCid == aad.forwardParentCid,
+                  canonicalEnvelopeIds == aad.attachmentIds else {
+                throw E2eeMessageAADError.authenticatedMetadataMismatch
+            }
+        }
+        return payload.withAuthenticatedMetadata(.init(
+            forwardCid: aad.forwardCid,
+            forwardMessageId: aad.forwardMessageId,
+            forwardParentCid: aad.forwardParentCid,
+            attachmentIds: aad.attachmentIds
+        ))
     }
 
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
@@ -2093,7 +2147,8 @@ class E2eRepository: EventsControllerDelegate {
                     messageId: data.id,
                     encryptedData: Data(mlsCiphertext),
                     cid: cid,
-                    receiveSource: .scopeSync
+                    receiveSource: .scopeSync,
+                    expectedEnvelope: data.e2eeReceivedEnvelope
                 )
                 return .application(.decrypted)
             }
@@ -2336,7 +2391,8 @@ class E2eRepository: EventsControllerDelegate {
                             messageId: application.id,
                             encryptedData: Data(ciphertext),
                             cid: cid,
-                            receiveSource: .scopeSync
+                            receiveSource: .scopeSync,
+                            expectedEnvelope: application.e2eeReceivedEnvelope
                         )
                         try self.durableInboxStore.markApplicationPersistenceCompleted(
                             accountId: accountId,
@@ -2545,6 +2601,7 @@ class E2eRepository: EventsControllerDelegate {
         encryptedData: Data,
         cid: ChannelId,
         receiveSource: E2eeAttachmentReceiveSource,
+        expectedEnvelope: E2eeReceivedMessageEnvelope? = nil,
         completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
     ) {
         do {
@@ -2552,7 +2609,8 @@ class E2eRepository: EventsControllerDelegate {
                 messageId: messageId,
                 encryptedData: encryptedData,
                 cid: cid,
-                receiveSource: receiveSource
+                receiveSource: receiveSource,
+                expectedEnvelope: expectedEnvelope
             )))
         } catch {
             log.error("Failed to decrypt message \(messageId): \(error)")
@@ -2566,7 +2624,8 @@ class E2eRepository: EventsControllerDelegate {
         messageId: MessageId,
         encryptedData: Data,
         cid: ChannelId,
-        receiveSource: E2eeAttachmentReceiveSource
+        receiveSource: E2eeAttachmentReceiveSource,
+        expectedEnvelope: E2eeReceivedMessageEnvelope? = nil
     ) throws -> E2ePayload {
         // Re-check the DB cache — a prior operation may have populated it.
         // Read on the background read-only context so the decrypt hot path never
@@ -2589,21 +2648,23 @@ class E2eRepository: EventsControllerDelegate {
             do {
                 let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
                 let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
-                try persistProcessedApplicationMessage(
+                let authenticatedPayload = try persistProcessedApplicationMessage(
                     processed,
                     messageId: messageId,
                     encryptedData: encryptedData,
                     cid: cid,
                     group: group,
-                    receiveSource: receiveSource
+                    receiveSource: receiveSource,
+                    expectedEnvelope: expectedEnvelope
                 )
-                return processed.payload
+                return authenticatedPayload
             } catch {
                 guard E2eeApplicationReplayRecovery.canFinalizeFromCachedPlaintext(
                     error: error,
                     cachedCiphertextHash: cachedCiphertextHash,
                     ciphertext: encryptedData
                 ) else { throw error }
+                try validateCachedPayload(cached, expectedEnvelope: expectedEnvelope)
                 e2eeAttachmentReceiveCoordinator.hydratePreviews(
                     payload: cached,
                     messageId: messageId,
@@ -2619,15 +2680,43 @@ class E2eRepository: EventsControllerDelegate {
         let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
         log.debug("[MLS] Current group epoch: \(group.epoch())", subsystems: .mls)
         let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
-        try persistProcessedApplicationMessage(
+        let authenticatedPayload = try persistProcessedApplicationMessage(
             processed,
             messageId: messageId,
             encryptedData: encryptedData,
             cid: cid,
             group: group,
-            receiveSource: receiveSource
+            receiveSource: receiveSource,
+            expectedEnvelope: expectedEnvelope
         )
-        return processed.payload
+        return authenticatedPayload
+    }
+
+    private func validateCachedPayload(
+        _ payload: E2ePayload,
+        expectedEnvelope: E2eeReceivedMessageEnvelope?
+    ) throws {
+        guard let expectedEnvelope else { return }
+        guard expectedEnvelope.requiresAAD else {
+            guard payload.authenticatedMetadata == nil,
+                  payload.e2eeAttachments.isEmpty else {
+                throw E2eeMessageAADError.authenticatedMetadataMismatch
+            }
+            return
+        }
+        guard let metadata = payload.authenticatedMetadata else {
+            throw E2eeMessageAADError.authenticatedMetadataMismatch
+        }
+        let expectedIds = try E2eeMessageAADV1.canonicalAttachmentIds(
+            expectedEnvelope.attachmentIds
+        )
+        guard metadata.forwardCid == expectedEnvelope.forwardCid,
+              metadata.forwardMessageId == expectedEnvelope.forwardMessageId,
+              metadata.forwardParentCid == expectedEnvelope.forwardParentCid,
+              metadata.attachmentIds == expectedIds else {
+            throw E2eeMessageAADError.authenticatedMetadataMismatch
+        }
+        try payload.e2eeAttachments.verifyCanonicalAttachmentIds(expectedIds)
     }
 
     /// Re-attempts decryption for messages in `cid` that still hold ciphertext but have
@@ -3688,6 +3777,7 @@ class E2eRepository: EventsControllerDelegate {
         encryptedData: Data,
         cid: ChannelId,
         receiveSource: E2eeAttachmentReceiveSource = .directDecrypt,
+        expectedEnvelope: E2eeReceivedMessageEnvelope? = nil,
         completion: ((_ result: Result<E2ePayload, Error>) -> Void)? = nil
     ) {
         // Foreground/realtime decrypts run ahead of background sync work so a freshly
@@ -3700,6 +3790,7 @@ class E2eRepository: EventsControllerDelegate {
                 encryptedData: encryptedData,
                 cid: cid,
                 receiveSource: receiveSource,
+                expectedEnvelope: expectedEnvelope,
                 completion: completion
             )
         }

@@ -329,6 +329,12 @@ public enum L10n {
   public enum Encryption {
     /// End-to-end message encryption
     public static var e2eMessageEncrytion: String { L10n.tr("Localizable", "encryption.e2e-message-encrytion") }
+    public enum ForwardDowngradeAlert {
+      /// The destination is a standard channel. Forwarded content will no longer have end-to-end encryption.
+      public static var message: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.message") }
+      /// Remove E2EE Protection?
+      public static var title: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.title") }
+    }
     public enum EnableE2eAlert {
       /// End-to-end encryption protects your data by encrypting it from the sender to the recipient, allowing only the intended recipient to decrypt it
       public static var message: String { L10n.tr("Localizable", "encryption.enable-e2e-alert.message") }

@@ -484,10 +484,14 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
                 store: self.store,
                 stagingStore: self.stagingStore,
                 client: client,
+                deletionClient: client as? E2eeAttachmentUnboundDeletionClient,
                 manifestBuilder: E2eeAttachmentManifestBuilder(
                     wrappingKeyStore: E2eeAttachmentWrappingKeyStore(access: .mainApp)
                 ),
                 messageBinding: messageBinding,
+                cancelScheduledTasks: { [weak self] attempt in
+                    await self?.cancelScheduledUploadTasks(for: attempt)
+                },
                 stateDidChange: { [weak self] in
                     self?.notifyTransferStoreChanged()
                 }
@@ -1259,6 +1263,22 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
 
     private static func hasScheduledTask(_ attempt: PendingE2eeTransferAttempt) -> Bool {
         !taskTokens(attempt).isEmpty
+    }
+
+    /// The finalizer invokes this only for a proven unrecoverable wrapping-key loss. It does not
+    /// mutate the durable attempt: the finalizer clears those mappings after cancellation so a
+    /// late URLSession callback is stale and cannot revive the terminal record.
+    private func cancelScheduledUploadTasks(for attempt: PendingE2eeTransferAttempt) async {
+        let tokens = Set(Self.taskTokens(attempt))
+        guard !tokens.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            session.getAllTasks { tasks in
+                tasks.filter { task in
+                    task.taskDescription.map(tokens.contains) == true
+                }.forEach { $0.cancel() }
+                continuation.resume()
+            }
+        }
     }
 
     private static func taskTokens(_ attempt: PendingE2eeTransferAttempt) -> [String] {

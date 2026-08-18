@@ -48,6 +48,8 @@ enum EndpointPath: Codable {
     case stopWatchingChannel(String)
     case pinnedMessages(String)
     case uploadAttachment(channelId: ChannelId, type: String)
+    case presignStandardAttachment(channelId: ChannelId)
+    case confirmStandardAttachment(channelId: ChannelId)
     case channelDetailUpdate(cid: ChannelId)
     case getAttachments(cid: ChannelId)
     case enableTopics(channelId: ChannelId)
@@ -219,6 +221,10 @@ enum EndpointPath: Codable {
             return "channels/\(channelId)/pinned_messages"
         case .uploadAttachment(let (channelId, type)):
             return "channels/\(channelId.apiPath)/\(type)"
+        case .presignStandardAttachment(let channelId):
+            return "channels/\(channelId.apiPath)/file/presign"
+        case .confirmStandardAttachment(let channelId):
+            return "channels/\(channelId.apiPath)/file/confirm"
         case .sendMessage(let channelId):
             return "channels/\(channelId.apiPath)/message"
         case .sendE2eMessage(let channelId):

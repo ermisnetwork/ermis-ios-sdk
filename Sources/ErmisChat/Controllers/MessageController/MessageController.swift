@@ -586,10 +586,22 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     }
 
     /// Forward the message to other channel.
-    public func forward(message: ChatMessage, to cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
-        messageUpdater.forwardMessage(MessageRequestBody.forwardMessageBody(from: message), to: cid) { [weak self] error in
+    public func forward(
+        message: ChatMessage,
+        to cid: ChannelId,
+        attachmentPayloadOverrides: [AnyAttachmentPayload]? = nil,
+        completion: ((Error?) -> Void)? = nil
+    ) {
+        messageUpdater.forwardMessage(
+            MessageRequestBody.forwardMessageBody(from: message),
+            to: cid,
+            attachmentPayloadOverrides: attachmentPayloadOverrides
+        ) { [weak self] result in
+            if case .success(let message?) = result {
+                self?.client.eventNotificationCenter.process(NewMessagePendingEvent(message: message))
+            }
             self?.callback {
-                completion?(error)
+                completion?(result.error)
             }
         }
     }

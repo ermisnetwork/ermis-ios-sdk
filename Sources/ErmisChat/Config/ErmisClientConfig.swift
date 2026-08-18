@@ -152,6 +152,14 @@ public struct ErmisClientConfig {
     /// This overrides the custom `UploadClient`. You should use 1 of them only.
     public var customUploader: Uploader?
 
+    /// Uses Bellboy's `presign -> direct storage PUT -> confirm` flow for standard attachments.
+    /// It remains disabled by default until the host has completed its Bellboy/R2 rollout matrix.
+    public var isStandardPresignedUploadEnabled = false
+
+    /// Allows the default uploader to use the legacy Bellboy multipart proxy only when presign
+    /// fails before a storage PUT can have succeeded. It never falls back after an ambiguous PUT.
+    public var allowsLegacyStandardUploadFallback = true
+
     /// Returns the largest attachment plaintext accepted by the client.
     ///
     /// Bellboy accepts attachment ciphertext up to 2 GiB. The client limit is slightly

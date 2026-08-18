@@ -226,6 +226,8 @@
 
 // Encryption
 "message.encrypted-message" = "Encrypted message";
+"encryption.forward-downgrade-alert.title" = "Remove E2EE Protection?";
+"encryption.forward-downgrade-alert.message" = "The destination is a standard channel. Forwarded content will no longer have end-to-end encryption.";
 /// Shown above an inline reply when the quoted message was authored by the current user.
 "message.quoted-message.replied-to-you" = "Replied to you";
 /// Shown above an inline reply. The placeholder contains the quoted-message author's name.

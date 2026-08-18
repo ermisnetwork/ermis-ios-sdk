@@ -427,33 +427,167 @@ class MessageUpdater: Worker {
     ///   - messageRequestBody: The `MessageRequestBody` of the forwarded message.
     ///   - cid: The channel identifier of the channel which message will be forwarded to.
     ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
-    func forwardMessage(_ messageRequestBody: MessageRequestBody, to cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
+    func forwardMessage(
+        _ initialRequestBody: MessageRequestBody,
+        to cid: ChannelId,
+        attachmentPayloadOverrides: [AnyAttachmentPayload]? = nil,
+        completion: ((Result<ChatMessage?, Error>) -> Void)? = nil
+    ) {
         var destinationIsEncrypted: Bool?
+        var sourceParentCid: String?
         database.viewContext.performAndWait {
             destinationIsEncrypted = ChannelDTO.load(cid: cid, context: database.viewContext)?.isE2eeEnabled
+            if let sourceCid = initialRequestBody.forwardCid,
+               let parsed = try? ChannelId(cid: sourceCid) {
+                sourceParentCid = ChannelDTO.load(
+                    cid: parsed,
+                    context: database.viewContext
+                )?.parentcid
+            }
         }
-        guard destinationIsEncrypted == false else {
-            // The legacy forward endpoint would expose the forwarded payload and does not bind
-            // forward metadata into MLS AAD. M4 replaces this with the destination-aware E2EE
-            // forward pipeline; until then, fail closed for encrypted or unknown destinations
-            // instead of silently downgrading privacy.
-            completion?(E2eeMessageAADError.authenticatedSendLaneUnavailable)
+        guard let destinationIsEncrypted else {
+            completion?(.failure(E2eeMessageAADError.authenticatedSendLaneUnavailable))
             return
         }
 
-        let endpoint: Endpoint<MessagePayload.Boxed> = .sendMessage(
-            cid: cid,
-            messagePayload: messageRequestBody
-        )
+        var messageRequestBody = initialRequestBody
+        messageRequestBody.forwardParentCid = sourceParentCid
 
-        self.apiClient.request(endpoint: endpoint) { [weak self] in
-            switch $0 {
-            case let .success(payload):
-                completion?(nil)
+        let requiresLocalUpload = attachmentPayloadOverrides != nil
+        if !destinationIsEncrypted && !requiresLocalUpload {
+            let endpoint: Endpoint<MessagePayload.Boxed> = .sendMessage(
+                cid: cid,
+                messagePayload: messageRequestBody
+            )
+            apiClient.request(endpoint: endpoint) {
+                switch $0 {
+                case .success:
+                    completion?(.success(nil))
+                case .failure(let error):
+                    completion?(.failure(error))
+                }
+            }
+            return
+        }
+
+        if destinationIsEncrypted,
+           !messageRequestBody.attachments.isEmpty,
+           attachmentPayloadOverrides == nil {
+            // Opaque source attachment payloads must never enter the destination manifest lane.
+            completion?(.failure(E2eeMessageAADError.authenticatedSendLaneUnavailable))
+            return
+        }
+
+        guard let attachmentPayloadOverrides else {
+            persistLocalForwardMessage(
+                messageRequestBody,
+                to: cid,
+                attachments: [],
+                stagingResult: nil,
+                stager: nil,
+                completion: completion
+            )
+            return
+        }
+
+        let stager = ForwardAttachmentSourceStager()
+        stager.stage(
+            attachmentPayloadOverrides,
+            for: cid,
+            messageId: messageRequestBody.id
+        ) { [weak self] result in
+            guard let self else {
+                if case let .success(stagingResult) = result {
+                    stager.removeNewlyCreatedFiles(in: stagingResult)
+                }
+                completion?(.failure(CancellationError()))
+                return
+            }
+            switch result {
+            case let .success(stagingResult):
+                log.info(
+                    "[ATTACHMENT_FORWARD] stage=destination_staging state=completed " +
+                    "attachment_count=\(stagingResult.payloads.count)"
+                )
+                self.persistLocalForwardMessage(
+                    messageRequestBody,
+                    to: cid,
+                    attachments: stagingResult.payloads,
+                    stagingResult: stagingResult,
+                    stager: stager,
+                    completion: completion
+                )
             case let .failure(error):
-                completion?(error)
+                log.error(
+                    "[ATTACHMENT_FORWARD] stage=destination_staging state=failed " +
+                    "error_type=\(String(reflecting: type(of: error)))"
+                )
+                completion?(.failure(error))
             }
         }
+    }
+
+    private func persistLocalForwardMessage(
+        _ messageRequestBody: MessageRequestBody,
+        to cid: ChannelId,
+        attachments: [AnyAttachmentPayload],
+        stagingResult: ForwardAttachmentStagingResult?,
+        stager: ForwardAttachmentSourceStager?,
+        completion: ((Result<ChatMessage?, Error>) -> Void)?
+    ) {
+        var newMessage: ChatMessage?
+        database.write({ session in
+            let dto = try session.createNewMessage(
+                in: cid,
+                messageId: messageRequestBody.id,
+                text: messageRequestBody.text,
+                command: messageRequestBody.command,
+                arguments: messageRequestBody.args,
+                parentMessageId: nil,
+                attachments: attachments,
+                stickerUrl: messageRequestBody.stickerUrl,
+                mentionedUserIds: messageRequestBody.mentionedUserIds,
+                mentionedAll: messageRequestBody.mentionedAll,
+                isSilent: messageRequestBody.isSilent,
+                quotedMessageId: nil,
+                createdAt: nil
+            )
+            dto.forwardCid = messageRequestBody.forwardCid
+            try session.saveMessageDecrypt(
+                payload: E2ePayload(
+                    text: messageRequestBody.text,
+                    attachments: [],
+                    stickerUrl: messageRequestBody.stickerUrl,
+                    authenticatedMetadata: .init(
+                        forwardCid: messageRequestBody.forwardCid,
+                        forwardMessageId: messageRequestBody.forwardMessageId,
+                        forwardParentCid: messageRequestBody.forwardParentCid,
+                        attachmentIds: []
+                    )
+                ),
+                messageId: dto.id,
+                ciphertextHash: nil
+            )
+            dto.localMessageState = .pendingSend
+            newMessage = try dto.asModel()
+        }, completion: { error in
+            if let error {
+                if let stagingResult {
+                    stager?.removeNewlyCreatedFiles(in: stagingResult)
+                }
+                log.error(
+                    "[ATTACHMENT_FORWARD] stage=pending_message state=failed " +
+                    "error_type=\(String(reflecting: type(of: error)))"
+                )
+                completion?(.failure(error))
+            } else {
+                log.info(
+                    "[ATTACHMENT_FORWARD] stage=pending_message state=completed " +
+                    "attachment_count=\(attachments.count)"
+                )
+                completion?(.success(newMessage))
+            }
+        })
     }
 
     /// Deletes the message reaction left by the current user.

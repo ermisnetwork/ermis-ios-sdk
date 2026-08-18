@@ -945,6 +945,29 @@ var deliveryStatus: MessageDeliveryStatus? {
 This feature allows user to upload a file to the system. Maximum file size is 2GB
 To upload channel attachment, call `uploadAttachment` function in `ChannelController` object.
 
+Standard-channel uploads use the legacy Bellboy multipart proxy by default. Hosts can opt in to
+Bellboy's direct `presign -> storage PUT -> confirm` flow while the rollout matrix is being
+validated:
+
+```swift
+var config = ErmisClientConfig(
+    apiKeyString: apiKey,
+    endpointEnviroment: endpointEnvironment
+)
+config.isStandardPresignedUploadEnabled = true
+config.allowsLegacyStandardUploadFallback = true
+```
+
+The direct storage request is file-backed and contains only storage-required headers; SDK API
+credentials, cookies, and Bellboy-specific headers are never copied to the presigned URL. Legacy
+fallback is attempted only when presign fails before a storage PUT could have succeeded. Set
+`allowsLegacyStandardUploadFallback` to `false` to fail closed during rollout. A configured
+`customUploader` or `customUploadClient` keeps precedence over this built-in selection.
+
+For standard video messages, the original video and generated thumbnail are uploaded and confirmed
+as two distinct objects. The message attachment is marked uploaded only after both confirms succeed;
+the visible progress reserves the final 10% for thumbnail upload and confirmation.
+
 ```swift
 public func  uploadAttachment(
     localFileURL: URL,

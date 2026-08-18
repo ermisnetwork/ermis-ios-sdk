@@ -85,11 +85,14 @@ extension NSManagedObjectContext: E2eDatabaseSession {
         dto.stickerUrl = payload.stickerUrl
         dto.ciphertextHash = ciphertextHash
 
-        if !payload.attachments.isEmpty || !payload.e2eeAttachments.isEmpty {
+        if !payload.attachments.isEmpty ||
+            !payload.e2eeAttachments.isEmpty ||
+            payload.authenticatedMetadata != nil {
             dto.attachmentsData = try JSONEncoder.default.encode(
                 E2eCachedAttachments(
                     legacy: payload.attachments,
-                    e2ee: payload.e2eeAttachments
+                    e2ee: payload.e2eeAttachments,
+                    authenticatedMetadata: payload.authenticatedMetadata
                 )
             )
         } else {
@@ -141,7 +144,8 @@ extension MessageDecryptDTO {
             text: text,
             attachments: cachedAttachments.legacy,
             e2eeAttachments: cachedAttachments.e2ee,
-            stickerUrl: stickerUrl
+            stickerUrl: stickerUrl,
+            authenticatedMetadata: cachedAttachments.authenticatedMetadata
         )
     }
 }
@@ -150,26 +154,29 @@ extension MessageDecryptDTO {
 /// Core Data attribute avoids a schema migration while retaining read compatibility with rows
 /// written by pre-M2 SDK versions.
 struct E2eCachedAttachments: Codable, Equatable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     let version: Int
     let legacy: [MessageAttachmentPayload]
     let e2ee: [E2eeAttachmentManifestV1]
+    let authenticatedMetadata: E2eeAuthenticatedMessageMetadata?
 
     init(
         version: Int = currentVersion,
         legacy: [MessageAttachmentPayload] = [],
-        e2ee: [E2eeAttachmentManifestV1] = []
+        e2ee: [E2eeAttachmentManifestV1] = [],
+        authenticatedMetadata: E2eeAuthenticatedMessageMetadata? = nil
     ) {
         self.version = version
         self.legacy = legacy
         self.e2ee = e2ee
+        self.authenticatedMetadata = authenticatedMetadata
     }
 
     static func decodeCompatible(from data: Data) throws -> Self {
         let decoder = JSONDecoder.default
         if let envelope = try? decoder.decode(Self.self, from: data) {
-            guard envelope.version == currentVersion else {
+            guard envelope.version == 1 || envelope.version == currentVersion else {
                 throw E2eCachedAttachmentsError.unsupportedVersion(envelope.version)
             }
             guard envelope.legacy.isEmpty || envelope.e2ee.isEmpty else {

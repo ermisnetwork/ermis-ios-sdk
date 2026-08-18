@@ -126,10 +126,13 @@ class MessageRepository {
                         )
                         e2ePayload = cachedPayload
                     } else {
+                        let cachedMetadata = (try dto.decryptedMessage?.asPayload())?
+                            .authenticatedMetadata
                         e2ePayload = E2ePayload(
                             text: requestBody.text,
                             attachments: requestBody.attachments,
-                            stickerUrl: requestBody.stickerUrl
+                            stickerUrl: requestBody.stickerUrl,
+                            authenticatedMetadata: cachedMetadata
                         )
                         if requestBody.forwardCid?.isEmpty == false
                             || requestBody.forwardMessageId?.isEmpty == false
@@ -601,7 +604,8 @@ class MessageRepository {
         e2eRepository.decryptMessagePayload(
             messageId: messageId,
             encryptedData: Data(encryptedBytes),
-            cid: cid
+            cid: cid,
+            expectedEnvelope: payload.e2eeReceivedEnvelope
         )
     }
 }
@@ -622,7 +626,8 @@ extension MessageRepository: E2eeAttachmentMessageBinding {
                     text: existingPayload?.text ?? message.text,
                     attachments: [],
                     e2eeAttachments: manifests,
-                    stickerUrl: existingPayload?.stickerUrl ?? message.stickerUrl
+                    stickerUrl: existingPayload?.stickerUrl ?? message.stickerUrl,
+                    authenticatedMetadata: existingPayload?.authenticatedMetadata
                 )
                 try session.saveMessageDecrypt(
                     payload: payload,

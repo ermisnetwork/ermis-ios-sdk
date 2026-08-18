@@ -45,6 +45,7 @@ public struct E2eeTransferProgress: Equatable, Sendable {
     public let completedBytes: Int64
     public let totalBytes: Int64
     public let failureReason: E2eeTransferFailureReason?
+    public let hasUnscheduledParts: Bool
 
     public var fractionCompleted: Double {
         guard totalBytes > 0 else { return phase == .confirmed ? 1 : 0 }
@@ -57,16 +58,18 @@ public struct E2eeTransferProgress: Equatable, Sendable {
         phase == .confirmed ? 1 : min(fractionCompleted, 0.99)
     }
 
-    init(
+    public init(
         phase: E2eeTransferPhase,
         completedBytes: Int64,
         totalBytes: Int64,
-        failureReason: E2eeTransferFailureReason?
+        failureReason: E2eeTransferFailureReason? = nil,
+        hasUnscheduledParts: Bool = false
     ) {
         self.phase = phase
         self.completedBytes = completedBytes
         self.totalBytes = totalBytes
         self.failureReason = failureReason
+        self.hasUnscheduledParts = hasUnscheduledParts
     }
 }
 
@@ -196,12 +199,21 @@ struct PendingE2eeTransferAttempt: Codable, Equatable, Sendable {
         updatedAt = now
     }
 
+    public var hasUnscheduledParts: Bool {
+        assets.contains { asset in
+            asset.uploadMode == .multipart && asset.parts.contains { part in
+                part.eTag == nil && part.taskToken == nil
+            }
+        }
+    }
+
     var publicProgress: E2eeTransferProgress {
         E2eeTransferProgress(
             phase: phase,
             completedBytes: completedBytes,
             totalBytes: totalBytes,
-            failureReason: failureReason
+            failureReason: failureReason,
+            hasUnscheduledParts: hasUnscheduledParts
         )
     }
 }

@@ -7,6 +7,13 @@ import Foundation
 
 @objc(AttachmentDTO)
 class AttachmentDTO: NSManagedObject {
+    /// Preview hydration updates only the attachment's renderable payload/cache identity. It must
+    /// not dirty the owning message: message observers would otherwise treat every decrypted
+    /// thumbnail as a message mutation and rebuild/re-animate the entire timeline one attachment
+    /// at a time. Normal attachment mutations (upload state, payload, URL, etc.) still propagate
+    /// through `willSave`.
+    fileprivate var suppressMessagePropagationForPreviewSave = false
+
     /// An attachment id.
     @NSManaged private var id: String?
     var attachmentID: AttachmentId? {
@@ -54,6 +61,11 @@ class AttachmentDTO: NSManagedObject {
 
     override func willSave() {
         super.willSave()
+
+        if suppressMessagePropagationForPreviewSave {
+            suppressMessagePropagationForPreviewSave = false
+            return
+        }
 
         guard !isDeleted && !message.isDeleted else {
             return
@@ -172,6 +184,7 @@ extension NSManagedObjectContext: AttachmentDatabaseSession {
         }
 
         let dto = AttachmentDTO.loadOrCreate(id: id, context: self)
+        dto.suppressMessagePropagationForPreviewSave = true
         dto.attachmentType = type
         dto.data = payloadData
         dto.thumbnailData = nil

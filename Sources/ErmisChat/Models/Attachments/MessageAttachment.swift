@@ -131,6 +131,15 @@ public extension MessageAttachment where Payload: AttachmentPayload {
 }
 
 public extension AnyMessageAttachment {
+    /// Whether this attachment is an opaque E2EE reference rather than a directly downloadable URL.
+    ///
+    /// This is the authoritative attachment-level signal for actions such as forwarding. Message
+    /// ciphertext/decrypt-cache fields can legitimately be absent from an otherwise decrypted
+    /// snapshot, so callers must not use those transient fields as their only routing signal.
+    var isE2eeOpaqueAsset: Bool {
+        remoteURL?.scheme?.lowercased() == "ermis-e2ee-attachment"
+    }
+
     /// Repoints a local attachment snapshot at its durable sandbox file.
     ///
     /// Photo/item-provider URLs are short-lived. `AttachmentDTO.localURL` is updated after the

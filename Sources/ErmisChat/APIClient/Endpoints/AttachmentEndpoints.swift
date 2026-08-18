@@ -18,4 +18,26 @@ extension Endpoint {
             query: nil
         )
     }
+
+    static func presignStandardAttachment(
+        with cid: ChannelId,
+        body: StandardAttachmentPresignRequest
+    ) -> Endpoint<StandardAttachmentPresignPayload> {
+        .init(
+            path: .presignStandardAttachment(channelId: cid),
+            method: .post,
+            body: body
+        )
+    }
+
+    static func confirmStandardAttachment(
+        with cid: ChannelId,
+        body: StandardAttachmentConfirmRequest
+    ) -> Endpoint<StandardAttachmentConfirmPayload> {
+        .init(
+            path: .confirmStandardAttachment(channelId: cid),
+            method: .post,
+            body: body
+        )
+    }
 }

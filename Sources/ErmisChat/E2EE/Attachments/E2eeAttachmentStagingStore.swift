@@ -277,12 +277,27 @@ struct E2eeAttachmentStagingStore {
         _ error: Error,
         stage: E2eeAttachmentDiskStage
     ) -> Error {
-        let nsError = error as NSError
-        if (nsError.domain == NSCocoaErrorDomain && nsError.code == CocoaError.fileWriteOutOfSpace.rawValue)
-            || (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOSPC)) {
+        var visited = Set<ObjectIdentifier>()
+        if containsNoSpaceError(error as NSError, visited: &visited) {
             return E2eeAttachmentStagingError.noSpace(stage)
         }
         return error
+    }
+
+    private static func containsNoSpaceError(
+        _ error: NSError,
+        visited: inout Set<ObjectIdentifier>
+    ) -> Bool {
+        guard visited.insert(ObjectIdentifier(error)).inserted else { return false }
+        if (error.domain == NSCocoaErrorDomain
+            && error.code == CocoaError.fileWriteOutOfSpace.rawValue)
+            || (error.domain == NSPOSIXErrorDomain && error.code == Int(ENOSPC)) {
+            return true
+        }
+        guard let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError else {
+            return false
+        }
+        return containsNoSpaceError(underlying, visited: &visited)
     }
 
     private func prepare(_ directory: URL) throws {

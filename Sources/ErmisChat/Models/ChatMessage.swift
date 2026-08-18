@@ -69,6 +69,19 @@ public struct ChatMessage {
     /// The channel id of channel which this message is forwarded from.
     public var forwardChannelId: ChannelId?
 
+    /// Authenticated source message identity for an E2EE forward, when available locally.
+    public var forwardMessageId: MessageId? {
+        decryptedMessage?.authenticatedMetadata?.forwardMessageId
+    }
+
+    /// Authenticated source thread/root channel for an E2EE forward, when present.
+    public var forwardParentChannelId: ChannelId? {
+        guard let rawValue = decryptedMessage?.authenticatedMetadata?.forwardParentCid else {
+            return nil
+        }
+        return try? ChannelId(cid: rawValue)
+    }
+
     /// A flag indicating whether the message was bounced due to moderation.
     public let isBounced: Bool
 

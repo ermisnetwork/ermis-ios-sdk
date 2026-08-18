@@ -19,7 +19,7 @@ public struct UploadedFile: Decodable {
 /// The upload client is responsible to upload files.
 public protocol UploadClient {
 
-    /// Uploads attachment as a multipart/form-data and returns only the uploaded remote file.
+    /// Uploads an attachment and returns only the uploaded remote file.
     /// - Parameters:
     ///   - attachment: An attachment to upload.
     ///   - progress: A closure that broadcasts upload progress.
@@ -30,7 +30,7 @@ public protocol UploadClient {
         completion: @escaping (Result<URL, Error>) -> Void
     )
 
-    /// Uploads attachment as a multipart/form-data and returns the uploaded remote file and its thumbnail.
+    /// Uploads an attachment and returns the uploaded remote file and its thumbnail.
     /// - Parameters:
     ///   - attachment: An attachment to upload.
     ///   - progress: A closure that broadcasts upload progress.
@@ -76,6 +76,8 @@ class ErmisUploadClient: NSObject, UploadClient, URLSessionDataDelegate {
     private let decoder: RequestDecoder
     private let encoder: RequestEncoder
     private let sessionConfiguration: URLSessionConfiguration
+    private let allowsLegacyStandardUploadFallback: Bool
+    private var presignedUploadClient: StandardPresignedAttachmentUploadClient?
 
     private lazy var session: URLSession = URLSession(configuration: sessionConfiguration,
                                                       delegate: self,
@@ -93,11 +95,21 @@ class ErmisUploadClient: NSObject, UploadClient, URLSessionDataDelegate {
     init(
         encoder: RequestEncoder,
         decoder: RequestDecoder,
-        sessionConfiguration: URLSessionConfiguration
+        sessionConfiguration: URLSessionConfiguration,
+        isStandardPresignedUploadEnabled: Bool = false,
+        allowsLegacyStandardUploadFallback: Bool = true
     ) {
         self.encoder = encoder
         self.decoder = decoder
         self.sessionConfiguration = sessionConfiguration
+        self.allowsLegacyStandardUploadFallback = allowsLegacyStandardUploadFallback
+        if isStandardPresignedUploadEnabled {
+            presignedUploadClient = StandardPresignedAttachmentUploadClient(
+                encoder: encoder,
+                decoder: decoder,
+                sessionConfiguration: sessionConfiguration
+            )
+        }
     }
 
     func uploadAttachment(
@@ -118,6 +130,37 @@ class ErmisUploadClient: NSObject, UploadClient, URLSessionDataDelegate {
     func uploadAttachment(
         _ attachment: AnyMessageAttachment,
         progress: ((Double) -> Void)? = nil,
+        completion: @escaping (Result<UploadedFile, Error>) -> Void
+    ) {
+        guard let presignedUploadClient else {
+            uploadAttachmentThroughLegacyProxy(
+                attachment,
+                progress: progress,
+                completion: completion
+            )
+            return
+        }
+        presignedUploadClient.upload(
+            attachment,
+            progress: progress
+        ) { [weak self] result in
+            guard case let .failure(error) = result,
+                  error.permitsLegacyFallback,
+                  self?.allowsLegacyStandardUploadFallback == true else {
+                completion(result.mapError { $0 as Error })
+                return
+            }
+            self?.uploadAttachmentThroughLegacyProxy(
+                attachment,
+                progress: progress,
+                completion: completion
+            )
+        }
+    }
+
+    private func uploadAttachmentThroughLegacyProxy(
+        _ attachment: AnyMessageAttachment,
+        progress: ((Double) -> Void)?,
         completion: @escaping (Result<UploadedFile, Error>) -> Void
     ) {
         guard

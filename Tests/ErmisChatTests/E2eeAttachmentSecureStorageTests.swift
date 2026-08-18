@@ -221,6 +221,21 @@ final class E2eeAttachmentSecureStorageTests: XCTestCase {
         )
     }
 
+    func testWrappedNoSpaceClassificationPreservesStage() {
+        let underlying = NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
+        let wrapped = NSError(
+            domain: NSCocoaErrorDomain,
+            code: CocoaError.fileWriteUnknown.rawValue,
+            userInfo: [NSUnderlyingErrorKey: underlying]
+        )
+
+        XCTAssertEqual(
+            E2eeAttachmentStagingStore.classifyDiskError(wrapped, stage: .download)
+                as? E2eeAttachmentStagingError,
+            .noSpace(.download)
+        )
+    }
+
     func testSourceStagingUsesAtomicDurableCopy() throws {
         let store = E2eeAttachmentStagingStore(
             rootURL: directory,

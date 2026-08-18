@@ -273,6 +273,128 @@ final class E2eeAttachmentFinalizerTests: XCTestCase {
         XCTAssertEqual(messageBinding.sentMessageId, attempt.messageId)
     }
 
+    func testWrappingKeyLossCancelsTasksCleansStagingAndDeletesUnboundAttachment() async throws {
+        let suiteName = "E2eeAttachmentFinalizerKeyLoss-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let originalKeychain = FinalizerKeychainStore()
+        let originalWrappingKeyStore = E2eeAttachmentWrappingKeyStore(
+            keychain: originalKeychain,
+            defaults: defaults,
+            access: .mainApp
+        )
+        var attempt = try makeBindingReadyAttempt(
+            wrappingKeyStore: originalWrappingKeyStore,
+            contentKey: Data((0..<32).map(UInt8.init)),
+            noncePrefix: Data((32..<40).map(UInt8.init))
+        )
+        let sourceURL = try stagingStore.sourceURL(
+            attemptId: attempt.attemptId,
+            attachmentIndex: 0,
+            fileExtension: "jpg"
+        )
+        try stagingStore.stagePreviewData(Data("source".utf8), to: sourceURL)
+        let canonicalURL = try stagingStore.canonicalCiphertextURL(
+            attemptId: attempt.attemptId,
+            assetIndex: 0
+        )
+        try stagingStore.stagePreviewData(Data("ciphertext".utf8), to: canonicalURL)
+        let partDirectory = try stagingStore.multipartAssetDirectory(
+            attemptId: attempt.attemptId,
+            assetId: attempt.assets[0].assetId
+        )
+        try Data("part".utf8).write(to: partDirectory.appendingPathComponent("part-001.cipher"))
+        attempt.assets[0].sourceURL = sourceURL
+        attempt.assets[0].canonicalCiphertextURL = canonicalURL
+        attempt.assets[0].taskIdentifier = 42
+        attempt.assets[0].taskToken = UUID().uuidString
+        try durableStore.insert(attempt)
+
+        // Same durable marker, but the installation-bound keychain record is absent after a
+        // reinstall. This must be distinguished from a merely locked Keychain.
+        let unavailableWrappingKeyStore = E2eeAttachmentWrappingKeyStore(
+            keychain: FinalizerKeychainStore(),
+            defaults: defaults,
+            access: .mainApp
+        )
+        let deletionClient = RecordingAttachmentDeletionClient()
+        let cancellationHandler = RecordingUnrecoverableAttemptHandler()
+        // E2eeAttachmentFinalizer intentionally holds this collaborator weakly. Keep the test
+        // binding alive so finalization reaches manifest construction and exercises key loss.
+        let messageBinding = RecordingAttachmentMessageBinding()
+        let finalizer = E2eeAttachmentFinalizer(
+            store: durableStore,
+            stagingStore: stagingStore,
+            client: RecordingAttachmentCompletionClient(outcomes: [.success(())]),
+            deletionClient: deletionClient,
+            manifestBuilder: E2eeAttachmentManifestBuilder(
+                wrappingKeyStore: unavailableWrappingKeyStore
+            ),
+            messageBinding: messageBinding,
+            cancelScheduledTasks: { cancellationHandler.record($0) }
+        )
+
+        do {
+            _ = try await finalizer.finalize(attemptId: attempt.attemptId)
+            XCTFail("Expected marker-proven wrapping-key loss")
+        } catch let error as E2eeAttachmentWrappingKeyError {
+            XCTAssertEqual(error, .localKeyUnavailableAfterReinstall)
+        }
+
+        let failed = try durableStore.attempt(attemptId: attempt.attemptId)
+        XCTAssertEqual(failed.phase, .failedTerminal)
+        XCTAssertEqual(failed.failureReason, .localKeyUnavailableAfterReinstall)
+        XCTAssertNil(failed.assets[0].sourceURL)
+        XCTAssertNil(failed.assets[0].canonicalCiphertextURL)
+        XCTAssertNil(failed.assets[0].taskIdentifier)
+        XCTAssertNil(failed.assets[0].taskToken)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: canonicalURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: partDirectory.path))
+        XCTAssertEqual(cancellationHandler.recordedAttemptIds, [attempt.attemptId])
+        XCTAssertEqual(deletionClient.deletedAttachmentIds, [attempt.assets[0].attachmentId])
+    }
+
+    func testRelaunchRetriesWrappingKeyLossCleanupFromTerminalRecord() async throws {
+        var attempt = makeSinglePutAttempt()
+        attempt.phase = .failedTerminal
+        attempt.failureReason = .localKeyUnavailableAfterReinstall
+        let sourceURL = try stagingStore.sourceURL(
+            attemptId: attempt.attemptId,
+            attachmentIndex: 0,
+            fileExtension: "jpg"
+        )
+        try stagingStore.stagePreviewData(Data("source".utf8), to: sourceURL)
+        let canonicalURL = try stagingStore.canonicalCiphertextURL(
+            attemptId: attempt.attemptId,
+            assetIndex: 0
+        )
+        try stagingStore.stagePreviewData(Data("ciphertext".utf8), to: canonicalURL)
+        attempt.assets[0].sourceURL = sourceURL
+        attempt.assets[0].canonicalCiphertextURL = canonicalURL
+        try durableStore.insert(attempt)
+
+        let deletionClient = RecordingAttachmentDeletionClient()
+        let finalizer = E2eeAttachmentFinalizer(
+            store: durableStore,
+            stagingStore: stagingStore,
+            client: RecordingAttachmentCompletionClient(outcomes: []),
+            deletionClient: deletionClient
+        )
+
+        await finalizer.finalizeReadyAttempts()
+
+        let recovered = try durableStore.attempt(attemptId: attempt.attemptId)
+        XCTAssertEqual(recovered.phase, .failedTerminal)
+        XCTAssertEqual(recovered.failureReason, .localKeyUnavailableAfterReinstall)
+        XCTAssertNil(recovered.assets[0].sourceURL)
+        XCTAssertNil(recovered.assets[0].canonicalCiphertextURL)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourceURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: canonicalURL.path))
+        XCTAssertEqual(deletionClient.deletedAttachmentIds, [attempt.assets[0].attachmentId])
+    }
+
     private func makeBindingReadyAttempt(
         wrappingKeyStore: E2eeAttachmentWrappingKeyStore,
         contentKey: Data,
@@ -407,6 +529,35 @@ private final class RecordingAttachmentMessageBinding: E2eeAttachmentMessageBind
         if let sendError {
             throw sendError
         }
+    }
+}
+
+private final class RecordingAttachmentDeletionClient: E2eeAttachmentUnboundDeletionClient {
+    private let lock = NSLock()
+    private var attachmentIds: [String] = []
+
+    var deletedAttachmentIds: [String] {
+        lock.withLock { attachmentIds }
+    }
+
+    func deleteUnboundE2eeAttachment(
+        cid: ChannelId,
+        attachmentId: String
+    ) async throws {
+        lock.withLock { attachmentIds.append(attachmentId) }
+    }
+}
+
+private final class RecordingUnrecoverableAttemptHandler {
+    private let lock = NSLock()
+    private var attemptIds: [String] = []
+
+    var recordedAttemptIds: [String] {
+        lock.withLock { attemptIds }
+    }
+
+    func record(_ attempt: PendingE2eeTransferAttempt) {
+        lock.withLock { attemptIds.append(attempt.attemptId) }
     }
 }
 

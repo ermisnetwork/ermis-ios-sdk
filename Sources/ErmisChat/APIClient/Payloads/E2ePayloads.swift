@@ -129,6 +129,9 @@ public struct E2ePayload: Codable, Equatable {
     /// message is rejected so a malformed E2EE manifest cannot silently become `.unknown`.
     public let e2eeAttachments: [E2eeAttachmentManifestV1]
     let stickerUrl: URL?
+    /// Local-only metadata recovered from OpenMLS-authenticated AAD. It is deliberately omitted
+    /// from MLS payload coding; sending it twice would create two competing wire representations.
+    let authenticatedMetadata: E2eeAuthenticatedMessageMetadata?
 
     private enum CodingKeys: String, CodingKey {
         case text
@@ -147,19 +150,22 @@ public struct E2ePayload: Codable, Equatable {
         lhs.text == rhs.text &&
             lhs.attachments == rhs.attachments &&
             lhs.e2eeAttachments == rhs.e2eeAttachments &&
-            lhs.stickerUrl == rhs.stickerUrl
+            lhs.stickerUrl == rhs.stickerUrl &&
+            lhs.authenticatedMetadata == rhs.authenticatedMetadata
     }
 
     init(
         text: String,
         attachments: [MessageAttachmentPayload],
         e2eeAttachments: [E2eeAttachmentManifestV1] = [],
-        stickerUrl: URL?
+        stickerUrl: URL?,
+        authenticatedMetadata: E2eeAuthenticatedMessageMetadata? = nil
     ) {
         self.text = text
         self.attachments = attachments
         self.e2eeAttachments = e2eeAttachments
         self.stickerUrl = stickerUrl
+        self.authenticatedMetadata = authenticatedMetadata
     }
 
     public init(from decoder: any Decoder) throws {
@@ -180,6 +186,7 @@ public struct E2ePayload: Codable, Equatable {
             let legacyContainer = try decoder.container(keyedBy: LegacyCodingKeys.self)
             self.stickerUrl = try legacyContainer.decodeIfPresent(URL.self, forKey: .stickerUrl)
         }
+        self.authenticatedMetadata = nil
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -195,6 +202,23 @@ public struct E2ePayload: Codable, Equatable {
         }
         try container.encodeIfPresent(stickerUrl, forKey: .stickerUrl)
     }
+
+    func withAuthenticatedMetadata(_ metadata: E2eeAuthenticatedMessageMetadata?) -> Self {
+        Self(
+            text: text,
+            attachments: attachments,
+            e2eeAttachments: e2eeAttachments,
+            stickerUrl: stickerUrl,
+            authenticatedMetadata: metadata
+        )
+    }
+}
+
+struct E2eeAuthenticatedMessageMetadata: Codable, Equatable {
+    let forwardCid: String?
+    let forwardMessageId: String?
+    let forwardParentCid: String?
+    let attachmentIds: [String]
 }
 
 enum E2ePayloadCodingError: Error, Equatable {
@@ -618,6 +642,10 @@ struct E2eSyncApplicationData: Decodable {
     let mlsEpoch: Int64?
     let contentType: String
     let createdAt: Date
+    let forwardCid: String?
+    let forwardMessageId: String?
+    let forwardParentCid: String?
+    let e2eeAttachmentIds: [String]
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -629,6 +657,10 @@ struct E2eSyncApplicationData: Decodable {
         case mlsEpoch = "mls_epoch"
         case contentType = "content_type"
         case createdAt = "created_at"
+        case forwardCid = "forward_cid"
+        case forwardMessageId = "forward_message_id"
+        case forwardParentCid = "forward_parent_cid"
+        case e2eeAttachmentIds = "e2ee_attachment_ids"
     }
 
     init(from decoder: any Decoder) throws {
@@ -642,11 +674,25 @@ struct E2eSyncApplicationData: Decodable {
         mlsEpoch = try container.decodeIfPresent(Int64.self, forKey: .mlsEpoch)
         contentType = try container.decode(String.self, forKey: .contentType)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
+        forwardCid = try container.decodeIfPresent(String.self, forKey: .forwardCid)
+        forwardMessageId = try container.decodeIfPresent(String.self, forKey: .forwardMessageId)
+        forwardParentCid = try container.decodeIfPresent(String.self, forKey: .forwardParentCid)
+        e2eeAttachmentIds = try container.decodeIfPresent([String].self, forKey: .e2eeAttachmentIds) ?? []
     }
 
     /// Whether this is a system message rather than an encrypted application message.
     var isSystemMessage: Bool {
         type == MessageType.system.rawValue
+    }
+
+
+    var e2eeReceivedEnvelope: E2eeReceivedMessageEnvelope {
+        .init(
+            forwardCid: forwardCid,
+            forwardMessageId: forwardMessageId,
+            forwardParentCid: forwardParentCid,
+            attachmentIds: e2eeAttachmentIds
+        )
     }
 }
 
