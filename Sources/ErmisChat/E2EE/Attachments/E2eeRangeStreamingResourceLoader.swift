@@ -754,6 +754,39 @@ actor E2eeRangePlaintextFrameStore {
     }
 }
 
+/// Keeps a resource-loading task suspended until it is registered under the loader lock.
+/// AVFoundation is allowed to cancel a request from the delegate queue immediately, so starting
+/// an unregistered task can otherwise leave a request running after `didCancel` has returned.
+final class E2eeRangeLoadingRequestStartGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resolution: Bool?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func wait() async -> Bool {
+        await withCheckedContinuation { continuation in
+            let resolved = lock.withLock { () -> Bool? in
+                if let resolution { return resolution }
+                self.continuation = continuation
+                return nil
+            }
+            if let resolved {
+                continuation.resume(returning: resolved)
+            }
+        }
+    }
+
+    func resolve(_ shouldStart: Bool) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            guard resolution == nil else { return nil }
+            resolution = shouldStart
+            let current = self.continuation
+            self.continuation = nil
+            return current
+        }
+        continuation?.resume(returning: shouldStart)
+    }
+}
+
 final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
     typealias GrantProvider = E2eeRangeStreamingGrantStore.GrantProvider
 
@@ -768,7 +801,13 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
     private let loadingRequestCancellationHandler: @Sendable () -> Void
     private let loadingRequestObserver: (AVAssetResourceLoadingRequest) -> Void
     private let lock = NSLock()
-    private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private struct ActiveLoadingRequest {
+        let token: UUID
+        let startGate: E2eeRangeLoadingRequestStartGate
+        var task: Task<Void, Never>?
+    }
+
+    private var activeLoadingRequests: [ObjectIdentifier: ActiveLoadingRequest] = [:]
     private var isInvalidated = false
 #if canImport(UIKit)
     private var memoryWarningObserver: NSObjectProtocol?
@@ -845,9 +884,23 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
     ) -> Bool {
         loadingRequestObserver(loadingRequest)
         let key = ObjectIdentifier(loadingRequest)
+        let token = UUID()
+        let startGate = E2eeRangeLoadingRequestStartGate()
         let startedAt = Date()
-        let task = Task { [weak self, weak loadingRequest] in
-            guard let self, let loadingRequest else { return }
+        let accepted = lock.withLock { () -> Bool in
+            guard !isInvalidated else { return false }
+            activeLoadingRequests[key] = ActiveLoadingRequest(
+                token: token,
+                startGate: startGate,
+                task: nil
+            )
+            return true
+        }
+        guard accepted else { return false }
+
+        let task = Task { [weak self, loadingRequest] in
+            guard await startGate.wait(), let self else { return }
+            defer { self.removeTask(for: key, token: token) }
             do {
                 try await self.fulfill(loadingRequest)
                 self.telemetry.recordLoadingRequest(latency: Date().timeIntervalSince(startedAt))
@@ -866,9 +919,21 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
                     loadingRequest.finishLoading(with: error)
                 }
             }
-            self.removeTask(for: key)
         }
-        lock.withLock { tasks[key] = task }
+        let installed = lock.withLock { () -> Bool in
+            guard var active = activeLoadingRequests[key],
+                  active.token == token,
+                  !isInvalidated else {
+                return false
+            }
+            active.task = task
+            activeLoadingRequests[key] = active
+            return true
+        }
+        startGate.resolve(installed)
+        if !installed {
+            task.cancel()
+        }
         return true
     }
 
@@ -877,21 +942,29 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
         didCancel loadingRequest: AVAssetResourceLoadingRequest
     ) {
         let key = ObjectIdentifier(loadingRequest)
-        let task = lock.withLock { tasks.removeValue(forKey: key) }
+        let active = lock.withLock { activeLoadingRequests.removeValue(forKey: key) }
+        log.debug(
+            "[E2EE_RANGE_PLAYBACK] request=cancelled",
+            subsystems: .mls
+        )
         loadingRequestCancellationHandler()
-        task?.cancel()
+        active?.startGate.resolve(false)
+        active?.task?.cancel()
     }
 
     func invalidate() {
-        let active: [Task<Void, Never>]? = lock.withLock {
+        let active: [ActiveLoadingRequest]? = lock.withLock {
             guard !isInvalidated else { return nil }
             isInvalidated = true
-            let values = Array(tasks.values)
-            tasks.removeAll()
+            let values = Array(activeLoadingRequests.values)
+            activeLoadingRequests.removeAll()
             return values
         }
         guard let active else { return }
-        active.forEach { $0.cancel() }
+        active.forEach {
+            $0.startGate.resolve(false)
+            $0.task?.cancel()
+        }
 #if canImport(UIKit)
         if let memoryWarningObserver {
             NotificationCenter.default.removeObserver(memoryWarningObserver)
@@ -914,8 +987,11 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
         }
     }
 
-    private func removeTask(for key: ObjectIdentifier) {
-        _ = lock.withLock { tasks.removeValue(forKey: key) }
+    private func removeTask(for key: ObjectIdentifier, token: UUID) {
+        _ = lock.withLock {
+            guard activeLoadingRequests[key]?.token == token else { return }
+            activeLoadingRequests.removeValue(forKey: key)
+        }
     }
 
     private func fulfill(_ request: AVAssetResourceLoadingRequest) async throws {

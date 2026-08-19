@@ -54,13 +54,12 @@ final class E2eeBackgroundTransferEventDrainer {
                 if event.kind == .progress {
                     return
                 } else if event.error != .none {
-                    if event.error == .canceled {
-                        record.phase = .canceled
-                        record.failureReason = nil
-                    } else {
-                        record.phase = .failedRetryable
-                        record.failureReason = Self.failureReason(for: event.error)
-                    }
+                    // A force-quit makes iOS cancel background URLSession tasks and later deliver
+                    // NSURLErrorCancelled when the app is launched again. Transport cancellation
+                    // is therefore not proof of user intent. Explicit SDK cancellation persists
+                    // `.canceled` and clears task mappings before its late callback reaches here.
+                    record.phase = .failedRetryable
+                    record.failureReason = Self.failureReason(for: event.error)
                 } else if event.httpStatus == nil {
                     record.phase = .failedTerminal
                     record.failureReason = .invalidServerResponse
@@ -235,7 +234,7 @@ final class E2eeBackgroundTransferEventDrainer {
         case .none:
             return .unknown
         case .canceled:
-            return .canceledByUser
+            return .backgroundTaskMissing
         case .timedOut, .networkLost, .cannotConnect, .notConnected:
             return .networkUnavailable
         case .httpClient, .httpServer, .unknown:

@@ -80,6 +80,26 @@ final class E2eeDurableTransferStore {
         }
     }
 
+    /// Repairs records written by SDK builds that classified an iOS force-quit URLSession
+    /// cancellation as explicit user intent. Callers must first prove the encrypted upload source
+    /// and valid grant still exist; ordinary `.canceled` records remain terminal.
+    func repairMisclassifiedForceQuitCancellation(
+        attemptId: String
+    ) throws -> PendingE2eeTransferAttempt {
+        try lock.withLock {
+            try prepareDirectoryLocked()
+            let previous = try loadLocked(attemptId: attemptId)
+            guard previous.phase == .canceled else { return previous }
+            var repaired = previous
+            repaired.phase = .failedRetryable
+            repaired.failureReason = .backgroundTaskMissing
+            repaired.updatedAt = Date()
+            try repaired.validate()
+            try writeLocked(repaired)
+            return repaired
+        }
+    }
+
     func remove(attemptId: String) throws {
         try lock.withLock {
             let url = recordURL(attemptId: attemptId)

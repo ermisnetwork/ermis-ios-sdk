@@ -518,6 +518,332 @@ final class E2eeBackgroundTransferCoordinatorTests: XCTestCase {
         })
     }
 
+    func testRetryReplaysOnlySelectedMissingMultipartAttemptWithoutResettingToZero() throws {
+        let descriptor = E2eeBackgroundSessionDescriptor(
+            bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",
+            endpoint: try XCTUnwrap(URL(string: "https://chat.example.test")),
+            applicationGroupIdentifier: nil
+        )
+        let scopedRoot = directory
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(descriptor.storageNamespace, isDirectory: true)
+        let stagingStore = E2eeAttachmentStagingStore(
+            rootURL: scopedRoot,
+            capacityProvider: BackgroundFixedCapacityProvider(capacity: UInt64.max)
+        )
+        try stagingStore.prepareEncryptedDirectories()
+        let canonicalURL = stagingStore.canonicalCiphertextDirectory
+            .appendingPathComponent("\(UUID().uuidString).cipher")
+        try Data((0..<50).map(UInt8.init)).write(to: canonicalURL)
+
+        let parts = try (1...5).map { number in
+            PendingE2eeMultipartPart(
+                number: number,
+                offset: UInt64((number - 1) * 10),
+                size: 10,
+                putURL: try XCTUnwrap(URL(string: "https://upload.example.test/part-\(number)")),
+                eTag: number == 1 ? "etag-1" : nil,
+                taskIdentifier: number == 2 ? 900 : nil,
+                taskToken: number == 2 ? UUID().uuidString : nil,
+                localFileURL: nil
+            )
+        }
+        var asset = PendingE2eeAsset(
+            attachmentId: UUID().uuidString,
+            assetId: UUID().uuidString,
+            kind: .original,
+            sourceURL: nil,
+            canonicalCiphertextURL: canonicalURL,
+            ciphertextSize: 50,
+            ciphertextSha256: String(repeating: "a", count: 64),
+            sealedSecret: nil,
+            uploadMode: .multipart,
+            uploadExpiresAt: Date().addingTimeInterval(600),
+            taskIdentifier: nil,
+            taskToken: nil,
+            parts: parts
+        )
+        asset.multipartPartSize = 10
+        asset.multipartUploadId = "opaque-upload"
+        var attempt = PendingE2eeTransferAttempt(
+            accountId: "account-a",
+            messageId: UUID().uuidString,
+            cid: "messaging:\(UUID().uuidString)",
+            phase: .uploading,
+            totalBytes: 50
+        )
+        attempt.completedBytes = 10
+        attempt.assets = [asset]
+        var unrelatedAttempt = PendingE2eeTransferAttempt(
+            accountId: "account-a",
+            messageId: UUID().uuidString,
+            cid: "messaging:\(UUID().uuidString)",
+            phase: .failedRetryable,
+            totalBytes: 50
+        )
+        var unrelatedAsset = asset
+        unrelatedAsset.assetId = UUID().uuidString
+        unrelatedAsset.parts = unrelatedAsset.parts.map { part in
+            var updated = part
+            updated.taskIdentifier = nil
+            updated.taskToken = nil
+            return updated
+        }
+        unrelatedAttempt.failureReason = .networkUnavailable
+        unrelatedAttempt.completedBytes = 10
+        unrelatedAttempt.assets = [unrelatedAsset]
+        let durableStore = E2eeDurableTransferStore(rootURL: scopedRoot)
+        try durableStore.insert(attempt)
+        try durableStore.insert(unrelatedAttempt)
+
+        let coordinator = E2eeBackgroundTransferCoordinator(
+            descriptor: descriptor,
+            rootURL: directory,
+            applicationGroupIdentifier: nil,
+            sessionConfigurationBuilder: { _, _ in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [HoldingUploadURLProtocol.self]
+                return configuration
+            }
+        )
+        let reconciled = expectation(description: "missing process task reconciled")
+        coordinator.reconcile { result in
+            if case .failure(let error) = result {
+                XCTFail("Unexpected reconcile failure: \(error)")
+            }
+            reconciled.fulfill()
+        }
+        wait(for: [reconciled], timeout: 2)
+
+        let failed = try durableStore.attempt(attemptId: attempt.attemptId)
+        XCTAssertEqual(failed.phase, .failedRetryable)
+        XCTAssertEqual(failed.failureReason, .backgroundTaskMissing)
+        XCTAssertEqual(failed.completedBytes, 10)
+
+        let resumed = expectation(description: "selected multipart retry resumed")
+        coordinator.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+        DispatchQueue.global().async {
+            for _ in 0..<40 {
+                if let updated = try? durableStore.attempt(attemptId: attempt.attemptId),
+                   updated.phase == .uploading,
+                   updated.assets.first?.parts.filter({ $0.taskToken != nil }).count == 3 {
+                    resumed.fulfill()
+                    return
+                }
+                usleep(50_000)
+            }
+        }
+        wait(for: [resumed], timeout: 2)
+
+        let updated = try durableStore.attempt(attemptId: attempt.attemptId)
+        XCTAssertEqual(updated.phase, .uploading)
+        XCTAssertEqual(updated.completedBytes, 10)
+        XCTAssertNil(updated.failureReason)
+        XCTAssertEqual(updated.assets.first?.parts.filter { $0.taskToken != nil }.count, 3)
+        XCTAssertEqual(updated.assets.first?.parts.first?.eTag, "etag-1")
+
+        let unrelated = try durableStore.attempt(attemptId: unrelatedAttempt.attemptId)
+        XCTAssertEqual(unrelated.phase, .failedRetryable)
+        XCTAssertEqual(unrelated.failureReason, .networkUnavailable)
+        XCTAssertTrue(unrelated.assets.first?.parts.allSatisfy { $0.taskToken == nil } == true)
+
+        coordinator.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+        let repeatedRetrySettled = expectation(description: "repeated retry remains bounded")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+            repeatedRetrySettled.fulfill()
+        }
+        wait(for: [repeatedRetrySettled], timeout: 1)
+        let repeated = try durableStore.attempt(attemptId: attempt.attemptId)
+        XCTAssertEqual(repeated.assets.first?.parts.filter { $0.taskToken != nil }.count, 3)
+    }
+
+    func testRetryRoutesCompletedTransportToFinalizingAndKeepsLocalFailureBlocked() throws {
+        let descriptor = E2eeBackgroundSessionDescriptor(
+            bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",
+            endpoint: try XCTUnwrap(URL(string: "https://chat.example.test")),
+            applicationGroupIdentifier: nil
+        )
+        let scopedRoot = directory
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(descriptor.storageNamespace, isDirectory: true)
+        let stagingStore = E2eeAttachmentStagingStore(
+            rootURL: scopedRoot,
+            capacityProvider: BackgroundFixedCapacityProvider(capacity: UInt64.max)
+        )
+        try stagingStore.prepareEncryptedDirectories()
+        let canonicalURL = stagingStore.canonicalCiphertextDirectory
+            .appendingPathComponent("\(UUID().uuidString).cipher")
+        try Data((0..<10).map(UInt8.init)).write(to: canonicalURL)
+
+        var completedAsset = PendingE2eeAsset(
+            attachmentId: UUID().uuidString,
+            assetId: UUID().uuidString,
+            kind: .original,
+            sourceURL: nil,
+            canonicalCiphertextURL: canonicalURL,
+            ciphertextSize: 10,
+            ciphertextSha256: String(repeating: "a", count: 64),
+            sealedSecret: nil,
+            uploadMode: .singlePut,
+            uploadExpiresAt: Date().addingTimeInterval(600),
+            taskIdentifier: nil,
+            taskToken: nil,
+            parts: []
+        )
+        completedAsset.isUploaded = true
+        var completedAttempt = PendingE2eeTransferAttempt(
+            accountId: "account-a",
+            messageId: UUID().uuidString,
+            cid: "messaging:\(UUID().uuidString)",
+            phase: .failedRetryable,
+            totalBytes: 10
+        )
+        completedAttempt.failureReason = .unknown
+        completedAttempt.completedBytes = 10
+        completedAttempt.assets = [completedAsset]
+
+        var blockedAsset = completedAsset
+        blockedAsset.assetId = UUID().uuidString
+        blockedAsset.uploadMode = nil
+        blockedAsset.isUploaded = false
+        var blockedAttempt = PendingE2eeTransferAttempt(
+            accountId: "account-a",
+            messageId: UUID().uuidString,
+            cid: "messaging:\(UUID().uuidString)",
+            phase: .failedRetryable,
+            totalBytes: 10
+        )
+        blockedAttempt.failureReason = .sourceUnavailable
+        blockedAttempt.assets = [blockedAsset]
+
+        let durableStore = E2eeDurableTransferStore(rootURL: scopedRoot)
+        try durableStore.insert(completedAttempt)
+        try durableStore.insert(blockedAttempt)
+        let coordinator = E2eeBackgroundTransferCoordinator(
+            descriptor: descriptor,
+            rootURL: directory,
+            applicationGroupIdentifier: nil,
+            sessionConfigurationBuilder: { _, _ in .ephemeral }
+        )
+
+        coordinator.retryAndResumeDurableTransfer(
+            messageId: completedAttempt.messageId,
+            accountId: completedAttempt.accountId
+        )
+        let finalized = expectation(description: "completed transport routed to finalization")
+        DispatchQueue.global().async {
+            for _ in 0..<40 {
+                if (try? durableStore.attempt(attemptId: completedAttempt.attemptId).phase) == .finalizing {
+                    finalized.fulfill()
+                    return
+                }
+                usleep(50_000)
+            }
+        }
+        wait(for: [finalized], timeout: 2)
+
+        coordinator.retryAndResumeDurableTransfer(
+            messageId: blockedAttempt.messageId,
+            accountId: blockedAttempt.accountId
+        )
+        let blockedSettled = expectation(description: "local prerequisite remains blocked")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+            blockedSettled.fulfill()
+        }
+        wait(for: [blockedSettled], timeout: 1)
+        let blocked = try durableStore.attempt(attemptId: blockedAttempt.attemptId)
+        XCTAssertEqual(blocked.phase, .failedRetryable)
+        XCTAssertEqual(blocked.failureReason, .sourceUnavailable)
+    }
+
+    func testRetryRepairsLegacyForceQuitCancellationWithSameCanonicalCiphertext() throws {
+        let descriptor = E2eeBackgroundSessionDescriptor(
+            bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",
+            endpoint: try XCTUnwrap(URL(string: "https://chat.example.test")),
+            applicationGroupIdentifier: nil
+        )
+        let scopedRoot = directory
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(descriptor.storageNamespace, isDirectory: true)
+        let stagingStore = E2eeAttachmentStagingStore(
+            rootURL: scopedRoot,
+            capacityProvider: BackgroundFixedCapacityProvider(capacity: UInt64.max)
+        )
+        try stagingStore.prepareEncryptedDirectories()
+        let canonicalURL = stagingStore.canonicalCiphertextDirectory
+            .appendingPathComponent("\(UUID().uuidString).cipher")
+        try Data((0..<10).map(UInt8.init)).write(to: canonicalURL)
+
+        let missingToken = UUID().uuidString
+        let asset = PendingE2eeAsset(
+            attachmentId: UUID().uuidString,
+            assetId: UUID().uuidString,
+            kind: .original,
+            sourceURL: nil,
+            canonicalCiphertextURL: canonicalURL,
+            ciphertextSize: 10,
+            ciphertextSha256: String(repeating: "a", count: 64),
+            sealedSecret: nil,
+            uploadMode: .singlePut,
+            uploadExpiresAt: Date().addingTimeInterval(600),
+            putURL: try XCTUnwrap(URL(string: "https://upload.example.test/single")),
+            taskIdentifier: 900,
+            taskToken: missingToken,
+            parts: []
+        )
+        var attempt = PendingE2eeTransferAttempt(
+            accountId: "account-a",
+            messageId: UUID().uuidString,
+            cid: "messaging:\(UUID().uuidString)",
+            phase: .canceled,
+            totalBytes: 10
+        )
+        attempt.assets = [asset]
+        let durableStore = E2eeDurableTransferStore(rootURL: scopedRoot)
+        try durableStore.insert(attempt)
+        let coordinator = E2eeBackgroundTransferCoordinator(
+            descriptor: descriptor,
+            rootURL: directory,
+            applicationGroupIdentifier: nil,
+            sessionConfigurationBuilder: { _, _ in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [HoldingUploadURLProtocol.self]
+                return configuration
+            }
+        )
+
+        coordinator.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+        let replayed = expectation(description: "single PUT replayed")
+        DispatchQueue.global().async {
+            for _ in 0..<40 {
+                guard let updated = try? durableStore.attempt(attemptId: attempt.attemptId),
+                      let token = updated.assets.first?.taskToken else {
+                    usleep(50_000)
+                    continue
+                }
+                if token != missingToken {
+                    replayed.fulfill()
+                    return
+                }
+                usleep(50_000)
+            }
+        }
+        wait(for: [replayed], timeout: 2)
+        let updated = try durableStore.attempt(attemptId: attempt.attemptId)
+        XCTAssertEqual(updated.assets.first?.canonicalCiphertextURL, canonicalURL)
+        XCTAssertNotEqual(updated.assets.first?.taskToken, missingToken)
+        XCTAssertNil(updated.failureReason)
+    }
+
     func testExpiredMultipartAttemptRemovesPartsButRetainsCanonicalCiphertext() throws {
         let context = try makePersistentCoordinatorContext()
         let canonicalURL = context.stagingStore.canonicalCiphertextDirectory

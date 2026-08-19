@@ -621,6 +621,14 @@ extension MessageRepository: E2eeAttachmentMessageBinding {
                 guard let message = session.message(id: messageId) else {
                     throw MessageRepositoryError.messageDoesNotExist
                 }
+                // A force-quit cancellation can be projected as `sendingFailed` before the
+                // durable transfer is revived. Persisting the completed manifest is the final
+                // pre-send boundary, so repair that stale UI/message state atomically here.
+                // `.sending` variants are also safe to replay because E2EE keeps the exact
+                // ciphertext/epoch intent durable and the server deduplicates by message ID.
+                message.localMessageState = Self.preparedE2eeAttachmentSendState(
+                    from: message.localMessageState
+                )
                 let existingPayload = try message.decryptedMessage?.asPayload()
                 let payload = E2ePayload(
                     text: existingPayload?.text ?? message.text,
@@ -668,6 +676,19 @@ extension MessageRepository: E2eeAttachmentMessageBinding {
                     continuation.resume(throwing: error)
                 }
             }
+        }
+    }
+
+    static func preparedE2eeAttachmentSendState(
+        from localState: LocalMessageState?
+    ) -> LocalMessageState? {
+        switch localState {
+        case .sendingFailed, .sending:
+            return .pendingSend
+        case .sendingAfterE2eeEpochStale:
+            return .pendingSendAfterE2eeEpochStale
+        default:
+            return localState
         }
     }
 }

@@ -361,6 +361,43 @@ final class E2eeDurableTransferStoreTests: XCTestCase {
         XCTAssertEqual(asset.taskIdentifier, 24)
     }
 
+    func testForceQuitCancellationCallbackRemainsRetryableAndPreservesCheckpoint() throws {
+        let journal = BackgroundTransferEventJournal(
+            url: directory.appendingPathComponent("journal/events.bin")
+        )
+        let store = E2eeDurableTransferStore(rootURL: directory)
+        let token = UUID().uuidString
+        let taskIdentifier = 25
+        try store.insert(makeMultipartAttempt(
+            taskToken: token,
+            taskIdentifier: taskIdentifier
+        ))
+        try journal.append(
+            BackgroundTransferEvent(
+                taskToken: token,
+                taskIdentifier: taskIdentifier,
+                completedBytes: 40,
+                totalBytes: 100,
+                httpStatus: nil,
+                eTag: nil,
+                error: .canceled
+            )
+        )
+
+        XCTAssertEqual(
+            try E2eeBackgroundTransferEventDrainer(store: store, journal: journal).drain(),
+            1
+        )
+
+        let interrupted = try XCTUnwrap(store.hydrate().first)
+        XCTAssertEqual(interrupted.phase, .failedRetryable)
+        XCTAssertEqual(interrupted.failureReason, .backgroundTaskMissing)
+        XCTAssertEqual(interrupted.completedBytes, 40)
+        XCTAssertEqual(interrupted.assets.first?.parts.first?.completedBytes, 40)
+        XCTAssertEqual(interrupted.assets.first?.parts.first?.taskToken, token)
+        XCTAssertTrue(try journal.readAll().isEmpty)
+    }
+
     func testCompletionWithoutHTTPResponseFailsClosed() throws {
         let journal = BackgroundTransferEventJournal(
             url: directory.appendingPathComponent("journal/events.bin")

@@ -223,21 +223,134 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
         }
     }
 
-    /// Replays durable state before reconciling URLSession. This is intentionally callable after
-    /// authentication because the initial snapshot replay can occur before `currentUserId` is
-    /// available to the attachment worker.
-    func replayAndResumeDurableTransfers() {
+    /// Retries only the newest durable attempt for one logical message. Relaunch reconciliation
+    /// remains global because URLSession owns one shared background session, but explicit Retry
+    /// must never revive another message's failed transfer.
+    func retryAndResumeDurableTransfer(messageId: String, accountId: String) {
         stateQueue.async { [weak self] in
-            self?.publishTransferSnapshotsLocked()
-        }
-        resumeMultipartUploads { result in
-            if case let .failure(error) = result {
-                log.error(
-                    "[E2EE_ATTACHMENT] stage=relaunch_resume state=failed error=\(e2eeTransferDiagnostic(error))",
-                    subsystems: .mls
-                )
+            guard let self else { return }
+            self.session.getAllTasks { [weak self] tasks in
+                guard let self else { return }
+                self.stateQueue.async {
+                    do {
+                        let active = tasks.reduce(into: Set<String>()) { tokens, task in
+                            guard let token = task.taskDescription,
+                                  UUID(uuidString: token) != nil else { return }
+                            tokens.insert(token)
+                        }
+                        try self.reviveRetryableAttemptLocked(
+                            messageId: messageId,
+                            accountId: accountId,
+                            activeTaskTokens: active
+                        )
+                        self.publishTransferSnapshotsLocked()
+                        self.resumeMultipartUploads { result in
+                            if case let .failure(error) = result {
+                                log.error(
+                                    "[E2EE_ATTACHMENT] stage=retry_resume state=failed error=\(e2eeTransferDiagnostic(error))",
+                                    subsystems: .mls
+                                )
+                            }
+                        }
+                    } catch {
+                        log.error(
+                            "[E2EE_ATTACHMENT] stage=retry_resume state=failed error=\(e2eeTransferDiagnostic(error))",
+                            subsystems: .mls
+                        )
+                    }
+                }
             }
         }
+    }
+
+    /// Revives one retryable attempt without changing attachment identity or regenerating
+    /// ciphertext. Completed transport retries finalization directly. Only transport failures
+    /// with valid grants and durable ciphertext may return to `.uploading`; local/terminal
+    /// prerequisites and expired grants remain failed for an explicit fresh-preparation flow.
+    private func reviveRetryableAttemptLocked(
+        messageId: String,
+        accountId: String,
+        activeTaskTokens: Set<String>
+    ) throws {
+        guard var attempt = try store.hydrate()
+            .filter({ $0.messageId == messageId && $0.accountId == accountId })
+            .max(by: { $0.createdAt < $1.createdAt }) else {
+            return
+        }
+
+        if attempt.phase == .canceled,
+           Self.hasRecoverableInterruptedTransport(attempt) {
+            // Compatibility repair for attempts written by builds that interpreted the
+            // force-quit URLSession cancellation callback as an explicit user cancellation.
+            // The explicit cancel path removes canonical ciphertext before persisting `.canceled`,
+            // so it cannot enter this branch.
+            attempt = try store.repairMisclassifiedForceQuitCancellation(
+                attemptId: attempt.attemptId
+            )
+        }
+        guard attempt.phase == .failedRetryable else {
+            return
+        }
+
+        if Self.allTransportUploadsComplete(attempt) {
+            _ = try store.update(attemptId: attempt.attemptId) { record in
+                record.phase = .finalizing
+                record.failureReason = nil
+            }
+            log.info(
+                "[E2EE_ATTACHMENT] stage=retry_replay state=revived target=selected recovery=finalizing",
+                subsystems: .mls
+            )
+            return
+        }
+
+        guard let failureReason = attempt.failureReason,
+              [.networkUnavailable, .serviceTemporarilyUnavailable, .backgroundTaskMissing, .unknown]
+            .contains(failureReason),
+              !attempt.assets.isEmpty,
+              attempt.assets.allSatisfy({ asset in
+                  guard asset.uploadMode != nil,
+                        let canonicalURL = asset.canonicalCiphertextURL,
+                        FileManager.default.fileExists(atPath: canonicalURL.path) else {
+                      return false
+                  }
+                  return asset.isUploaded || asset.uploadExpiresAt.map { $0 > Date() } == true
+              }) else {
+            log.info(
+                "[E2EE_ATTACHMENT] stage=retry_replay state=blocked target=selected reason=prerequisite",
+                subsystems: .mls
+            )
+            return
+        }
+
+        _ = try store.update(attemptId: attempt.attemptId) { record in
+            for assetIndex in record.assets.indices {
+                let asset = record.assets[assetIndex]
+                // Keep a disappeared single-PUT token: reconciliation performs an idempotent
+                // replay against the same object key. Multipart parts can be scheduled only
+                // after inactive mappings are detached; active OS tasks remain authoritative.
+                for partIndex in record.assets[assetIndex].parts.indices {
+                    guard let token = record.assets[assetIndex].parts[partIndex].taskToken,
+                          !activeTaskTokens.contains(token) else {
+                        continue
+                    }
+                    record.assets[assetIndex].parts[partIndex].taskIdentifier = nil
+                    record.assets[assetIndex].parts[partIndex].taskToken = nil
+                }
+                if asset.uploadMode == .multipart,
+                   let token = asset.taskToken,
+                   !activeTaskTokens.contains(token) {
+                    record.assets[assetIndex].taskIdentifier = nil
+                    record.assets[assetIndex].taskToken = nil
+                }
+            }
+            record.phase = .uploading
+            record.failureReason = nil
+        }
+        log.info(
+            "[E2EE_ATTACHMENT] stage=retry_replay state=revived target=selected recovery=transport",
+            subsystems: .mls
+        )
     }
 
     /// Preparation/finalization mutate the same durable store outside `stateQueue`. They call
@@ -1311,6 +1424,21 @@ final class E2eeBackgroundTransferCoordinator: NSObject {
                 return false
             }
         }
+    }
+
+    private static func hasRecoverableInterruptedTransport(
+        _ attempt: PendingE2eeTransferAttempt
+    ) -> Bool {
+        !attempt.assets.isEmpty
+            && !allTransportUploadsComplete(attempt)
+            && attempt.assets.allSatisfy { asset in
+                guard asset.uploadMode != nil,
+                      let canonicalURL = asset.canonicalCiphertextURL,
+                      FileManager.default.fileExists(atPath: canonicalURL.path) else {
+                    return false
+                }
+                return asset.isUploaded || asset.uploadExpiresAt.map { $0 > Date() } == true
+            }
     }
 
     private static func fixedError(_ error: Error?) -> BackgroundTransferFixedError {

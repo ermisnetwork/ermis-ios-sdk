@@ -111,8 +111,11 @@ final class E2eeAttachmentPreparationCoordinator {
         transferCoordinator.hasDurableAttempt(messageId: messageId, accountId: accountId)
     }
 
-    func replayAndResumeDurableTransfers() {
-        transferCoordinator.replayAndResumeDurableTransfers()
+    func retryAndResumeDurableTransfer(messageId: String, accountId: String) {
+        transferCoordinator.retryAndResumeDurableTransfer(
+            messageId: messageId,
+            accountId: accountId
+        )
     }
 
     func prepareAndSchedule(

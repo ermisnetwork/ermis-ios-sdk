@@ -160,6 +160,14 @@ class AttachmentQueueUploader: Worker {
             case .confirmed:
                 message.attachments.forEach { $0.localState = .uploaded }
             default:
+                // A durable retry revives the transfer after the previous cancellation/failure
+                // projection marked the message as failed. Keep the message sendable while the
+                // attachment remains below 100%; the MessageSender predicate still waits for all
+                // attachment rows to become uploaded, while the E2EE finalizer sends directly
+                // after Bellboy completion.
+                if message.localMessageState == .sendingFailed {
+                    message.localMessageState = .pendingSend
+                }
                 for attachment in message.attachments {
                     let currentProgress: Double
                     if case let .uploading(value) = attachment.localState {
@@ -229,10 +237,13 @@ class AttachmentQueueUploader: Worker {
                     // phase and reconcile URLSession instead of reading an expired Photos picker
                     // URL or creating a duplicate Bellboy attachment attempt.
                     log.info(
-                        "[E2EE_ATTACHMENT] stage=relaunch_resume state=durable_attempt_found"
+                        "[E2EE_ATTACHMENT] stage=durable_retry state=attempt_found"
                     )
                     self.removePendingAttachment(with: id)
-                    coordinator.replayAndResumeDurableTransfers()
+                    coordinator.retryAndResumeDurableTransfer(
+                        messageId: id.messageId,
+                        accountId: accountId
+                    )
                     return
                 }
                 self.prepareE2eeAttachmentSource(with: id)

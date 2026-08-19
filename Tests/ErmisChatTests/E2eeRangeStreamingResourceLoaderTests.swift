@@ -14,6 +14,25 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         super.tearDown()
     }
 
+    func testLoadingRequestStartGateStartsRegisteredRequest() async {
+        let gate = E2eeRangeLoadingRequestStartGate()
+        let waiter = Task { await gate.wait() }
+
+        gate.resolve(true)
+
+        let shouldStart = await waiter.value
+        XCTAssertTrue(shouldStart)
+    }
+
+    func testLoadingRequestStartGateKeepsFirstCancellationResolution() async {
+        let gate = E2eeRangeLoadingRequestStartGate()
+        gate.resolve(false)
+        gate.resolve(true)
+
+        let shouldStart = await gate.wait()
+        XCTAssertFalse(shouldStart)
+    }
+
     func testAVAssetCancellationCancelsUnderlyingCiphertextRequest() async throws {
         let fixture = try makeFixture(
             plaintext: makePCMWave(duration: 1),
