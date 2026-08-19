@@ -12,6 +12,8 @@ class CurrentUserPayload: UserPayload {
     let mutedUsers: [MutedUserPayload]
     /// Unread channel and message counts
     let unreadCount: UnreadCount?
+    /// Number of key packages remaining on the server
+    let keyPackagesRemaining: Int?
 
     init(
         id: String,
@@ -36,12 +38,14 @@ class CurrentUserPayload: UserPayload {
         unreadCount: UnreadCount? = nil,
         isEmailVerified: Bool,
         bellBoyId: String,
-        aboutMe: String
+        aboutMe: String,
+        keyPackagesRemaining: Int? = nil
     ) {
         self.devices = devices
         self.mutedUsers = mutedUsers
         self.unreadCount = unreadCount
-
+        self.keyPackagesRemaining = keyPackagesRemaining
+        
         super.init(
             id: id,
             projectId: projectId,
@@ -61,7 +65,7 @@ class CurrentUserPayload: UserPayload {
             language: language,
             isEmailVerified: isEmailVerified,
             bellBoyId: bellBoyId,
-            aboutMe: aboutMe
+            aboutMe: aboutMe,
         )
     }
 
@@ -70,6 +74,7 @@ class CurrentUserPayload: UserPayload {
         devices = try container.decodeIfPresent([DevicePayload].self, forKey: .devices) ?? []
         mutedUsers = try container.decodeIfPresent([MutedUserPayload].self, forKey: .mutedUsers) ?? []
         unreadCount = try? UnreadCount(from: decoder)
+        keyPackagesRemaining = try container.decodeIfPresent(Int.self, forKey: .keyPackagesRemaining)
 
         try super.init(from: decoder)
     }

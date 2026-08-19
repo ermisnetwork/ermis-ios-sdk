@@ -174,6 +174,57 @@ extension ErmisApiError {
     }
 }
 
+/// Bellboy's authoritative application-message epoch rejection.
+///
+/// This intentionally accepts only the send/edit message error contract. Other `epoch_stale`
+/// messages belong to protocol transitions and must not discard an application-message network
+/// intent. Bellboy currently maps the domain error to HTTP 400 and may move it to 409.
+struct E2eeMessageEpochStaleRejection: Equatable {
+    let rejectedEpoch: Int64
+    let currentGroupEpoch: Int64
+
+    static func parse(_ error: Error) -> Self? {
+        let apiError: ErmisApiError?
+        if let direct = error as? ErmisApiError {
+            apiError = direct
+        } else if let clientError = error as? ClientError {
+            apiError = clientError.underlyingError as? ErmisApiError
+        } else {
+            apiError = nil
+        }
+
+        guard let apiError,
+              apiError.httpStatusCode == 400 || apiError.httpStatusCode == 409 else {
+            return nil
+        }
+
+        let prefix = "epoch_stale: message encrypted with epoch "
+        let separator = ", current group epoch is "
+        guard apiError.message.hasPrefix(prefix) else { return nil }
+        let remainder = apiError.message.dropFirst(prefix.count)
+        guard let separatorRange = remainder.range(of: separator),
+              let rejectedEpoch = Int64(remainder[..<separatorRange.lowerBound]),
+              let currentGroupEpoch = Int64(remainder[separatorRange.upperBound...]),
+              rejectedEpoch >= 0,
+              currentGroupEpoch >= 0 else {
+            return nil
+        }
+        return .init(rejectedEpoch: rejectedEpoch, currentGroupEpoch: currentGroupEpoch)
+    }
+
+    /// Automatic re-encryption is safe only when Bellboy rejected the exact durable intent and
+    /// the authoritative group epoch moved forward. A server-behind condition cannot be repaired
+    /// by consuming another local sender secret.
+    func canRebind(intentEpoch: Int64) -> Bool {
+        rejectedEpoch == intentEpoch && currentGroupEpoch > rejectedEpoch
+    }
+
+    func isSatisfied(by localEpoch: UInt64) -> Bool {
+        guard currentGroupEpoch >= 0 else { return false }
+        return localEpoch >= UInt64(currentGroupEpoch)
+    }
+}
+
 extension ClosedRange where Bound == Int {
     /// The range of HTTP request status codes for client errors.
     static let clientErrorCodes: Self = 400...499

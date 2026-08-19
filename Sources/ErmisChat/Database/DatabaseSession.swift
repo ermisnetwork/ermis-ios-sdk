@@ -368,6 +368,17 @@ protocol AttachmentDatabaseSession {
         id: AttachmentId
     ) throws -> AttachmentDTO
 
+    /// Materializes a renderable attachment after an E2EE preview has been authenticated and
+    /// decrypted into the process-local preview cache. Plaintext preview bytes are deliberately
+    /// not persisted in Core Data.
+    @discardableResult
+    func saveE2eePreviewAttachment(
+        id: AttachmentId,
+        type: AttachmentType,
+        payloadData: Data,
+        previewAssetId: String
+    ) throws -> AttachmentDTO
+
     /// Deletes the provided dto from a database
     /// - Parameter attachment: The DTO to be deleted
     func delete(attachment: AttachmentDTO)
@@ -385,6 +396,17 @@ protocol StickerDataBaseSession {
     func getSticker(id: String) throws -> StickerDTO?
 }
 
+protocol E2eDatabaseSession {
+    @discardableResult
+    func saveMessageDecrypt(payload: E2ePayload, messageId: String, ciphertextHash: Data?) throws -> MessageDecryptDTO
+
+    @discardableResult
+    func savePendingRemoveMember(userId: String, channelCid: String) -> PendingRemoveMemberDTO
+    func loadPendingRemoveMemberUserIds(channelCid: String) -> [String]
+    func deletePendingRemoveMember(userId: String, channelCid: String)
+    func deletePendingRemoveMembers(userIds: [String], channelCid: String)
+}
+
 protocol DatabaseSession: UserDatabaseSession,
     CurrentUserDatabaseSession,
     MessageDatabaseSession,
@@ -395,7 +417,8 @@ protocol DatabaseSession: UserDatabaseSession,
     MemberListQueryDatabaseSession,
     AttachmentDatabaseSession,
     QueuedRequestDatabaseSession,
-    StickerDataBaseSession {}
+    StickerDataBaseSession,
+    E2eDatabaseSession {}
 
 extension DatabaseSession {
     
@@ -538,12 +561,17 @@ extension DatabaseSession {
 
         switch payload.eventType {
         case .messageNew, .notificationMessageNew:
-            let newPreview = preview(for: cid)
-            let newPreviewCreatedAt = newPreview?.createdAt.bridgeDate ?? .distantFuture
+            // Look up the new message directly by its ID instead of using preview(for:),
+            // because preview(for:) sorts by `defaultSortingKey` which is only populated
+            // in willSave() — after the current write transaction — so the newly inserted
+            // message would have a nil key and sort below the previous message, causing
+            // the channel list to show the second-to-last message as the preview.
+            let incomingMessage = payload.message.flatMap { message(id: $0.id) }
+            let incomingCreatedAt = incomingMessage?.createdAt.bridgeDate ?? .distantPast
             let currentPreviewCreatedAt = channelDTO.previewMessage?.createdAt.bridgeDate ?? .distantPast
-            if newPreviewCreatedAt > currentPreviewCreatedAt {
-                channelDTO.previewMessage = newPreview
-                channelDTO.lastMessageAt = newPreviewCreatedAt.bridgeDate
+            if incomingCreatedAt > currentPreviewCreatedAt, let incomingMessage {
+                channelDTO.previewMessage = incomingMessage
+                channelDTO.lastMessageAt = incomingCreatedAt.bridgeDate
             }
         case .messageUpdated:
             let currentPreviewAt = channelDTO.previewMessage?.textUpdatedAt?.bridgeDate ?? channelDTO.previewMessage?.createdAt.bridgeDate ?? .distantPast

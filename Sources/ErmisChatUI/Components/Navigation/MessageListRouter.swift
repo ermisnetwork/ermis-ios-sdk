@@ -120,9 +120,10 @@ open class MessageListRouter:
     ///
     open func showFilePreview(attachment: MessageFileAttachment?, client: ErmisClient?) {
         let preview = components.filePreviewVC.init()
-        preview.content = .init(fileAttachment: attachment)
-
+        // The client must exist before content is evaluated because E2EE file URLs are opaque
+        // references and require the authenticated original resolver before WebKit is touched.
         preview.client = client
+        preview.content = .init(fileAttachment: attachment)
 
         let navigation = UINavigationController(rootViewController: preview)
         rootViewController.present(navigation, animated: true)

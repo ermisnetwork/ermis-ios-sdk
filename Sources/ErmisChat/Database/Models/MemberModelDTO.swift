@@ -42,6 +42,15 @@ class MemberDTO: NSManagedObject {
         }
         return Date() > muted.bridgeDate
     }
+    
+    var isJoined: Bool {
+        switch channelRoleRaw {
+        case MemberRole.owner.rawValue, MemberRole.admin.rawValue, MemberRole.moderator.rawValue, MemberRole.member.rawValue:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 // MARK: - Fetch requests

@@ -152,6 +152,11 @@ struct ChannelDetailPayload {
     
     let isClosedTopic: Bool?
 
+    // E2e
+    let mlsEnabled: Bool
+    let mlsEnabledAt: Date?
+    let mlsEpoch: Int?
+
     public var isDirectMessageChannel: Bool {
         cid.type == .messaging
     }
@@ -191,7 +196,10 @@ extension ChannelDetailPayload: Decodable {
             team: try container.decodeIfPresent(String.self, forKey: .team),
             cooldownDuration: (try container.decodeIfPresent(Int.self, forKey: .cooldownDuration) ?? 0) / 1000,
             topicsEnabled: try container.decodeIfPresent(Bool.self, forKey: .topicsEnabled),
-            isClosedTopic: try container.decodeIfPresent(Bool.self, forKey: .isClosedTopic)
+            isClosedTopic: try container.decodeIfPresent(Bool.self, forKey: .isClosedTopic),
+            mlsEnabled: try container.decode(Bool.self, forKey: .mlsEnabled),
+            mlsEnabledAt: try container.decodeIfPresent(Date.self, forKey: .mlsEnabledAt),
+            mlsEpoch: try container.decodeIfPresent(Int.self, forKey: .mlsEpoch)
         )
     }
 }

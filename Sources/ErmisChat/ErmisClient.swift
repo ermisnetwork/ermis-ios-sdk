@@ -2,9 +2,18 @@
 // Copyright 2025 Ermis Inc.
 //
 
+import AVFoundation
 import CoreData
 import Foundation
 import ErmisShared
+
+/// Controls whether logout preserves or destroys the authenticated user's local cache.
+public enum LogoutLocalDataPolicy: Equatable {
+    /// Clear authentication/runtime state while retaining user-scoped messages, cursors and MLS state.
+    case preserve
+    /// Explicitly destroy the current user's Core Data cache, MLS provider, device ID and cursors.
+    case purgeCurrentUser
+}
 
 /// The root object representing a Ermis Chat.
 ///
@@ -86,6 +95,63 @@ public class ErmisClient {
 
     let walletRepository: WalletRepository
 
+    let e2eRepository: E2eRepository
+
+    let mlsClient: MlsClient
+
+    /// One SDK-owned background transfer session for this app/environment. It is intentionally
+    /// shared across accounts; durable opaque task mappings preserve account isolation.
+    let e2eeAttachmentTransferCoordinator: E2eeBackgroundTransferCoordinator?
+
+    /// User-initiated full-download fallback for E2EE originals. It is separate from the upload
+    /// worker and never holds the MLS mutation executor while performing network or file I/O.
+    private lazy var e2eeAttachmentOriginalDownloadCoordinator =
+        E2eeAttachmentOriginalDownloadCoordinator(
+            apiClient: apiClient,
+            database: databaseContainer,
+            ciphertextDirectory: config.e2eeAttachmentStorageFolderURL?
+                .appendingPathComponent("OriginalDownloads", isDirectory: true),
+            durableCiphertextProvider: { [weak self] input in
+                guard let self,
+                      let accountId = self.currentUserId,
+                      let transferCoordinator = self.e2eeAttachmentTransferCoordinator else {
+                    throw E2eeAttachmentOriginalDownloadError.backgroundTransferUnavailable
+                }
+
+                let lease = try await transferCoordinator.acquireVerifiedBackgroundCiphertext(
+                    accountId: accountId,
+                    cid: input.cid.rawValue,
+                    attachmentId: input.attachmentId,
+                    assetId: input.assetId,
+                    expectedCiphertextSize: Int64(clamping: input.expectedCiphertextBytes),
+                    expectedCiphertextSha256: input.expectedCiphertextSha256,
+                    requestProvider: { [weak self] in
+                        guard let self else {
+                            throw E2eeAttachmentOriginalDownloadError.backgroundTransferUnavailable
+                        }
+                        let grant = try await self.apiClient.e2eeAttachmentDownloadGrant(
+                            cid: input.cid,
+                            attachmentId: input.attachmentId,
+                            assetId: input.assetId
+                        )
+                        var request = URLRequest(url: grant.downloadURL)
+                        request.httpMethod = "GET"
+                        return request
+                    },
+                    progress: { completed, total in
+                        input.progress(.init(
+                            phase: .downloading,
+                            completedCiphertextBytes: UInt64(clamping: completed),
+                            totalCiphertextBytes: UInt64(clamping: total)
+                        ))
+                    }
+                )
+                return .init(localURL: lease.localURL) {
+                    await lease.consume()
+                }
+            }
+        )
+
     func makeMessagesPaginationStateHandler() -> MessagesPaginationStateHandling {
         MessagesPaginationStateHandler()
     }
@@ -116,21 +182,25 @@ public class ErmisClient {
         token: Token?,
         notificationTokenProvider: NotificationTokenProviding?
     ) {
+        var resolvedConfig = config
+        if resolvedConfig.localStorageScope == .automatic {
+            resolvedConfig.localStorageScope = token.map { .user($0.userId) } ?? .inMemory
+        }
         var environment = Environment()
 
-        if !config.isClientInActiveMode {
+        if !resolvedConfig.isClientInActiveMode {
             environment.webSocketClientBuilder = nil
         }
 
         self.init(
-            config: config,
+            config: resolvedConfig,
             clientId: token?.clientId,
             projectId: token?.projectId ?? "",
             rootProjectId: token?.projectId ?? "",
             chainId: token?.chainId,
             environment: environment,
             notificationTokenProvider: notificationTokenProvider ?? DefaultNotificationTokenProvider(),
-            factory: .init(config: config, environment: environment)
+            factory: .init(config: resolvedConfig, environment: environment)
         )
 
         if let token {
@@ -160,10 +230,41 @@ public class ErmisClient {
         self.rootProjectid = rootProjectId
         self.chainId = chainId
         self.environment = environment
+        if !Bundle.main.isAppExtension {
+            // Playback plaintext belongs to a process-local gallery session. A previous process
+            // cannot still own it, so remove stale files eagerly even if this launch never opens
+            // an attachment. The cleanup helper is safe when multiple clients share a process.
+            try? E2eeAttachmentOriginalDownloadCoordinator.cleanupStalePlaintextAtMainAppLaunch()
+        }
+        let deviceIdStore = MlsDeviceIdStore(applicationGroupIdentifier: config.applicationGroupIdentifier)
+        let mlsClient = MlsClient(
+            storageFolderURL: config.mlsStorageFolderURL,
+            legacyStorageFolderURLs: [config.localStorageFolderURL].compactMap { $0 },
+            applicationGroupIdentifier: config.applicationGroupIdentifier,
+            deviceIdStore: deviceIdStore
+        )
+        let e2eeAttachmentTransferCoordinator: E2eeBackgroundTransferCoordinator?
+        if !Bundle.main.isAppExtension,
+           let transferRootURL = config.e2eeAttachmentStorageFolderURL {
+            let descriptor = E2eeBackgroundSessionDescriptor(
+                bundleIdentifier: Bundle.main.bundleIdentifier ?? "network.ermis.host",
+                endpoint: config.endpointEnviroment.baseURL,
+                applicationGroupIdentifier: config.applicationGroupIdentifier
+            )
+            e2eeAttachmentTransferCoordinator = E2eeBackgroundTransferCoordinatorRegistry.coordinator(
+                descriptor: descriptor,
+                rootURL: transferRootURL,
+                applicationGroupIdentifier: config.applicationGroupIdentifier
+            )
+        } else {
+            e2eeAttachmentTransferCoordinator = nil
+        }
 
         urlSessionConfiguration = factory.makeUrlSessionConfiguration()
         var apiClientEncoder = factory.makeApiClientRequestEncoder()
         var webSocketEncoder = factory.makeWebSocketRequestEncoder()
+        apiClientEncoder.deviceIdStore = deviceIdStore
+        webSocketEncoder.deviceIdStore = deviceIdStore
         let databaseContainer = factory.makeDatabaseContainer()
         let apiClient = factory.makeApiClient(
             encoder: apiClientEncoder,
@@ -175,9 +276,18 @@ public class ErmisClient {
                 nil
             }
         )
+
+        let e2eRepository = environment.e2eRepositoryBuilder(
+            databaseContainer,
+            eventNotificationCenter,
+            mlsClient,
+            apiClient
+        )
+        
         let messageRepository = environment.messageRepositoryBuilder(
             databaseContainer,
-            apiClient
+            apiClient,
+            e2eRepository
         )
         let offlineRequestsRepository = environment.offlineRequestsRepositoryBuilder(
             messageRepository,
@@ -213,6 +323,7 @@ public class ErmisClient {
             projectId,
             environment.timerType
         )
+        authRepository.configureDeviceIdStore(deviceIdStore)
 
         let walletRepository = environment.walletRepositoryBuilder(
             databaseContainer,
@@ -229,7 +340,10 @@ public class ErmisClient {
         self.messageRepository = messageRepository
         self.syncRepository = syncRepository
         self.walletRepository = walletRepository
+        self.e2eRepository = e2eRepository
         self.notificationTokenProvider = notificationTokenProvider
+        self.mlsClient = mlsClient
+        self.e2eeAttachmentTransferCoordinator = e2eeAttachmentTransferCoordinator
         authenticationRepository = authRepository
         extensionLifecycle = environment.extensionLifecycleBuilder(config.applicationGroupIdentifier)
         callRepository = environment.callRepositoryBuilder(apiClient)
@@ -246,6 +360,19 @@ public class ErmisClient {
         setupTokenRefresher()
         setupOfflineRequestQueue()
         setupConnectionRecoveryHandler(with: environment)
+        e2eeAttachmentTransferCoordinator?.configureCompletionClient(
+            apiClient,
+            messageBinding: messageRepository
+        )
+        e2eeAttachmentTransferCoordinator?.start()
+
+        if let userId = currentUserId {
+            do {
+                try mlsClient.setup(with: userId)
+            } catch {
+                log.error("Failed to initialize MLS: \(error)")
+            }
+        }
     }
 
     deinit {
@@ -254,10 +381,13 @@ public class ErmisClient {
     }
 
     func setupTokenRefresher() {
-        apiClient.tokenRefresher = { [weak self] completion in
-            self?.refreshToken { error in
-                completion(error)
+        log.info("[AuthRefresh] implementation=single_flight_v2 state=installed", subsystems: .authentication)
+        apiClient.tokenRefresher = { [weak repository = authenticationRepository] completion in
+            guard let repository else {
+                completion(ClientError.MissingTokenProvider())
+                return
             }
+            repository.refreshToken(completion: completion)
         }
     }
 
@@ -301,6 +431,11 @@ public class ErmisClient {
         self.chainId = token.chainId
         self.setProjecId(token.projectId)
         authenticationRepository.update(token: token, userInfo: userInfo)
+            do {
+                try mlsClient.setup(with: token.userId)
+            } catch {
+                log.error("Failed to initialize MLS: \(error)")
+            }
     }
 
     public func setProjecId(_ projectId: String) {
@@ -391,33 +526,84 @@ public class ErmisClient {
         authenticationRepository.cancelTimers()
     }
 
-    /// Disconnects the chat client form the chat servers and removes all the local data related.
+    /// Disconnects the chat client while preserving the current user's local data.
     public func logout(completion: @escaping () -> Void) {
-        authenticationRepository.logOutUser()
+        logout(localDataPolicy: .preserve, completion: completion)
+    }
 
+    /// Disconnects the chat client and applies the requested local-data policy.
+    public func logout(
+        localDataPolicy: LogoutLocalDataPolicy,
+        completion: @escaping () -> Void
+    ) {
+        let transferAccountId = currentUserId
+        // Full originals are foreground-only plaintext files. They are never part of the
+        // durable upload store, so tear them down independently from account-scoped background
+        // transfer cancellation before this client can be reused by another authenticated user.
+        Task { [weak self] in
+            await self?.e2eeAttachmentOriginalDownloadCoordinator.shutdown()
+        }
+        authenticationRepository.logOutUser()
         // Stop tracking active components
         activeChannelControllers.removeAllObjects()
         activeChannelListControllers.removeAllObjects()
 
-        let group = DispatchGroup()
-        group.enter()
-        disconnect {
-            group.leave()
-        }
-
-        group.enter()
-        databaseContainer.removeAllData { error in
-            if let error = error {
-                log.error("Logging out current user failed with error \(error)", subsystems: .all)
-            } else {
-                log.debug("Logging out current user successfully.", subsystems: .all)
+        // Disconnect first so no WebSocket event can enqueue MLS work after runtime teardown.
+        disconnect { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async(execute: completion)
+                return
             }
-            group.leave()
+            let finish = {
+                log.debug("Logged out user with local data policy \(localDataPolicy).", subsystems: .all)
+                DispatchQueue.main.async(execute: completion)
+            }
+            let applyLocalDataPolicy = {
+                switch localDataPolicy {
+                case .preserve:
+                    self.e2eRepository.reset()
+                    finish()
+                case .purgeCurrentUser:
+                    do {
+                        try self.e2eRepository.purgeCurrentUserState()
+                    } catch {
+                        log.error("Purging current user's MLS state failed with error \(error)", subsystems: .mls)
+                    }
+                    self.databaseContainer.removeAllData { error in
+                        if let error {
+                            log.error("Purging current user's local database failed with error \(error)", subsystems: .database)
+                        }
+                        finish()
+                    }
+                }
+            }
+            guard let transferAccountId,
+                  let coordinator = self.e2eeAttachmentTransferCoordinator else {
+                applyLocalDataPolicy()
+                return
+            }
+            coordinator.cancelTasks(accountId: transferAccountId) { _ in
+                applyLocalDataPolicy()
+            }
         }
+    }
 
-        group.notify(queue: .main) {
-            completion()
+    /// Forward this method from
+    /// `application(_:handleEventsForBackgroundURLSession:completionHandler:)`.
+    /// The SDK owns the handler exactly once and invokes it only after opaque callback events have
+    /// been persisted, drained into the durable transfer store, and reconciled with URLSession.
+    @discardableResult
+    public func handleE2eeBackgroundURLSessionEvents(
+        identifier: String,
+        completionHandler: @escaping () -> Void
+    ) -> E2eeBackgroundSessionEventHandlingResult {
+        guard let coordinator = e2eeAttachmentTransferCoordinator else {
+            return .unsupportedSessionIdentifier
         }
+        return coordinator.handleEventsForBackgroundURLSession(
+            identifier: identifier,
+            completionHandler: completionHandler
+        )
     }
 
     public func downloadAttachments(attachments: [AnyMessageAttachment], completion: @escaping([DownloadedAttachment], Error?) -> Void) {
@@ -426,6 +612,195 @@ public class ErmisClient {
             let error = result.results.first(where: { $0.error != nil})?.error
             completion(downloadedAttachments, error)
         })
+    }
+
+    /// Returns a playable local URL for an E2EE attachment original.
+    ///
+    /// Standard attachments are returned unchanged. E2EE originals are downloaded only on this
+    /// explicit user action, globally hash-verified, frame-decrypted to a protected temporary file,
+    /// and then returned to the media viewer. Range streaming is intentionally not used here.
+    public func prepareAttachmentForViewing(_ attachment: AnyMessageAttachment) async throws -> URL {
+        try await prepareAttachmentForViewing(attachment, progress: { _ in })
+    }
+
+    /// Resolves an attachment for an explicit viewer action and reports non-sensitive transfer
+    /// progress for that individual original. The byte count is ciphertext received from storage;
+    /// callers must keep the UI in a processing state while the phase is verifying/decrypting.
+    public func prepareAttachmentForViewing(
+        _ attachment: AnyMessageAttachment,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+    ) async throws -> URL {
+        try await e2eeAttachmentOriginalDownloadCoordinator.localOriginalURL(
+            for: attachment,
+            progress: progress
+        )
+    }
+
+    /// Acquires explicit ownership of a playable attachment original.
+    ///
+    /// SDK viewers should retain this lease for as long as they read `localURL` and release it on
+    /// close, reuse, export completion, or error. Different consumers can safely share the same
+    /// verified plaintext without invalidating one another.
+    public func acquireAttachmentForViewing(
+        _ attachment: AnyMessageAttachment,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void = { _ in }
+    ) async throws -> E2eeAttachmentOriginalLease {
+        try await e2eeAttachmentOriginalDownloadCoordinator.localOriginalLease(
+            for: attachment,
+            progress: progress
+        )
+    }
+
+    /// Acquires a lease-owned local source suitable for a fresh forwarded upload.
+    ///
+    /// E2EE opaque originals keep their verified decrypt/download lane. Pending local files are
+    /// reused while present. Standard and legacy HTTP(S) attachments are streamed to protected
+    /// temporary storage because upload payloads must never be initialized with a remote URL.
+    public func acquireAttachmentForForwarding(
+        _ attachment: AnyMessageAttachment
+    ) async throws -> E2eeAttachmentOriginalLease {
+        if let localURL = attachment.uploadingState?.localFileURL,
+           localURL.isFileURL,
+           FileManager.default.fileExists(atPath: localURL.path) {
+            return E2eeAttachmentOriginalLease(localURL: localURL, releaseHandler: {})
+        }
+        guard let sourceURL = attachment.remoteURL else {
+            throw ForwardAttachmentSourceMaterializationError.invalidRemoteURL
+        }
+        if sourceURL.isFileURL {
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw ForwardAttachmentSourceMaterializationError.downloadedFileUnavailable
+            }
+            return E2eeAttachmentOriginalLease(localURL: sourceURL, releaseHandler: {})
+        }
+        if E2eeAttachmentOriginalDownloadCoordinator.isOpaqueE2eeAttachment(attachment) {
+            return try await acquireAttachmentForViewing(attachment)
+        }
+
+        log.info(
+            "[ATTACHMENT_FORWARD] stage=source_materialization state=remote_download_started"
+        )
+        let lease = try await ForwardAttachmentRemoteSourceMaterializer(
+            maximumBytes: config.maxAttachmentSize
+        ).materialize(
+            remoteURL: sourceURL,
+            preferredFileExtension: ForwardAttachmentRemoteSourceMaterializer
+                .preferredFileExtension(for: attachment)
+        )
+        log.info(
+            "[ATTACHMENT_FORWARD] stage=source_materialization state=remote_download_completed"
+        )
+        return lease
+    }
+
+    /// Returns an AVAsset-backed playback lease. When the independent range flag is disabled or
+    /// the attachment is not an E2EE opaque asset this simply wraps the verified local-original
+    /// lane. When enabled, AVFoundation receives authenticated plaintext ranges and transparently
+    /// falls back to that same full download if range transport fails.
+    public func acquireVideoAttachmentForPlayback(
+        _ attachment: AnyMessageAttachment,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void = { _ in }
+    ) async throws -> E2eeAttachmentPlaybackLease {
+        guard E2eeRangeStreamingFeatureFlag.isEnabled,
+              E2eeAttachmentOriginalDownloadCoordinator.isOpaqueE2eeAttachment(attachment) else {
+            let original = try await acquireAttachmentForViewing(attachment, progress: progress)
+            return E2eeAttachmentPlaybackLease(
+                asset: AVURLAsset(url: original.localURL),
+                releaseHandler: { original.release() }
+            )
+        }
+
+        let descriptor = try await e2eeAttachmentOriginalDownloadCoordinator
+            .rangeStreamingDescriptor(for: attachment)
+        let loader = try E2eeRangeStreamingResourceLoader(
+            asset: descriptor.asset,
+            grantProvider: { [weak self] assetId in
+                guard let self else { throw URLError(.cancelled) }
+                let issuedAt = Date()
+                guard let cid = try? ChannelId(cid: descriptor.cid) else {
+                    throw E2eeAttachmentOriginalDownloadError.invalidOpaqueURL
+                }
+                let response = try await self.apiClient.e2eeAttachmentDownloadGrant(
+                    cid: cid,
+                    attachmentId: descriptor.attachmentId,
+                    assetId: assetId
+                )
+                guard let expiresAt = DateFormatter.Ermis.rfc3339Date(from: response.expiresAt) else {
+                    throw E2eeAttachmentAPIContractError.invalidExpiry
+                }
+                return E2eeRangeStreamingGrant(
+                    assetId: assetId,
+                    grantURL: response.downloadURL,
+                    expiresAt: expiresAt,
+                    issuedAt: issuedAt
+                )
+            },
+            fallbackProvider: { [weak self] in
+                guard let self else { throw URLError(.cancelled) }
+                return try await self.acquireAttachmentForViewing(attachment, progress: progress)
+            }
+        )
+        let asset = loader.makeAsset()
+        asset.resourceLoader.setDelegate(
+            loader,
+            queue: DispatchQueue(label: "network.ermis.e2ee.range-loader")
+        )
+        return E2eeAttachmentPlaybackLease(asset: asset) {
+            loader.invalidate()
+        }
+    }
+
+    /// Explicitly cancels the durable background GET for one E2EE original.
+    ///
+    /// Releasing or closing a viewer intentionally does not call this API: it only detaches that
+    /// consumer so the transfer can survive navigation and app relaunch. Use this method only for
+    /// a user-visible Cancel action. Other attachments and accounts are not affected.
+    public func cancelAttachmentOriginalDownload(
+        _ attachment: AnyMessageAttachment,
+        in cid: ChannelId
+    ) async throws {
+        guard let accountId = currentUserId,
+              let transferCoordinator = e2eeAttachmentTransferCoordinator else {
+            throw E2eeAttachmentOriginalDownloadError.backgroundTransferUnavailable
+        }
+        let reference = try E2eeAttachmentOriginalDownloadCoordinator.opaqueAssetReference(
+            for: attachment
+        )
+        try await withCheckedThrowingContinuation { continuation in
+            transferCoordinator.cancelBackgroundDownload(
+                accountId: accountId,
+                cid: cid.rawValue,
+                attachmentId: reference.attachmentId,
+                assetId: reference.assetId
+            ) { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+
+    /// Returns whether the attachment URL is an opaque E2EE reference that must never be passed
+    /// directly to a generic downloader, media library, document picker, or share sheet.
+    public func requiresVerifiedE2eeOriginal(_ attachment: AnyMessageAttachment) -> Bool {
+        E2eeAttachmentOriginalDownloadCoordinator.isOpaqueE2eeAttachment(attachment)
+    }
+
+    /// Backwards-compatible video-specific spelling. Image and video viewers now share the same
+    /// authenticated original resolver.
+    public func prepareAttachmentForPlayback(_ attachment: AnyMessageAttachment) async throws -> URL {
+        try await prepareAttachmentForViewing(attachment)
+    }
+
+    /// Returns the readiness of the MLS group effectively used by `cid`.
+    public func e2eeReadiness(for cid: ChannelId) -> E2eeChannelReadiness {
+        e2eRepository.readiness(for: cid)
+    }
+
+    /// Runs the Welcome-first bootstrap flow and completes when the channel reaches a terminal state.
+    public func ensureE2eeReady(
+        for cid: ChannelId,
+        completion: @escaping (E2eeChannelReadiness) -> Void
+    ) {
+        e2eRepository.ensureE2eeReady(for: cid, completion: completion)
     }
 
     func createBackgroundWorkers() {
@@ -440,11 +815,18 @@ public class ErmisClient {
                 apiClient: apiClient
             ),
             NewUserQueryUpdater(database: databaseContainer, apiClient: apiClient),
-            MessageEditor(messageRepository: messageRepository, database: databaseContainer, apiClient: apiClient),
+            MessageEditor(messageRepository: messageRepository, e2eRepository: e2eRepository, database: databaseContainer, apiClient: apiClient),
             AttachmentQueueUploader(
                 database: databaseContainer,
                 apiClient: apiClient,
-                attachmentPostProcessor: config.uploadedAttachmentPostProcessor
+                attachmentPostProcessor: config.uploadedAttachmentPostProcessor,
+                e2eePreparationCoordinator: e2eeAttachmentTransferCoordinator.map {
+                    E2eeAttachmentPreparationCoordinator(
+                        transferCoordinator: $0,
+                        initializingClient: apiClient
+                    )
+                },
+                currentUserId: { [weak self] in self?.currentUserId }
             )
         ]
     }
@@ -470,14 +852,6 @@ public class ErmisClient {
     /// You should only use this in special cases like a notification service or other background process
     public func setToken(token: Token) {
         authenticationRepository.setToken(token: token, completeTokenWaiters: true)
-    }
-
-    /// Starts the process to  refresh the token
-    /// - Parameter completion: A block to be executed when the process is completed. Contains an error if something went wrong
-    private func refreshToken(completion: ((Error?) -> Void)?) {
-        authenticationRepository.refreshToken {
-            completion?($0)
-        }
     }
 
     public func subscribe() {
@@ -565,10 +939,11 @@ public class ErmisClient {
     func getTokenProvider(_ refreshTokenHelper: ErmisRefreshTokenHelper) -> TokenProvider? {
         { [weak self] completion in
             guard let self else {
+                completion(.failure(ClientError.ClientHasBeenDeallocated()))
                 return
             }
-            guard refreshTokenHelper.token.isExpired else {
-                completion(.success(refreshTokenHelper.token))
+            if let initialToken = refreshTokenHelper.consumeInitialTokenIfValid() {
+                completion(.success(initialToken))
                 return
             }
 
@@ -582,6 +957,10 @@ public class ErmisClient {
                 switch result {
                 case .success(let authResponse):
                     if let token = try? Token(rawValue: authResponse.token) {
+                        refreshTokenHelper.update(
+                            token: token,
+                            refreshToken: authResponse.refreshToken
+                        )
                         refreshTokenHelper.onAuthorizationChanged?(authResponse)
                         completion(.success(token))
                     } else {
@@ -698,12 +1077,38 @@ public class ErmisClient {
     }
 
     public func getUser(with id: String) -> ChatUser? {
-        let userDTO = databaseContainer.viewContext.user(id: id, projectId: projectId)
-        return try? userDTO?.asModel()
+        var result: ChatUser?
+        databaseContainer.viewContext.performAndWait {
+            let userDTO = databaseContainer.viewContext.user(id: id, projectId: projectId)
+            result = try? userDTO?.asModel()
+        }
+        return result
     }
     // MARK: - Invite
     public func acceptInvite(cid: ChannelId, completion: @escaping ((Error?) -> Void)) {
-        apiClient.request(endpoint: .acceptInvite(cid: cid)) { result in
+        apiClient.request(endpoint: .acceptInvite(cid: cid)) { [weak self] result in
+            guard let self else {
+                completion(result.error)
+                return
+            }
+            guard result.error == nil else {
+                completion(result.error)
+                return
+            }
+            // After accepting, check if the channel is MLS-enabled.
+            // If so, perform an external join so the device can decrypt messages,
+            // then trigger an E2E sync for that channel.
+            var isMlsEnabled = false
+            self.databaseContainer.viewContext.performAndWait {
+                if let dto = ChannelDTO.load(cid: cid, context: self.databaseContainer.viewContext) {
+                    isMlsEnabled = dto.mlsEnabled
+                }
+            }
+            guard isMlsEnabled else {
+                completion(nil)
+                return
+            }
+            self.e2eRepository.performE2eChannelSync(cid: cid)
             completion(result.error)
         }
     }
@@ -719,6 +1124,7 @@ public class ErmisClient {
             completion(result.error)
         }
     }
+    // MARK: - E2E
     // MARK: - Call
     @discardableResult
     package
@@ -745,7 +1151,14 @@ public class ErmisClient {
             throw ClientError.Unexpected("Precondition failed")
         }
 
-        guard let channel = try? databaseContainer.backgroundReadOnlyContext.channel(cid: callSignalEventDTO.cid)?.asModel() else {
+        // backgroundReadOnlyContext is a private-queue context. All Core Data
+        // access must happen on its queue via performAndWait to avoid crashes.
+//        var channel: Channel?
+//        databaseContainer.viewContext.performAndWait {
+//            channel = try? databaseContainer.backgroundReadOnlyContext.channel(cid: callSignalEventDTO.cid)?.asModel()
+//        }
+
+        guard let channel = try? databaseContainer.viewContext.channel(cid: callSignalEventDTO.cid)?.asModel() else {
             throw ClientError.ChannelDoesNotExist(cid: callSignalEventDTO.cid)
         }
 
@@ -769,8 +1182,14 @@ extension ErmisClient: AuthenticationRepositoryDelegate {
     func didFinishSettingUpAuthenticationEnvironment(for state: EnvironmentState) {
         switch state {
         case .firstConnection, .newUser:
+            e2eRepository.loginTime = Date()
             createBackgroundWorkers()
         case .newToken:
+            // After reinstall UserDefaults is cleared but Keychain token persists,
+            // so the state is .newToken with a nil loginTime. Restore it here.
+            if e2eRepository.loginTime == nil {
+                e2eRepository.loginTime = Date()
+            }
             if backgroundWorkers.isEmpty {
                 createBackgroundWorkers()
             }
@@ -782,9 +1201,11 @@ extension ErmisClient: ConnectionStateDelegate {
     func webSocketClient(_ client: WebSocketClient, didUpdateConnectionState state: WebSocketConnectionState) {
         connectionRepository.handleConnectionUpdate(
             state: state,
-            onExpiredToken: { [weak self] in
-                self?.refreshToken(completion: { error in
-                })
+            onExpiredToken: { [weak repository = authenticationRepository] in
+                repository?.refreshToken { _ in
+                    // The connection recovery path observes the resulting connection state.
+                    // It does not need to forward this completion through `ErmisClient`.
+                }
             }
         )
         connectionRecoveryHandler?.webSocketClient(client, didUpdateConnectionState: state)

@@ -6,7 +6,7 @@ import Foundation
 
 struct ChannelEditDetailPayload: Encodable {
     let id: String?
-    let cid: ChannelId?
+    var cid: ChannelId?
     let name: String?
     let description: String?
     let imageURL: String?
@@ -17,6 +17,19 @@ struct ChannelEditDetailPayload: Encodable {
     let invites: Set<UserId>
     let coolDownDuration: Int?
     let filterWords: [String]?
+
+    /// TLS-serialized commit bytes for MLS channel creation.
+    var commit: [UInt8]?
+    /// TLS-serialized welcome bytes for MLS channel creation.
+    var welcome: [UInt8]?
+    /// MLS group epoch after the commit.
+    var epoch: Int?
+    /// TLS-serialized ratchet tree bytes for MLS channel creation.
+    var ratchetTree: [UInt8]?
+    /// TLS-serialized GroupInfo bytes for MLS channel creation.
+    var groupInfo: [UInt8]?
+    /// Whether MLS encryption is enabled for this channel.
+    var mlsEnabled: Bool?
 
     init(
         cid: ChannelId,
@@ -83,7 +96,7 @@ struct ChannelEditDetailPayload: Encodable {
         if !allMembers.isEmpty {
             try container.encode(allMembers, forKey: .members)
         }
-
+        try container.encodeIfPresent(cid?.id, forKey: .channelId)
         try container.encodeIfPresent(name, forKey: .name)
         try container.encodeIfPresent(description, forKey: .cDescription)
         try container.encodeIfPresent(imageURL, forKey: .imageURL)
@@ -91,6 +104,12 @@ struct ChannelEditDetailPayload: Encodable {
         try container.encodeIfPresent(isPublic, forKey: .isPublic)
         try container.encodeIfPresent(coolDownDuration, forKey: .cooldownDuration)
         try container.encodeIfPresent(filterWords, forKey: .filterWords)
+        try container.encodeE2eeBytesIfPresent(commit, forKey: .commit)
+        try container.encodeE2eeBytesIfPresent(welcome, forKey: .welcome)
+        try container.encodeIfPresent(epoch, forKey: .epoch)
+        try container.encodeE2eeBytesIfPresent(ratchetTree, forKey: .ratchetTree)
+        try container.encodeE2eeBytesIfPresent(groupInfo, forKey: .groupInfo)
+        try container.encodeIfPresent(mlsEnabled, forKey: .mlsEnabled)
     }
 }
 

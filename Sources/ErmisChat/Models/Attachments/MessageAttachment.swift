@@ -131,6 +131,40 @@ public extension MessageAttachment where Payload: AttachmentPayload {
 }
 
 public extension AnyMessageAttachment {
+    /// Whether this attachment is an opaque E2EE reference rather than a directly downloadable URL.
+    ///
+    /// This is the authoritative attachment-level signal for actions such as forwarding. Message
+    /// ciphertext/decrypt-cache fields can legitimately be absent from an otherwise decrypted
+    /// snapshot, so callers must not use those transient fields as their only routing signal.
+    var isE2eeOpaqueAsset: Bool {
+        remoteURL?.scheme?.lowercased() == "ermis-e2ee-attachment"
+    }
+
+    /// Repoints a local attachment snapshot at its durable sandbox file.
+    ///
+    /// Photo/item-provider URLs are short-lived. `AttachmentDTO.localURL` is updated after the
+    /// source is materialized, but the type-erased JSON payload can still contain the original
+    /// picker URL. Rendering that stale payload after the picker closes or after relaunch produces
+    /// an empty attachment even though the durable file is still present.
+    mutating func useDurableLocalFileURL(_ localURL: URL) {
+        let updater = AnyAttachmentUpdater()
+        updater.update(&self, forPayload: ImageAttachmentPayload.self) { payload in
+            payload.imageURL = localURL
+        }
+        updater.update(&self, forPayload: VideoAttachmentPayload.self) { payload in
+            payload.videoURL = localURL
+        }
+        updater.update(&self, forPayload: AudioAttachmentPayload.self) { payload in
+            payload.audioURL = localURL
+        }
+        updater.update(&self, forPayload: FileAttachmentPayload.self) { payload in
+            payload.assetURL = localURL
+        }
+        updater.update(&self, forPayload: VoiceRecordingAttachmentPayload.self) { payload in
+            payload.voiceRecordingURL = localURL
+        }
+    }
+
     var title: String? {
         switch type {
         case .image:

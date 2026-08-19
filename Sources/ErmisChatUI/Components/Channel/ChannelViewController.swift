@@ -212,6 +212,7 @@ open class ChannelViewController: _ViewController,
         }
 
         channelController.delegate = self
+        
         channelController.synchronize { [weak self] error in
             self?.didFinishSynchronizing(with: error)
         }

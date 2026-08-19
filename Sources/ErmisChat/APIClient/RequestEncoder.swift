@@ -11,6 +11,7 @@ protocol RequestEncoder {
     ///
     /// Trying to encode an `Endpoint` with the `needConnectionId` set to `true` without setting the delegate
     var connectionProviderDelegate: ConnectionProviderDelegate? { get set }
+    var deviceIdStore: MlsDeviceIdStore? { get set }
 
     /// Asynchronously creates a new `URLRequest` with the data from the `Endpoint`. It also adds all required data
     /// like an api key, etc.
@@ -86,6 +87,7 @@ class DefaultRequestEncoder: RequestEncoder {
     /// Timeout when waiting for token or connectionId
     private let waiterTimeout: TimeInterval = 10
     weak var connectionProviderDelegate: ConnectionProviderDelegate?
+    var deviceIdStore: MlsDeviceIdStore?
 
     func encodeRequest<ResponsePayload: Decodable>(
         for endpoint: Endpoint<ResponsePayload>,
@@ -101,6 +103,15 @@ class DefaultRequestEncoder: RequestEncoder {
             request = URLRequest(url: url)
             request.httpMethod = endpoint.method.rawValue
             request.addValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+            if endpoint.urlType == .normal {
+                request.setValue(
+                    E2eeByteWireFormat.headerValue,
+                    forHTTPHeaderField: E2eeByteWireFormat.headerName
+                )
+            }
+            for (field, value) in endpoint.headers {
+                request.setValue(value, forHTTPHeaderField: field)
+            }
 
             switch endpoint.path {
             case .users, .updateUsers:
@@ -133,9 +144,19 @@ class DefaultRequestEncoder: RequestEncoder {
             case let .success(requestWithAuth):
                 self.addConnectionIdIfNeeded(
                     request: requestWithAuth,
-                    endpoint: endpoint,
-                    completion: completion
-                )
+                    endpoint: endpoint
+                ) {
+                    switch $0 {
+                    case let .success(requestWithConnectionId):
+                        self.addDeviceIdIfNeeded(
+                            request: requestWithConnectionId,
+                            endpoint: endpoint,
+                            completion: completion
+                        )
+                    case let .failure(error):
+                        completion(.failure(error))
+                    }
+                }
             case let .failure(error):
                 completion(.failure(error))
             }
@@ -228,6 +249,26 @@ class DefaultRequestEncoder: RequestEncoder {
             }
         }
     }
+    /// Add `X-Device-ID` header to request if `needDeviceId` = true
+    private func addDeviceIdIfNeeded<T: Decodable>(
+        request: URLRequest,
+        endpoint: Endpoint<T>,
+        completion: @escaping (Result<URLRequest, Error>) -> Void
+    ) {
+        guard endpoint.needDeviceId else {
+            completion(.success(request))
+            return
+        }
+        var updatedRequest = request
+        if let url = request.url,
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let userId = components.queryItems?.first(where: { $0.name == "user_id" })?.value,
+           let deviceId = deviceIdStore?.canonicalDeviceId(for: userId) {
+            updatedRequest.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        }
+        completion(.success(updatedRequest))
+    }
+
     /// Create request URL from endpoint.
     private func encodeRequestURL<T: Decodable>(for endpoint: Endpoint<T>) throws -> URL {
         var urlComponents = URLComponents()
@@ -262,7 +303,10 @@ class DefaultRequestEncoder: RequestEncoder {
             try encodeRequestQuery(with: body, to: &request)
         case .post, .patch, .delete:
             if let data = endpoint.body as? Data {
-                request.httpBody = data
+                request.httpBody = try E2eeLegacyRequestBodyNormalizer.normalizeIfNeeded(
+                    data,
+                    path: endpoint.path
+                )
             } else {
                 let body = try JSONEncoder.ermis.encode(AnyEncodable(endpoint.body ?? EmptyBody()))
                 request.httpBody = body

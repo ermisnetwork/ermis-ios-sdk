@@ -13,6 +13,7 @@ class AsyncOperation: BaseOperation {
     private let maxRetries: Int
     private(set) var executionBlock: (AsyncOperation, @escaping (_ output: Output) -> Void) -> Void
     private var executedRetries = 0
+    private let retryQueue = DispatchQueue(label: "network.ermis.async-operation.retry")
 
     var canRetry: Bool {
         executedRetries < maxRetries && !isCancelled && !isFinished
@@ -35,8 +36,10 @@ class AsyncOperation: BaseOperation {
     }
 
     private func execute() {
-        executionBlock(self) { [weak self] in
-            self?.handleResult($0)
+        executionBlock(self) { [weak self] output in
+            self?.retryQueue.async { [weak self] in
+                self?.handleResult(output)
+            }
         }
     }
 
@@ -50,10 +53,6 @@ class AsyncOperation: BaseOperation {
 
         executedRetries += 1
         execute()
-    }
-
-    func resetRetries() {
-        executedRetries = 0
     }
 }
 
@@ -106,6 +105,7 @@ class SSEAsyncOperation: BaseOperation {
     private let maxRetries: Int
     private(set) var executionBlock: (SSEAsyncOperation, @escaping (_ output: Output) -> Void) -> Void
     private var executedRetries = 0
+    private let retryQueue = DispatchQueue(label: "network.ermis.sse-async-operation.retry")
 
     var canRetry: Bool {
         executedRetries < maxRetries && !isCancelled && !isFinished
@@ -128,8 +128,10 @@ class SSEAsyncOperation: BaseOperation {
     }
 
     private func execute() {
-        executionBlock(self) { [weak self] in
-            self?.handleResult($0)
+        executionBlock(self) { [weak self] output in
+            self?.retryQueue.async { [weak self] in
+                self?.handleResult(output)
+            }
         }
     }
 
@@ -143,10 +145,6 @@ class SSEAsyncOperation: BaseOperation {
 
         executedRetries += 1
         execute()
-    }
-
-    func resetRetries() {
-        executedRetries = 0
     }
 }
 

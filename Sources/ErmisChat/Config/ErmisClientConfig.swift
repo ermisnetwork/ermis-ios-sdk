@@ -4,6 +4,17 @@
 
 import Foundation
 import ErmisShared
+
+/// Selects the local database namespace used by an Ermis client.
+///
+/// `.automatic` preserves source compatibility: the public `ErmisClient` initializer resolves it
+/// to `.user(token.userId)` when a token is supplied and `.inMemory` before authentication.
+public enum ErmisLocalStorageScope: Equatable {
+    case automatic
+    case inMemory
+    case user(UserId)
+}
+
 /// A configuration object used to configure a `ErmisClient` instance.
 ///
 /// The default configuration can be changed the following way:
@@ -29,6 +40,23 @@ public struct ErmisClientConfig {
         Self.initLocalStorageFolderURL(groupIdentifier: nil)
     }()
 
+    /// MLS provider state is durable security state rather than a user-visible document or an
+    /// evictable cache. Keep it in Application Support even while the legacy chat cache remains in
+    /// Documents for source compatibility.
+    var mlsStorageFolderURL: URL? {
+        Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier)
+    }
+
+    /// E2EE attachment ciphertext and multipart staging are durable, non-evictable transfer
+    /// state. Keep them in Application Support, separate from the general attachment cache.
+    var e2eeAttachmentStorageFolderURL: URL? {
+        Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier)?
+            .appendingPathComponent("E2EEAttachments", isDirectory: true)
+    }
+
+    /// Authentication-aware storage scope. Do not share one on-disk cache between users.
+    public var localStorageScope: ErmisLocalStorageScope = .automatic
+
     static func initLocalStorageFolderURL(groupIdentifier: String?) -> URL? {
 #if os(macOS)
         let urls = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -45,6 +73,28 @@ public struct ErmisClientConfig {
         }
         return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
 #endif
+    }
+
+    static func initMlsStorageFolderURL(groupIdentifier: String?) -> URL? {
+#if !os(macOS)
+        if let groupIdentifier {
+            guard let container = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: groupIdentifier
+            ) else {
+                log.error(
+                    "Chat is configured to use the App Group: \(groupIdentifier) but the target seems to be not configured correctly"
+                )
+                return nil
+            }
+            return container
+                .appendingPathComponent("Library", isDirectory: true)
+                .appendingPathComponent("Application Support", isDirectory: true)
+                .appendingPathComponent("network.ermis.ermisChat", isDirectory: true)
+        }
+#endif
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appendingPathComponent("network.ermis.ermisChat", isDirectory: true)
     }
 
     /// The datacenter `ErmisClient` uses for connecting.
@@ -102,9 +152,28 @@ public struct ErmisClientConfig {
     /// This overrides the custom `UploadClient`. You should use 1 of them only.
     public var customUploader: Uploader?
 
-    /// Returns max possible attachment size in bytes.
+    /// Uses Bellboy's `presign -> direct storage PUT -> confirm` flow for standard attachments.
+    /// It remains disabled by default until the host has completed its Bellboy/R2 rollout matrix.
+    public var isStandardPresignedUploadEnabled = false
+
+    /// Allows the default uploader to use the legacy Bellboy multipart proxy only when presign
+    /// fails before a storage PUT can have succeeded. It never falls back after an ambiguous PUT.
+    public var allowsLegacyStandardUploadFallback = true
+
+    /// Returns the largest attachment plaintext accepted by the client.
+    ///
+    /// Bellboy accepts attachment ciphertext up to 2 GiB. The client limit is slightly
+    /// smaller so the E2EE V1 frame headers and authentication tags still fit below that cap.
     public var maxAttachmentSize: Int64 {
-        return 104_857_600 // 100 * 1024 * 1024
+        2_147_287_040
+    }
+
+    /// Returns the largest E2EE attachment plaintext accepted by the V1 frame contract.
+    ///
+    /// The exact value accounts for the 24-byte authenticated framing overhead of every
+    /// 256 KiB frame under Bellboy's 2 GiB ciphertext cap.
+    public var maxE2eeAttachmentSize: Int64 {
+        2_147_287_040
     }
 
     /// Allows to inject a custom API client for downloading attachments, if not specified, `ErmisDownloadClient` is used.

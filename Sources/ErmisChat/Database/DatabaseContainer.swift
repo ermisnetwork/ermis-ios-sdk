@@ -221,6 +221,37 @@ class DatabaseContainer: NSPersistentContainer {
         }
     }
 
+    /// Performs and durably saves a database mutation before returning.
+    ///
+    /// MLS application-message processing uses this boundary to persist plaintext before
+    /// advancing the receiver ratchet in the separate OpenMLS SQLite provider.
+    func writeAndWait(_ actions: (DatabaseSession) throws -> Void) throws {
+        var writeError: Error?
+        writableContext.performAndWait {
+            do {
+                FetchCache.clear()
+                try actions(writableContext)
+                FetchCache.clear()
+
+                for object in writableContext.updatedObjects where object.changedValues().isEmpty {
+                    writableContext.refresh(object, mergeChanges: true)
+                }
+
+                if writableContext.hasChanges {
+                    try writableContext.save()
+                }
+            } catch {
+                writableContext.rollback()
+                FetchCache.clear()
+                writeError = error
+            }
+        }
+
+        if let writeError {
+            throw writeError
+        }
+    }
+
     /// Removes all data from the local storage.
     func removeAllData(completion: ((Error?) -> Void)? = nil) {
         /// Cleanup the current user cache for all manage object contexts.
@@ -231,19 +262,54 @@ class DatabaseContainer: NSPersistentContainer {
         }
 
         writableContext.performAndWait { [weak self] in
-            let entityNames = self?.managedObjectModel.entities.compactMap(\.name)
+            guard let self else {
+                completion?(nil)
+                return
+            }
+
+            let entityNames = self.managedObjectModel.entities.compactMap(\.name)
             var deleteError: Error?
-            entityNames?.forEach { [weak self] entityName in
+
+            // First, nullify the MessageDecryptDTO.message relationship so
+            // batch-deleting MessageDTO won't leave dangling pointers.
+            let decryptFetch = NSFetchRequest<MessageDecryptDTO>(entityName: MessageDecryptDTO.entityName)
+            if let decrypts = try? self.writableContext.fetch(decryptFetch) {
+                for decrypt in decrypts {
+                    decrypt.message = nil
+                }
+            }
+
+            for entityName in entityNames {
+                // Preserve decrypted message cache so E2E messages remain readable after re-login
+                guard entityName != MessageDecryptDTO.entityName else { continue }
+
                 let deleteFetch = NSFetchRequest<NSFetchRequestResult>(entityName: entityName)
                 let deleteRequest = NSBatchDeleteRequest(fetchRequest: deleteFetch)
+                deleteRequest.resultType = .resultTypeObjectIDs
                 do {
-                    try self?.writableContext.execute(deleteRequest)
-                    try self?.writableContext.save()
+                    let result = try self.writableContext.execute(deleteRequest) as? NSBatchDeleteResult
+                    // Merge batch delete changes into the context so in-memory objects
+                    // are updated and relationship faults don't point to deleted rows.
+                    if let objectIDs = result?.result as? [NSManagedObjectID], !objectIDs.isEmpty {
+                        let changes: [AnyHashable: Any] = [NSDeletedObjectsKey: objectIDs]
+                        NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: self.allContext)
+                    }
                 } catch {
                     log.error("Batch delete request failed with error \(error)")
                     deleteError = error
                 }
             }
+
+            do {
+                if self.writableContext.hasChanges {
+                    try self.writableContext.save()
+                }
+            } catch {
+                log.error("Save after batch delete failed with error \(error)")
+                deleteError = error
+            }
+
+            self.writableContext.reset()
             completion?(deleteError)
         }
     }

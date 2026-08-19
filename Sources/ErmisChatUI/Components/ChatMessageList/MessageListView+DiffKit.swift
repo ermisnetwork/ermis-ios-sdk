@@ -52,6 +52,7 @@ extension ChatMessage: Differentiable, Hashable {
         && quotedMessage == source.quotedMessage
         && author == source.author
         && allAttachments == source.allAttachments
+        && decryptedMessage == source.decryptedMessage
     }
 
     public var differenceIdentifier: Int {

@@ -74,7 +74,8 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     private lazy var worker: ChannelListUpdater = self.environment
         .channelQueryUpdaterBuilder(
             client.databaseContainer,
-            client.apiClient
+            client.apiClient,
+            client.e2eRepository
         )
 
     /// A Boolean value that returns whether pagination is finished
@@ -145,6 +146,13 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
 
     private let filter: ((Channel) -> Bool)?
     private let environment: Environment
+
+    /// Channels already linked + watched this session. Guards against re-issuing the
+    /// `startWatchingChannels` request (and the channel fetch it performs) on every incoming
+    /// message for a channel that never lands in the observed `channels` list — e.g. a channel
+    /// filtered out of / beyond the loaded page, or the open channel not being part of the page.
+    /// Without this, each new message in such a channel triggers a redundant "get channel" API call.
+    @Atomic private var watchedLinkedCids: Set<ChannelId> = []
 
     /// Creates a new `ChannelListController`.
     ///
@@ -349,6 +357,8 @@ extension ChannelListController: EventsControllerDelegate {
     private func unlinkChannelIfNeeded(_ channel: Channel) {
         guard channels.contains(channel) else { return }
         guard !shouldChannelBelongToCurrentQuery(channel) else { return }
+        // Allow this channel to be watched again if it later rejoins the query.
+        _watchedLinkedCids.mutate { $0.remove(channel.cid) }
         worker.unlink(channel: channel, with: query)
     }
 
@@ -369,14 +379,27 @@ extension ChannelListController: EventsControllerDelegate {
 
     /// Links the channel to the current channel list query and starts watching it.
     private func link(channel: Channel) {
+        // Watch each channel at most once per session. Atomic check-and-insert so a burst of
+        // incoming messages for the same not-yet-listed channel issues only one watch/fetch.
+        var alreadyWatched = false
+        _watchedLinkedCids.mutate { cids in
+            alreadyWatched = cids.contains(channel.cid)
+            if !alreadyWatched { cids.insert(channel.cid) }
+        }
+        guard !alreadyWatched else { return }
+
         worker.link(channel: channel, with: query) { [weak self] error in
             if let error = error {
                 log.error(error)
+                // Linking failed — allow a later message to retry the watch.
+                self?._watchedLinkedCids.mutate { $0.remove(channel.cid) }
                 return
             }
 
             self?.worker.startWatchingChannels(withIds: [channel.cid], userId: self?.client.currentUserId) { error in
                 guard let error = error else { return }
+                // Watch failed — drop from the set so it can be retried on the next message.
+                self?._watchedLinkedCids.mutate { $0.remove(channel.cid) }
                 log.warning(
                     "Failed to start watching linked channel: \(channel.cid), error: \(error.localizedDescription)"
                 )
@@ -389,7 +412,8 @@ extension ChannelListController {
     struct Environment {
         var channelQueryUpdaterBuilder: (
             _ database: DatabaseContainer,
-            _ apiClient: APIClient
+            _ apiClient: APIClient,
+            _ e2eRepository: E2eRepository?
         ) -> ChannelListUpdater = ChannelListUpdater.init
 
         var createChannelListDatabaseObserver: (

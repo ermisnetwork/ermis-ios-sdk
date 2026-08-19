@@ -64,4 +64,13 @@ public enum ChannelCodingKeys: String, CodingKey, CaseIterable {
     case topicsEnabled = "topics_enabled"
     /// Close a topic flag.
     case isClosedTopic = "is_closed_topic"
+    case mlsEnabled = "mls_enabled"
+    case mlsEnabledAt = "mls_enabled_at"
+    case mlsEpoch = "mls_epoch"
+    case commit
+    case welcome
+    case epoch
+    case ratchetTree = "ratchet_tree"
+    case groupInfo = "group_info"
+    case channelId = "channel_id"
 }

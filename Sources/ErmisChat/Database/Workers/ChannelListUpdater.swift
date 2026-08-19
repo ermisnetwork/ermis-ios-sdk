@@ -7,6 +7,13 @@ import ErmisShared
 
 /// Makes a channels query call to the backend and updates the local storage with the results.
 class ChannelListUpdater: Worker {
+    private weak var e2eRepository: E2eRepository?
+
+    init(database: DatabaseContainer, apiClient: APIClient, e2eRepository: E2eRepository?) {
+        self.e2eRepository = e2eRepository
+        super.init(database: database, apiClient: apiClient)
+    }
+
     /// Makes a channels query call to the backend and updates the local storage with the results.
     ///
     /// - Parameters:
@@ -246,11 +253,22 @@ private extension ChannelListUpdater {
         database.write { session in
             initialActions?(session)
             channels = session.saveChannelList(payload: payload, query: query).compactMap { try? $0.asModel() }
-        } completion: { error in
+        } completion: { [weak self] error in
             if let error = error {
                 log.error("Failed to save `ChannelListPayload` to the database. Error: \(error)")
                 completion?(.failure(error))
             } else {
+                // Query results are now the bootstrap trigger, matching Web: restored groups
+                // catch up in bounded batches; missing groups pre-sync for a Welcome and only
+                // then fall back to serialized external join + post-sync.
+                self?.e2eRepository?.cleanupOrphanedMlsGroups()
+
+                let mlsCids = payload.channels
+                    .filter { $0.channel.mlsEnabled }
+                    .map { $0.channel.cid }
+                if !mlsCids.isEmpty {
+                    self?.e2eRepository?.handleNewEncryptedChannels(mlsCids)
+                }
                 completion?(.success(channels))
             }
         }

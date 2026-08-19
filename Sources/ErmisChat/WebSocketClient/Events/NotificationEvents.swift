@@ -12,6 +12,9 @@ public struct NotificationMessageNewEvent: ChannelSpecificEvent, HasUnreadCount 
     /// The parent channel identifier of the channel that the message is sent to.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel a message was sent to.
     public let channel: Channel
 
@@ -28,6 +31,7 @@ public struct NotificationMessageNewEvent: ChannelSpecificEvent, HasUnreadCount 
 class NotificationMessageNewEventDTO: EventDTO {
     let channel: ChannelDetailPayload
     let message: MessagePayload
+    let topicCids: [ChannelId]
     let unreadCount: UnreadCount?
     let createdAt: Date
     let payload: EventPayload
@@ -35,6 +39,7 @@ class NotificationMessageNewEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         channel = try response.value(at: \.channel)
         message = try response.value(at: \.message)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         unreadCount = try? response.value(at: \.unreadCount)
         payload = response
@@ -47,6 +52,7 @@ class NotificationMessageNewEventDTO: EventDTO {
         else { return nil }
 
         return try? NotificationMessageNewEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             message: messageDTO.asModel(),
             createdAt: createdAt,
@@ -102,6 +108,9 @@ public struct NotificationMarkReadEvent: ChannelSpecificEvent, HasUnreadCount {
     /// The parent channel identifier of the read channel.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The unread counts of the current user.
     public let unreadCount: UnreadCount?
 
@@ -123,6 +132,9 @@ public struct NotificationMarkUnreadEvent: ChannelSpecificEvent {
     /// The parent channel identifier of the unread channel.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The event timestamp.
     public let createdAt: Date
 
@@ -143,6 +155,7 @@ class NotificationMarkReadEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let unreadCount: UnreadCount
     let createdAt: Date
     let lastReadMessageId: MessageId?
@@ -152,6 +165,7 @@ class NotificationMarkReadEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         unreadCount = try response.value(at: \.unreadCount)
         lastReadMessageId = try? response.value(at: \.lastReadMessageId)
@@ -165,6 +179,7 @@ class NotificationMarkReadEventDTO: EventDTO {
             user: userDTO.asModel(),
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             unreadCount: unreadCount,
             lastReadMessageId: lastReadMessageId,
             createdAt: createdAt
@@ -176,6 +191,7 @@ class NotificationMarkUnreadEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let createdAt: Date
     let firstUnreadMessageId: MessageId
     let lastReadMessageId: MessageId?
@@ -187,6 +203,7 @@ class NotificationMarkUnreadEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         firstUnreadMessageId = try response.value(at: \.firstUnreadMessageId)
         lastReadMessageId = try response.value(at: \.lastReadMessageId)
@@ -202,6 +219,7 @@ class NotificationMarkUnreadEventDTO: EventDTO {
             user: userDTO.asModel(),
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             createdAt: createdAt,
             firstUnreadMessageId: firstUnreadMessageId,
             lastReadMessageId: lastReadMessageId,
@@ -249,6 +267,9 @@ public struct NotificationAddedToChannelEvent: ChannelSpecificEvent, HasUnreadCo
     /// The parent channel identifier of the channel that a message was sent to.
     public var parentCid: ChannelId? { channel.cid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel the current user was added to.
     public let channel: Channel
 
@@ -264,6 +285,7 @@ public struct NotificationAddedToChannelEvent: ChannelSpecificEvent, HasUnreadCo
 
 class NotificationChannelCreatedEventDTO: EventDTO {
     let channel: ChannelDetailPayload
+    let topicCids: [ChannelId]
     let unreadCount: UnreadCount?
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
@@ -272,6 +294,7 @@ class NotificationChannelCreatedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         channel = try response.value(at: \.channel)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         unreadCount = try? response.value(at: \.unreadCount)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
@@ -285,6 +308,7 @@ class NotificationChannelCreatedEventDTO: EventDTO {
         else { return nil }
 
         return try? NotificationAddedToChannelEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             unreadCount: unreadCount,
             member: memberDTO.asModel(),
@@ -304,6 +328,9 @@ public struct NotificationRemovedFromChannelEvent: ChannelSpecificEvent {
     /// The parent channel identifier of the channel that the current user was removed from.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The current user.
     public let member: ChannelMember
 
@@ -314,6 +341,7 @@ public struct NotificationRemovedFromChannelEvent: ChannelSpecificEvent {
 class NotificationRemovedFromChannelEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let user: UserPayload
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
@@ -323,6 +351,7 @@ class NotificationRemovedFromChannelEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try response.value(at: \.user)
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
@@ -339,6 +368,7 @@ class NotificationRemovedFromChannelEventDTO: EventDTO {
             user: userDTO.asModel(),
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -386,6 +416,9 @@ public struct NotificationInvitedEvent: MemberEvent, ChannelSpecificEvent {
     /// The parent channel identifier of the channel that the current user was invited to.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The membership information of the current user.
     public let member: ChannelMember
 
@@ -397,6 +430,7 @@ class NotificationInvitedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -406,6 +440,7 @@ class NotificationInvitedEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -421,6 +456,7 @@ class NotificationInvitedEventDTO: EventDTO {
             user: userDTO.asModel(),
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             member: memberDTO.asModel(),
             createdAt: createdAt
         )
@@ -442,8 +478,13 @@ public struct NotificationInviteRespondBackEvent: MemberEvent, ChannelSpecificEv
     /// The parent channel identifier of the channel that current user has becom a member of.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel the current user has become a member of.
     public let channel: Channel
+
+    public let mlsEnabled: Bool
 
     /// The membership information of the current user.
     public let member: ChannelMember
@@ -457,6 +498,8 @@ public struct NotificationInviteRespondBackEvent: MemberEvent, ChannelSpecificEv
 
 class NotificationInviteAcceptedEventDTO: EventDTO {
     let cid: ChannelId
+    let mlsEnabled: Bool
+    let topicCids: [ChannelId]
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -464,6 +507,8 @@ class NotificationInviteAcceptedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -476,7 +521,9 @@ class NotificationInviteAcceptedEventDTO: EventDTO {
         else { return nil }
 
         return try? NotificationInviteRespondBackEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .accept,
             createdAt: createdAt
@@ -486,6 +533,8 @@ class NotificationInviteAcceptedEventDTO: EventDTO {
 
 class NotificationInviteSkippedEventDTO: EventDTO {
     let cid: ChannelId
+    let mlsEnabled: Bool
+    let topicCids: [ChannelId]
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -493,6 +542,8 @@ class NotificationInviteSkippedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -505,7 +556,9 @@ class NotificationInviteSkippedEventDTO: EventDTO {
         else { return nil }
 
         return try? NotificationInviteRespondBackEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .skip,
             createdAt: createdAt
@@ -515,15 +568,17 @@ class NotificationInviteSkippedEventDTO: EventDTO {
 
 class NotificationInviteRejectedEventDTO: EventDTO {
     let cid: ChannelId
+    let mlsEnabled: Bool
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
-    let topicCids: [ChannelId]?
+    let topicCids: [ChannelId]
     let createdAt: Date
     let payload: EventPayload
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
-        topicCids = try? response.value(at: \.topicCids)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -536,7 +591,9 @@ class NotificationInviteRejectedEventDTO: EventDTO {
         else { return nil }
 
         return try? NotificationInviteRespondBackEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .reject,
             createdAt: createdAt
@@ -547,6 +604,8 @@ class NotificationInviteRejectedEventDTO: EventDTO {
 class NotificationInviteMessagingRejectedEventDTO: EventDTO {
     //    let user: UserPayload
     let cid: ChannelId
+    let mlsEnabled: Bool
+    let topicCids: [ChannelId]
     // This `member` field is equal to the `membership` field in channel query
     let member: MemberPayload
     let createdAt: Date
@@ -554,6 +613,8 @@ class NotificationInviteMessagingRejectedEventDTO: EventDTO {
 
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
+        mlsEnabled = try response.value(at: \.mlsEnabled)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         member = try response.value(at: \.memberContainer?.member)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -566,7 +627,9 @@ class NotificationInviteMessagingRejectedEventDTO: EventDTO {
         else { return nil }
 
         return try? NotificationInviteRespondBackEvent(
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
+            mlsEnabled: mlsEnabled,
             member: memberDTO.asModel(),
             respondBackType: .messagingReject,
             createdAt: createdAt
@@ -582,6 +645,9 @@ public struct NotificationChannelDeletedEvent: ChannelSpecificEvent {
     /// The parent cid of the channel that was deleted.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel that was deleted
     public let channel: Channel
 
@@ -592,6 +658,7 @@ public struct NotificationChannelDeletedEvent: ChannelSpecificEvent {
 class NotificationChannelDeletedEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let channel: ChannelDetailPayload
     let createdAt: Date
     let payload: EventPayload
@@ -599,6 +666,7 @@ class NotificationChannelDeletedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         channel = try response.value(at: \.channel)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -609,6 +677,7 @@ class NotificationChannelDeletedEventDTO: EventDTO {
         return try? NotificationChannelDeletedEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             createdAt: createdAt
         )

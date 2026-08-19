@@ -2,6 +2,7 @@
 // Copyright 2025 Ermis Inc.
 //
 
+import CoreData
 import Foundation
 import ErmisShared
 
@@ -9,17 +10,20 @@ import ErmisShared
 class ChannelUpdater: Worker {
     private let channelRepository: ChannelRepository
     private let callRepository: CallRepository
+    private let e2eRepository: E2eRepository
     private let paginationStateHandler: MessagesPaginationStateHandling
 
     init(
         channelRepository: ChannelRepository,
         callRepository: CallRepository,
+        e2eRepository: E2eRepository,
         paginationStateHandler: MessagesPaginationStateHandling,
         database: DatabaseContainer,
         apiClient: APIClient
     ) {
         self.channelRepository = channelRepository
         self.callRepository = callRepository
+        self.e2eRepository = e2eRepository
         self.paginationStateHandler = paginationStateHandler
         super.init(database: database, apiClient: apiClient)
     }
@@ -83,6 +87,14 @@ class ChannelUpdater: Worker {
                         completion?(.failure(error))
                         return
                     }
+                    // Preview plaintext is process-local and is intentionally cleared on app
+                    // relaunch. Rehydrate the visible page after its durable message/decrypt
+                    // records have been merged; a scope sync with no new events has nothing to
+                    // dispatch and cannot restore these previews on its own.
+                    self.e2eRepository.hydrateCachedAttachmentPreviews(
+                        messageIds: payload.messages.map(\.id),
+                        cid: payload.channel.cid
+                    )
                     completion?(.success(payload))
                 }
             } catch {
@@ -98,11 +110,77 @@ class ChannelUpdater: Worker {
                     .updateChannel(query: channelQuery)
             }
         }()
+        var cid: ChannelId
+        if isChannelCreate, channelQuery.mlsEnabled == true {
+            let userIds = Array(channelQuery.channelPayload?.members ?? [])
+            
+            if channelQuery.channelPayload?.type == .messaging {
+                let channelId = e2eRepository.hashChannelId(projectId: channelQuery.projectId, userIds: userIds)
+                cid = channelId
+            } else if let channelId = channelQuery.cid {
+                cid = channelId
+            } else {
+                completion(.failure(ClientError.Unexpected("CID nil when creating channel")))
+                return
+            }
+                        
+            e2eRepository.consumeKeyPackagesBatch(targetUserIds: userIds, completion: { [weak self, cid] result in
+                guard let self else {
+                    return
+                }
+                switch result {
+                case .success(let keyPackages):
+                    do {
+                        let (commitBundle, ratchetTree, groupInfo, epoch) = try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
 
-        if isInRecoveryMode {
-            apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
+                        var updatedQuery = channelQuery
+                        updatedQuery.channelPayload?.cid = cid
+                        updatedQuery.channelPayload?.commit = commitBundle.commit.uint8Array
+                        updatedQuery.channelPayload?.welcome = (commitBundle.welcome ?? Data()).uint8Array
+                        updatedQuery.channelPayload?.epoch = epoch
+                        updatedQuery.channelPayload?.ratchetTree = ratchetTree.toBytes().uint8Array
+                        updatedQuery.channelPayload?.groupInfo = groupInfo.uint8Array
+                        updatedQuery.channelPayload?.mlsEnabled = channelQuery.mlsEnabled
+
+                        let e2eEndpoint: Endpoint<ChannelPayload> = .createChannel(query: updatedQuery)
+
+                        apiClient.request(endpoint: e2eEndpoint) { [weak self] result in
+                            guard let self else {
+                                return
+                            }
+                            switch result {
+                            case .success:
+                                do {
+                                    try e2eRepository.mergePendingCommit(in: cid)
+                                    completion(result)
+                                } catch {
+                                    completion(.failure(error))
+                                }
+                            case .failure(let error):
+                                do {
+                                    try e2eRepository.clearPendingCommit(in: cid)
+                                } catch (let e) {
+                                
+                                }
+                                completion(.failure(error))
+
+                            }
+                        }
+                    } catch let error {
+                        log.error("Failed to add member to group", subsystems: .mls)
+                        completion(.failure(error))
+                    }
+                case .failure(let error):
+                    log.error("Consume channel's keypackage failed: \(error)", subsystems: .mls)
+                    completion(.failure(error))
+                }
+            })
         } else {
-            apiClient.request(endpoint: endpoint, completion: completion)
+            if isInRecoveryMode {
+                apiClient.recoveryRequest(endpoint: endpoint, completion: completion)
+            } else {
+                apiClient.request(endpoint: endpoint, completion: completion)
+            }
         }
     }
 
@@ -233,17 +311,82 @@ class ChannelUpdater: Worker {
     ///   - currentUserId: the id of the current user.
     ///   - cid: The Id of the channel where you want to add the users.
     ///   - userIds: User ids to add to the channel.
+    ///   - mlsEnabled: True if the channel with cid has mls enable.
     ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
     func addMembers(
         currentUserId: UserId? = nil,
         cid: ChannelId,
+        isMlsEnabled: Bool,
         userIds: Set<UserId>,
         completion: ((Error?) -> Void)? = nil
     ) {
+        if isMlsEnabled {
+            e2eRepository.consumeKeyPackagesBatch(targetUserIds: Array(userIds), completion: { [weak self] result in
+                guard let self else {
+                    return
+                }
+                switch result {
+                case .success(let keyPackages):
+                    do {
+                        // A member who self-left still occupies an MLS leaf until the
+                        // designated evictor commits their eviction. If any such "ghost" is
+                        // still pending, bundle its removal into THIS add commit — a plain
+                        // add would otherwise fail (e.g. re-adding the left user hits a
+                        // duplicate leaf). See the self-leave composite-cleanup flow.
+                        let pendingGhosts = e2eRepository.getPendingRemoveMemberUserIds(channelCid: cid.rawValue)
+                        let bundle = pendingGhosts.isEmpty
+                            ? try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
+                            : try e2eRepository.addMembersWithRemovals(to: cid, removeUserIds: pendingGhosts, memberKeypackages: keyPackages)
+                        let (commitBundle, ratchetTree, groupInfo, epoch) = bundle
+                        // Enable e2e
+                        let body = AddMembersRequestBody(addMembers: Array(userIds),
+                                                         commit: commitBundle.commit,
+                                                         welcome: commitBundle.welcome ?? Data(),
+                                                         ratchetTree: ratchetTree.toBytes(),
+                                                         epoch: epoch,
+                                                         groupInfo: groupInfo)
+                        apiClient.request(endpoint: .addMembers(cid: cid, userIds: userIds, mlsBody: body)) { [weak self] result in
+                            guard let self else {
+                                return
+                            }
+                            switch result {
+                            case .success:
+                                do {
+                                    try e2eRepository.mergePendingCommit(in: cid)
+                                    // The bundled ghosts were evicted by this commit; clear them.
+                                    if !pendingGhosts.isEmpty {
+                                        e2eRepository.deletePendingRemoveMembers(userIds: pendingGhosts, channelCid: cid.rawValue)
+                                    }
+                                    completion?(nil)
+                                } catch {
+                                    completion?(error)
+                                }
+                            case .failure(let error):
+                                do {
+                                    try e2eRepository.clearPendingCommit(in: cid)
+                                    completion?(error)
+                                } catch {
+                                    completion?(error)
+                                }
+                            }
+                        }
+                    } catch let error {
+                        log.error("Failed to add member to group: \(error)", subsystems: .mls)
+                        completion?(error)
+                    }
+                case .failure(let error):
+                    log.error("Consume channel's keypackage failed: \(error)", subsystems: .mls)
+                    completion?(error)
+                }
+            })
+            return
+        }
+
         apiClient.request(
             endpoint: .addMembers(
                 cid: cid,
-                userIds: userIds
+                userIds: userIds,
+                mlsBody: nil
             )
         ) {
             completion?($0.error)
@@ -259,9 +402,58 @@ class ChannelUpdater: Worker {
     func removeMembers(
         currentUserId: UserId? = nil,
         cid: ChannelId,
+        isMlsEnabled: Bool,
         userIds: Set<UserId>,
+        isSelfLeave: Bool,
         completion: ((Error?) -> Void)? = nil
     ) {
+        if isMlsEnabled {
+            do {
+                var body: Encodable
+                if isSelfLeave {
+                    body = LeaveChannelRequestBody(removeMembers: Array(userIds), selfRemove: true)
+                } else {
+                    let (commitBunddle, groupInfo, epoch) = try e2eRepository.removeMembers(Array(userIds), in: cid)
+                    body = RemoveMembersRequestBody(removeMembers: Array(userIds),
+                                                        selfRemove: false,
+                                                        commit: commitBunddle.commit,
+                                                        epoch: epoch,
+                                                        groupInfo: groupInfo)
+                }
+                apiClient.request(endpoint: .removeMembers(cid: cid, userIds: userIds, mlsBody: body)) { [weak self] result in
+                    guard let self else {
+                        return
+                    }
+                    switch result {
+                    case .success:
+                        do {
+                            if !isSelfLeave {
+                                try e2eRepository.mergePendingCommit(in: cid)
+                            } else {
+                                try e2eRepository.deleteGroup(cid: cid.rawValue)
+                            }
+                            completion?(nil)
+                        } catch {
+                            completion?(error)
+                        }
+                    case .failure(let error):
+                        do {
+                            if !isSelfLeave {
+                                try e2eRepository.clearPendingCommit(in: cid)
+                            }
+                            completion?(error)
+                        } catch {
+                            completion?(error)
+                        }
+                    }
+                }
+            } catch (let error) {
+                log.error("Failed to remove member of group: error: \(error)", subsystems: .mls)
+                completion?(error)
+            }
+            return
+        }
+
         apiClient.request(
             endpoint: .removeMembers(
                 cid: cid,
@@ -281,8 +473,30 @@ class ChannelUpdater: Worker {
         cid: ChannelId,
         completion: ((Error?) -> Void)? = nil
     ) {
-        apiClient.request(endpoint: .acceptInvite(cid: cid)) {
-            completion?($0.error)
+        apiClient.request(endpoint: .acceptInvite(cid: cid)) { [weak self] (result: Result<EmptyResponse, Error>) in
+            guard let self else {
+                completion?(result.error)
+                return
+            }
+            guard result.error == nil else {
+                completion?(result.error)
+                return
+            }
+            // After accepting, check if the channel is MLS-enabled.
+            // If so, perform an external join so the device can decrypt messages,
+            // then trigger an E2E sync for that channel.
+            var isMlsEnabled = false
+            self.database.viewContext.performAndWait {
+                if let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) {
+                    isMlsEnabled = dto.mlsEnabled
+                }
+            }
+            guard isMlsEnabled else {
+                completion?(nil)
+                return
+            }
+            self.e2eRepository.performE2eChannelSync(cid: cid)
+            completion?(result.error)
         }
     }
 
@@ -563,11 +777,121 @@ class ChannelUpdater: Worker {
         })
     }
 
+    /// Searches messages locally from CoreData for a given channel.
+    /// - Parameters:
+    ///   - payload: The search request payload containing cid, searchTerm, limit, and offset.
+    ///   - completion: Called with the search results from the local database.
+    func searchLocal(payload: ChannelSearchRequestPayload, completion: @escaping (Result<ChannelSearchPayload, Error>) -> Void) {
+        database.backgroundReadOnlyContext.perform {
+            do {
+                let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+
+                let cidPredicate = NSPredicate(format: "cid == %@", payload.cid)
+                // Search in both the plain text field and the decrypted text (for E2E messages)
+                let textPredicate = NSCompoundPredicate(orPredicateWithSubpredicates: [
+                    NSPredicate(format: "text CONTAINS[cd] %@", payload.searchTerm),
+                    NSPredicate(format: "decryptedMessage.text CONTAINS[cd] %@", payload.searchTerm)
+                ])
+
+                request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
+                    cidPredicate,
+                    textPredicate
+                ])
+
+                request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: false)]
+
+                let totalResults = try self.database.backgroundReadOnlyContext.count(for: request)
+
+                request.fetchOffset = payload.offset
+                request.fetchLimit = payload.limit
+
+                let messageDTOs = try self.database.backgroundReadOnlyContext.fetch(request)
+
+                let messages: [ChannelSearchMessagePayload] = messageDTOs.map { dto in
+                    let displayText = dto.decryptedMessage?.text ?? dto.text
+                    return ChannelSearchMessagePayload(
+                        id: dto.id,
+                        text: displayText,
+                        userId: dto.user.userId,
+                        createdAt: dto.createdAt.bridgeDate
+                    )
+                }
+
+                var result = ChannelSearchPayload()
+                result.messages = messages
+                result.limit = payload.limit
+                result.offset = payload.offset
+                result.total = totalResults
+
+                completion(.success(result))
+            } catch {
+                completion(.failure(error))
+            }
+        }
+    }
+
     func saveComposerUnsentContent(in cid: ChannelId, content: ComposerContent?) {
         self.database.write { session in
             try session.updateComposerUnsentContent(in: cid, content: content)
         }
     }
+
+    func enableEncryption(in cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
+        e2eRepository.consumeKeyPackages(in: cid, targetUserIds: [], completion: { [weak self] result in
+            guard let self else {
+                return
+            }
+            switch result {
+            case .success(let keyPackages):
+                do {
+                    let (commitBundle, ratchetTree, groupInfo, epoch) = try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
+                    // Enable e2e
+                    let body = EnableEncryptionRequestBody(commit: commitBundle.commit,
+                                                           welcome: commitBundle.welcome ?? Data(),
+                                                           ratchetTree: ratchetTree.toBytes(),
+                                                           epoch: 0,
+                                                           groupInfo: groupInfo)
+                    channelRepository.enableEncryption(cid: cid, body: body) { [weak self] result in
+                        guard let self else {
+                            return
+                        }
+                        switch result {
+                        case .success:
+                            do {
+                                try e2eRepository.mergePendingCommit(in: cid)
+                                self.database.write { (session) in
+                                    if let channel = session.channel(cid: cid) {
+                                        channel.mlsEnabled = true
+                                        channel.mlsEnabledAt = Date().bridgeDate
+                                        channel.mlsEpoch = 1
+                                    }
+                                } completion: { error in
+                                    completion?(nil)
+                                }
+                                completion?(nil)
+                            } catch {
+                                completion?(error)
+                            }
+                        case .failure(let error):
+                            do {
+                                try e2eRepository.clearPendingCommit(in: cid)
+                                completion?(error)
+                            } catch {
+                                completion?(error)
+                            }
+                        }
+                    }
+                } catch let error {
+                    log.error("Failed to add member to group", subsystems: .mls)
+                    completion?(error)
+                }
+            case .failure(let error):
+                log.error("Consume channel's keypackage failed: \(error)", subsystems: .mls)
+                completion?(error)
+            }
+        })
+    }
+
     // MARK: - private
     
     private func messagePayload(text: String?, currentUserId: UserId?) -> MessageRequestBody? {

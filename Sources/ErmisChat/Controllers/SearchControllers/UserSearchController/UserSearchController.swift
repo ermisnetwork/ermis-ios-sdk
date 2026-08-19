@@ -352,10 +352,13 @@ private extension UserSearchController {
 
     public func queryUsers(with ids: [String]) -> [ChatUser] {
         let request = UserDTO.userListFetchRequest(userIds: ids, projectId: client.projectId)
-        let users = try? client.databaseContainer.viewContext.fetch(request).compactMap({
-            try? $0.asModel()
-        })
-        return users ?? []
+        var users: [ChatUser] = []
+        client.databaseContainer.viewContext.performAndWait {
+            users = (try? client.databaseContainer.viewContext.fetch(request).compactMap({
+                try? $0.asModel()
+            })) ?? []
+        }
+        return users
     }
 }
 

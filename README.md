@@ -21,8 +21,21 @@ The ErmisChat SDK for iOS allows you to integrate real-time chat into your clien
 
 The minimum requirements for ErmisChat SDK for iOS are:
 
-- iOS 14 or higher
-- Swift 5.0 or higher
+- iOS 15 or higher
+- Swift 5.10 or higher
+
+### OpenMLS compatibility
+
+The SDK pins `open-mls-ios` to the exact prerelease tag `0.1.0-m0.1`. This version contains the
+AAD and plaintext-first persistence APIs required by the E2EE implementation. PIN/Epoch Archive
+APIs are intentionally not exposed in this release.
+
+Do not commit a local path dependency for release builds. When developing both repositories
+locally, use SwiftPM editable mode:
+
+```bash
+swift package edit open-mls-ios --path ../open-mls-ios
+```
 
 ## Getting started
 
@@ -161,6 +174,148 @@ To logout, call `logout` function in ```ErmisClient```
 ```swift
 client.logout(completion: completion)
 ```
+
+#### MLS device identity storage
+
+For E2EE accounts, the SDK keeps one MLS `device_id` per user in a non-synchronizing Keychain
+generic-password item protected with `AfterFirstUnlockThisDeviceOnly`. Normal logout preserves this
+identity; only an explicit local E2EE purge removes it.
+
+When upgrading from a version that stored device IDs in `UserDefaults`, the SDK copies the existing
+per-user value to Keychain and writes the migration marker only after an exact read-back succeeds.
+The legacy value remains available during the compatibility/rollback window. Before migration has
+completed, a temporarily unavailable Keychain makes the SDK keep using the existing legacy value
+without generating a replacement. After Keychain is authoritative, the same condition fails closed
+because a restored legacy value may belong to another installation.
+
+`ThisDeviceOnly` Keychain items do not migrate to another installation through backup/restore. Once
+migration has completed, a missing Keychain item is therefore treated as a new installation: the SDK
+creates a new device ID and the account must follow the normal MLS external-join flow. Applications
+must not assume that restoring an encrypted device backup preserves the previous MLS device identity.
+
+#### MLS provider database storage and migration
+
+<details>
+<summary>Change log</summary>
+
+- `2026-08-08`: Locked the M1 incoming/outgoing persistence ordering and added a reproducible
+  SIGKILL/relaunch verification harness.
+  - Reason: same-process reload tests do not prove that SQLite/WAL state survives abrupt process
+    termination.
+  - Integrator action: run the harness on a booted simulator before changing MLS persistence or
+    pending-send recovery.
+  - Compatibility/default: production APIs and wire payloads are unchanged; the harness exists
+    only in the test target.
+
+</details>
+
+The OpenMLS SQLite provider is stored under the app's Application Support directory, separately
+from the Core Data chat cache. Its directory is excluded from backup and uses
+`completeUntilFirstUserAuthentication` file protection on iOS. When an App Group is configured,
+the same Application Support layout is used inside that container.
+
+Upgrades copy the legacy provider database and any SQLite `-wal`/`-shm` sidecars into a staging
+directory, reopen the staged database, and verify its stored identity and group IDs before promotion.
+The migration marker is written only after verification. The legacy database remains untouched for
+the rollback window; if copying or verification fails, the SDK continues with that legacy database
+instead of opening a blank provider. A relaunch safely retries an interrupted migration.
+
+At runtime, the SDK routes application decrypts, protocol processing, outgoing encryption,
+membership commits, external joins, key-package generation, and group deletion through one internal
+MLS mutation executor. It preserves FIFO ordering per effective MLS group and currently limits the
+shared OpenMLS SQLite provider to one mutation at a time. The old decrypt-only queue is not used in
+parallel. Share extensions and notification service extensions must hand work to the main app and
+must not instantiate or mutate OpenMLS group state directly.
+
+Incoming application processing is deferred: the SDK retains the exact plaintext, AAD, sender and
+message epoch, commits plaintext to Core Data, and only then saves the updated OpenMLS receiver
+state. Commit processing returns typed before/after epoch metadata; the durable commit proof and
+exact target epoch are checked before its apply cursor advances. A Welcome whose group was already
+persisted retries its historical-message normalization before cursor advancement, so a prior Core
+Data failure cannot be hidden by relaunch. Standalone MLS proposals remain unsupported by Bellboy's
+production flow and are rejected as repair issues rather than applied.
+
+Outgoing E2EE text and edit sends follow the inverse durable ordering: create the local message and
+stable ID first, encrypt on the MLS executor, save the sender state, synchronously persist the exact
+ciphertext/epoch network intent, and only then begin HTTP. Relaunch and unknown HTTP-result recovery
+reuse that exact intent. If a crash happens after sender-state save but before intent persistence,
+the missing generation is abandoned and a later generation is encrypted from the durable sender
+state. The composer clears only after the optimistic message write succeeds; database failure or
+newer user input preserves the current draft. Slow-mode cooldown starts only after that local write.
+
+To rerun the M1 process-crash gate, boot an iOS Simulator and pass its UDID:
+
+```sh
+./scripts/run-m1-e2ee-crash-harness.sh <booted-simulator-udid>
+```
+
+The four seed invocations intentionally report an XCTest process failure because each one sends
+`SIGKILL` after its durable boundary. The script succeeds only when every following invocation
+reopens the same on-disk OpenMLS/Core Data state and verifies TCR-005 through TCR-008.
+
+#### E2EE attachment original download and export
+
+An E2EE attachment's `remoteURL` is an opaque SDK reference, not a storage URL. Do not pass it to a
+generic downloader, `AVPlayer`, Photos, a document picker, or a share sheet. Resolve an original
+through the SDK so its declared ciphertext size and global SHA-256 are checked before authenticated
+frame decryption exposes a protected local file:
+
+```swift
+let lease = try await client.acquireAttachmentForViewing(attachment) { progress in
+    // `fractionCompleted` is network ciphertext progress only. Keep processing UI visible while
+    // the phase is `.verifying`, `.waitingForUnlock`, or `.decrypting`.
+    updateTransferUI(progress)
+}
+defer { lease.release() }
+
+let localURL = lease.localURL
+// Keep `lease` alive while AVPlayer, WebKit, Photos, Files, or the share sheet reads `localURL`.
+```
+
+The foreground resolver coalesces requests for the same asset and bounds interactive full-file
+downloads. Cancelling a viewer releases only that viewer; the underlying request is cancelled when
+no requester remains. A download-grant-related `401`/`403` obtains one fresh grant and restarts the
+whole GET. It never trusts an unproven partial response. Plaintext is atomically published only after
+all size/hash/frame-GCM checks pass.
+
+If protected data is unavailable after the ciphertext has been downloaded and globally verified,
+the resolver reports `.waitingForUnlock`, keeps that verified ciphertext in protected SDK staging,
+and creates no plaintext. It automatically continues authenticated frame decryption after the device
+is unlocked. A foreground download that is still partial when the process is killed is not yet a
+durable resume point; process-death recovery for partial bytes belongs to the background-download
+journal/reconciliation milestone.
+
+Every viewer/exporter must own a separate `E2eeAttachmentOriginalLease`. Releasing one lease cannot
+delete a plaintext file while another gallery, Save, or Share operation still uses it. After the last
+lease is released, the SDK removes that plaintext original. The older
+`prepareAttachmentForViewing` URL-only API remains source-compatible, but because it cannot observe
+consumer lifetime, its plaintext is retained until client shutdown; new integrations should use the
+lease API.
+
+The built-in gallery keeps standard attachments on the existing download path. For opaque E2EE
+attachments, Save and Share consume only the verified local file. Save owns an independent request,
+whereas Share is viewer-scoped and is cancelled if the gallery closes. This foreground Save remains
+process-scoped; durable background download/export recovery is a separate follow-up milestone.
+
+The built-in file preview follows the same boundary: an opaque E2EE file reference is resolved to a
+size/SHA/frame-GCM-verified local file before WebKit preview or Files export. The opaque URL must not
+be handed to `WKWebView` or the standard attachment downloader (`NSURLErrorUnsupportedURL`).
+
+The message long-press **Download** action uses this same verified-original boundary. For an E2EE
+file it resolves the opaque reference first and presents the verified plaintext copy in the Files
+document picker; it never forwards `ermis-e2ee-attachment://...` to the generic HTTP downloader.
+Standard attachment downloads keep their existing behavior.
+
+#### E2EE attachments in Channel Info
+
+Channel Info for an effectively encrypted channel must use Bellboy's E2EE attachment projection
+query and join each projection to the durable decrypted message manifest. The encrypted manifest,
+not the projection, object key, URL, or filename extension, is authoritative for display metadata
+and image/video/file/voice classification. Visible cells may resolve only the encrypted preview;
+opening, saving, or sharing an original must use the verified-original pipeline above.
+
+See [E2EE Channel Info attachment integration](E2EE_CHANNEL_INFO_ATTACHMENTS.md) for pagination,
+join validation, unavailable-state, preview, and original-download requirements.
 
 <br />
 
@@ -789,6 +944,29 @@ var deliveryStatus: MessageDeliveryStatus? {
 
 This feature allows user to upload a file to the system. Maximum file size is 2GB
 To upload channel attachment, call `uploadAttachment` function in `ChannelController` object.
+
+Standard-channel uploads use the legacy Bellboy multipart proxy by default. Hosts can opt in to
+Bellboy's direct `presign -> storage PUT -> confirm` flow while the rollout matrix is being
+validated:
+
+```swift
+var config = ErmisClientConfig(
+    apiKeyString: apiKey,
+    endpointEnviroment: endpointEnvironment
+)
+config.isStandardPresignedUploadEnabled = true
+config.allowsLegacyStandardUploadFallback = true
+```
+
+The direct storage request is file-backed and contains only storage-required headers; SDK API
+credentials, cookies, and Bellboy-specific headers are never copied to the presigned URL. Legacy
+fallback is attempted only when presign fails before a storage PUT could have succeeded. Set
+`allowsLegacyStandardUploadFallback` to `false` to fail closed during rollout. A configured
+`customUploader` or `customUploadClient` keeps precedence over this built-in selection.
+
+For standard video messages, the original video and generated thumbnail are uploaded and confirmed
+as two distinct objects. The message attachment is marked uploaded only after both confirms succeed;
+the visible progress reserves the final 10% for thumbnail upload and confirmation.
 
 ```swift
 public func  uploadAttachment(

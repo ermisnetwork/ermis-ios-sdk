@@ -55,6 +55,8 @@ open class ShareViewController: _ViewController, UIProvider, ChannelListControll
 
     private var isSendingMessage: Bool = false
 
+    private var maximumContentSize: Int64 = 2_147_287_040
+
     /// The `OperationQueue` which handling incoming requests
     private let operationQueue: OperationQueue = {
         let operationQueue = OperationQueue(maxConcurrentCount: 3)
@@ -94,6 +96,7 @@ open class ShareViewController: _ViewController, UIProvider, ChannelListControll
         }
         
         
+        maximumContentSize = client.config.maxAttachmentSize
         let channelListQuery: ChannelListQuery = .init(
             filter: .joinedChannels(memberId: currentUserId,
                                     projectId: client.projectId ?? ""),
@@ -107,11 +110,16 @@ open class ShareViewController: _ViewController, UIProvider, ChannelListControll
     }
 
     open func isContentValid() -> Bool {
-        var totalSize = content.text.data(using: .utf8)?.count ?? 0
-        totalSize = content.attachments.reduce(into: totalSize) { partialResult, attachemnt in
-            partialResult += (attachemnt.fileSize ?? 0)
+        var totalSize = Int64(content.text.utf8.count)
+        for attachment in content.attachments {
+            let attachmentSize = Int64(attachment.fileSize ?? 0)
+            guard attachmentSize >= 0,
+                  totalSize <= maximumContentSize - attachmentSize else {
+                return false
+            }
+            totalSize += attachmentSize
         }
-        return totalSize <= 104_857_600 // 100MB
+        return totalSize <= maximumContentSize
     }
 
     open func checkContentValid() {
@@ -600,4 +608,3 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
         return nil
     }
 }
-

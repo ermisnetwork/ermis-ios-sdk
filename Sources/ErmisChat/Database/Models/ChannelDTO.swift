@@ -71,6 +71,25 @@ class ChannelDTO: NSManagedObject {
     @NSManaged var parent: ChannelDTO?
     @NSManaged var topics: Set<ChannelDTO>?
 
+    // E2e
+    @NSManaged var mlsEnabled: Bool
+    @NSManaged var mlsEnabledAt: DBDate?
+    @NSManaged var mlsEpoch: Int
+    /// The `created_at` of the last successfully processed E2EE sync event for this channel.
+    /// Used as a cursor for POST /v1/e2ee/sync. Falls back to `mlsGroupJoinedAt` when nil.
+    @NSManaged var e2eSyncCursor: DBDate?
+    /// The timestamp when *this device* joined the MLS group for the channel
+    /// (via external join or welcome message). Used as the fallback cursor for E2E sync
+    /// when `e2eSyncCursor` is nil, so only events after the device joined are fetched.
+    @NSManaged var mlsGroupJoinedAt: DBDate?
+    /// The first MLS epoch this installation can decrypt for this effective group.
+    /// It is persisted only from a verified Welcome or external-join proof.
+    @NSManaged var mlsFirstDecryptableEpoch: NSNumber?
+    /// Exact durable external-commit boundary for this installation. Events before this
+    /// envelope are retained as encrypted history and must never be offered to OpenMLS.
+    @NSManaged var mlsFirstDecryptableCursorCreatedAt: DBDate?
+    @NSManaged var mlsFirstDecryptableCursorEventId: String?
+
     var projectId: String? {
         guard let channelId = try? ChannelId(cid: cid) else {
             return nil
@@ -164,6 +183,31 @@ class ChannelDTO: NSManagedObject {
         return load(by: request, context: context)
     }
 
+    /// Fetches all channels that have MLS encryption enabled.
+    /// Used by E2eRepository to build the cursor map for POST /v1/e2ee/sync.
+    static func fetchAllMlsEnabled(context: NSManagedObjectContext) -> [ChannelDTO] {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+        request.predicate = NSPredicate(format: "mlsEnabled == YES")
+        return (try? context.fetch(request)) ?? []
+    }
+    
+    /// Fetches all channels that have MLS encryption enabled and user joined.
+    /// Used by E2eRepository to build the cursor map for POST /v1/e2ee/sync.
+    static func fetchAllJoinedMlsEnabled(context: NSManagedObjectContext) -> [ChannelDTO] {
+        let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+        let joinedRoles = [
+            MemberRole.owner.rawValue,
+            MemberRole.admin.rawValue,
+            MemberRole.moderator.rawValue,
+            MemberRole.member.rawValue
+        ]
+        request.predicate = NSPredicate(
+            format: "mlsEnabled == YES AND membership != nil AND membership.channelRoleRaw IN %@",
+            joinedRoles
+        )
+        return (try? context.fetch(request)) ?? []
+    }
+
     static func loadOrCreate(cid: ChannelId, context: NSManagedObjectContext, cache: PreWarmedCache?) -> ChannelDTO {
         if let cachedObject = cache?.model(for: cid.rawValue, context: context, type: ChannelDTO.self) {
             return cachedObject
@@ -187,6 +231,42 @@ extension ChannelDTO: EphemeralValuesContainer {
         currentlyTypingUsers.removeAll()
         watchers.removeAll()
         watcherCount = 0
+    }
+}
+
+// MARK: - E2EE / Topic MLS group resolution
+
+extension ChannelDTO {
+    /// The cid of the channel whose MLS group encrypts/decrypts this channel's messages.
+    ///
+    /// Topics do not own an MLS group — they inherit their parent channel's group. So a
+    /// topic resolves to its `parentcid`; every other channel resolves to its own `cid`.
+    var mlsGroupCid: String {
+        if let parentcid, !parentcid.isEmpty {
+            return parentcid
+        }
+        return cid
+    }
+
+    /// Whether messages in this channel are end-to-end encrypted.
+    ///
+    /// A topic shares its parent channel's MLS group, so a topic is E2EE exactly when its
+    /// parent channel has MLS enabled — even if the topic row itself doesn't carry the flag.
+    var isE2eeEnabled: Bool {
+        if mlsEnabled {
+            return true
+        }
+        guard let parentcid, !parentcid.isEmpty else {
+            return false
+        }
+        if let parent {
+            return parent.mlsEnabled
+        }
+        guard let context = managedObjectContext,
+              let parentCid = try? ChannelId(cid: parentcid) else {
+            return false
+        }
+        return ChannelDTO.load(cid: parentCid, context: context)?.mlsEnabled ?? false
     }
 }
 
@@ -218,7 +298,7 @@ extension NSManagedObjectContext {
         cache: PreWarmedCache?
     ) throws -> ChannelDTO {
         let dto = ChannelDTO.loadOrCreate(cid: payload.cid, context: self, cache: cache)
-        
+
         if let name = payload.name {
             dto.name = name
         }
@@ -273,7 +353,7 @@ extension NSManagedObjectContext {
         if dto.defaultSortingAt == nil {
             dto.defaultSortingAt = dto.createdAt
         }
-        
+
         if let lastMessageAt = payload.lastMessageAt {
             dto.lastMessageAt = payload.lastMessageAt?.bridgeDate
 
@@ -322,11 +402,20 @@ extension NSManagedObjectContext {
             let member = try saveMember(payload: memberPayload, channelId: payload.cid, query: nil, cache: cache)
             dto.members.insert(member)
         }
-        
+
 
         if let query = query {
             let queryDTO = saveQuery(query: query)
             queryDTO.channels.insert(dto)
+        }
+
+        dto.mlsEnabled = payload.mlsEnabled
+        if let mlsEnabledAt = payload.mlsEnabledAt {
+            dto.mlsEnabledAt = mlsEnabledAt.bridgeDate
+        }
+
+        if let mlsEpoch = payload.mlsEpoch {
+            dto.mlsEpoch = mlsEpoch
         }
 
         return dto
@@ -356,10 +445,46 @@ extension NSManagedObjectContext {
         dto.reads.subtracting(reads).forEach { delete($0) }
         dto.reads = reads
 
-        try payload.messages.forEach { _ = try saveMessage(payload: $0, channelDTO: dto, syncOwnReactions: true, cache: cache) }
+        var savedMessagesById: [MessageId: MessageDTO] = [:]
+        try payload.messages.forEach {
+            let message = try saveMessage(payload: $0, channelDTO: dto, syncOwnReactions: true, cache: cache)
+            savedMessagesById[message.id] = message
+        }
 
         if dto.needsPreviewUpdate(payload) {
-            dto.previewMessage = preview(for: payload.channel.cid)
+            let fetchedPreview = preview(for: payload.channel.cid)
+            let authoritativePreview = payload.newestMessage
+                .flatMap { savedMessagesById[$0.id] }
+                .flatMap { message in
+                    MessageDTO.isEligibleChannelPreview(
+                        message,
+                        cid: payload.channel.cid.rawValue,
+                        context: self
+                    ) ? message : nil
+                }
+
+            // Bellboy returns channel messages in chronological order. The last payload message
+            // is therefore authoritative when timestamps tie. Preserve a newer local pending
+            // preview that is not part of the server payload.
+            if let authoritativePreview {
+                let payloadMessageIds = Set(savedMessagesById.keys)
+                let currentPreviewDate = fetchedPreview.map {
+                    ($0.locallyCreatedAt ?? $0.createdAt).bridgeDate
+                } ?? .distantPast
+                let authoritativeDate = (
+                    authoritativePreview.locallyCreatedAt ?? authoritativePreview.createdAt
+                ).bridgeDate
+                let currentIsFromPayload = fetchedPreview.map { payloadMessageIds.contains($0.id) } ?? false
+
+                if authoritativeDate > currentPreviewDate ||
+                    (authoritativeDate == currentPreviewDate && currentIsFromPayload) {
+                    dto.previewMessage = authoritativePreview
+                } else {
+                    dto.previewMessage = fetchedPreview
+                }
+            } else {
+                dto.previewMessage = fetchedPreview
+            }
         }
 
         dto.updateOldestMessageAt(payload: payload)
@@ -691,6 +816,9 @@ extension Channel {
             latestMessages: { fetchMessages() },
             parent: { try? dto.parent?.relationshipAsModel(depth: depth)},
             topics: { fetchTopic() },
+            mlsEnabled: dto.mlsEnabled,
+            mlsEnabledAt: dto.mlsEnabledAt?.bridgeDate,
+            mlsEpoch: dto.mlsEpoch,
             lastMessageFromCurrentUser: { fetchLatestMessageFromUser() },
             pinnedMessages: {
                 dto.pinnedMessages.compactMap {
@@ -741,6 +869,7 @@ extension ChannelDTO {
             return false
         }
 
-        return preview.createdAt.compare(newestMessage.createdAt) == .orderedAscending
+        guard preview.id != newestMessage.id else { return false }
+        return preview.createdAt.compare(newestMessage.createdAt) != .orderedDescending
     }
 }

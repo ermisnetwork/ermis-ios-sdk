@@ -217,10 +217,14 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
         if message?.isDeleted == true || message == nil {
             setDeletedText()
             hideAttachmentPreview()
+        } else if message?.isEncrypted == true {
+            setText(L10n.Message.encryptedMessage)
+            hideAttachmentPreview()
         } else if let message = message {
             if !message.text.isEmpty {
                 setText(message.text)
             } else if isAttachmentsEmpty {
+                textView.attributedText = nil
                 hideAttachmentPreview()
             } else {
                 setAttachmentPreview(for: message)
@@ -238,11 +242,13 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
     /// Update content of description label
     open func updateDescriptionLabel() {
         if content?.message?.author.userId == content?.channel?.membership?.userId {
-            descriptionLabel.text = "Have answered you"
+            descriptionLabel.text = L10n.Message.QuotedMessage.repliedToYou
         } else if let author = content?.message?.author {
-            descriptionLabel.text = "Have answered \(author.displayName)"
+            descriptionLabel.text = L10n.Message.QuotedMessage.repliedTo(author.displayName)
+        } else {
+            descriptionLabel.text = nil
         }
-        descriptionLabel.isHidden = content?.repliedMessageAuthor == nil
+        descriptionLabel.isHidden = content?.repliedMessageAuthor == nil || descriptionLabel.text == nil
         descriptionLabel.textAlignment = content?.isRepliedMessageSentByCurrentUser == false ? .left : .right
     }
 

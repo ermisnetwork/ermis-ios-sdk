@@ -52,6 +52,9 @@ open class VideoPlaybackControlView: _View, UIProvider {
     private var playerStatusObserver: NSKeyValueObservation?
     private var playerItemObserver: NSKeyValueObservation?
     private var itemDurationObserver: NSKeyValueObservation?
+    private var isScrubbing = false
+    private var shouldResumeAfterScrubbing = false
+    private var seekGeneration = 0
 
     /// A content displayed by the view.
     open var content: Content = .initial {
@@ -176,18 +179,53 @@ open class VideoPlaybackControlView: _View, UIProvider {
     }
 
     @objc open func timeSliderDidBeginEditing(_ sender: UISlider) {
+        isScrubbing = true
+        shouldResumeAfterScrubbing = player?.timeControlStatus == .playing
         player?.pause()
     }
 
     /// Is invoked when time slider changes the value.
     @objc open func timeSliderDidChange(_ sender: UISlider, event: UIEvent) {
-        let duration = player?.currentItem?.duration.seconds ?? 0
-        let time = CMTime(seconds: duration * .init(sender.value), preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        seek(to: sender.value, resumeWhenFinished: false)
     }
 
     @objc open func timeSliderDidEndEditing(_ sender: UISlider) {
-        player?.play()
+        isScrubbing = false
+        seek(to: sender.value, resumeWhenFinished: shouldResumeAfterScrubbing)
+    }
+
+    /// Seeks through the local verified media file without requiring an exact decoded sample at
+    /// every slider position. Exact zero-tolerance seeks are especially brittle for HEVC/MOV:
+    /// most requested timestamps are not keyframes, and repeated overlapping seeks can leave the
+    /// player clock advancing while `AVPlayerLayer` has no frame to display.
+    private func seek(to sliderValue: Float, resumeWhenFinished: Bool) {
+        guard let player,
+              let item = player.currentItem,
+              item.duration.isNumeric,
+              item.duration.seconds.isFinite,
+              item.duration.seconds > 0 else { return }
+
+        seekGeneration &+= 1
+        let generation = seekGeneration
+        item.cancelPendingSeeks()
+
+        let targetSeconds = item.duration.seconds * Double(sliderValue)
+        let target = CMTime(seconds: targetSeconds, preferredTimescale: 600)
+        let tolerance = CMTime(seconds: 0.25, preferredTimescale: 600)
+        player.seek(
+            to: target,
+            toleranceBefore: tolerance,
+            toleranceAfter: tolerance
+        ) { [weak self, weak player] finished in
+            DispatchQueue.main.async {
+                guard let self,
+                      finished,
+                      generation == self.seekGeneration else { return }
+                if resumeWhenFinished {
+                    player?.play()
+                }
+            }
+        }
     }
 
     /// Is invoked when current track reached the end.
@@ -230,12 +268,14 @@ open class VideoPlaybackControlView: _View, UIProvider {
 
         let interval = CMTime(seconds: 0.05, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         playerTimeChangesObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] time in
-            guard let currentItem = self?.player?.currentItem else { return }
+            guard let self,
+                  !self.isScrubbing,
+                  let currentItem = self.player?.currentItem else { return }
 
             if time.isNumeric && currentItem.duration.isNumeric {
-                self?.content.playingProgress = time.seconds / currentItem.duration.seconds
+                self.content.playingProgress = time.seconds / currentItem.duration.seconds
             } else {
-                self?.content.playingProgress = 0
+                self.content.playingProgress = 0
             }
         }
 

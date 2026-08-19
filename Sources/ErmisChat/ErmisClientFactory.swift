@@ -2,6 +2,8 @@
 // Copyright 2025 Ermis Inc.
 //
 
+import CoreData
+import CryptoKit
 import Foundation
 import ErmisShared
 
@@ -47,7 +49,9 @@ class ErmisClientFactory {
             uploadClient: config.customUploadClient ?? ErmisUploadClient(
                 encoder: encoder,
                 decoder: decoder,
-                sessionConfiguration: urlSessionConfiguration
+                sessionConfiguration: urlSessionConfiguration,
+                isStandardPresignedUploadEnabled: config.isStandardPresignedUploadEnabled,
+                allowsLegacyStandardUploadFallback: config.allowsLegacyStandardUploadFallback
             )
         )
 
@@ -84,7 +88,7 @@ class ErmisClientFactory {
 
     func makeDatabaseContainer() -> DatabaseContainer {
         do {
-            if config.isLocalStorageEnabled {
+            if config.isLocalStorageEnabled, config.localStorageScope != .inMemory {
                 guard let storeURL = config.localStorageFolderURL else {
                     throw ClientError.MissingLocalStorageURL()
                 }
@@ -96,7 +100,30 @@ class ErmisClientFactory {
                     attributes: nil
                 )
 
-                let dbFileURL = storeURL.appendingPathComponent(config.apiKey.apiKeyString)
+                let dbFileURL: URL
+                switch config.localStorageScope {
+                case .automatic:
+                    // Internal/test initializers can still reach this branch. Preserve the legacy
+                    // API-key path; the public initializer always resolves `.automatic` first.
+                    dbFileURL = storeURL.appendingPathComponent(config.apiKey.apiKeyString)
+                case .inMemory:
+                    preconditionFailure("The in-memory scope must not create an on-disk store.")
+                case .user(let userId):
+                    let userFolder = storeURL
+                        .appendingPathComponent("users", isDirectory: true)
+                        .appendingPathComponent(Self.storageNamespace(apiKey: config.apiKey.apiKeyString, userId: userId), isDirectory: true)
+                    try FileManager.default.createDirectory(
+                        at: userFolder,
+                        withIntermediateDirectories: true,
+                        attributes: nil
+                    )
+                    dbFileURL = userFolder.appendingPathComponent("ermis.sqlite")
+                    try migrateLegacyStoreIfOwned(
+                        legacyURL: storeURL.appendingPathComponent(config.apiKey.apiKeyString),
+                        destinationURL: dbFileURL,
+                        userId: userId
+                    )
+                }
                 return environment.databaseContainerBuilder(
                     .onDisk(databaseFileURL: dbFileURL),
                     config.shouldFlushLocalStorageOnStart,
@@ -122,6 +149,77 @@ class ErmisClientFactory {
             config.deletedMessagesVisibility,
             config.shouldShowShadowedMessages
         )
+    }
+
+    static func storageNamespace(apiKey: String, userId: UserId) -> String {
+        SHA256.hash(data: Data("\(apiKey)\u{0}\(userId)".utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
+    /// Moves the old API-key-only Core Data store only when its CurrentUserDTO proves that it
+    /// belongs to `userId`. A mismatch is deliberately quarantined at the legacy path.
+    private func migrateLegacyStoreIfOwned(
+        legacyURL: URL,
+        destinationURL: URL,
+        userId: UserId
+    ) throws {
+        let fileManager = FileManager.default
+        guard !fileManager.fileExists(atPath: destinationURL.path),
+              fileManager.fileExists(atPath: legacyURL.path) else { return }
+
+        let markerKey = "ermis_user_store_migration_v1_\(Self.storageNamespace(apiKey: config.apiKey.apiKeyString, userId: userId))"
+        guard UserDefaults.standard.object(forKey: markerKey) == nil else { return }
+
+        guard let modelURL = Bundle.ermisChat.url(forResource: "ErmisChatModel", withExtension: "momd"),
+              let model = NSManagedObjectModel(contentsOf: modelURL) else {
+            throw ClientError("Unable to load the Core Data model for legacy-store migration.")
+        }
+
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: model)
+        let options: [AnyHashable: Any] = [
+            NSMigratePersistentStoresAutomaticallyOption: true,
+            NSInferMappingModelAutomaticallyOption: true
+        ]
+        let store = try coordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: legacyURL,
+            options: options
+        )
+        defer { try? coordinator.remove(store) }
+
+        let context = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        context.persistentStoreCoordinator = coordinator
+        var ownerMatches = false
+        var inspectionError: Error?
+        context.performAndWait {
+            do {
+                let request = NSFetchRequest<NSManagedObject>(entityName: "CurrentUserDTO")
+                request.fetchLimit = 1
+                guard let currentUser = try context.fetch(request).first,
+                      let users = currentUser.value(forKey: "users") as? NSSet else { return }
+                ownerMatches = users.compactMap { $0 as? NSManagedObject }
+                    .contains { ($0.value(forKey: "userId") as? String) == userId }
+            } catch {
+                inspectionError = error
+            }
+        }
+        if let inspectionError { throw inspectionError }
+        guard ownerMatches else {
+            UserDefaults.standard.set("quarantined", forKey: markerKey)
+            log.warning("Legacy Core Data store owner did not match the authenticated user; leaving it quarantined.", subsystems: .database)
+            return
+        }
+
+        _ = try coordinator.migratePersistentStore(
+            store,
+            to: destinationURL,
+            options: options,
+            withType: NSSQLiteStoreType
+        )
+        UserDefaults.standard.set("migrated", forKey: markerKey)
+        log.info("Migrated the legacy Core Data store into a user-scoped namespace.", subsystems: .database)
     }
 
     func makeEventNotificationCenter(

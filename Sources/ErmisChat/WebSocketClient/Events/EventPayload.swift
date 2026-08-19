@@ -44,6 +44,10 @@ class EventPayload: Decodable {
         case isVideo = "is_video"
         case callAction = "action"
         case metadata
+        case keyPackagesRemaining = "key_packages_remaining"
+        case mlsProtocol = "protocol_data"
+        case mlsEnabled = "mls_enabled"
+        case selfRemove = "self_remove"
     }
 
     let eventType: EventType
@@ -81,6 +85,11 @@ class EventPayload: Decodable {
     let isVideo: Bool?
     let callAction: CallAction?
     let metadata: Metadata?
+    let keyPackagesRemaining: Int?
+    let mlsProtocol: MLSProtocolMessagePayload?
+    let mlsEnabled: Bool?
+    let selfRemove: Bool?
+
     init(
         eventType: EventType,
         connectionId: String? = nil,
@@ -115,7 +124,11 @@ class EventPayload: Decodable {
         callId: String? = nil,
         isVideo: Bool? = nil,
         callAction: CallAction? = nil,
-        metadata: Metadata? = nil
+        metadata: Metadata? = nil,
+        keyPackagesRemaining: Int? = nil,
+        mlsProtocol: MLSProtocolMessagePayload? = nil,
+        mlsEnabled: Bool? = nil,
+        selfRemove: Bool? = nil
     ) {
         self.eventType = eventType
         self.connectionId = connectionId
@@ -151,6 +164,10 @@ class EventPayload: Decodable {
         self.channelType = channelType
         self.channelId = channelId
         self.metadata = metadata
+        self.keyPackagesRemaining = keyPackagesRemaining
+        self.mlsProtocol = mlsProtocol
+        self.mlsEnabled = mlsEnabled
+        self.selfRemove = selfRemove
     }
 
     required init(from decoder: Decoder) throws {
@@ -191,6 +208,10 @@ class EventPayload: Decodable {
         channelType = try container.decodeIfPresent(ChannelType.self, forKey: .channelType)
         channelId = try container.decodeIfPresent(String.self, forKey: .channelId)
         metadata = try container.decodeIfPresent(Metadata.self, forKey: .metadata)
+        keyPackagesRemaining = try container.decodeIfPresent(Int.self, forKey: .keyPackagesRemaining)
+        mlsProtocol = try container.decodeIfPresent(MLSProtocolMessagePayload.self, forKey: .mlsProtocol)
+        mlsEnabled = try container.decodeIfPresent(Bool.self, forKey: .mlsEnabled)
+        selfRemove = try container.decodeIfPresent(Bool.self, forKey: .selfRemove)
     }
 
     func event() throws -> Event {
@@ -216,6 +237,7 @@ private extension PartialKeyPath where Root == EventPayload {
         case \EventPayload.memberContainer: return "memberContainer"
         case \EventPayload.channel: return "channel"
         case \EventPayload.message: return "message"
+        case \EventPayload.mlsProtocol: return "mlsProtocol"
         case \EventPayload.reaction: return "reaction"
         case \EventPayload.watcherCount: return "watcherCount"
         case \EventPayload.unreadCount: return "unreadCount"
@@ -227,6 +249,7 @@ private extension PartialKeyPath where Root == EventPayload {
         case \EventPayload.hardDelete: return "hardDelete"
         case \EventPayload.shadow: return "shadow"
         case \EventPayload.callAction: return "action"
+        case \EventPayload.mlsEnabled: return "mlsEnabled"
         default: return String(describing: self)
         }
     }

@@ -24,6 +24,8 @@ class MessageDTO: NSManagedObject {
     @NSManaged var id: String
     @NSManaged var cid: String?
     @NSManaged var text: String
+    @NSManaged var encryptedData: Data?
+    @NSManaged var mlsEpoch: Int64
     @NSManaged var type: String
     @NSManaged var command: String?
     @NSManaged var createdAt: DBDate
@@ -46,6 +48,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var translations: [String: String]?
     @NSManaged var originalLanguage: String?
     
+    @NSManaged var decryptedMessage: MessageDecryptDTO?
     @NSManaged var moderationDetails: MessageModerationDetailsDTO?
     var isBounced: Bool {
         moderationDetails?.action == MessageModerationAction.bounce.rawValue
@@ -134,7 +137,11 @@ class MessageDTO: NSManagedObject {
         request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: true)]
 
         let pendingSendMessage = NSPredicate(
-            format: "localMessageStateRaw == %@", LocalMessageState.pendingSend.rawValue
+            format: "localMessageStateRaw IN %@",
+            [
+                LocalMessageState.pendingSend.rawValue,
+                LocalMessageState.pendingSendAfterE2eeEpochStale.rawValue
+            ]
         )
         request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
             pendingSendMessage,
@@ -149,7 +156,13 @@ class MessageDTO: NSManagedObject {
         let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: true)]
         request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [
-            NSPredicate(format: "localMessageStateRaw == %@", LocalMessageState.pendingSync.rawValue),
+            NSPredicate(
+                format: "localMessageStateRaw IN %@",
+                [
+                    LocalMessageState.pendingSync.rawValue,
+                    LocalMessageState.pendingSyncAfterE2eeEpochStale.rawValue
+                ]
+            ),
             allAttachmentsAreUploadedOrEmptyPredicate()
         ])
 
@@ -444,6 +457,20 @@ class MessageDTO: NSManagedObject {
         return load(by: request, context: context).first
     }
 
+    /// Checks the same constraints used by `preview(for:)` without relying on an in-transaction
+    /// fetch order. Channel payloads use this when selecting their authoritative newest message,
+    /// including two messages whose server timestamps are identical.
+    static func isEligibleChannelPreview(
+        _ message: MessageDTO,
+        cid: String,
+        context: NSManagedObjectContext
+    ) -> Bool {
+        previewMessagePredicate(
+            cid: cid,
+            includeShadowedMessages: context.shouldShowShadowedMessages ?? false
+        ).evaluate(with: message)
+    }
+
     static func load(id: String, context: NSManagedObjectContext) -> MessageDTO? {
         load(by: id, context: context).first
     }
@@ -541,7 +568,26 @@ class MessageDTO: NSManagedObject {
     static func loadSendingMessages(context: NSManagedObjectContext) -> [MessageDTO] {
         let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
         request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: false)]
-        request.predicate = NSPredicate(format: "localMessageStateRaw == %@", LocalMessageState.sending.rawValue)
+        request.predicate = NSPredicate(
+            format: "localMessageStateRaw IN %@",
+            [
+                LocalMessageState.sending.rawValue,
+                LocalMessageState.sendingAfterE2eeEpochStale.rawValue
+            ]
+        )
+        return load(by: request, context: context)
+    }
+
+    static func loadSyncingMessages(context: NSManagedObjectContext) -> [MessageDTO] {
+        let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.locallyCreatedAt, ascending: false)]
+        request.predicate = NSPredicate(
+            format: "localMessageStateRaw IN %@",
+            [
+                LocalMessageState.syncing.rawValue,
+                LocalMessageState.syncingAfterE2eeEpochStale.rawValue
+            ]
+        )
         return load(by: request, context: context)
     }
 }
@@ -553,6 +599,38 @@ extension MessageDTO {
     var localMessageState: LocalMessageState? {
         get { localMessageStateRaw.flatMap(LocalMessageState.init(rawValue:)) }
         set { localMessageStateRaw = newValue?.rawValue }
+    }
+
+    /// Invalidates the exact MLS network intent when the user creates another edit generation.
+    /// The next background edit pass must encrypt and durably bind the new plaintext before POST.
+    func invalidateE2eeNetworkIntentForNewEdit() {
+        guard channel?.isE2eeEnabled == true else { return }
+        encryptedData = nil
+        mlsEpoch = 0
+        decryptedMessage?.ciphertextHash = nil
+    }
+
+    /// Discards an exact application-message intent only after Bellboy authoritatively rejected
+    /// that same epoch. `mlsEpoch` is then repurposed (while ciphertext is nil) as Bellboy's
+    /// durable minimum epoch the recovery sync must reach before one replacement may be generated.
+    func prepareForE2eeEpochStaleRebind(
+        _ rejection: E2eeMessageEpochStaleRejection,
+        isEdit: Bool
+    ) -> Bool {
+        let expectedInFlightState: LocalMessageState = isEdit ? .syncing : .sending
+        guard channel?.isE2eeEnabled == true,
+              localMessageState == expectedInFlightState,
+              encryptedData != nil,
+              rejection.canRebind(intentEpoch: mlsEpoch) else {
+            return false
+        }
+        encryptedData = nil
+        mlsEpoch = rejection.currentGroupEpoch
+        decryptedMessage?.ciphertextHash = nil
+        localMessageState = isEdit
+            ? .pendingSyncAfterE2eeEpochStale
+            : .pendingSendAfterE2eeEpochStale
+        return true
     }
 
     var isLocalOnly: Bool {
@@ -657,15 +735,34 @@ extension NSManagedObjectContext: MessageDatabaseSession {
     ) throws -> MessageDTO {
         let cid = try ChannelId(cid: channelDTO.cid)
         let dto = MessageDTO.loadOrCreate(id: payload.id, context: self, cache: cache)
+        let currentProjectUserId = currentUser?.user(of: cid.projectId)?.userId
+        let isKnownForeignMessage = currentProjectUserId.map { $0 != payload.user.id } ?? false
 
-        if dto.localMessageState == .pendingSend || dto.localMessageState == .pendingSync {
+        if (dto.localMessageState == .pendingSend || dto.localMessageState == .pendingSync),
+           !isKnownForeignMessage {
             return dto
+        }
+
+        if isKnownForeignMessage {
+            // Local send/edit/delete states are meaningful only for the current user's own
+            // optimistic messages. Clear state left by older clients that allowed a foreign
+            // message mutation so authoritative sync restores its normal interaction menu.
+            dto.localMessageState = nil
+            dto.isHardDeleted = false
         }
 
         dto.cid = payload.cid?.rawValue
         dto.text = payload.text
+        if let encryptedData = payload.encryptedData {
+            dto.encryptedData = Data(encryptedData)
+        }
+        dto.mlsEpoch = Int64(payload.mlsEpoch ?? 0)
         dto.createdAt = payload.createdAt.bridgeDate
         dto.updatedAt = payload.updatedAt.bridgeDate
+        // `preview(for:)` can run later in this same Core Data transaction. Waiting for
+        // `willSave()` leaves this key nil during that fetch, which makes an older persisted
+        // message win over the actual latest message from the channel payload.
+        dto.prepareDefaultSortKeyIfNeeded()
         if payload.deletedAt != nil {
             dto.deletedAt = payload.deletedAt?.bridgeDate
         }
@@ -752,7 +849,35 @@ extension NSManagedObjectContext: MessageDatabaseSession {
                 return dto
             }
         )
-        dto.attachments = attachments
+        let isOwnE2eeAttachmentResponse = payload.attachments.isEmpty
+            && payload.encryptedData != nil
+            && currentProjectUserId == payload.user.id
+        if attachments.isEmpty, isOwnE2eeAttachmentResponse {
+            let localAttachments = Set(dto.attachments.filter { $0.localURL != nil }).union(
+                AttachmentDTO.loadLocalAttachments(
+                    cid: cid,
+                    messageId: payload.id,
+                    context: self
+                )
+            )
+            if !localAttachments.isEmpty {
+                // The authoritative E2EE envelope references opaque attachment IDs while the
+                // manifest is inside MLS plaintext. Do not replace the optimistic file-backed
+                // relationship with the empty standard `attachments` array from Bellboy.
+                localAttachments.forEach {
+                    $0.message = dto
+                    $0.localState = .uploaded
+                }
+                dto.attachments = localAttachments
+                log.info(
+                    "[E2EE_ATTACHMENT] stage=response_persist state=preserved_local_rendering count=\(localAttachments.count)"
+                )
+            } else {
+                dto.attachments = attachments
+            }
+        } else {
+            dto.attachments = attachments
+        }
 
         if let stickerUrl = payload.stickerUrl {
             dto.stickerUrl = stickerUrl
@@ -794,6 +919,15 @@ extension NSManagedObjectContext: MessageDatabaseSession {
                     $0.lastReadAt?.bridgeDate ?? Date() >= payload.createdAt && $0.user.userId != payload.user.id
                 }
             )
+        }
+
+        // Re-link any previously cached decrypted payload that may have been orphaned
+        // when messages were cleared on first-page load (cascade delete removes the
+        // MessageDecryptDTO together with its parent MessageDTO). If the new DTO has no
+        // decryptedMessage yet but encrypted data is present, look up the orphaned
+        // MessageDecryptDTO by message ID and re-attach it.
+        if dto.decryptedMessage == nil, dto.encryptedData != nil {
+            dto.decryptedMessage = MessageDecryptDTO.load(messageId: payload.id, context: self)
         }
 
         // Refetch channel preview if the current preview has changed.
@@ -992,10 +1126,36 @@ extension NSManagedObjectContext: MessageDatabaseSession {
     func rescueMessagesStuckInSending() {
         // Restart messages in sending state.
         let messages = MessageDTO.loadSendingMessages(context: self)
-        // MARK: - Todo: - Prevent case duplicate message.
         messages.forEach {
-            //$0.localMessageState = .pendingSend
-            delete(message: $0)
+            if $0.localMessageState == .sendingAfterE2eeEpochStale {
+                $0.localMessageState = .pendingSendAfterE2eeEpochStale
+                return
+            }
+            if $0.encryptedData != nil {
+                // E2EE sends persist their exact MLS ciphertext/epoch before POST. Retrying that
+                // same intent is idempotent by message ID and does not advance the sender ratchet.
+                $0.localMessageState = .pendingSend
+            } else {
+                // The standard path still has no durable exact network intent, so retain its
+                // existing conservative behavior until it is migrated separately.
+                delete(message: $0)
+            }
+        }
+
+        // E2EE edits also persist their exact ciphertext/epoch before entering `.syncing`.
+        // A process death makes the HTTP outcome unknown, so replay that same intent instead
+        // of encrypting the edited plaintext again and advancing the sender ratchet twice.
+        let syncingEdits = MessageDTO.loadSyncingMessages(context: self)
+        syncingEdits.forEach {
+            if $0.localMessageState == .syncingAfterE2eeEpochStale {
+                $0.localMessageState = .pendingSyncAfterE2eeEpochStale
+                return
+            }
+            if $0.encryptedData != nil {
+                $0.localMessageState = .pendingSync
+            } else {
+                $0.localMessageState = .syncingFailed
+            }
         }
 
         // Restart attachments that were in progress before the app was killed.
@@ -1029,10 +1189,15 @@ extension MessageDTO {
             .sorted { ($0.attachmentID?.index ?? 0) < ($1.attachmentID?.index ?? 0) }
             .compactMap { $0.asRequestPayload() }
 
+        let authenticatedMetadata = (try? decryptedMessage?.asPayload())?
+            .authenticatedMetadata
+
         return .init(
             id: id,
             user: user.asRequestBody(),
             text: text,
+            encryptedData: encryptedData?.uint8Array,
+            mslEpoch: encryptedData == nil ? nil : Int(mlsEpoch),
             oldTexts: Array(oldTexts?.map { MessageEditHistoryPayload(text: $0.text, createdAt: $0.createdAt) } ?? []),
             command: command,
             args: args,
@@ -1042,7 +1207,14 @@ extension MessageDTO {
             attachments: uploadedAttachments,
             stickerUrl: stickerUrl,
             mentionedUserIds: mentionedUserIds,
-            mentionedAll: mentionedAll
+            mentionedAll: mentionedAll,
+            // `forwardCid` historically defaults to `""` in the Core Data model. The request
+            // model canonicalizes that legacy sentinel to nil so non-forward attachment sends do
+            // not emit `forward_cid` and trigger Bellboy's forward validation.
+            forwardCid: authenticatedMetadata?.forwardCid ?? forwardCid,
+            forwardMessageId: authenticatedMetadata?.forwardMessageId,
+            forwardParentCid: authenticatedMetadata?.forwardParentCid,
+            e2eeAttachmentIds: authenticatedMetadata?.attachmentIds ?? []
         )
     }
 
@@ -1074,6 +1246,8 @@ private extension ChatMessage {
         id = dto.id
         cid = try? dto.cid.map { try ChannelId(cid: $0) }
         text = dto.text
+        encryptedData = dto.encryptedData
+        mlsEpoch = Int(dto.mlsEpoch)
         type = MessageType(rawValue: dto.type) ?? .regular
         oldTexts = dto.oldTexts?.map { $0.asModel() }
         stickerUrl = dto.stickerUrl
@@ -1101,6 +1275,13 @@ private extension ChatMessage {
                 originalText: $0.originalText,
                 action: MessageModerationAction(rawValue: $0.action)
             )
+        }
+        decryptedMessage = try? dto.decryptedMessage?.asPayload()
+        // If decrypted content is available, override the encrypted placeholders so callers
+        // never need to check decryptedMessage separately for display.
+        if let payload = decryptedMessage {
+            text = payload.text
+            stickerUrl = payload.stickerUrl
         }
         textUpdatedAt = dto.textUpdatedAt?.bridgeDate
         mentionedAll = dto.mentionedAll
@@ -1153,11 +1334,52 @@ private extension ChatMessage {
 
         let user = try dto.user.asModel()
         $_author = ({ user }, nil)
-        $_attachments = ({
-            dto.attachments
-                .compactMap { $0.asAnyModel() }
-                .sorted { $0.id.index < $1.id.index }
-        }, dto.managedObjectContext)
+        if let decryptedPayload = decryptedMessage, !decryptedPayload.attachments.isEmpty, let cid {
+            let messageId = dto.id
+            let decryptedAttachments = decryptedPayload.attachments.enumerated().compactMap { index, attachment -> AnyMessageAttachment? in
+                // Encode only the RawJSON payload, matching what AttachmentDTO.saveAttachment stores in `data`.
+                guard let data = try? JSONEncoder.default.encode(attachment.payload) else { return nil }
+                let attachmentId = AttachmentId(
+                    cid: cid,
+                    messageId: messageId,
+                    index: index
+                )
+                return AnyMessageAttachment(id: attachmentId, type: attachment.type, payload: data, thumbnailData: nil, uploadingState: nil)
+            }
+            $_attachments = ({ decryptedAttachments }, nil)
+        } else if let decryptedPayload = decryptedMessage,
+                  !decryptedPayload.e2eeAttachments.isEmpty,
+                  let cid {
+            let messageId = dto.id
+            let e2eeAttachments = decryptedPayload.e2eeAttachments.enumerated().compactMap {
+                index,
+                manifest -> AnyMessageAttachment? in
+                let previewAssetId = manifest.assets.first(where: { $0.kind == .preview })?.assetId
+                let cachedPreview = previewAssetId.flatMap(E2eeAttachmentPreviewCache.shared.value(for:))
+                guard let renderable = try? E2eeAttachmentReceiveCoordinator.renderablePayload(
+                    for: manifest,
+                    previewGeneration: cachedPreview?.generation
+                ) else { return nil }
+                return AnyMessageAttachment(
+                    id: AttachmentId(cid: cid, messageId: messageId, index: index),
+                    type: renderable.type,
+                    payload: renderable.data,
+                    thumbnailData: cachedPreview?.data,
+                    uploadingState: nil
+                )
+            }
+            // The encrypted manifest is the authoritative attachment projection. Build directly
+            // from it so WebSocket and scope_sync can render even when preview download completes
+            // before the standard MessageDTO exists, or while its AttachmentDTO is still being
+            // materialized asynchronously.
+            $_attachments = ({ e2eeAttachments }, nil)
+        } else {
+            $_attachments = ({
+                dto.attachments
+                    .compactMap { $0.asAnyModel() }
+                    .sorted { $0.id.index < $1.id.index }
+            }, dto.managedObjectContext)
+        }
 
         if dto.replies.isEmpty {
             $_latestReplies = ({ [] }, nil)

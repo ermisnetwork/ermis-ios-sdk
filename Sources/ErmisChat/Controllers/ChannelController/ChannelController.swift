@@ -28,7 +28,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     /// In this case `cid` on `channelQuery `will be valid but all channel modifications will
     /// fail because channel with provided `id` will be missing on backend side.
     /// That is why we need to check both flag and valid `cid` before modifications.
-    private var isChannelAlreadyCreated: Bool
+    public var isChannelAlreadyCreated: Bool
     
     /// The identifier of a channel this controller observes.
     /// Will be `nil` when we want to create direct message channel and `id`
@@ -55,6 +55,27 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
             setLocalStateBasedOnError(startDatabaseObservers())
         }
         return channelObserver?.item
+    }
+
+    /// Whether this channel effectively uses E2EE.
+    ///
+    /// The immutable channel snapshot can briefly lag behind the Core Data row during initial
+    /// observation/reconnect. Composer validation must not fall back to standard-channel limits
+    /// during that window. Topics inherit the effective value from their parent through
+    /// `ChannelDTO.isE2eeEnabled`.
+    public var isE2eeEnabled: Bool {
+        if channel?.mlsEnabled == true || channelQuery.mlsEnabled == true {
+            return true
+        }
+        guard let cid else { return false }
+        var enabled = false
+        client.databaseContainer.viewContext.performAndWait {
+            enabled = ChannelDTO.load(
+                cid: cid,
+                context: client.databaseContainer.viewContext
+            )?.isE2eeEnabled == true
+        }
+        return enabled
     }
     
     /// The messages of the channel the controller represents.
@@ -220,6 +241,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         updater = self.environment.channelUpdaterBuilder(
             client.channelRepository,
             client.callRepository,
+            client.e2eRepository,
             client.makeMessagesPaginationStateHandler(),
             client.databaseContainer,
             client.apiClient
@@ -685,6 +707,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         updater.addMembers(
             currentUserId: client.currentUserId,
             cid: cid,
+            isMlsEnabled: channel?.mlsEnabled ?? false,
             userIds: userIds
         ) { [weak self] error in
             self?.callback {
@@ -702,6 +725,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     ///
     public func removeMembers(
         userIds: Set<UserId>,
+        isSelfLeave: Bool,
         completion: ((Error?) -> Void)? = nil
     ) {
         /// Perform action only if channel is already created on backend side and have a valid `cid`.
@@ -713,7 +737,9 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         updater.removeMembers(
             currentUserId: client.currentUserId,
             cid: cid,
-            userIds: userIds
+            isMlsEnabled: channel?.mlsEnabled ?? false,
+            userIds: userIds,
+            isSelfLeave: isSelfLeave
         ) { [weak self] error in
             self?.callback {
                 completion?(error)
@@ -1134,6 +1160,26 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
                               attachmentTypes: attachmentTypes,
                               completion: completion)
     }
+
+    /// Queries the E2EE Channel Info attachment projection. This path must be used for an
+    /// effectively encrypted channel; the standard attachment endpoint cannot provide the
+    /// authenticated local manifest required to render encrypted assets.
+    public func queryE2eeAttachments(
+        limit: Int = 50,
+        cursor: E2eeChannelAttachmentListCursor? = nil,
+        completion: @escaping (Result<E2eeChannelAttachmentListPage, Error>) -> Void
+    ) {
+        guard let cid else {
+            completion(.failure(ClientError.InvalidChannelId()))
+            return
+        }
+        client.queryE2eeChannelAttachments(
+            in: cid,
+            limit: limit,
+            cursor: cursor,
+            completion: completion
+        )
+    }
     
     public
     func search(term: String,
@@ -1148,7 +1194,11 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
                                                                searchTerm: term,
                                                                limit: limit,
                                                                offset: offset)
-        updater.search(payload: searchRequestPayload, completion: completion)
+        if channel?.mlsEnabled == true {
+            updater.searchLocal(payload: searchRequestPayload, completion: completion)
+        } else {
+            updater.search(payload: searchRequestPayload, completion: completion)
+        }
     }
     
     public func saveComposerUnsentContent(_ content: ComposerContent?) {
@@ -1157,6 +1207,18 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         }
         updater.saveComposerUnsentContent(in: cid, content: content)
     }
+
+    public func enableEncryption(completion: ((Error?) -> Void)? = nil) {
+        guard let cid else {
+            return
+        }
+        updater.enableEncryption(in: cid, completion: { [weak self] error in
+            self?.callback {
+                completion?(error)
+            }
+        })
+    }
+
     // MARK: - Internal
     
     func recoverWatchedChannel(completion: @escaping (Error?) -> Void) {
@@ -1169,9 +1231,19 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     
     deinit {
         guard self.isJumpingToMessage, let cid = self.cid else { return }
+        // When other active controllers for the same CID exist, only reset the
+        // pagination boundaries so their message predicates are not incorrectly
+        // constrained. Skip deleting messages to avoid wiping data they observe.
+        let hasOtherActiveControllers = client.activeChannelControllers.allObjects.contains {
+            $0.cid == cid
+        }
         dataStore.database.write { session in
-            let channelDTO = session.channel(cid: cid)
-            channelDTO?.cleanAllMessagesExcludingLocalOnly()
+            guard let channelDTO = session.channel(cid: cid) else { return }
+            if !hasOtherActiveControllers {
+                channelDTO.cleanAllMessagesExcludingLocalOnly()
+            }
+            channelDTO.newestMessageAt = nil
+            channelDTO.oldestMessageAt = nil
         }
     }
 }
@@ -1236,6 +1308,7 @@ extension ChannelController {
         var channelUpdaterBuilder: (
             _ channelRepository: ChannelRepository,
             _ callRepository: CallRepository,
+            _ e2eRepository: E2eRepository,
             _ paginationStateHandler: MessagesPaginationStateHandling,
             _ database: DatabaseContainer,
             _ apiClient: APIClient

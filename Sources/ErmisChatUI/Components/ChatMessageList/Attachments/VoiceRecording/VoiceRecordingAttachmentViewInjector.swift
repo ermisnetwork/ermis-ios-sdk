@@ -28,6 +28,25 @@ public protocol VoiceRecordingAttachmentPresentationViewDelegate: MessageContent
 
     /// Called when the user scrubs the progress view.
     func voiceRecordingAttachmentPresentationViewSeek(to timeInterval: TimeInterval)
+
+    /// Returns whether the attachment owns the audio player's current context.
+    ///
+    /// E2EE voice messages keep an opaque attachment URL in the message model while the player is
+    /// intentionally given a verified, decrypted local file URL. Comparing URLs directly would
+    /// therefore leave the E2EE bubble permanently in its idle visual state.
+    func voiceRecordingAttachmentPresentationView(
+        _ attachment: MessageVoiceRecordingAttachment,
+        matchesPlaybackURL playbackURL: URL?
+    ) -> Bool
+}
+
+public extension VoiceRecordingAttachmentPresentationViewDelegate {
+    func voiceRecordingAttachmentPresentationView(
+        _ attachment: MessageVoiceRecordingAttachment,
+        matchesPlaybackURL playbackURL: URL?
+    ) -> Bool {
+        attachment.voiceRecordingURL == playbackURL
+    }
 }
 
 public class VoiceRecordingAttachmentViewInjector: CustomCellViewInjector {

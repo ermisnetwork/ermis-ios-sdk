@@ -135,6 +135,10 @@ public struct MemberRole: RawRepresentable, Codable, Hashable, ExpressibleByStri
     public init(stringLiteral value: String) {
         self.init(rawValue: value)
     }
+    
+    public var isJoined: Bool {
+        return rawValue == MemberRole.owner.rawValue || rawValue == MemberRole.admin.rawValue || rawValue == MemberRole.moderator.rawValue || rawValue == MemberRole.member.rawValue
+    }
 }
 
 public extension MemberRole {

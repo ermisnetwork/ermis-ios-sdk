@@ -37,6 +37,8 @@ public enum L10n {
       }
     }
     public enum Title {
+      /// Enable
+      public static var enable: String { L10n.tr("Localizable", "alert.title.enable") }
       /// Error
       public static var error: String { L10n.tr("Localizable", "alert.title.error") }
       /// Info
@@ -49,8 +51,12 @@ public enum L10n {
   }
 
   public enum Attachment {
-    /// File size exceeds the limit. Maximum allowed: 100MB.
+    /// File size exceeds the configured limit.
     public static var maxSizeExceeded: String { L10n.tr("Localizable", "attachment.max-size-exceeded") }
+    /// File size exceeds the limit. Maximum allowed: %@.
+    public static func maxSizeExceededFormat(_ p1: Any) -> String {
+      return L10n.tr("Localizable", "attachment.max-size-exceeded-format", String(describing: p1))
+    }
   }
 
   public enum Audio {
@@ -320,6 +326,31 @@ public enum L10n {
     public static var timeAgoWeeksSingular: String { L10n.tr("Localizable", "dates.time-ago-weeks-singular") }
   }
 
+  public enum Encryption {
+    /// End-to-end message encryption
+    public static var e2eMessageEncrytion: String { L10n.tr("Localizable", "encryption.e2e-message-encrytion") }
+    public enum ForwardDowngradeAlert {
+      /// The destination is a standard channel. Forwarded content will no longer have end-to-end encryption.
+      public static var message: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.message") }
+      /// Remove E2EE Protection?
+      public static var title: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.title") }
+    }
+    public enum EnableE2eAlert {
+      /// End-to-end encryption protects your data by encrypting it from the sender to the recipient, allowing only the intended recipient to decrypt it
+      public static var message: String { L10n.tr("Localizable", "encryption.enable-e2e-alert.message") }
+      /// Do you want to encrypt this conversation with %@?
+      public static func title(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "encryption.enable-e2e-alert.title", String(describing: p1))
+      }
+    }
+    public enum EnableGroupE2eAlert {
+      /// Do you want to encrypt the conversation in group %@?
+      public static func title(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "encryption.enable-group-e2e-alert.title", String(describing: p1))
+      }
+    }
+  }
+
   public enum Forward {
     /// Forwarding to
     public static var title: String { L10n.tr("Localizable", "forward.title") }
@@ -366,6 +397,8 @@ public enum L10n {
     public static var deletedMessagePlaceholder: String { L10n.tr("Localizable", "message.deleted-message-placeholder") }
     /// Edited
     public static var edited: String { L10n.tr("Localizable", "message.edited") }
+    /// Encrypted message
+    public static var encryptedMessage: String { L10n.tr("Localizable", "message.encrypted-message") }
     /// Forwarded from %@
     public static func forwardedFromOther(_ p1: Any) -> String {
       return L10n.tr("Localizable", "message.forwarded-from-other", String(describing: p1))
@@ -499,6 +532,14 @@ public enum L10n {
       public static var resend: String { L10n.tr("Localizable", "message.moderation.resend") }
       /// Are you sure?
       public static var title: String { L10n.tr("Localizable", "message.moderation.title") }
+    }
+    public enum QuotedMessage {
+      /// Replied to %@
+      public static func repliedTo(_ p1: Any) -> String {
+        return L10n.tr("Localizable", "message.quoted-message.replied-to", String(describing: p1))
+      }
+      /// Replied to you
+      public static var repliedToYou: String { L10n.tr("Localizable", "message.quoted-message.replied-to-you") }
     }
     public enum Sending {
       /// UPLOADING FAILED
@@ -752,7 +793,10 @@ public enum L10n {
 extension L10n {
   private static func tr(_ table: String, _ key: String, _ args: CVarArg...) -> String {
      // TODO: Using using Theme.default prohibits using Theme injection
-     let format = Theme.default.localizationProvider(key, table)
+     let providedFormat = Theme.default.localizationProvider(key, table)
+     let format = providedFormat == key
+       ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: table)
+       : providedFormat
      return String(format: format, locale: Locale.current, arguments: args)
   }
 }
@@ -760,4 +804,3 @@ extension L10n {
 private final class BundleToken {
   static let bundle: Bundle = .ermisChatUI
 }
-

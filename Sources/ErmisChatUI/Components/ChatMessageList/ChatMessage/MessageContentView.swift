@@ -117,6 +117,11 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         theme.fonts.caption1.bold
     }
 
+    /// The font used when rendering encrypted message.
+    open var encryptedMessageFont: UIFont {
+        theme.fonts.caption1.italic
+    }
+
     /// The default font when rendering the message text.
     ///
     /// **Note:** Because of an issue which we don't know yet the root cause, if you want
@@ -139,6 +144,10 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             return systemMessageFont
         }
 
+        if content?.isEncrypted == true {
+            return encryptedMessageFont
+        }
+
         return defaultMessageFont
     }
 
@@ -150,6 +159,13 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
         if content?.shouldRenderAsSystemMessage == true {
             return theme.colors.systemMessageText
+        }
+
+        if content?.isEncrypted == true {
+            if content?.isSentByCurrentUser == true {
+                return theme.colors.outgoingMessageText.withAlphaComponent(0.8)
+            }
+            return theme.colors.incommingMessageText.withAlphaComponent(0.8)
         }
 
         if content?.isSentByCurrentUser == true {
@@ -872,6 +888,10 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
     open func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange, interaction: UITextItemInteraction) -> Bool {
         if textView == timestampTextView {
+            // Don't show edit history when encryption is enable.
+            guard channel?.mlsEnabled != true else {
+                return false
+            }
             delegate?.messageContentViewDidTapAtShowEditedHistory(indexPath?())
             return true
         }

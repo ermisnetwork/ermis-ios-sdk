@@ -16,6 +16,54 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         playerView.player
     }
 
+    /// Resolves encrypted opaque media URLs to verified local plaintext files before AVPlayer sees
+    /// them. Standard video URLs bypass this closure unchanged in `ErmisClient`.
+    /// Returns a cancellation closure for the in-flight original resolver, if any. This prevents
+    /// a dismissed video gallery from continuing a full authenticated download in the background.
+    public var videoURLResolver: ((
+        AnyMessageAttachment,
+        @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void,
+        @escaping (Result<E2eeAttachmentOriginalLease, Error>) -> Void
+    ) -> (() -> Void)?)?
+
+    /// Preferred E2EE video path. Its AVAsset may be backed by authenticated byte-range
+    /// decryption or by the verified full-download fallback, depending on the rollout flag.
+    public var videoPlaybackResolver: ((
+        AnyMessageAttachment,
+        @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void,
+        @escaping (Result<E2eeAttachmentPlaybackLease, Error>) -> Void
+    ) -> (() -> Void)?)?
+
+    /// Notifies the gallery when a full E2EE original is using an interactive download slot.
+    /// The poster thumbnail remains available independently from this state.
+    public var originalResolutionStateDidChange: ((Bool) -> Void)?
+
+    /// Emits encrypted-download / verification / decryption state for the visible original.
+    public var originalResolutionProgressDidChange: ((E2eeAttachmentOriginalDownloadProgress) -> Void)?
+
+    public private(set) var isResolvingE2eeOriginal = false
+
+    /// Gallery pages beside the selected item keep their decrypted preview. The full original is
+    /// requested only for the item the user is actively viewing.
+    public var isE2eeOriginalResolutionEnabled = true {
+        didSet {
+            guard oldValue != isE2eeOriginalResolutionEnabled else { return }
+            if isE2eeOriginalResolutionEnabled {
+                contentDidChanged()
+            } else {
+                cancelPendingOriginalResolution()
+                resolutionToken = UUID()
+                player.pause()
+            }
+        }
+    }
+
+    private var resolutionToken = UUID()
+    private var cancelOriginalResolution: (() -> Void)?
+    private var originalLease: E2eeAttachmentOriginalLease?
+    private var playbackLease: E2eeAttachmentPlaybackLease?
+    private var resolvedOpaqueURL: URL?
+
     /// Image view to be used for zoom in/out animation.
     open private(set) lazy var animationPlaceholderImageView: UIImageView = UIImageView()
         .withoutAutoresizingMaskConstraints
@@ -52,18 +100,95 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
 
         let videoAttachment = content?.attachment(payloadType: VideoAttachmentPayload.self)
 
+        if let thumbnailData = content?.thumbnailData {
+            showPreview(using: UIImage(data: thumbnailData))
+        }
+
         let newAssetURL = videoAttachment?.videoURL
         let currentAssetURL = (player.currentItem?.asset as? AVURLAsset)?.url
 
-        if newAssetURL != currentAssetURL {
-            let playerItem = newAssetURL.map {
-                AVPlayerItem(asset: components.videoLoader.videoAsset(at: $0))
+        let representedURL = newAssetURL?.scheme == "ermis-e2ee-attachment"
+            ? resolvedOpaqueURL
+            : currentAssetURL
+        if newAssetURL != representedURL {
+            cancelPendingOriginalResolution()
+            resolutionToken = UUID()
+            let token = resolutionToken
+            player.replaceCurrentItem(with: nil)
+
+            if let content,
+               let videoPlaybackResolver,
+               newAssetURL?.scheme == "ermis-e2ee-attachment" {
+                guard isE2eeOriginalResolutionEnabled else { return }
+                setResolvingE2eeOriginal(true)
+                resolvedOpaqueURL = newAssetURL
+                cancelOriginalResolution = videoPlaybackResolver(
+                    content,
+                    { [weak self] progress in
+                        DispatchQueue.main.async {
+                            guard let self, self.resolutionToken == token else { return }
+                            self.originalResolutionProgressDidChange?(progress)
+                        }
+                    },
+                    { [weak self] result in
+                        DispatchQueue.main.async {
+                            guard let self, self.resolutionToken == token else { return }
+                            self.cancelOriginalResolution = nil
+                            self.setResolvingE2eeOriginal(false)
+                            switch result {
+                            case let .success(lease):
+                                self.playbackLease?.release()
+                                self.playbackLease = lease
+                                self.player.replaceCurrentItem(with: AVPlayerItem(asset: lease.asset))
+                            case .failure:
+                                self.resolvedOpaqueURL = nil
+                                self.player.replaceCurrentItem(with: nil)
+                            }
+                        }
+                    }
+                )
+            } else if let content, let videoURLResolver, newAssetURL?.scheme == "ermis-e2ee-attachment" {
+                guard isE2eeOriginalResolutionEnabled else { return }
+                setResolvingE2eeOriginal(true)
+                resolvedOpaqueURL = newAssetURL
+                cancelOriginalResolution = videoURLResolver(
+                    content,
+                    { [weak self] progress in
+                        DispatchQueue.main.async {
+                            guard let self, self.resolutionToken == token else { return }
+                            self.originalResolutionProgressDidChange?(progress)
+                        }
+                    },
+                    { [weak self] result in
+                        DispatchQueue.main.async {
+                            guard let self, self.resolutionToken == token else { return }
+                            self.cancelOriginalResolution = nil
+                            self.setResolvingE2eeOriginal(false)
+                            switch result {
+                            case let .success(lease):
+                                self.originalLease?.release()
+                                self.originalLease = lease
+                                self.player.replaceCurrentItem(
+                                    with: AVPlayerItem(asset: self.components.videoLoader.videoAsset(at: lease.localURL))
+                                )
+                            case .failure:
+                                self.resolvedOpaqueURL = nil
+                                self.player.replaceCurrentItem(with: nil)
+                            }
+                        }
+                    }
+                )
+            } else {
+                let playerItem = newAssetURL.map {
+                    AVPlayerItem(asset: components.videoLoader.videoAsset(at: $0))
+                }
+                player.replaceCurrentItem(with: playerItem)
             }
-            player.replaceCurrentItem(with: playerItem)
 
             if let thumbnailURL = videoAttachment?.thumbnailURL {
                 showPreview(using: thumbnailURL)
-            } else if let url = newAssetURL {
+            } else if content?.thumbnailData == nil, let url = newAssetURL,
+                      url.scheme != "ermis-e2ee-attachment" {
                 components.videoLoader.loadPreviewForVideo(at: url) { [weak self] in
                     switch $0 {
                     case let .success(preview):
@@ -88,10 +213,35 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         animationPlaceholderImageView
     }
 
+    public func cancelPendingOriginalResolution() {
+        cancelOriginalResolution?()
+        cancelOriginalResolution = nil
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        originalLease?.release()
+        originalLease = nil
+        playbackLease?.release()
+        playbackLease = nil
+        resolvedOpaqueURL = nil
+        setResolvingE2eeOriginal(false)
+    }
+
+    private func setResolvingE2eeOriginal(_ isResolving: Bool) {
+        guard isResolvingE2eeOriginal != isResolving else { return }
+        isResolvingE2eeOriginal = isResolving
+        originalResolutionStateDidChange?(isResolving)
+    }
+
     open override func prepareForReuse() {
         super.prepareForReuse()
+        cancelPendingOriginalResolution()
+        resolutionToken = UUID()
         imageView.image = nil
         player.pause()
         player.replaceCurrentItem(with: nil)
+        videoURLResolver = nil
+        videoPlaybackResolver = nil
+        originalResolutionStateDidChange = nil
+        originalResolutionProgressDidChange = nil
     }
 }

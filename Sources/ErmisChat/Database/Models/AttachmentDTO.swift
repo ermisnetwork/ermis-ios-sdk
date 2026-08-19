@@ -7,6 +7,13 @@ import Foundation
 
 @objc(AttachmentDTO)
 class AttachmentDTO: NSManagedObject {
+    /// Preview hydration updates only the attachment's renderable payload/cache identity. It must
+    /// not dirty the owning message: message observers would otherwise treat every decrypted
+    /// thumbnail as a message mutation and rebuild/re-animate the entire timeline one attachment
+    /// at a time. Normal attachment mutations (upload state, payload, URL, etc.) still propagate
+    /// through `willSave`.
+    fileprivate var suppressMessagePropagationForPreviewSave = false
+
     /// An attachment id.
     @NSManaged private var id: String?
     var attachmentID: AttachmentId? {
@@ -55,6 +62,11 @@ class AttachmentDTO: NSManagedObject {
     override func willSave() {
         super.willSave()
 
+        if suppressMessagePropagationForPreviewSave {
+            suppressMessagePropagationForPreviewSave = false
+            return
+        }
+
         guard !isDeleted && !message.isDeleted else {
             return
         }
@@ -93,6 +105,24 @@ class AttachmentDTO: NSManagedObject {
         request.sortDescriptors = [NSSortDescriptor(keyPath: \AttachmentDTO.id, ascending: true)]
         request.predicate = NSPredicate(format: "localStateRaw == %@", LocalAttachmentState.uploading(progress: 0).rawValue)
         return load(by: request, context: context)
+    }
+
+    /// Finds sender-local attachment rows by their deterministic IDs even if an earlier
+    /// authoritative E2EE response nullified the relationship. Bellboy intentionally returns no
+    /// standard attachment payload for this lane, so the local file-backed rows remain the only
+    /// immediately renderable representation on the sending device until M3 download rendering.
+    static func loadLocalAttachments(
+        cid: ChannelId,
+        messageId: MessageId,
+        context: NSManagedObjectContext,
+        maximumCount: Int = 10
+    ) -> Set<AttachmentDTO> {
+        Set((0..<maximumCount).compactMap { index in
+            let id = AttachmentId(cid: cid, messageId: messageId, index: index)
+            guard let attachment = load(id: id, context: context),
+                  attachment.localURL != nil else { return nil }
+            return attachment
+        })
     }
 }
 
@@ -143,6 +173,28 @@ extension NSManagedObjectContext: AttachmentDatabaseSession {
         return dto
     }
 
+    func saveE2eePreviewAttachment(
+        id: AttachmentId,
+        type: AttachmentType,
+        payloadData: Data,
+        previewAssetId: String
+    ) throws -> AttachmentDTO {
+        guard let messageDTO = message(id: id.messageId) else {
+            throw ClientError.MessageDoesNotExist(messageId: id.messageId)
+        }
+
+        let dto = AttachmentDTO.loadOrCreate(id: id, context: self)
+        dto.suppressMessagePropagationForPreviewSave = true
+        dto.attachmentType = type
+        dto.data = payloadData
+        dto.thumbnailData = nil
+        dto.assetId = previewAssetId
+        dto.localURL = nil
+        dto.localState = nil
+        dto.message = messageDTO
+        return dto
+    }
+
     func delete(attachment: AttachmentDTO) {
         delete(attachment)
     }
@@ -179,13 +231,17 @@ extension AttachmentDTO {
             log.debug("Attachment failed to be converted to model because ID is invalid.")
             return nil
         }
-        return .init(
+        var model = AnyMessageAttachment(
             id: id,
             type: attachmentType,
             payload: data,
-            thumbnailData: thumbnailData,
+            thumbnailData: assetId.flatMap(E2eeAttachmentPreviewCache.shared.data(for:)) ?? thumbnailData,
             uploadingState: uploadingState
         )
+        if let localURL, FileManager.default.fileExists(atPath: localURL.path) {
+            model.useDurableLocalFileURL(localURL)
+        }
+        return model
     }
 
     /// Snapshots the current state of `AttachmentDTO` and returns its representation for used in API calls.

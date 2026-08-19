@@ -48,6 +48,8 @@ enum EndpointPath: Codable {
     case stopWatchingChannel(String)
     case pinnedMessages(String)
     case uploadAttachment(channelId: ChannelId, type: String)
+    case presignStandardAttachment(channelId: ChannelId)
+    case confirmStandardAttachment(channelId: ChannelId)
     case channelDetailUpdate(cid: ChannelId)
     case getAttachments(cid: ChannelId)
     case enableTopics(channelId: ChannelId)
@@ -58,8 +60,10 @@ enum EndpointPath: Codable {
     case reopenTopic(channelId: ChannelId)
 
     case sendMessage(ChannelId)
+    case sendE2eMessage(ChannelId)
     case message(MessageId)
     case editMessage(MessageId, ChannelId)
+    case editE2eMessage(MessageId, ChannelId)
     case deleteMessage(MessageId, ChannelId)
     case pinMessage(MessageId, ChannelId)
     case unPinMessage(MessageId, ChannelId)
@@ -101,6 +105,24 @@ enum EndpointPath: Codable {
     case joinProject
     // Call
     case signal
+    // KeyPackage
+    case uploadKeyPackages
+    case keyPackagesCount
+    case consumeKeyPackages(ChannelId)
+    case consumeKeyPackagesBatch
+    case syncMls(ChannelId)
+    case enableEncryption(ChannelId)
+    case uploadGroupInfo(ChannelId)
+    case getGroupInfo(ChannelId)
+    case externalJoin(ChannelId)
+    case e2eSync
+    case e2eChannelSync(ChannelId)
+    case commitEviction(ChannelId)
+    case initE2eeAttachment(ChannelId)
+    case queryE2eeAttachments(ChannelId)
+    case completeE2eeAttachment(ChannelId, String)
+    case downloadE2eeAttachmentGrant(ChannelId, String, String)
+    case deleteE2eeAttachment(ChannelId, String)
 
     var value: String {
         switch self {
@@ -199,12 +221,20 @@ enum EndpointPath: Codable {
             return "channels/\(channelId)/pinned_messages"
         case .uploadAttachment(let (channelId, type)):
             return "channels/\(channelId.apiPath)/\(type)"
+        case .presignStandardAttachment(let channelId):
+            return "channels/\(channelId.apiPath)/file/presign"
+        case .confirmStandardAttachment(let channelId):
+            return "channels/\(channelId.apiPath)/file/confirm"
         case .sendMessage(let channelId):
             return "channels/\(channelId.apiPath)/message"
+        case .sendE2eMessage(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/message"
         case .message(let messageId):
             return "messages/\(messageId)"
         case .editMessage(let (messageId, cid)):
             return "messages/\(cid.apiPath)/\(messageId)"
+        case .editE2eMessage(let messageId, let cid):
+            return "v1/e2ee/channels/\(cid.apiPath)/\(messageId)"
         case .deleteMessage(let (messageId, cid)):
             return "messages/\(cid.apiPath)/\(messageId)"
         case .pinMessage(let (messageId, cid)):
@@ -270,6 +300,40 @@ enum EndpointPath: Codable {
             return "uss/v1/users/join"
         case .signal:
             return "signal"
+        case .uploadKeyPackages:
+            return "v1/e2ee/key_packages"
+        case .keyPackagesCount:
+            return "v1/e2ee/key_packages/count"
+        case .consumeKeyPackages(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/key_packages"
+        case .consumeKeyPackagesBatch:
+            return "v1/e2ee/key_packages/batch"
+        case .syncMls(let channelId):
+            return "channels/\(channelId.apiPath)/sync"
+        case .enableEncryption(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/enable"
+        case .uploadGroupInfo(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/group_info"
+        case .getGroupInfo(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/group_info"
+        case .externalJoin(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/external_join"
+        case .e2eSync:
+            return "v1/e2ee/scope_sync"
+        case .e2eChannelSync(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/sync"
+        case .commitEviction(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/commit_eviction"
+        case .initE2eeAttachment(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/init"
+        case .queryE2eeAttachments(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/query"
+        case .completeE2eeAttachment(let channelId, let attachmentId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/\(attachmentId)/complete"
+        case .downloadE2eeAttachmentGrant(let channelId, let attachmentId, let assetId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/\(attachmentId)/assets/\(assetId)/download-grant"
+        case .deleteE2eeAttachment(let channelId, let attachmentId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/attachments/\(attachmentId)"
         case .enableTopics(let channelId):
             return "channels/\(channelId.apiPath)/topics/enable"
         case .disableTopics(let channelId):

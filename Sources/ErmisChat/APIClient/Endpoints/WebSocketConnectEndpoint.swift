@@ -15,11 +15,16 @@ extension Endpoint {
     static func webSocketConnect(
         userInfo: UserInfo,
         token: Token?,
+        deviceId: String,
         apiKey: String
     ) -> Endpoint<EmptyResponse> {
         .init(
             path: .connect,
             method: .get,
+            query: [
+                "device_id": deviceId,
+                E2eeByteWireFormat.webSocketQueryName: E2eeByteWireFormat.headerValue
+            ],
             body: WebSocketConnectPayload(userInfo: userInfo, token: token, apiKey: apiKey)
         )
     }

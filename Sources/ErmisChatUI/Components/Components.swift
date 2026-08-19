@@ -209,6 +209,9 @@ public struct Components {
     /// The injector used for injecting call views.
     public var callViewInjector: CustomCellViewInjector.Type = CallViewInjector.self
 
+    /// The injector used for injecting MessageEncryptionViews.
+    public var encryptionInjector: CustomCellViewInjector.Type = EncryptionInjector.self
+
     /// The button for taking an action on attachment being uploaded.
     public var attachmentActionButton: AttachmentActionButton.Type = AttachmentActionButton.self
 
@@ -289,6 +292,9 @@ public struct Components {
 
     /// The view that show call details in the message cell.
     public var callView: CallView.Type  = CallView.self
+
+    /// The view that show when message is encrypted.
+    public var messageEncryptionView: MessageEncryptionView.Type = MessageEncryptionView.self
 
     /// The view that shows messages delivery status.
     public var messageDeliveryStatusView: MessageDeliveryStatusView.Type =

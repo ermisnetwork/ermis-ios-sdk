@@ -5,7 +5,7 @@
 import Foundation
 
 /// A type that describes attachment JSON payload.
-struct MessageAttachmentPayload {
+struct MessageAttachmentPayload: Equatable {
     private enum CodingKeys: String, CodingKey {
         case type
         case linkURL = "link_url"
@@ -17,6 +17,10 @@ struct MessageAttachmentPayload {
     /// It's possible to have attachments of custom type with unknown structure
     /// so we need to keep in raw data form so it will be possible to decode later.
     let payload: RawJSON
+
+    static func == (lhs: MessageAttachmentPayload, rhs: MessageAttachmentPayload) -> Bool {
+        lhs.type == rhs.type && lhs.payload == rhs.payload
+    }
 }
 
 extension MessageAttachmentPayload: Encodable {

@@ -12,12 +12,40 @@ public extension ChatMessage {
             return false
         }
 
+        // Local delivery/edit states belong only to messages authored by the current user. If a
+        // legacy/corrupt row attached one to a remote message, keep normal reply/copy actions
+        // available instead of treating that message as a failed local mutation.
+        if !isSentByCurrentUser {
+            return true
+        }
+
         return localState == nil || isLastActionFailed
+    }
+
+    /// The state used by the message-actions menu. A foreign message is always handled as an
+    /// authoritative server message; its stale local state must not expose Edit/Delete/Resend.
+    var effectiveLocalStateForMessageActions: LocalMessageState? {
+        isSentByCurrentUser ? localState : nil
+    }
+
+    /// Resolves message ownership from the authoritative user models available to the action
+    /// controller. This intentionally does not trust only `isSentByCurrentUser`, because an older
+    /// cached snapshot can carry a stale value while the active project user is already known.
+    func isAuthoredByCurrentUser(_ currentUser: CurrentChatUser) -> Bool {
+        author.id == currentUser.id && author.projectId == currentUser.projectId
+    }
+
+    /// The local state used by an action menu that has access to the active project user.
+    /// Foreign messages always enter the normal Reply/Copy/Forward action lane.
+    func effectiveLocalStateForMessageActions(
+        currentUser: CurrentChatUser
+    ) -> LocalMessageState? {
+        isAuthoredByCurrentUser(currentUser) ? localState : nil
     }
 
     /// A boolean value that checks if the last action (`send`, `edit` or `delete`) on the message failed.
     var isLastActionFailed: Bool {
-        guard isDeleted == false else {
+        guard isDeleted == false, isSentByCurrentUser else {
             return false
         }
 
@@ -49,7 +77,15 @@ public extension ChatMessage {
             return nil
         }
 
-        return isDeleted ? L10n.Message.deletedMessagePlaceholder : text
+        guard !isDeleted else {
+            return L10n.Message.deletedMessagePlaceholder
+        }
+
+        guard !isEncrypted else {
+            return L10n.Message.encryptedMessage
+        }
+
+        return text
     }
 
     /// Returns last active thread participant.

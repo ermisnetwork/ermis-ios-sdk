@@ -47,11 +47,13 @@ extension Endpoint {
                             oldMessage: MessageRequestBody?,
                             channelId: ChannelId)
         -> Endpoint<EmptyResponse> {
-        .init(
-            path: .editMessage(payload.id, channelId),
+            let endpointPath: EndpointPath = payload.encryptedData == nil ? .editMessage(payload.id, channelId) : .editE2eMessage(payload.id, channelId)
+        return .init(
+            path: endpointPath,
             method: .post,
             body: ["message": payload,
-                   "old_message": oldMessage]
+                   "old_message": oldMessage],
+            needDeviceId: payload.encryptedData != nil
         )
     }
 

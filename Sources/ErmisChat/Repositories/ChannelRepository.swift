@@ -128,5 +128,77 @@ class ChannelRepository {
             completion?(result)
         }
     }
-        
+
+    /// Enable encryption for the specific channel.
+    /// - Parameters:
+    ///  - cid: The channel identifier.
+    ///  - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    func enableEncryption(cid: ChannelId, body: EnableEncryptionRequestBody, completion: ((Result<EmptyResponse, Error>) -> Void)? = nil) {
+        apiClient.request(endpoint: .enableEncryption(cid: cid, body: body)) { [weak self] result in
+            if let error = result.error {
+                completion?(.failure(error))
+                return
+            }
+            completion?(result)
+        }
+    }
+
+    /// Upload GroupInfo for a channel after a successful MLS commit.
+    ///
+    /// Must be called by any member after every successful commit (enableE2ee, addMembers,
+    /// removeMember, keyRotation, externalJoin). The server upserts — only the latest GroupInfo
+    /// is stored per channel.
+    ///
+    /// - Parameters:
+    ///   - cid: The channel identifier.
+    ///   - body: The GroupInfo bytes and the new epoch.
+    ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    func uploadGroupInfo(cid: ChannelId, body: UploadGroupInfoRequestBody, completion: ((Result<ChannelPayload, Error>) -> Void)? = nil) {
+        apiClient.request(endpoint: .uploadGroupInfo(cid: cid, body: body)) { [weak self] result in
+            if let error = result.error {
+                completion?(.failure(error))
+                return
+            }
+            completion?(result)
+        }
+    }
+
+    /// Fetch the current GroupInfo for a channel.
+    ///
+    /// Returns a `GroupInfoPayload` which includes the full channel state plus `groupInfo` bytes,
+    /// `epoch`, and `isStale`. When `isStale` is `true` the stored GroupInfo is behind the current
+    /// MLS epoch and an existing member must upload a fresh one.
+    ///
+    /// - Parameters:
+    ///   - cid: The channel identifier.
+    ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    func getGroupInfo(cid: ChannelId, completion: ((Result<GroupInfoPayload, Error>) -> Void)? = nil) {
+        apiClient.request(endpoint: .getGroupInfo(cid: cid)) { [weak self] result in
+            if let error = result.error {
+                completion?(.failure(error))
+                return
+            }
+            completion?(result)
+        }
+    }
+
+    /// Join an MLS group via an External Commit (no Welcome needed).
+    ///
+    /// - Multi-device (sender is already a member): only broadcasts the external commit.
+    /// - Public channel (sender is not a member): inserts the member, sends a SystemMessage,
+    ///   fires a MemberJoined event, and broadcasts the external commit.
+    ///
+    /// - Parameters:
+    ///   - cid: The channel identifier.
+    ///   - body: The external commit bytes, new epoch, optional projectId and members list.
+    ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
+    func externalJoin(cid: ChannelId, body: ExternalJoinRequestBody, completion: ((Result<ChannelPayload, Error>) -> Void)? = nil) {
+        apiClient.request(endpoint: .externalJoin(cid: cid, body: body)) { [weak self] result in
+            if let error = result.error {
+                completion?(.failure(error))
+                return
+            }
+            completion?(result)
+        }
+    }
 }

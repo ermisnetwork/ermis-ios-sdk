@@ -167,7 +167,7 @@ private class MessageSendingQueue {
                          .messageDoesNotHaveValidChannel:
                         let event = NewMessageErrorEvent(messageId: request.messageId, error: error)
                         self?.eventsNotificationCenter.process(event)
-                    case let .failedToSendMessage(error):
+                    case let .failedToSendMessage(error), let .failedToEncryptedMessage(error):
                         let event = NewMessageErrorEvent(messageId: request.messageId, error: error)
                         self?.eventsNotificationCenter.process(event)
                     }

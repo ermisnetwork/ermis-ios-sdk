@@ -586,10 +586,22 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
     }
 
     /// Forward the message to other channel.
-    public func forward(message: ChatMessage, to cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
-        messageUpdater.forwardMessage(MessageRequestBody.forwardMessageBody(from: message), to: cid) { [weak self] error in
+    public func forward(
+        message: ChatMessage,
+        to cid: ChannelId,
+        attachmentPayloadOverrides: [AnyAttachmentPayload]? = nil,
+        completion: ((Error?) -> Void)? = nil
+    ) {
+        messageUpdater.forwardMessage(
+            MessageRequestBody.forwardMessageBody(from: message),
+            to: cid,
+            attachmentPayloadOverrides: attachmentPayloadOverrides
+        ) { [weak self] result in
+            if case .success(let message?) = result {
+                self?.client.eventNotificationCenter.process(NewMessagePendingEvent(message: message))
+            }
             self?.callback {
-                completion?(error)
+                completion?(result.error)
             }
         }
     }
@@ -653,6 +665,29 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
         messageUpdater.resendMessage(with: messageId) { [weak self] error in
             self?.callback {
                 completion?(error)
+            }
+        }
+    }
+
+    /// Decrypts the message represented by this controller.
+    ///
+    /// If the message already has a cached decrypted payload (i.e. `decryptedMessage` is non-nil),
+    /// the result is returned immediately without performing any MLS operation.
+    /// Otherwise the raw encrypted bytes are decrypted via MLS, the result is persisted to the
+    /// local database, and the updated `ChatMessage` is returned.
+    ///
+    /// - Parameter completion: Called on the **callbackQueue** with the decrypted `ChatMessage`,
+    ///                         or an error if decryption fails.
+    public func decryptMessage(completion: @escaping (Result<ChatMessage, Error>) -> Void) {
+        guard let message else {
+            callback {
+                completion(.failure(ClientError.MessageDoesNotExist(messageId: self.messageId)))
+            }
+            return
+        }
+        client.e2eRepository.decryptMessage(message) { [weak self] result in
+            self?.callback {
+                completion(result)
             }
         }
     }

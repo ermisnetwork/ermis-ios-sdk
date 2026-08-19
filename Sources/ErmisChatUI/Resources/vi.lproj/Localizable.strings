@@ -224,6 +224,15 @@
 /// Can appear if you haven't properly configured your custom attachments.
 "message.unsupported-attachment" = "Tệp tin không được hỗ trợ";
 
+// Encryption
+"message.encrypted-message" = "Tin nhắn được mã hóa";
+"encryption.forward-downgrade-alert.title" = "Bỏ bảo vệ E2EE?";
+"encryption.forward-downgrade-alert.message" = "Kênh đích là kênh tiêu chuẩn. Nội dung được chuyển tiếp sẽ không còn được mã hóa đầu cuối.";
+/// Hiển thị phía trên trả lời trích dẫn khi tin nhắn gốc là của người dùng hiện tại.
+"message.quoted-message.replied-to-you" = "Đã trả lời bạn";
+/// Hiển thị phía trên trả lời trích dẫn. Biến là tên tác giả của tin nhắn gốc.
+"message.quoted-message.replied-to" = "Đã trả lời %@";
+
 // System message
 
 /// Show when channel name updated.
@@ -302,7 +311,8 @@
 /// Show when user reject your friend request.
 "message.system.other-reject-add-friend-request" = "%@ đã từ chối tham gia nhóm.";
 /// Shown when an attachment can't be uploaded because it's bigger than the allowed limit.
-"attachment.max-size-exceeded" = "Kích thước tệp vượt qua giới hạn 100MB.";
+"attachment.max-size-exceeded" = "Kích thước tệp vượt quá giới hạn đã cấu hình.";
+"attachment.max-size-exceeded-format" = "Kích thước tệp vượt quá giới hạn. Tối đa: %@.";
 
 /// Shown as title of pinned messages view.
 "pin.collapsed.title" = "Tin nhắn đã ghim";
@@ -323,6 +333,8 @@
 "alert.title.error" = "Lỗi";
 /// Generic title text in the popups.
 "alert.title.info" = "Thông tin";
+/// Generic title text in the popups.
+"alert.title.enable" = "Bật";
 
 "alert.title.permission-required" = "Yêu cầu quyền truy cập";
 /// Message of require camera access alert.
@@ -422,6 +434,12 @@
 /// Share
 "share.send-to" = "Gửi đến";
 
+/// Encryption
+"encryption.e2e-message-encrytion" = "Mã hóa đầu cuối tin nhắn";
+"encryption.enable-e2e-alert.title" = "Bạn có muốn mã hóa cuộc trò chuyện này với %@ không?";
+"encryption.enable-group-e2e-alert.title" = "Bạn có muốn mã hóa cuộc trò chuyện trong nhóm %@ không?";
+"encryption.enable-e2e-alert.message" = "Mã hóa đầu cuối bảo vệ dữ liệu của bạn bằng cách mã hóa nó từ người gửi đến người nhận, cho phép chỉ người nhận dự định giải mã nó.";
+
 /// Shown in the gallery preview, indicating which image is currently presented.
 /// The first placeholder is the number of the selected image.
 /// The second placeholder is the total number of images in the attachment.
@@ -476,4 +494,3 @@
 
 /// The default title of link preview when don't have any information.
 "no_preview_available" = "Không có bản xem trước";
-

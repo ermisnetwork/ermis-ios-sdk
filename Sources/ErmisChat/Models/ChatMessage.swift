@@ -19,7 +19,11 @@ public struct ChatMessage {
     public let cid: ChannelId?
 
     /// The text of the message.
-    public let text: String
+    public var text: String
+
+    public var encryptedData: Data?
+
+    public var mlsEpoch: Int?
 
     public let oldTexts: [MessageEditHistory]?
 
@@ -64,6 +68,19 @@ public struct ChatMessage {
 
     /// The channel id of channel which this message is forwarded from.
     public var forwardChannelId: ChannelId?
+
+    /// Authenticated source message identity for an E2EE forward, when available locally.
+    public var forwardMessageId: MessageId? {
+        decryptedMessage?.authenticatedMetadata?.forwardMessageId
+    }
+
+    /// Authenticated source thread/root channel for an E2EE forward, when present.
+    public var forwardParentChannelId: ChannelId? {
+        guard let rawValue = decryptedMessage?.authenticatedMetadata?.forwardParentCid else {
+            return nil
+        }
+        return try? ChannelId(cid: rawValue)
+    }
 
     /// A flag indicating whether the message was bounced due to moderation.
     public let isBounced: Bool
@@ -186,6 +203,30 @@ public struct ChatMessage {
     /// The moderation details in case the message was moderated.
     public let moderationDetails: MessageModerationDetails?
 
+    /// The cached decrypted content of this message, if the message has been successfully decrypted.
+    /// `nil` for non-encrypted messages or messages not yet decrypted.
+    public var decryptedMessage: E2ePayload? {
+        didSet {
+            guard let payload = decryptedMessage, let cid else { return }
+            text = payload.text
+            stickerUrl = payload.stickerUrl
+            if !payload.attachments.isEmpty {
+                let messageId = id
+                let decryptedAttachments = payload.attachments.enumerated().compactMap { index, attachment -> AnyMessageAttachment? in
+                    // Encode only the RawJSON payload, matching what AttachmentDTO.saveAttachment stores in `data`.
+                    guard let data = try? JSONEncoder.default.encode(attachment.payload) else { return nil }
+                    let attachmentId = AttachmentId(
+                        cid: cid,
+                        messageId: messageId,
+                        index: index
+                    )
+                    return AnyMessageAttachment(id: attachmentId, type: attachment.type, payload: data, thumbnailData: nil, uploadingState: nil)
+                }
+                $_attachments = ({ decryptedAttachments }, nil)
+            }
+        }
+    }
+
     /// If the message is authored by the current user this field contains the list of channel members
     /// who read this message (excluding the current user).
     ///
@@ -208,6 +249,8 @@ public struct ChatMessage {
         id: MessageId,
         cid: ChannelId,
         text: String,
+        encryptedData: Data?,
+        mlsEpoch: Int?,
         oldTexts: [MessageEditHistory]?,
         type: MessageType,
         command: String?,
@@ -242,6 +285,7 @@ public struct ChatMessage {
         translations: [TranslationLanguage: String]?,
         originalLanguage: TranslationLanguage?,
         moderationDetails: MessageModerationDetails?,
+        decryptedMessage: E2ePayload?,
         readBy: @escaping () -> Set<ChatUser>,
         readByCount: @escaping () -> Int,
         underlyingContext: NSManagedObjectContext?,
@@ -250,6 +294,8 @@ public struct ChatMessage {
         self.id = id
         self.cid = cid
         self.text = text
+        self.encryptedData = encryptedData
+        self.mlsEpoch = mlsEpoch
         self.type = type
         self.oldTexts = oldTexts
         self.command = command
@@ -273,6 +319,7 @@ public struct ChatMessage {
         self.translations = translations
         self.originalLanguage = originalLanguage
         self.moderationDetails = moderationDetails
+        self.decryptedMessage = decryptedMessage
         self.textUpdatedAt = textUpdatedAt
         self.mentionedAll = mentionedAll
 
@@ -402,7 +449,9 @@ public extension ChatMessage {
         }
 
         switch localState {
-        case .pendingSend, .sending, .pendingSync, .syncing, .deleting:
+        case .pendingSend, .sending, .pendingSync, .syncing, .deleting,
+             .pendingSendAfterE2eeEpochStale, .sendingAfterE2eeEpochStale,
+             .pendingSyncAfterE2eeEpochStale, .syncingAfterE2eeEpochStale:
             return .pending
         case .sendingFailed, .syncingFailed, .deletingFailed:
             return .failed
@@ -418,6 +467,11 @@ public extension ChatMessage {
         
         return type == .ephemeral || type == .error
     }
+
+    public var isEncrypted: Bool {
+        return encryptedData != nil && text.isEmpty && allAttachments.isEmpty && stickerUrl == nil && decryptedMessage == nil
+    }
+
 }
 
 extension ChatMessage: Hashable {
@@ -477,6 +531,18 @@ public enum LocalMessageState: String {
     /// Sending of the message failed after multiple of tries. The system is not trying to send this message anymore.
     case sendingFailed
 
+    /// Bellboy rejected the first exact E2EE send intent as stale. Before this state can send,
+    /// the SDK must finish scope sync and create one replacement ciphertext at the newer epoch.
+    case pendingSendAfterE2eeEpochStale
+    /// The single automatic replacement send is in flight. A second epoch-stale rejection fails
+    /// closed and requires an explicit user retry rather than looping indefinitely.
+    case sendingAfterE2eeEpochStale
+
+    /// Edit equivalent of `pendingSendAfterE2eeEpochStale`.
+    case pendingSyncAfterE2eeEpochStale
+    /// Edit equivalent of `sendingAfterE2eeEpochStale`.
+    case syncingAfterE2eeEpochStale
+
     /// The message is waiting to be deleted.
     case deleting
     /// Deleting of the message failed after multiple of tries. The system is not trying to delete this message anymore.
@@ -484,7 +550,8 @@ public enum LocalMessageState: String {
 
     /// If the message is available only locally. The message is not on the server.
     var isLocalOnly: Bool {
-        self == .pendingSend || self == .sendingFailed || self == .sending
+        self == .pendingSend || self == .sendingFailed || self == .sending ||
+            self == .pendingSendAfterE2eeEpochStale || self == .sendingAfterE2eeEpochStale
     }
 }
 
@@ -642,4 +709,3 @@ public enum SystemMessage {
         }
     }
 }
-

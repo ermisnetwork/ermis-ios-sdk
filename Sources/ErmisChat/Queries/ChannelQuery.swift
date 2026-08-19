@@ -27,7 +27,7 @@ public struct ChannelQuery: Encodable {
     /// A number of watchers for the channel to be retrieved.
     public let watchersLimit: Int?
     /// ChannelCreatePayload that is needed only when creating channel
-    let channelPayload: ChannelEditDetailPayload?
+    var channelPayload: ChannelEditDetailPayload?
 
     /// The project id this query handles.
     let projectId: String
@@ -37,6 +37,8 @@ public struct ChannelQuery: Encodable {
     
     /// The topic channel id this query handles, if any.
     let topicCid: ChannelId?
+
+    var mlsEnabled: Bool?
 
     /// `ChannelId` this query handles.
     /// If `id` part is missing then it's impossible to create valid `ChannelId`.
@@ -51,6 +53,7 @@ public struct ChannelQuery: Encodable {
     ///   - paginationParameter: the pagination configuration.
     ///   - membersLimit: a number of members for the channel  to be retrieved.
     ///   - watchersLimit: a number of watchers for the channel to be retrieved.
+    ///   - mslEnabled: a boolean value for the encryption state of the channel.
     public init(
         cid: ChannelId,
         parentCid: ChannelId? = nil,
@@ -58,7 +61,8 @@ public struct ChannelQuery: Encodable {
         pageSize: Int? = .messagesPageSize,
         paginationParameter: PaginationParameter? = nil,
         membersLimit: Int? = nil,
-        watchersLimit: Int? = nil
+        watchersLimit: Int? = nil,
+        mlsEnabled: Bool? = nil
     ) {
         id = cid.id
         type = cid.type
@@ -70,6 +74,7 @@ public struct ChannelQuery: Encodable {
         self.watchersLimit = watchersLimit
         self.projectId = cid.projectId
         self.topicCid = topicCid
+        self.mlsEnabled = mlsEnabled
     }
 
     /// Init a channel query.
@@ -78,7 +83,8 @@ public struct ChannelQuery: Encodable {
     init(channelPayload: ChannelEditDetailPayload,
          projectId: String,
          parentCid: ChannelId? = nil,
-         topicCid: ChannelId? = nil) {
+         topicCid: ChannelId? = nil,
+         mlsEnabled: Bool? = nil) {
         id = channelPayload.id
         type = channelPayload.type
         self.channelPayload = channelPayload
@@ -88,6 +94,7 @@ public struct ChannelQuery: Encodable {
         self.parentCid = parentCid
         self.projectId = projectId
         self.topicCid = topicCid
+        self.mlsEnabled = mlsEnabled
     }
 
     /// Init a channel query.
@@ -100,7 +107,8 @@ public struct ChannelQuery: Encodable {
             pageSize: channelQuery.pagination?.pageSize,
             paginationParameter: channelQuery.pagination?.parameter,
             membersLimit: channelQuery.membersLimit,
-            watchersLimit: channelQuery.watchersLimit
+            watchersLimit: channelQuery.watchersLimit,
+            mlsEnabled: channelQuery.mlsEnabled
         )
     }
 
@@ -120,6 +128,7 @@ public struct ChannelQuery: Encodable {
         if let topicCid = topicCid {
             try container.encode(topicCid.rawValue, forKey: .topicCid)
         }
+
     }
 }
 

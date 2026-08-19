@@ -15,9 +15,11 @@ struct Endpoint<ResponseType: Decodable>: Codable {
     let method: EndpointMethod
     let query: Encodable?
     let needConnectionId: Bool
+    let needDeviceId: Bool
     let needToken: Bool
     let urlType: URLType
     let body: Encodable?
+    let headers: [String: String]
 
     init(
         path: EndpointPath,
@@ -25,16 +27,20 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         query: Encodable? = nil,
         body: Encodable? = nil,
         needConnectionId: Bool = false,
+        needDeviceId: Bool = false,
         needToken: Bool = true,
-        urlType: URLType = .normal
+        urlType: URLType = .normal,
+        headers: [String: String] = [:]
     ) {
         self.path = path
         self.method = method
         self.query = query
         self.body = body
         self.needConnectionId = needConnectionId
+        self.needDeviceId = needDeviceId
         self.needToken = needToken
         self.urlType = urlType
+        self.headers = headers
     }
 
     // MARK: - Codable
@@ -44,9 +50,11 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         case method
         case queryItems
         case requiresConnectionId
+        case requiresDeviceId
         case requiresToken
         case body
         case urlType
+        case headers
     }
 
     init(from decoder: Decoder) throws {
@@ -55,9 +63,11 @@ struct Endpoint<ResponseType: Decodable>: Codable {
         method = try container.decode(EndpointMethod.self, forKey: .method)
         query = try container.decodeIfPresent(Data.self, forKey: .queryItems)
         needConnectionId = try container.decode(Bool.self, forKey: .requiresConnectionId)
+        needDeviceId = try container.decodeIfPresent(Bool.self, forKey: .requiresDeviceId) ?? false
         needToken = try container.decode(Bool.self, forKey: .requiresToken)
         body = try container.decodeIfPresent(Data.self, forKey: .body)
         urlType = try container.decode(URLType.self, forKey: .urlType)
+        headers = try container.decodeIfPresent([String: String].self, forKey: .headers) ?? [:]
     }
 
     func encode(to encoder: Encoder) throws {
@@ -68,11 +78,13 @@ struct Endpoint<ResponseType: Decodable>: Codable {
             try container.encode(queryItemsData, forKey: .queryItems)
         }
         try container.encode(needConnectionId, forKey: .requiresConnectionId)
+        try container.encode(needDeviceId, forKey: .requiresDeviceId)
         try container.encode(needToken, forKey: .requiresToken)
         if let body = try body?.encodedAsData() {
             try container.encode(body, forKey: .body)
         }
         try container.encode(urlType, forKey: .urlType)
+        try container.encode(headers, forKey: .headers)
     }
 }
 

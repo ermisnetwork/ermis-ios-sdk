@@ -18,6 +18,9 @@ public struct MessageNewEvent: ChannelSpecificEvent, HasUnreadCount {
     /// The parent channel identifier of the channel that the message was sent to.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel a message was sent to.
     public let channel: Channel
 
@@ -35,6 +38,7 @@ class MessageNewEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let createdAt: Date
     let watcherCount: Int?
@@ -45,6 +49,7 @@ class MessageNewEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         watcherCount = try? response.value(at: \.watcherCount)
@@ -62,6 +67,7 @@ class MessageNewEventDTO: EventDTO {
         return try? MessageNewEvent(
             user: userDTO.asModel(),
             message: messageDTO.asModel(),
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             createdAt: createdAt,
             watcherCount: watcherCount,
@@ -81,6 +87,9 @@ public struct MessageUpdatedEvent: ChannelSpecificEvent {
     /// The parent channel identifier of the channel that the message is sent to.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel a message is sent to.
     public let channel: Channel
 
@@ -95,6 +104,7 @@ class MessageUpdatedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let createdAt: Date
     let payload: EventPayload
@@ -102,9 +112,8 @@ class MessageUpdatedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
-        parentCid = try? response.value(at: \.parentCid
-
-        )
+        parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -119,6 +128,7 @@ class MessageUpdatedEventDTO: EventDTO {
 
         return try? MessageUpdatedEvent(
             user: userDTO.asModel(),
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             message: messageDTO.asModel(),
             createdAt: createdAt
@@ -137,6 +147,9 @@ public struct MessagePinnedEvent: ChannelSpecificEvent {
     /// The parent channel identifier of channel that the message is sent to.
     public var parentCid: ChannelId? { channel.cid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel a message is sent to.
     public let channel: Channel
 
@@ -154,6 +167,7 @@ class MessagePinnedEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let createdAt: Date
     let payload: EventPayload
@@ -163,6 +177,7 @@ class MessagePinnedEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -178,6 +193,7 @@ class MessagePinnedEventDTO: EventDTO {
 
         return try? MessagePinnedEvent(
             user: userDTO.asModel(),
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             message: messageDTO.asModel(),
             isPinned: isPinned,
@@ -197,6 +213,9 @@ public struct MessageDeletedEvent: ChannelSpecificEvent {
     /// The parent channel identifer of channel that a message was deleted from.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The channel a message was deleted from.
     public let channel: Channel
 
@@ -214,6 +233,7 @@ class MessageDeletedEventDTO: EventDTO {
     let user: UserPayload?
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let createdAt: Date
     let payload: EventPayload
@@ -223,6 +243,7 @@ class MessageDeletedEventDTO: EventDTO {
         user = try? response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -238,6 +259,7 @@ class MessageDeletedEventDTO: EventDTO {
 
         return try? MessageDeletedEvent(
             user: userDTO.asModel(),
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             message: messageDTO.asModel(),
             createdAt: createdAt,
@@ -250,6 +272,7 @@ class MessageDeletedForMeEventDTO: EventDTO {
     let user: UserPayload?
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let message: MessagePayload
     let createdAt: Date
     let payload: EventPayload
@@ -259,6 +282,7 @@ class MessageDeletedForMeEventDTO: EventDTO {
         user = try? response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         message = try response.value(at: \.message)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -274,6 +298,7 @@ class MessageDeletedForMeEventDTO: EventDTO {
 
         return try? MessageDeletedEvent(
             user: userDTO.asModel(),
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             message: messageDTO.asModel(),
             createdAt: createdAt,
@@ -296,6 +321,9 @@ public struct MessageReadEvent: ChannelSpecificEvent {
     /// The parent channel identifier of  the read channel.
     public var parentCid: ChannelId? { channel.parentCid }
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The read channel.
     public let channel: Channel
 
@@ -310,6 +338,7 @@ class MessageReadEventDTO: EventDTO {
     let user: UserPayload
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let createdAt: Date
     let unreadCount: UnreadCount?
     let payload: EventPayload
@@ -318,6 +347,7 @@ class MessageReadEventDTO: EventDTO {
         user = try response.value(at: \.user)
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         createdAt = try response.value(at: \.createdAt)
         unreadCount = try? response.value(at: \.unreadCount)
         payload = response
@@ -331,6 +361,7 @@ class MessageReadEventDTO: EventDTO {
 
         return try? MessageReadEvent(
             user: userDTO.asModel(),
+            topicCids: topicCids,
             channel: channelDTO.asModel(),
             createdAt: createdAt,
             unreadCount: unreadCount

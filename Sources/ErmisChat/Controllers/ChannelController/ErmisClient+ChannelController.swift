@@ -75,6 +75,7 @@ public extension ErmisClient {
         imageURL: String? = nil,
         saveMessage: Bool = true,
         isPublic: Bool = false,
+        mlsEnabled: Bool = false,
         members: Set<UserId> = [],
         isCurrentUserMember: Bool = true,
         messageOrdering: MessageOrdering = .topToBottom,
@@ -100,7 +101,8 @@ public extension ErmisClient {
 
         return .init(
             channelQuery: .init(channelPayload: payload,
-                                projectId: projectId),
+                                projectId: projectId,
+                                mlsEnabled: mlsEnabled),
             channelListQuery: channelListQuery,
             client: self,
             isChannelAlreadyCreated: false,
@@ -136,6 +138,7 @@ public extension ErmisClient {
         name: String? = nil,
         imageURL:String? = nil,
         isPublic: Bool = false,
+        isEncryped: Bool = false,
         channelListQuery: ChannelListQuery? = nil
     ) throws -> ChannelController {
         guard let currentUserId = currentUserId else { throw ClientError.CurrentUserDoesNotExist() }
@@ -154,7 +157,8 @@ public extension ErmisClient {
 
         return .init(
             channelQuery: .init(channelPayload: payload,
-                                projectId: projectId),
+                                projectId: projectId,
+                                mlsEnabled: isEncryped),
             channelListQuery: channelListQuery,
             client: self,
             isChannelAlreadyCreated: false,

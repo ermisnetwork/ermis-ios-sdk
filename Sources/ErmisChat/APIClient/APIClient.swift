@@ -52,6 +52,7 @@ class APIClient {
     private let refreshTokenOP: OperationQueue = {
         let operationQueue = OperationQueue()
         operationQueue.name = "network.ermis.refreshToken"
+        operationQueue.maxConcurrentOperationCount = 1
         return operationQueue
     }()
 
@@ -127,8 +128,12 @@ class APIClient {
                         self?.sseRequest(endpoint: endpoint, completion: completion)
                         done(.continue)
                     } else if let error = error as? ClientError.TokenRefreshed {
-                        operation.resetRetries()
-                        done(.retry)
+                        if operation.canRetry {
+                            done(.retry)
+                        } else {
+                            completion(nil, ClientError.TokenRefreshRetryLimitExceeded())
+                            done(.continue)
+                        }
                     } else if let error = error as? ClientError.RefreshTokenExpired {
                         completion(nil, error)
                         done(.continue)
@@ -222,7 +227,11 @@ class APIClient {
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
         let requestOperation = operation(endpoint: endpoint, isRecoveryOperation: false, completion: completion)
-        OperationQueue.main.addOperation(requestOperation)
+        // Refresh must not run on `OperationQueue.main`. During reconnect many failed requests can
+        // join the same refresh cycle; executing the refresh operation on main lets synchronous
+        // connection/token callbacks recursively grow the main-thread stack. A dedicated serial
+        // queue also guarantees that two refresh HTTP requests cannot race each other.
+        refreshTokenOP.addOperation(requestOperation)
     }
     /// Performs a recovery request and retries in case of network failures
     ///
@@ -284,9 +293,15 @@ class APIClient {
                     self?.request(endpoint: endpoint, completion: completion)
                     done(.continue)
                 case .failure(_ as ClientError.TokenRefreshed):
-                    // Retry request. Expired token has been refreshed
-                    operation.resetRetries()
-                    done(.retry)
+                    // A server can reject a locally-valid JWT (revocation, environment mismatch,
+                    // or claim policy). Keep this retry finite instead of resetting the budget and
+                    // entering an unbounded refresh -> retry callback loop.
+                    if operation.canRetry {
+                        done(.retry)
+                    } else {
+                        completion(.failure(ClientError.TokenRefreshRetryLimitExceeded()))
+                        done(.continue)
+                    }
                 case .failure(_ as ClientError.RefreshTokenExpired):
                     completion(result)
                     done(.continue)
@@ -445,11 +460,15 @@ class APIClient {
             completion(ClientError.RefreshingToken())
             return
         }
-        
-        enterTokenFetchMode()
-        
-        tokenRefresher? { [weak self] error in
-            self?.exitTokenFetchMode()
+
+        // AuthenticationRepository owns token-fetch mode for the full single-flight cycle. It
+        // keeps this queue suspended until every joined completion has chosen retry/failure.
+        // Entering/exiting here as well can resume the queue in the middle of completion delivery.
+        guard let tokenRefresher else {
+            completion(ClientError.MissingTokenProvider())
+            return
+        }
+        tokenRefresher { error in
             if let error = error as? ClientError {
                 completion(error)
             } else {
@@ -488,10 +507,13 @@ class APIClient {
         operationQueue.addOperation(uploadOperation)
     }
     
-    func uploadVideoThumbnail(attachment: AnyMessageAttachment,
-                              completion: @escaping (Result<UploadedAttachment, Error>) -> Void) {
+    func uploadVideoThumbnail(
+        attachment: AnyMessageAttachment,
+        progress: ((Double) -> Void)? = nil,
+        completion: @escaping (Result<UploadedAttachment, Error>) -> Void
+    ) {
         let uploadOperation = AsyncOperation(maxRetries: 0) { [weak self] operation, done in
-            self?.uploader.upload(attachment, progress: nil) { result in
+            self?.uploader.upload(attachment, progress: progress) { result in
                 switch result {
                 case let .failure(error) where self?.isConnectionError(error) == true:
                     // Do not retry unless its a connection problem and we stil     l have retries left

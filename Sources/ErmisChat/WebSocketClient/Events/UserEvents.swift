@@ -73,6 +73,10 @@ public struct UserWatchingEvent: ChannelSpecificEvent {
 
     /// The parent channel identifier of channel a user started/stoped watching.
     public let parentCid: ChannelId?
+
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The event timestamp
     public let createdAt: Date
 
@@ -86,6 +90,7 @@ public struct UserWatchingEvent: ChannelSpecificEvent {
 class UserWatchingEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let user: UserPayload
     let createdAt: Date
     let isStarted: Bool
@@ -94,6 +99,7 @@ class UserWatchingEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
         isStarted = response.eventType == .userStartWatching
@@ -106,6 +112,7 @@ class UserWatchingEventDTO: EventDTO {
         return try? UserWatchingEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             createdAt: createdAt,
             user: userDTO.asModel(),
             isStarted: isStarted
@@ -153,6 +160,9 @@ public struct UserBannedEvent: ChannelSpecificEvent {
     /// The parent channel identifier of channel user is banned at.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The banned user.
     public let user: ChatUser
 
@@ -175,6 +185,7 @@ public struct UserBannedEvent: ChannelSpecificEvent {
 class UserBannedEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let user: UserPayload
 //    let ownerId: UserId
     let createdAt: Date
@@ -186,6 +197,7 @@ class UserBannedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try response.value(at: \.user)
 //        ownerId = try response.value(at: \.createdBy?.id)
         createdAt = try response.value(at: \.createdAt)
@@ -201,6 +213,7 @@ class UserBannedEventDTO: EventDTO {
         return try? UserBannedEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             ownerId: "ownerId",
             createdAt: createdAt,
@@ -249,6 +262,9 @@ public struct UserUnbannedEvent: ChannelSpecificEvent {
     /// The parent channel identifier of channel that user is unbanned at.
     public let parentCid: ChannelId?
 
+    /// The topic cids
+    public let topicCids: [ChannelId]
+
     /// The unbanned user.
     public let user: ChatUser
 
@@ -259,6 +275,7 @@ public struct UserUnbannedEvent: ChannelSpecificEvent {
 class UserUnbannedEventDTO: EventDTO {
     let cid: ChannelId
     let parentCid: ChannelId?
+    let topicCids: [ChannelId]
     let user: UserPayload
     let createdAt: Date
     let payload: EventPayload
@@ -266,6 +283,7 @@ class UserUnbannedEventDTO: EventDTO {
     init(from response: EventPayload) throws {
         cid = try response.value(at: \.cid)
         parentCid = try? response.value(at: \.parentCid)
+        topicCids = (try? response.value(at: \.topicCids)) ?? []
         user = try response.value(at: \.user)
         createdAt = try response.value(at: \.createdAt)
         payload = response
@@ -277,6 +295,7 @@ class UserUnbannedEventDTO: EventDTO {
         return try? UserUnbannedEvent(
             cid: cid,
             parentCid: parentCid,
+            topicCids: topicCids,
             user: userDTO.asModel(),
             createdAt: createdAt
         )

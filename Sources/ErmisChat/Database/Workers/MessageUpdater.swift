@@ -55,17 +55,30 @@ class MessageUpdater: Worker {
         var shouldDeleteOnBackend = true
 
         database.write({ session in
-            guard let messageDTO = session.message(id: message.id) else {
+            guard let storedMessage = session.message(id: message.id) else {
                 // Even though the message does not exist locally
-                // we don't throw any error because we still want
-                // to try to delete the message on the backend.
+                // we don't throw for delete-for-me because the server may still have it.
+                // Delete-for-everyone must fail closed because authorship cannot be verified.
+                if !onlyForMe {
+                    throw ClientError.MessageDoesNotExist(messageId: message.id)
+                }
                 return
             }
 
+            let messageDTO: MessageDTO
+            if onlyForMe {
+                messageDTO = storedMessage
+            } else {
+                messageDTO = try session.messageEditableByCurrentUser(message.id)
+            }
+
             // Hard Deleting is necessary for messages which are only available locally in the DB
-            let shouldBeHardDeleted = messageDTO.isLocalOnly
+            // and authored by this user. A stale/corrupt local state on somebody else's server
+            // message must never suppress the delete-for-me backend request.
+            let shouldBeHardDeleted = (try? session.currentUserIsAuthor(of: messageDTO)) == true
+                && messageDTO.isLocalOnly
             messageDTO.isHardDeleted = shouldBeHardDeleted
-            if messageDTO.isLocalOnly {
+            if shouldBeHardDeleted {
                 messageDTO.type = MessageType.deleted.rawValue
                 messageDTO.deletedAt = DBDate()
                 messageDTO.text = ""
@@ -122,6 +135,12 @@ class MessageUpdater: Worker {
             func updateMessage(localState: LocalMessageState) throws {
                 messageDTO.text = text
 
+                // `encryptedData`/`mlsEpoch` are the exact durable network intent for the
+                // currently queued E2EE generation. A user edit creates a new generation, so
+                // the ciphertext of the previously accepted message (or a failed earlier edit)
+                // must never be reused for the new plaintext.
+                messageDTO.invalidateE2eeNetworkIntentForNewEdit()
+
                 messageDTO.localMessageState = localState
 
                 messageDTO.updatedAt = DBDate()
@@ -151,6 +170,19 @@ class MessageUpdater: Worker {
 //                    let user = try session.user(id: $0, projectId: cid.projectId)
 //                    return user
 //                })
+
+                // Update the cached decrypted message if one exists (E2E encrypted channel)
+                if let decryptDTO = MessageDecryptDTO.load(messageId: messageId, context: session as! NSManagedObjectContext) {
+                    decryptDTO.text = text
+                    if !attachments.isEmpty {
+                        let attachmentPayloads = messageDTO.attachments.compactMap {
+                            $0.asRequestPayload()
+                        }
+                        decryptDTO.attachmentsData = try? JSONEncoder.default.encode(attachmentPayloads)
+                    } else {
+                        decryptDTO.attachmentsData = nil
+                    }
+                }
             }
 
             if messageDTO.isBounced {
@@ -159,11 +191,13 @@ class MessageUpdater: Worker {
             }
 
             switch messageDTO.localMessageState {
-            case nil, .pendingSync, .syncingFailed, .deletingFailed:
+            case nil, .pendingSync, .syncingFailed, .deletingFailed,
+                 .pendingSyncAfterE2eeEpochStale:
                 try updateMessage(localState: .pendingSync)
-            case .pendingSend, .sendingFailed:
+            case .pendingSend, .sendingFailed, .pendingSendAfterE2eeEpochStale:
                 try updateMessage(localState: .pendingSend)
-            case .sending, .syncing, .deleting:
+            case .sending, .syncing, .deleting,
+                 .sendingAfterE2eeEpochStale, .syncingAfterE2eeEpochStale:
                 throw ClientError.MessageEditing(
                     messageId: messageId,
                     reason: "message is in `\(messageDTO.localMessageState!)` state"
@@ -393,20 +427,167 @@ class MessageUpdater: Worker {
     ///   - messageRequestBody: The `MessageRequestBody` of the forwarded message.
     ///   - cid: The channel identifier of the channel which message will be forwarded to.
     ///   - completion: Called when the API call is finished. Called with `Error` if the remote update fails.
-    func forwardMessage(_ messageRequestBody: MessageRequestBody, to cid: ChannelId, completion: ((Error?) -> Void)? = nil) {
-        let endpoint: Endpoint<MessagePayload.Boxed> = .sendMessage(
-            cid: cid,
-            messagePayload: messageRequestBody
-        )
-
-        self.apiClient.request(endpoint: endpoint) { [weak self] in
-            switch $0 {
-            case let .success(payload):
-                completion?(nil)
-            case let .failure(error):
-                completion?(error)
+    func forwardMessage(
+        _ initialRequestBody: MessageRequestBody,
+        to cid: ChannelId,
+        attachmentPayloadOverrides: [AnyAttachmentPayload]? = nil,
+        completion: ((Result<ChatMessage?, Error>) -> Void)? = nil
+    ) {
+        var destinationIsEncrypted: Bool?
+        var sourceParentCid: String?
+        database.viewContext.performAndWait {
+            destinationIsEncrypted = ChannelDTO.load(cid: cid, context: database.viewContext)?.isE2eeEnabled
+            if let sourceCid = initialRequestBody.forwardCid,
+               let parsed = try? ChannelId(cid: sourceCid) {
+                sourceParentCid = ChannelDTO.load(
+                    cid: parsed,
+                    context: database.viewContext
+                )?.parentcid
             }
         }
+        guard let destinationIsEncrypted else {
+            completion?(.failure(E2eeMessageAADError.authenticatedSendLaneUnavailable))
+            return
+        }
+
+        var messageRequestBody = initialRequestBody
+        messageRequestBody.forwardParentCid = sourceParentCid
+
+        let requiresLocalUpload = attachmentPayloadOverrides != nil
+        if !destinationIsEncrypted && !requiresLocalUpload {
+            let endpoint: Endpoint<MessagePayload.Boxed> = .sendMessage(
+                cid: cid,
+                messagePayload: messageRequestBody
+            )
+            apiClient.request(endpoint: endpoint) {
+                switch $0 {
+                case .success:
+                    completion?(.success(nil))
+                case .failure(let error):
+                    completion?(.failure(error))
+                }
+            }
+            return
+        }
+
+        if destinationIsEncrypted,
+           !messageRequestBody.attachments.isEmpty,
+           attachmentPayloadOverrides == nil {
+            // Opaque source attachment payloads must never enter the destination manifest lane.
+            completion?(.failure(E2eeMessageAADError.authenticatedSendLaneUnavailable))
+            return
+        }
+
+        guard let attachmentPayloadOverrides else {
+            persistLocalForwardMessage(
+                messageRequestBody,
+                to: cid,
+                attachments: [],
+                stagingResult: nil,
+                stager: nil,
+                completion: completion
+            )
+            return
+        }
+
+        let stager = ForwardAttachmentSourceStager()
+        stager.stage(
+            attachmentPayloadOverrides,
+            for: cid,
+            messageId: messageRequestBody.id
+        ) { [weak self] result in
+            guard let self else {
+                if case let .success(stagingResult) = result {
+                    stager.removeNewlyCreatedFiles(in: stagingResult)
+                }
+                completion?(.failure(CancellationError()))
+                return
+            }
+            switch result {
+            case let .success(stagingResult):
+                log.info(
+                    "[ATTACHMENT_FORWARD] stage=destination_staging state=completed " +
+                    "attachment_count=\(stagingResult.payloads.count)"
+                )
+                self.persistLocalForwardMessage(
+                    messageRequestBody,
+                    to: cid,
+                    attachments: stagingResult.payloads,
+                    stagingResult: stagingResult,
+                    stager: stager,
+                    completion: completion
+                )
+            case let .failure(error):
+                log.error(
+                    "[ATTACHMENT_FORWARD] stage=destination_staging state=failed " +
+                    "error_type=\(String(reflecting: type(of: error)))"
+                )
+                completion?(.failure(error))
+            }
+        }
+    }
+
+    private func persistLocalForwardMessage(
+        _ messageRequestBody: MessageRequestBody,
+        to cid: ChannelId,
+        attachments: [AnyAttachmentPayload],
+        stagingResult: ForwardAttachmentStagingResult?,
+        stager: ForwardAttachmentSourceStager?,
+        completion: ((Result<ChatMessage?, Error>) -> Void)?
+    ) {
+        var newMessage: ChatMessage?
+        database.write({ session in
+            let dto = try session.createNewMessage(
+                in: cid,
+                messageId: messageRequestBody.id,
+                text: messageRequestBody.text,
+                command: messageRequestBody.command,
+                arguments: messageRequestBody.args,
+                parentMessageId: nil,
+                attachments: attachments,
+                stickerUrl: messageRequestBody.stickerUrl,
+                mentionedUserIds: messageRequestBody.mentionedUserIds,
+                mentionedAll: messageRequestBody.mentionedAll,
+                isSilent: messageRequestBody.isSilent,
+                quotedMessageId: nil,
+                createdAt: nil
+            )
+            dto.forwardCid = messageRequestBody.forwardCid
+            try session.saveMessageDecrypt(
+                payload: E2ePayload(
+                    text: messageRequestBody.text,
+                    attachments: [],
+                    stickerUrl: messageRequestBody.stickerUrl,
+                    authenticatedMetadata: .init(
+                        forwardCid: messageRequestBody.forwardCid,
+                        forwardMessageId: messageRequestBody.forwardMessageId,
+                        forwardParentCid: messageRequestBody.forwardParentCid,
+                        attachmentIds: []
+                    )
+                ),
+                messageId: dto.id,
+                ciphertextHash: nil
+            )
+            dto.localMessageState = .pendingSend
+            newMessage = try dto.asModel()
+        }, completion: { error in
+            if let error {
+                if let stagingResult {
+                    stager?.removeNewlyCreatedFiles(in: stagingResult)
+                }
+                log.error(
+                    "[ATTACHMENT_FORWARD] stage=pending_message state=failed " +
+                    "error_type=\(String(reflecting: type(of: error)))"
+                )
+                completion?(.failure(error))
+            } else {
+                log.info(
+                    "[ATTACHMENT_FORWARD] stage=pending_message state=completed " +
+                    "attachment_count=\(attachments.count)"
+                )
+                completion?(.success(newMessage))
+            }
+        })
     }
 
     /// Deletes the message reaction left by the current user.
@@ -567,7 +748,18 @@ extension ClientError {
     }
 }
 
-private extension DatabaseSession {
+extension DatabaseSession {
+    /// Returns whether the message author is the active user in the message's project.
+    /// A single database may contain identities for multiple projects, so comparing against an
+    /// arbitrary first current-user row is not sufficient.
+    func currentUserIsAuthor(of messageDTO: MessageDTO) throws -> Bool {
+        guard let projectId = messageDTO.channel?.projectId,
+              let currentProjectUser = currentUser?.user(of: projectId) else {
+            throw ClientError.CurrentUserDoesNotExist()
+        }
+        return currentProjectUser.id == messageDTO.user.id
+    }
+
     /// This helper return the message if it can be edited by the current user.
     /// The message entity will be returned if it exists and authored by the current user.
     /// If any of the requirements is not met the error will be thrown.
@@ -576,12 +768,15 @@ private extension DatabaseSession {
     /// - Throws: Either `CurrentUserDoesNotExist`/`MessageDoesNotExist`/
     /// - Returns: The message entity.
     func messageEditableByCurrentUser(_ messageId: MessageId) throws -> MessageDTO {
-        guard currentUser != nil else {
-            throw ClientError.CurrentUserDoesNotExist()
-        }
-
         guard let messageDTO = message(id: messageId) else {
             throw ClientError.MessageDoesNotExist(messageId: messageId)
+        }
+
+        guard try currentUserIsAuthor(of: messageDTO) else {
+            throw ClientError.MessageEditing(
+                messageId: messageId,
+                reason: "message is not authored by the current user"
+            )
         }
 
         return messageDTO

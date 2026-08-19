@@ -97,7 +97,9 @@ open class MessageActionsViewController: _ViewController, UIProvider {
             return []
         }
 
-        switch message.localState {
+        let isAuthoredByCurrentUser = message.isAuthoredByCurrentUser(currentUser)
+
+        switch message.effectiveLocalStateForMessageActions(currentUser: currentUser) {
         case nil:
             var actions: [MessageActionItem] = []
 
@@ -108,7 +110,7 @@ open class MessageActionsViewController: _ViewController, UIProvider {
             let canDeleteOwnMessage = (channel?.canDeleteOwnMessage ?? true)
             let canPinMessage = channel?.canPinMessage ?? channelConfig.pinEnabled
             let canForwardMessage = true
-            let isSentByCurrentUser = message.isSentByCurrentUser
+            let isSentByCurrentUser = isAuthoredByCurrentUser
 
             if canQuoteMessage {
                 actions.append(inlineReplyActionItem())
@@ -130,7 +132,7 @@ open class MessageActionsViewController: _ViewController, UIProvider {
                 actions.append(forwardActionItem())
             }
 
-            if canUpdateOwnMessage && message.isSentByCurrentUser && !message.isSticker {
+            if canUpdateOwnMessage && isAuthoredByCurrentUser && !message.isSticker {
                 actions.append(editActionItem())
             }
 
@@ -143,7 +145,7 @@ open class MessageActionsViewController: _ViewController, UIProvider {
                 actions.append(isPinned ? unPinActionItem() : pinActionItem())
             }
 
-            if canDeleteOwnMessage && message.isSentByCurrentUser {
+            if canDeleteOwnMessage && isAuthoredByCurrentUser {
                 actions.append(deleteActionItem())
             }
 
@@ -152,7 +154,7 @@ open class MessageActionsViewController: _ViewController, UIProvider {
             }
 
             if let channelConfig = channelConfig,
-               channelConfig.mutesEnabled && !message.isSentByCurrentUser {
+               channelConfig.mutesEnabled && !isAuthoredByCurrentUser {
                 let isMuted = currentUser.mutedUsers.map(\.id).contains(message.author.id)
                 actions.append(isMuted ? unmuteActionItem() : muteActionItem())
             }
@@ -165,7 +167,11 @@ open class MessageActionsViewController: _ViewController, UIProvider {
                 deleteActionItem()
             ]
         case .pendingSend,
+             .pendingSendAfterE2eeEpochStale,
+             .sendingAfterE2eeEpochStale,
              .pendingSync,
+             .pendingSyncAfterE2eeEpochStale,
+             .syncingAfterE2eeEpochStale,
              .syncingFailed,
              .deletingFailed,
              .sending,

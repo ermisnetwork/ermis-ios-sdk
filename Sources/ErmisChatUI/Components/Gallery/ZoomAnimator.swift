@@ -31,11 +31,24 @@ open class ZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     open func animateZoomInTransition(using transitionContext: UIViewControllerContextTransitioning) {
         let containerView = transitionContext.containerView
 
+        guard let toVC = transitionContext.viewController(forKey: .to) else {
+            transitionContext.completeTransition(false)
+            return
+        }
         guard
-            let toVC = transitionContext.viewController(forKey: .to),
             let fromVC = transitionContext.viewController(forKey: .from),
             let fromImageView = self.fromImageView
-        else { return }
+        else {
+            // A Channel Info page can be detached or its source cell can be reused while an
+            // E2EE original is resolving. Fall back to a normal modal presentation rather
+            // than leaving UIKit in an unfinished transition.
+            if toVC.view.superview == nil {
+                containerView.addSubview(toVC.view)
+            }
+            toVC.view.alpha = 1
+            transitionContext.completeTransition(!transitionContext.transitionWasCancelled)
+            return
+        }
 
         toVC.view.alpha = 0
         containerView.addSubview(toVC.view)
@@ -120,10 +133,39 @@ open class ZoomAnimator: NSObject, UIViewControllerAnimatedTransitioning {
     open func animateDismiss(using transitionContext: UIViewControllerContextTransitioning) {
         guard
             let toVC = transitionContext.viewController(forKey: .to),
-            let fromVC = transitionContext.viewController(forKey: .from),
-            let fromImageView = self.fromImageView,
-            let toImageView = self.toImageView
-        else { return }
+            let fromVC = transitionContext.viewController(forKey: .from)
+        else {
+            transitionContext.completeTransition(false)
+            return
+        }
+
+        guard let fromImageView = self.fromImageView,
+              let toImageView = self.toImageView else {
+            // The target collection cell is not guaranteed to survive a page change, an
+            // attachment-load failure, or a controller detach. Dismiss normally in that
+            // case; failing to complete this context freezes the gallery and its Close button.
+            if toVC.view.superview == nil {
+                transitionContext.containerView.insertSubview(toVC.view, belowSubview: fromVC.view)
+            }
+            UIView.animate(
+                withDuration: transitionDuration(using: transitionContext),
+                animations: {
+                    fromVC.view.alpha = 0
+                },
+                completion: { _ in
+                    fromVC.view.alpha = 1
+                    if transitionContext.isInteractive {
+                        if transitionContext.transitionWasCancelled {
+                            transitionContext.cancelInteractiveTransition()
+                        } else {
+                            transitionContext.finishInteractiveTransition()
+                        }
+                    }
+                    transitionContext.completeTransition(!transitionContext.transitionWasCancelled)
+                }
+            )
+            return
+        }
         let duration = transitionDuration(using: transitionContext)
 
         UIView.animate(

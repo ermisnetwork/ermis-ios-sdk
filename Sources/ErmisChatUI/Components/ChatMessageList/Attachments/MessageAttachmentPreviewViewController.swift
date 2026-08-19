@@ -11,9 +11,21 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
         didSet { updateContentIfNeeded() }
     }
 
-    public var client: ErmisClient?
+    public var client: ErmisClient? {
+        didSet {
+            // The router can provide content before the client. Re-evaluate an already loaded
+            // controller so an opaque E2EE URL never falls through to WKWebView.
+            guard isViewLoaded else { return }
+            contentDidChanged()
+        }
+    }
 
-    public private(set) lazy var attachmentSaver = client?.attachmentSaver(presentingFrom: self)
+    public private(set) lazy var attachmentSaver = client?.attachmentSaver(
+        presentingFrom: navigationController?.presentingViewController ?? presentingViewController ?? self
+    )
+
+    private var previewResolutionTask: _Concurrency.Task<Void, Never>?
+    private var previewOriginalLease: E2eeAttachmentOriginalLease?
 
     public private(set) lazy var alertRouter = components.alertsRouter.init(rootViewController: self)
 
@@ -88,6 +100,11 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
     }
 
     override open func contentDidChanged() {
+        previewResolutionTask?.cancel()
+        previewResolutionTask = nil
+        webView.stopLoading()
+        previewOriginalLease?.release()
+        previewOriginalLease = nil
         goBackButton.isEnabled = false
         goForwardButton.isEnabled = false
         title = content?.title
@@ -97,7 +114,10 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
             downloadButton.isEnabled = true
         }
 
-        if let url = content?.url {
+        if let fileAttachment = content?.fileAttachment,
+           Self.isOpaqueE2eeURL(fileAttachment.assetURL) {
+            resolveE2eeFilePreview(fileAttachment)
+        } else if let url = content?.url {
             webView.load(URLRequest(url: url))
         } else {
             activityIndicatorView.stopAnimating()
@@ -119,6 +139,11 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
     }
 
     @objc open func close() {
+        previewResolutionTask?.cancel()
+        previewResolutionTask = nil
+        webView.stopLoading()
+        previewOriginalLease?.release()
+        previewOriginalLease = nil
         dismiss(animated: true)
     }
 
@@ -131,16 +156,110 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
         if let channelAttachment = content?.channelAttachment {
             attachmentSaver?.downloadChannelAttachment(attachment: channelAttachment, completion: handleDownloadResult)
         } else if let fileAttachment = content?.fileAttachment {
-            attachmentSaver?.downloadAttachments(attachments: [fileAttachment.asAnyAttachment], completion: handleDownloadResult)
+            let attachment = fileAttachment.asAnyAttachment
+            guard let client, client.requiresVerifiedE2eeOriginal(attachment) else {
+                attachmentSaver?.downloadAttachments(attachments: [attachment], completion: handleDownloadResult)
+                return
+            }
+            guard let attachmentSaver else {
+                handleDownloadResult(ClientError.Unknown("Attachment saver is unavailable"))
+                return
+            }
+
+            // Save is an explicit action and owns an independent requester. It is intentionally
+            // not tied to the preview task, so closing the preview does not discard a requested
+            // export after its verified plaintext is ready.
+            _Concurrency.Task { [weak self, client, attachmentSaver] in
+                do {
+                    let lease = try await client.acquireAttachmentForViewing(attachment)
+                    try _Concurrency.Task.checkCancellation()
+                    attachmentSaver.saveVerifiedAttachment(
+                        at: lease.localURL,
+                        attachment: attachment,
+                        completion: { error in
+                            lease.release()
+                            handleDownloadResult(error)
+                        }
+                    )
+                } catch {
+                    log.error("[E2EE_FILE_PREVIEW] operation=save state=failed error=\(type(of: error))")
+                    DispatchQueue.main.async {
+                        self?.downloadButton.isEnabled = true
+                        handleDownloadResult(error)
+                    }
+                }
+            }
         } else {
             handleDownloadResult(ClientError.Unknown("Attachment not valid for download"))
         }
+    }
+
+    private func resolveE2eeFilePreview(_ fileAttachment: MessageFileAttachment) {
+        guard let client else {
+            // Client assignment is allowed to arrive after content assignment. Keep the opaque
+            // reference inert until the router supplies the authenticated resolver.
+            activityIndicatorView.stopAnimating()
+            downloadButton.isEnabled = false
+            return
+        }
+
+        let attachment = fileAttachment.asAnyAttachment
+        activityIndicatorView.startAnimating()
+        downloadButton.isEnabled = true
+        previewResolutionTask = _Concurrency.Task { [weak self, client] in
+            do {
+                let lease = try await client.acquireAttachmentForViewing(attachment)
+                try _Concurrency.Task.checkCancellation()
+                await MainActor.run {
+                    guard let self else {
+                        lease.release()
+                        return
+                    }
+                    self.previewResolutionTask = nil
+                    self.previewOriginalLease?.release()
+                    self.previewOriginalLease = lease
+                    self.webView.loadFileURL(
+                        lease.localURL,
+                        allowingReadAccessTo: lease.localURL.deletingLastPathComponent()
+                    )
+                }
+            } catch is CancellationError {
+                await MainActor.run {
+                    self?.previewResolutionTask = nil
+                    self?.activityIndicatorView.stopAnimating()
+                }
+            } catch {
+                log.error("[E2EE_FILE_PREVIEW] operation=preview state=failed error=\(type(of: error))")
+                await MainActor.run {
+                    self?.previewResolutionTask = nil
+                    self?.activityIndicatorView.stopAnimating()
+                }
+            }
+        }
+    }
+
+    static func isOpaqueE2eeURL(_ url: URL?) -> Bool {
+        url?.scheme?.lowercased() == "ermis-e2ee-attachment"
     }
 
     // MARK: - WKNavigationDelegate
 
     public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         activityIndicatorView.startAnimating()
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard !Self.isOpaqueE2eeURL(navigationAction.request.url) else {
+            log.error("[E2EE_FILE_PREVIEW] operation=navigation state=blocked_opaque_url")
+            activityIndicatorView.stopAnimating()
+            decisionHandler(.cancel)
+            return
+        }
+        decisionHandler(.allow)
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -154,6 +273,19 @@ open class MessageAttachmentPreviewViewController: _ViewController, WKNavigation
 
         goBackButton.isEnabled = webView.canGoBack
         goForwardButton.isEnabled = webView.canGoForward
+    }
+
+    public func webView(
+        _ webView: WKWebView,
+        didFailProvisionalNavigation navigation: WKNavigation!,
+        withError error: Error
+    ) {
+        activityIndicatorView.stopAnimating()
+    }
+
+    deinit {
+        previewResolutionTask?.cancel()
+        previewOriginalLease?.release()
     }
 }
 
