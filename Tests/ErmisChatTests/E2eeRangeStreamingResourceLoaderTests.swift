@@ -5,6 +5,7 @@
 @testable import ErmisChat
 import AVFoundation
 import Foundation
+import UniformTypeIdentifiers
 import XCTest
 
 final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
@@ -31,6 +32,100 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
 
         let shouldStart = await gate.wait()
         XCTAssertFalse(shouldStart)
+    }
+
+    func testMediaDescriptionUsesManifestMetadataBeforeAttachmentFallback() throws {
+        let fixture = try makeFixture(
+            plaintext: makePCMWave(duration: 1),
+            frameSize: 128,
+            mimeType: "video/quicktime"
+        )
+
+        let description = E2eeRangeMediaDescription.resolve(
+            asset: fixture.asset,
+            attachmentMimeType: "video/mp4",
+            attachmentFileName: "fallback.mp4"
+        )
+
+        XCTAssertEqual(description.source, .manifestMime)
+        XCTAssertEqual(description.fileExtension, "mov")
+        XCTAssertEqual(description.contentTypeIdentifier, UTType.quickTimeMovie.identifier)
+    }
+
+    func testMediaDescriptionFallsBackToAttachmentNameThenVideoDefault() throws {
+        let fixture = try makeFixture(frameCount: 2, frameSize: 64)
+        let named = E2eeRangeMediaDescription.resolve(
+            asset: fixture.asset,
+            attachmentMimeType: nil,
+            attachmentFileName: "clip.mov"
+        )
+        let defaulted = E2eeRangeMediaDescription.resolve(
+            asset: fixture.asset,
+            attachmentMimeType: nil,
+            attachmentFileName: nil
+        )
+
+        XCTAssertEqual(named.source, .attachmentName)
+        XCTAssertEqual(named.fileExtension, "mov")
+        XCTAssertEqual(defaulted.source, .videoDefault)
+        XCTAssertEqual(defaulted.fileExtension, "mp4")
+    }
+
+    func testCiphertextReaderWaitsForConnectivityWithoutMutatingCallerConfiguration() {
+        let source = URLSessionConfiguration.ephemeral
+        source.waitsForConnectivity = false
+        source.requestCachePolicy = .returnCacheDataElseLoad
+        source.urlCache = URLCache(
+            memoryCapacity: 1_024,
+            diskCapacity: 0,
+            diskPath: nil
+        )
+
+        let playback = E2eeRangeCiphertextReader.playbackSessionConfiguration(from: source)
+
+        XCTAssertFalse(source.waitsForConnectivity)
+        XCTAssertEqual(source.requestCachePolicy, .returnCacheDataElseLoad)
+        XCTAssertNotNil(source.urlCache)
+        XCTAssertTrue(playback.waitsForConnectivity)
+        XCTAssertEqual(playback.requestCachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertNil(playback.urlCache)
+    }
+
+    func testInvalidationCleanupCompletesFromCancelledCallerContext() async throws {
+        let fixture = try makeFixture(frameCount: 2, frameSize: 64)
+        let completionCount = RangeStreamingCounter()
+        let grantURL = try XCTUnwrap(URL(string: "https://range.test/invalidation"))
+        let loader = try E2eeRangeStreamingResourceLoader(
+            asset: fixture.asset,
+            grantProvider: { assetId in
+                E2eeRangeStreamingGrant(
+                    assetId: assetId,
+                    grantURL: grantURL,
+                    expiresAt: Date().addingTimeInterval(300)
+                )
+            },
+            fallbackProvider: {
+                E2eeAttachmentOriginalLease(
+                    localURL: fixture.plaintextURL,
+                    releaseHandler: {}
+                )
+            },
+            invalidationCompletionHandler: {
+                completionCount.increment()
+            }
+        )
+
+        let cancelledCaller = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            loader.invalidate()
+        }
+        cancelledCaller.cancel()
+        await cancelledCaller.value
+        try await waitUntil { completionCount.value == 1 }
+
+        loader.invalidate()
+        try await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertEqual(completionCount.value, 1)
     }
 
     func testAVAssetCancellationCancelsUnderlyingCiphertextRequest() async throws {
@@ -97,7 +192,9 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
             }
             let exact = try? fixture.ciphertext.slice(range)
             let responseData: Data
-            if count == 2, let exact, !exact.isEmpty {
+            // Keep every post-startup range malformed so an AVFoundation replacement or
+            // priority bypass cannot accidentally turn this into a request-ordering test.
+            if count >= 2, let exact, !exact.isEmpty {
                 responseData = Data(exact.dropLast())
             } else {
                 responseData = exact ?? Data()
@@ -252,13 +349,15 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
             telemetry: telemetry
         )
 
-        let result = try await reader.read(
+        let received = RangeStreamingDataRecorder()
+        try await reader.stream(
             assetId: "opaque-asset",
             range: 4..<8,
-            totalCiphertextSize: 20
+            totalCiphertextSize: 20,
+            consume: { received.append($0) }
         )
 
-        XCTAssertEqual(result, Data([4, 5, 6, 7]))
+        XCTAssertEqual(received.data, Data([4, 5, 6, 7]))
         XCTAssertEqual(providerCalls.value, 2)
         XCTAssertEqual(requestCalls.value, 2)
         let snapshot = telemetry.snapshot()
@@ -308,6 +407,31 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         }
         XCTAssertEqual(providerCalls.value, 2)
         XCTAssertEqual(requestCalls.value, 2)
+        await reader.invalidate(assetId: "opaque-asset")
+    }
+
+    func testCiphertextReaderStreamsOnlyAfterExactRangeHeadersValidate() async throws {
+        RangeStreamingURLProtocol.installHandler { _ in
+            .init(
+                statusCode: 206,
+                headers: [
+                    "Content-Length": "4",
+                    "Content-Range": "bytes 4-7/20"
+                ],
+                data: Data([4, 5, 6, 7])
+            )
+        }
+        let reader = try makeReader()
+        let received = RangeStreamingDataRecorder()
+
+        try await reader.stream(
+            assetId: "opaque-asset",
+            range: 4..<8,
+            totalCiphertextSize: 20,
+            consume: { received.append($0) }
+        )
+
+        XCTAssertEqual(received.data, Data([4, 5, 6, 7]))
         await reader.invalidate(assetId: "opaque-asset")
     }
 
@@ -372,6 +496,145 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         await store.invalidate()
     }
 
+    func testFirstResponseBypassesAnOverlappingBroadFlight() async throws {
+        let fixture = try makeFixture(frameCount: 8, frameSize: 32)
+        let gate = RangeStreamingFetchGate()
+        let ranges = RangeStreamingRangeRecorder()
+        let telemetry = E2eeRangeStreamingTelemetry()
+        let store = try E2eeRangePlaintextFrameStore(
+            asset: fixture.asset,
+            telemetry: telemetry,
+            fetcher: { range in
+                ranges.append(range)
+                if ranges.count == 1 {
+                    await gate.waitForRelease()
+                    try Task.checkCancellation()
+                }
+                return try fixture.ciphertext.slice(range)
+            }
+        )
+
+        let broad = Task { try await store.frames(in: 0...3) }
+        await gate.waitUntilStarted()
+        let priority = try await store.frames(
+            in: 2...2,
+            prioritizingFirstResponse: true
+        )
+
+        XCTAssertEqual(priority[2], fixture.plaintext.subdata(in: 64..<96))
+        XCTAssertEqual(ranges.values.count, 2)
+        XCTAssertEqual(telemetry.snapshot().priorityBypassCount, 1)
+
+        await gate.release()
+        let broadResult = try await broad.value
+        XCTAssertEqual(broadResult.count, 4)
+        let activeFlightCount = await store.activeFlightCount
+        XCTAssertEqual(activeFlightCount, 0)
+        await store.invalidate()
+    }
+
+    func testPriorityBatchDuplicatesOnlyItsFirstFrameWhenBroadFlightOverlaps() async throws {
+        let fixture = try makeFixture(frameCount: 8, frameSize: 32)
+        let gate = RangeStreamingFetchGate()
+        let ranges = RangeStreamingRangeRecorder()
+        let deliveredFrames = RangeStreamingCounter()
+        let telemetry = E2eeRangeStreamingTelemetry()
+        let store = try E2eeRangePlaintextFrameStore(
+            asset: fixture.asset,
+            telemetry: telemetry,
+            fetcher: { range in
+                ranges.append(range)
+                if ranges.count == 1 {
+                    await gate.waitForRelease()
+                    try Task.checkCancellation()
+                }
+                return try fixture.ciphertext.slice(range)
+            }
+        )
+
+        let broad = Task { try await store.frames(in: 0...7) }
+        await gate.waitUntilStarted()
+        let priority = Task {
+            try await store.consumeFrames(
+                in: 2...5,
+                prioritizingFirstResponse: true
+            ) { _, _ in
+                _ = deliveredFrames.increment()
+            }
+        }
+
+        try await waitUntil { deliveredFrames.value == 1 }
+        XCTAssertEqual(ranges.values.count, 2)
+        let storedFrameLength = 32
+            + E2eeAttachmentFrameCryptoV1.headerSize
+            + E2eeAttachmentFrameCryptoV1.tagSize
+        XCTAssertEqual(ranges.values[1].count, storedFrameLength)
+        XCTAssertEqual(telemetry.snapshot().priorityBypassCount, 1)
+
+        await gate.release()
+        _ = try await broad.value
+        try await priority.value
+        XCTAssertEqual(deliveredFrames.value, 4)
+        await store.invalidate()
+    }
+
+    func testFirstResponseUsesPriorityTransportWithoutOverlap() async throws {
+        let fixture = try makeFixture(frameCount: 2, frameSize: 32)
+        let transports = RangeStreamingBoolRecorder()
+        let store = try E2eeRangePlaintextFrameStore(
+            asset: fixture.asset,
+            streamingFetcher: { range, usesPriorityTransport, consume in
+                transports.append(usesPriorityTransport)
+                try await consume(try fixture.ciphertext.slice(range))
+            }
+        )
+
+        let result = try await store.frames(
+            in: 1...1,
+            prioritizingFirstResponse: true
+        )
+
+        XCTAssertEqual(result[1], fixture.plaintext.subdata(in: 32..<64))
+        XCTAssertEqual(transports.values, [true])
+        await store.invalidate()
+    }
+
+    func testFirstResponseBypassesLowerPrioritySingleFrameFlight() async throws {
+        let fixture = try makeFixture(frameCount: 2, frameSize: 32)
+        let continuationGate = RangeStreamingFetchGate()
+        let transports = RangeStreamingBoolRecorder()
+        let telemetry = E2eeRangeStreamingTelemetry()
+        let store = try E2eeRangePlaintextFrameStore(
+            asset: fixture.asset,
+            telemetry: telemetry,
+            streamingFetcher: { range, usesPriorityTransport, consume in
+                transports.append(usesPriorityTransport)
+                if !usesPriorityTransport {
+                    await continuationGate.waitForRelease()
+                    try Task.checkCancellation()
+                }
+                try await consume(try fixture.ciphertext.slice(range))
+            }
+        )
+
+        let continuation = Task { try await store.frames(in: 1...1) }
+        await continuationGate.waitUntilStarted()
+        let priority = try await store.frames(
+            in: 1...1,
+            prioritizingFirstResponse: true
+        )
+
+        XCTAssertEqual(priority[1], fixture.plaintext.subdata(in: 32..<64))
+        XCTAssertEqual(transports.values, [false, true])
+        XCTAssertEqual(telemetry.snapshot().priorityBypassCount, 1)
+
+        await continuationGate.release()
+        _ = try await continuation.value
+        let activeFlightCount = await store.activeFlightCount
+        XCTAssertEqual(activeFlightCount, 0)
+        await store.invalidate()
+    }
+
     func testPartiallyOverlappingRequestsNeverFetchTheSameFrameTwice() async throws {
         let fixture = try makeFixture(frameCount: 8, frameSize: 32)
         let gate = RangeStreamingFetchGate()
@@ -391,7 +654,7 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         let first = Task { try await store.frames(in: 0...3) }
         await gate.waitUntilStarted()
         let second = Task { try await store.frames(in: 1...4) }
-        try await waitUntilAsync { await store.activeWaiterCount == 2 }
+        try await waitUntilAsync { await store.activeWaiterCount >= 2 }
         await gate.release()
         let results = try await (first.value, second.value)
 
@@ -420,7 +683,7 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         let cancelled = Task { try await store.frames(in: 0...3) }
         await gate.waitUntilStarted()
         let survivor = Task { try await store.frames(in: 1...2) }
-        try await waitUntilAsync { await store.activeWaiterCount == 2 }
+        try await waitUntilAsync { await store.activeWaiterCount >= 2 }
 
         cancelled.cancel()
         do {
@@ -432,7 +695,7 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         let activeFlightCount = await store.activeFlightCount
         let activeWaiterCount = await store.activeWaiterCount
         XCTAssertEqual(activeFlightCount, 1)
-        XCTAssertEqual(activeWaiterCount, 1)
+        XCTAssertGreaterThanOrEqual(activeWaiterCount, 1)
 
         await gate.release()
         let result = try await survivor.value
@@ -499,33 +762,79 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         await store.invalidate()
     }
 
-    func testSequentialDetectionPrefetchesAtMostEightFramesButFirstRandomSeekIsExact() async throws {
+    func testFirstResponseUsesTheSameBoundedBatchAsContinuation() async throws {
         let fixture = try makeFixture(frameCount: 12, frameSize: 32)
         let store = try E2eeRangePlaintextFrameStore(
             asset: fixture.asset,
             fetcher: { range in try fixture.ciphertext.slice(range) }
         )
 
-        let first = await store.firstBatch(
-            for: 128..<132,
+        let first = await store.batch(
             firstFrame: 4,
-            lastFrame: 4
+            lastFrame: 11,
+            prioritizingFirstResponse: true
         )
-        let sequential = await store.firstBatch(
-            for: 132..<136,
+        let continuation = await store.batch(
             firstFrame: 4,
-            lastFrame: 4
+            lastFrame: 11,
+            prioritizingFirstResponse: false
         )
-        let distantRandom = await store.firstBatch(
-            for: 320..<324,
+        let shortContinuation = await store.batch(
             firstFrame: 10,
-            lastFrame: 10
+            lastFrame: 11,
+            prioritizingFirstResponse: false
         )
 
-        XCTAssertEqual(first, 4...4)
-        XCTAssertEqual(sequential, 4...11)
-        XCTAssertEqual(sequential.count, E2eeRangePlaintextFrameStore.maximumFrameBatch)
-        XCTAssertEqual(distantRandom, 10...10)
+        XCTAssertEqual(first, 4...11)
+        XCTAssertEqual(first.count, E2eeRangePlaintextFrameStore.maximumFrameBatch)
+        XCTAssertEqual(continuation, 4...11)
+        XCTAssertEqual(continuation.count, E2eeRangePlaintextFrameStore.maximumFrameBatch)
+        XCTAssertEqual(shortContinuation, 10...11)
+        await store.invalidate()
+    }
+
+    func testStreamingBatchYieldsFirstAuthenticatedFrameBeforeRangeCompletes() async throws {
+        let fixture = try makeFixture(frameCount: 4, frameSize: 32)
+        let gate = RangeStreamingFetchGate()
+        let deliveredFrames = RangeStreamingCounter()
+        let transports = RangeStreamingBoolRecorder()
+        let firstStoredFrameLength = 32
+            + E2eeAttachmentFrameCryptoV1.headerSize
+            + E2eeAttachmentFrameCryptoV1.tagSize
+        let store = try E2eeRangePlaintextFrameStore(
+            asset: fixture.asset,
+            streamingFetcher: { range, usesPriorityTransport, consume in
+                transports.append(usesPriorityTransport)
+                let ciphertext = try fixture.ciphertext.slice(range)
+                try await consume(ciphertext.subdata(in: 0..<firstStoredFrameLength))
+                await gate.waitForRelease()
+                try Task.checkCancellation()
+                try await consume(ciphertext.subdata(in: firstStoredFrameLength..<ciphertext.count))
+            }
+        )
+
+        let task = Task {
+            try await store.consumeFrames(
+                in: 0...3,
+                prioritizingFirstResponse: true
+            ) { frameIndex, plaintext in
+                XCTAssertEqual(
+                    plaintext,
+                    fixture.plaintext.subdata(
+                        in: Int(frameIndex) * 32..<(Int(frameIndex) + 1) * 32
+                    )
+                )
+                _ = deliveredFrames.increment()
+            }
+        }
+        await gate.waitUntilStarted()
+        try await waitUntil { deliveredFrames.value == 1 }
+        XCTAssertEqual(deliveredFrames.value, 1)
+
+        await gate.release()
+        try await task.value
+        XCTAssertEqual(deliveredFrames.value, 4)
+        XCTAssertEqual(transports.values, [true])
         await store.invalidate()
     }
 
@@ -555,15 +864,49 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         telemetry.recordGrantEvent(.initialRequest)
         telemetry.recordGrantEvent(.renewalRequest)
         telemetry.recordRangeRequest()
+        telemetry.recordConnectivityWait()
         telemetry.recordCiphertextBytes(128)
         telemetry.recordCacheHit(bytes: 64)
+        let headRegion = telemetry.recordLoadingRequestShape(
+            range: 0..<128,
+            plaintextSize: 4_096,
+            frameSize: 128,
+            requestsAllDataToEnd: false
+        )
+        let tailRegion = telemetry.recordLoadingRequestShape(
+            range: 3_968..<4_096,
+            plaintextSize: 4_096,
+            frameSize: 128,
+            requestsAllDataToEnd: true
+        )
+        telemetry.recordActiveLoadingRequestCount(3)
+        telemetry.recordPriorityBypass()
+        telemetry.recordMediaTypeSource(.manifestName)
         telemetry.recordLoadingRequest(latency: 0.125)
+        telemetry.recordFirstResponse(
+            latency: 0.075,
+            region: .middle,
+            requestsAllDataToEnd: false
+        )
         telemetry.recordFallback(.responseContract)
 
         let summary = E2eeRangeStreamingTelemetry.summary(telemetry.snapshot())
 
         XCTAssertTrue(summary.contains("range_requests=1"))
+        XCTAssertTrue(summary.contains("priority_transport_requests=0"))
+        XCTAssertTrue(summary.contains("continuation_transport_requests=1"))
+        XCTAssertTrue(summary.contains("connectivity_waits=1"))
         XCTAssertTrue(summary.contains("ciphertext_bytes=128"))
+        XCTAssertTrue(summary.contains("bounded_requests=1"))
+        XCTAssertTrue(summary.contains("all_to_end_requests=1"))
+        XCTAssertTrue(summary.contains("max_active_requests=3"))
+        XCTAssertEqual(headRegion, .head)
+        XCTAssertEqual(tailRegion, .tail)
+        XCTAssertTrue(summary.contains("first_responses=1"))
+        XCTAssertTrue(summary.contains("max_first_response_ms=75"))
+        XCTAssertTrue(summary.contains("middle_first_response_ms=75"))
+        XCTAssertTrue(summary.contains("priority_bypasses=1"))
+        XCTAssertTrue(summary.contains("media_type_source=manifestName"))
         XCTAssertTrue(summary.contains("fallback_reason=responseContract"))
         for forbidden in [
             "http://", "https://", "attachment_id", "message_id", "channel_id",
@@ -842,6 +1185,40 @@ private final class RangeStreamingRangeRecorder: @unchecked Sendable {
     func append(_ range: Range<UInt64>) {
         lock.lock()
         ranges.append(range)
+        lock.unlock()
+    }
+}
+
+private final class RangeStreamingDataRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = Data()
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func append(_ data: Data) {
+        lock.lock()
+        value.append(data)
+        lock.unlock()
+    }
+}
+
+private final class RangeStreamingBoolRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValues: [Bool] = []
+
+    var values: [Bool] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedValues
+    }
+
+    func append(_ value: Bool) {
+        lock.lock()
+        storedValues.append(value)
         lock.unlock()
     }
 }

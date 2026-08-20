@@ -4,6 +4,29 @@
 
 import Foundation
 
+enum URLRequestDiagnosticState: String {
+    case started
+    case resumed
+    case succeeded
+    case failed
+}
+
+private let privacySafeHTTPMethods: Set<String> = [
+    "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"
+]
+
+extension URLRequest {
+    /// A bounded request summary safe for production diagnostics.
+    ///
+    /// Deliberately omits the URL, query, headers, body, response, and raw error. Those fields can
+    /// contain credentials, presigned storage grants, push tokens, and user/content identifiers.
+    func privacySafeDiagnosticSummary(state: URLRequestDiagnosticState) -> String {
+        let normalizedMethod = httpMethod?.uppercased() ?? "UNKNOWN"
+        let method = privacySafeHTTPMethods.contains(normalizedMethod) ? normalizedMethod : "OTHER"
+        return "[API_REQUEST] state=\(state.rawValue) method=\(method)"
+    }
+}
+
 public
 extension URLRequest {
     func cURL(pretty: Bool = false) -> String {

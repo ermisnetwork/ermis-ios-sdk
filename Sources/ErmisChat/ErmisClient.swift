@@ -693,16 +693,27 @@ public class ErmisClient {
         return lease
     }
 
-    /// Returns an AVAsset-backed playback lease. When the independent range flag is disabled or
-    /// the attachment is not an E2EE opaque asset this simply wraps the verified local-original
-    /// lane. When enabled, AVFoundation receives authenticated plaintext ranges and transparently
-    /// falls back to that same full download if range transport fails.
+    /// Returns an AVAsset-backed playback lease. Every E2EE opaque video uses authenticated
+    /// plaintext ranges by default, independently of file size or duration. The verified
+    /// local-original lane remains available for explicit rollback, non-E2EE assets, and
+    /// transparent fallback when range transport fails.
     public func acquireVideoAttachmentForPlayback(
         _ attachment: AnyMessageAttachment,
         progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void = { _ in }
     ) async throws -> E2eeAttachmentPlaybackLease {
-        guard E2eeRangeStreamingFeatureFlag.isEnabled,
-              E2eeAttachmentOriginalDownloadCoordinator.isOpaqueE2eeAttachment(attachment) else {
+        let isOpaqueE2eeVideo = E2eeAttachmentOriginalDownloadCoordinator
+            .isOpaqueE2eeAttachment(attachment)
+        let usesRangeStreaming = E2eeVideoPlaybackPolicy.usesRangeStreaming(
+            isOpaqueE2eeVideo: isOpaqueE2eeVideo,
+            clientEnabled: config.isE2eeRangeStreamingEnabled,
+            processEnabled: E2eeRangeStreamingFeatureFlag.isEnabled
+        )
+        guard usesRangeStreaming else {
+            if isOpaqueE2eeVideo {
+                log.info("[E2EE_VIDEO_PLAYBACK] transport=full_download reason=rollback_disabled")
+            } else {
+                log.info("[E2EE_VIDEO_PLAYBACK] transport=full_download reason=non_opaque")
+            }
             let original = try await acquireAttachmentForViewing(attachment, progress: progress)
             return E2eeAttachmentPlaybackLease(
                 asset: AVURLAsset(url: original.localURL),
@@ -710,6 +721,7 @@ public class ErmisClient {
             )
         }
 
+        log.info("[E2EE_VIDEO_PLAYBACK] transport=range")
         let descriptor = try await e2eeAttachmentOriginalDownloadCoordinator
             .rangeStreamingDescriptor(for: attachment)
         let loader = try E2eeRangeStreamingResourceLoader(
@@ -738,7 +750,9 @@ public class ErmisClient {
             fallbackProvider: { [weak self] in
                 guard let self else { throw URLError(.cancelled) }
                 return try await self.acquireAttachmentForViewing(attachment, progress: progress)
-            }
+            },
+            attachmentMimeType: attachment.mimetype,
+            attachmentFileName: attachment.title
         )
         let asset = loader.makeAsset()
         asset.resourceLoader.setDelegate(

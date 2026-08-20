@@ -160,6 +160,13 @@ public struct ErmisClientConfig {
     /// fails before a storage PUT can have succeeded. It never falls back after an ambiguous PUT.
     public var allowsLegacyStandardUploadFallback = true
 
+    /// Uses authenticated byte-range decryption for every opaque E2EE video playback.
+    ///
+    /// This is enabled by default and does not depend on file size or duration. Set it to `false`
+    /// to roll playback back to the verified whole-original download lane. Explicit downloads,
+    /// sharing, forwarding, and range transport failures continue to use the whole-original lane.
+    public var isE2eeRangeStreamingEnabled = true
+
     /// Returns the largest attachment plaintext accepted by the client.
     ///
     /// Bellboy accepts attachment ciphertext up to 2 GiB. The client limit is slightly

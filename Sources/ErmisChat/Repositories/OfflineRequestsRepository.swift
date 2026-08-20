@@ -82,7 +82,7 @@ class OfflineRequestsRepository {
             }
 
             guard let endpoint = try? JSONDecoder.ermis.decode(DataEndpoint.self, from: endpoint) else {
-                log.error("Could not decode queued request \(id)", subsystems: .offlineSupport)
+                log.error("[OFFLINE_REQUEST] state=decode_failed", subsystems: .offlineSupport)
                 deleteQueuedRequestAndComplete()
                 continue
             }
@@ -91,14 +91,14 @@ class OfflineRequestsRepository {
             let shouldBeDiscarded = hoursQueued > Double(maxHoursThreshold)
 
             guard endpoint.shouldBeQueuedOffline && !shouldBeDiscarded else {
-                log.error("Queued request for /\(endpoint.path.value) should not be queued", subsystems: .offlineSupport)
+                log.error("[OFFLINE_REQUEST] state=discarded reason=ineligible_or_expired", subsystems: .offlineSupport)
                 deleteQueuedRequestAndComplete()
                 continue
             }
 
-            log.info("Executing queued offline request for /\(endpoint.path)", subsystems: .offlineSupport)
+            log.info("[OFFLINE_REQUEST] state=executing", subsystems: .offlineSupport)
             apiClient.recoveryRequest(endpoint: endpoint) { [weak self] result in
-                log.info("Completed queued offline request /\(endpoint.path)", subsystems: .offlineSupport)
+                log.info("[OFFLINE_REQUEST] state=completed", subsystems: .offlineSupport)
                 switch result {
                 case let .success(data):
                     self?.performDatabaseRecoveryActionsUponSuccess(
@@ -108,16 +108,10 @@ class OfflineRequestsRepository {
                     )
                 case .failure(_ as ClientError.ConnectionError):
                     // If we failed because there is still no successful connection, we don't remove it from the queue
-                    log.info(
-                        "Keeping offline request /\(endpoint.path) as there is no connection",
-                        subsystems: .offlineSupport
-                    )
+                    log.info("[OFFLINE_REQUEST] state=retained reason=network_unavailable", subsystems: .offlineSupport)
                     leave()
-                case let .failure(error):
-                    log.info(
-                        "Request for /\(endpoint.path) failed: \(error)",
-                        subsystems: .offlineSupport
-                    )
+                case .failure:
+                    log.info("[OFFLINE_REQUEST] state=failed", subsystems: .offlineSupport)
                     deleteQueuedRequestAndComplete()
                 }
             }
@@ -171,14 +165,14 @@ class OfflineRequestsRepository {
         let date = Date()
         retryQueue.async { [database] in
             guard let data = try? JSONEncoder.ermis.encode(endpoint) else {
-                log.error("Could not encode queued request for /\(endpoint.path)", subsystems: .offlineSupport)
+                log.error("[OFFLINE_REQUEST] state=encode_failed", subsystems: .offlineSupport)
                 completion?()
                 return
             }
 
             database.write { _ in
                 QueuedRequestDTO.createRequest(date: date, endpoint: data, context: database.writableContext)
-                log.info("Queued request for /\(endpoint.path)", subsystems: .offlineSupport)
+                log.info("[OFFLINE_REQUEST] state=queued", subsystems: .offlineSupport)
                 completion?()
             }
         }

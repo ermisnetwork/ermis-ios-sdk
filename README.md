@@ -306,6 +306,33 @@ file it resolves the opaque reference first and presents the verified plaintext 
 document picker; it never forwards `ermis-e2ee-attachment://...` to the generic HTTP downloader.
 Standard attachment downloads keep their existing behavior.
 
+#### E2EE video range playback
+
+The built-in gallery uses authenticated byte-range playback for every opaque E2EE video by
+default. Selection does not depend on file size or duration: AVFoundation requests plaintext
+ranges, the SDK maps them to framed ciphertext, and only verified frames enter the bounded playback
+cache. The custom asset URL carries a sanitized media extension and its content UTI is resolved
+from authenticated manifest metadata first, then attachment metadata, with an MP4 video fallback;
+this prevents missing MIME metadata from forcing extension-less media probing. Explicit Download,
+Save, Share, and Forward operations still acquire a verified whole original because their consumers
+require a complete local file.
+
+Hosts can retain a per-client rollback while completing their device matrix:
+
+```swift
+var config = ErmisClientConfig(
+    apiKeyString: apiKey,
+    endpointEnviroment: environment
+)
+config.isE2eeRangeStreamingEnabled = false
+```
+
+At process level, an absent `ERMIS_E2EE_RANGE_STREAMING_ENABLED` value uses the default-on policy;
+`1` explicitly enables it, while any other explicit value disables it. Range authorization,
+response validation, or authenticated-frame failures transparently continue from the verified
+whole-original fallback. Keep the fallback and rollback controls available until real R2/device
+startup, seek, lifecycle, and network-recovery gates pass.
+
 #### E2EE attachments in Channel Info
 
 Channel Info for an effectively encrypted channel must use Bellboy's E2EE attachment projection

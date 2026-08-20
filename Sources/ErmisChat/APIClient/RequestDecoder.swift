@@ -23,15 +23,14 @@ protocol RequestDecoder {
 struct DefaultRequestDecoder: RequestDecoder {
     func decodeRequestResponse<ResponseType: Decodable>(data: Data?, response: URLResponse?, error: Error?) throws -> ResponseType {
         // Handle the error
-        guard error == nil else {
-            let error = error!
+        if let error {
             switch (error as NSError).code {
             case NSURLErrorCancelled:
                 log.info("The request was cancelled.", subsystems: .httpRequests)
             case NSURLErrorNetworkConnectionLost:
                 log.info("The network connection was lost.", subsystems: .httpRequests)
             default:
-                log.error(error, subsystems: .httpRequests)
+                log.error("[API_REQUEST] state=transport_failed category=network", subsystems: .httpRequests)
             }
 
             throw error
@@ -42,7 +41,7 @@ struct DefaultRequestDecoder: RequestDecoder {
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw ClientError.Unexpected("Expecting `HTTPURLResponse` but received: \(response?.description ?? "nil").")
+            throw ClientError.Unexpected("Expected an HTTP response.")
         }
 
 //        log.debug("URL request response: \(httpResponse), data:\n\(data.debugPrettyPrintedJSON))", subsystems: .httpRequests)
@@ -58,7 +57,7 @@ struct DefaultRequestDecoder: RequestDecoder {
             
             log
                 .error(
-                    "API request failed with status code: \(httpResponse.statusCode), code: \(ermisApiError.code) response:\n\(data.debugPrettyPrintedJSON))",
+                    "[API_REQUEST] state=server_failed http_status=\(httpResponse.statusCode) api_code=\(ermisApiError.code)",
                     subsystems: .httpRequests
                 )
             throw ClientError(with: ermisApiError)
@@ -82,7 +81,7 @@ struct DefaultRequestDecoder: RequestDecoder {
             let decodedPayload = try JSONDecoder.default.decode(ResponseType.self, from: data)
             return decodedPayload
         } catch {
-            log.error(error, subsystems: .httpRequests)
+            log.error("[API_REQUEST] state=decode_failed category=response_schema", subsystems: .httpRequests)
             throw error
         }
     }
@@ -96,7 +95,7 @@ struct DefaultRequestDecoder: RequestDecoder {
             let decodedPayload = try JSONDecoder.default.decode(ResponseType.self, from: data)
             return decodedPayload
         } catch {
-            log.error(error, subsystems: .httpRequests)
+            log.error("[API_REQUEST] state=decode_failed category=sse_schema", subsystems: .httpRequests)
             throw error
         }
     }

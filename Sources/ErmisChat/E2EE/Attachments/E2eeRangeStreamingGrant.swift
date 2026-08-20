@@ -4,11 +4,34 @@
 
 import Foundation
 
-/// Range playback is an independent rollback lane. It remains off unless a host process opts in
-/// explicitly; ordinary SDK and production builds therefore keep using verified full downloads.
+/// Process-wide rollback switch for E2EE video range playback.
+///
+/// Range playback is enabled when the environment override is absent. Existing development and
+/// deployment configurations that explicitly set `ERMIS_E2EE_RANGE_STREAMING_ENABLED=1` remain
+/// enabled, while any other explicit value disables the lane. Hosts can also disable range
+/// playback per client through `ErmisClientConfig.isE2eeRangeStreamingEnabled`.
 enum E2eeRangeStreamingFeatureFlag {
+    static let environmentKey = "ERMIS_E2EE_RANGE_STREAMING_ENABLED"
+
     static var isEnabled: Bool {
-        ProcessInfo.processInfo.environment["ERMIS_E2EE_RANGE_STREAMING_ENABLED"] == "1"
+        isEnabled(environment: ProcessInfo.processInfo.environment)
+    }
+
+    static func isEnabled(environment: [String: String]) -> Bool {
+        guard let override = environment[environmentKey] else { return true }
+        return override == "1"
+    }
+}
+
+/// Central playback selector. File size and duration are intentionally absent: every opaque E2EE
+/// video follows the same range policy, while non-video download/export paths stay unchanged.
+enum E2eeVideoPlaybackPolicy {
+    static func usesRangeStreaming(
+        isOpaqueE2eeVideo: Bool,
+        clientEnabled: Bool,
+        processEnabled: Bool
+    ) -> Bool {
+        isOpaqueE2eeVideo && clientEnabled && processEnabled
     }
 }
 

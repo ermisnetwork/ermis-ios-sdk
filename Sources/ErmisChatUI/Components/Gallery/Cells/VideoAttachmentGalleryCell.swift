@@ -58,7 +58,7 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         }
     }
 
-    private var resolutionToken = UUID()
+    private(set) var resolutionToken = UUID()
     private var cancelOriginalResolution: (() -> Void)?
     private var originalLease: E2eeAttachmentOriginalLease?
     private var playbackLease: E2eeAttachmentPlaybackLease?
@@ -214,6 +214,14 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
     }
 
     public func cancelPendingOriginalResolution() {
+        // Invalidate callbacks before cancellation/release. A resolver may already have queued its
+        // completion on the main queue; without a new token that completion can reinstall a range
+        // playback lease after the gallery has disappeared.
+        let hadActiveResolution = cancelOriginalResolution != nil
+            || originalLease != nil
+            || playbackLease != nil
+            || isResolvingE2eeOriginal
+        resolutionToken = UUID()
         cancelOriginalResolution?()
         cancelOriginalResolution = nil
         player.pause()
@@ -224,6 +232,9 @@ open class VideoAttachmentGalleryCell: GalleryCollectionViewCell, RemoteImageDis
         playbackLease = nil
         resolvedOpaqueURL = nil
         setResolvingE2eeOriginal(false)
+        if hadActiveResolution {
+            log.info("[E2EE_VIDEO_PLAYBACK] state=viewer_cancelled", subsystems: .mls)
+        }
     }
 
     private func setResolvingE2eeOriginal(_ isResolving: Bool) {

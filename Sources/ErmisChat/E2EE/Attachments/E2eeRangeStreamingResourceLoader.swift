@@ -47,18 +47,104 @@ enum E2eeRangeStreamingFallbackReason: String, Sendable {
     case unknown
 }
 
+enum E2eeRangeMediaTypeSource: String, Sendable {
+    case manifestMime
+    case manifestName
+    case attachmentMime
+    case attachmentName
+    case videoDefault
+}
+
+enum E2eeRangeLoadingRequestRegion: String, Sendable {
+    case head
+    case middle
+    case tail
+}
+
+struct E2eeRangeMediaDescription: Equatable, Sendable {
+    let contentTypeIdentifier: String
+    let fileExtension: String
+    let source: E2eeRangeMediaTypeSource
+
+    static func resolve(
+        asset: E2eeAttachmentManifestAssetV1,
+        attachmentMimeType: String?,
+        attachmentFileName: String?
+    ) -> Self {
+        if let value = videoType(mimeType: asset.display?["mime_type"]?.stringValue) {
+            return description(type: value, source: .manifestMime)
+        }
+        if let value = videoType(fileName: asset.display?["name"]?.stringValue) {
+            return description(type: value, source: .manifestName)
+        }
+        if let value = videoType(mimeType: attachmentMimeType) {
+            return description(type: value, source: .attachmentMime)
+        }
+        if let value = videoType(fileName: attachmentFileName) {
+            return description(type: value, source: .attachmentName)
+        }
+        return description(type: .mpeg4Movie, source: .videoDefault)
+    }
+
+    private static func videoType(mimeType: String?) -> UTType? {
+        guard let mimeType,
+              let type = UTType(mimeType: mimeType),
+              type.conforms(to: .audiovisualContent) else { return nil }
+        return type
+    }
+
+    private static func videoType(fileName: String?) -> UTType? {
+        guard let fileName else { return nil }
+        let fileExtension = URL(fileURLWithPath: fileName).pathExtension.lowercased()
+        guard !fileExtension.isEmpty,
+              let type = UTType(filenameExtension: fileExtension),
+              type.conforms(to: .audiovisualContent) else { return nil }
+        return type
+    }
+
+    private static func description(type: UTType, source: E2eeRangeMediaTypeSource) -> Self {
+        let fileExtension = type.preferredFilenameExtension?.lowercased() ?? "mp4"
+        return .init(
+            contentTypeIdentifier: type.identifier,
+            fileExtension: fileExtension,
+            source: source
+        )
+    }
+}
+
 /// Lock-backed because grant, URLSession and AVFoundation callbacks arrive on different executors.
 /// The snapshot and log line intentionally contain counters and fixed categories only.
+enum E2eeRangeStreamingTransportClass: Sendable {
+    case priority
+    case continuation
+}
+
 final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
     struct Snapshot: Equatable, Sendable {
         var initialGrantRequests = 0
         var grantRenewalRequests = 0
         var rangeRequests = 0
+        var priorityTransportRequests = 0
+        var continuationTransportRequests = 0
+        var connectivityWaitCount = 0
         var ciphertextBytes = 0
         var cacheHitBytes = 0
         var completedLoadingRequests = 0
         var startupLatencyMilliseconds = 0
         var maximumSeekLatencyMilliseconds = 0
+        var firstResponseCount = 0
+        var maximumFirstResponseLatencyMilliseconds = 0
+        var maximumHeadFirstResponseLatencyMilliseconds = 0
+        var maximumMiddleFirstResponseLatencyMilliseconds = 0
+        var maximumTailFirstResponseLatencyMilliseconds = 0
+        var priorityBypassCount = 0
+        var boundedLoadingRequests = 0
+        var allToEndLoadingRequests = 0
+        var headLoadingRequests = 0
+        var middleLoadingRequests = 0
+        var tailLoadingRequests = 0
+        var maximumActiveLoadingRequests = 0
+        var mediaTypeSource: E2eeRangeMediaTypeSource = .videoDefault
         var fallbackCount = 0
         var lastFallbackReason: E2eeRangeStreamingFallbackReason?
     }
@@ -77,9 +163,17 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         }
     }
 
-    func recordRangeRequest() {
+    func recordRangeRequest(
+        transport: E2eeRangeStreamingTransportClass = .continuation
+    ) {
         lock.withLock {
             value.rangeRequests += 1
+            switch transport {
+            case .priority:
+                value.priorityTransportRequests += 1
+            case .continuation:
+                value.continuationTransportRequests += 1
+            }
         }
     }
 
@@ -87,6 +181,14 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         lock.withLock {
             value.ciphertextBytes += max(0, ciphertextBytes)
         }
+    }
+
+    func recordConnectivityWait() {
+        lock.withLock { value.connectivityWaitCount += 1 }
+        log.info(
+            "[E2EE_RANGE_PLAYBACK] state=waiting_for_connectivity",
+            subsystems: .mls
+        )
     }
 
     func recordCacheHit(bytes: Int) {
@@ -110,6 +212,93 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         }
     }
 
+    func recordLoadingRequestShape(
+        range: Range<UInt64>,
+        plaintextSize: UInt64,
+        frameSize: UInt64,
+        requestsAllDataToEnd: Bool
+    ) -> E2eeRangeLoadingRequestRegion {
+        let batchWindow = frameSize.multipliedReportingOverflow(
+            by: UInt64(E2eeRangePlaintextFrameStore.maximumFrameBatch)
+        )
+        let edgeWindow = batchWindow.overflow
+            ? plaintextSize
+            : min(plaintextSize, batchWindow.partialValue)
+        return lock.withLock {
+            if requestsAllDataToEnd {
+                value.allToEndLoadingRequests += 1
+            } else {
+                value.boundedLoadingRequests += 1
+            }
+            if range.lowerBound < edgeWindow {
+                value.headLoadingRequests += 1
+                return .head
+            } else if range.upperBound > plaintextSize - edgeWindow {
+                value.tailLoadingRequests += 1
+                return .tail
+            } else {
+                value.middleLoadingRequests += 1
+                return .middle
+            }
+        }
+    }
+
+    func recordFirstResponse(
+        latency: TimeInterval,
+        region: E2eeRangeLoadingRequestRegion,
+        requestsAllDataToEnd: Bool
+    ) {
+        let milliseconds = max(0, Int((latency * 1_000).rounded()))
+        lock.withLock {
+            value.firstResponseCount += 1
+            value.maximumFirstResponseLatencyMilliseconds = max(
+                value.maximumFirstResponseLatencyMilliseconds,
+                milliseconds
+            )
+            switch region {
+            case .head:
+                value.maximumHeadFirstResponseLatencyMilliseconds = max(
+                    value.maximumHeadFirstResponseLatencyMilliseconds,
+                    milliseconds
+                )
+            case .middle:
+                value.maximumMiddleFirstResponseLatencyMilliseconds = max(
+                    value.maximumMiddleFirstResponseLatencyMilliseconds,
+                    milliseconds
+                )
+            case .tail:
+                value.maximumTailFirstResponseLatencyMilliseconds = max(
+                    value.maximumTailFirstResponseLatencyMilliseconds,
+                    milliseconds
+                )
+            }
+        }
+        let requestMode = requestsAllDataToEnd ? "all_to_end" : "bounded"
+        log.info(
+            "[E2EE_RANGE_PLAYBACK] state=first_response region=\(region.rawValue) "
+                + "request=\(requestMode) latency_ms=\(milliseconds)",
+            subsystems: .mls
+        )
+    }
+
+    func recordActiveLoadingRequestCount(_ count: Int) {
+        lock.withLock {
+            value.maximumActiveLoadingRequests = max(value.maximumActiveLoadingRequests, count)
+        }
+    }
+
+    func recordPriorityBypass() {
+        lock.withLock { value.priorityBypassCount += 1 }
+        log.info(
+            "[E2EE_RANGE_PLAYBACK] state=priority_bypass",
+            subsystems: .mls
+        )
+    }
+
+    func recordMediaTypeSource(_ source: E2eeRangeMediaTypeSource) {
+        lock.withLock { value.mediaTypeSource = source }
+    }
+
     func recordFallback(_ reason: E2eeRangeStreamingFallbackReason) {
         lock.withLock {
             value.fallbackCount += 1
@@ -125,10 +314,26 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         let fallback = snapshot.lastFallbackReason?.rawValue ?? "none"
         return "[E2EE_RANGE_PLAYBACK] state=closed initial_grants=\(snapshot.initialGrantRequests) "
             + "renewals=\(snapshot.grantRenewalRequests) range_requests=\(snapshot.rangeRequests) "
+            + "priority_transport_requests=\(snapshot.priorityTransportRequests) "
+            + "continuation_transport_requests=\(snapshot.continuationTransportRequests) "
+            + "connectivity_waits=\(snapshot.connectivityWaitCount) "
             + "ciphertext_bytes=\(snapshot.ciphertextBytes) cache_hit_bytes=\(snapshot.cacheHitBytes) "
             + "completed_requests=\(snapshot.completedLoadingRequests) "
             + "startup_ms=\(snapshot.startupLatencyMilliseconds) "
             + "max_seek_ms=\(snapshot.maximumSeekLatencyMilliseconds) "
+            + "first_responses=\(snapshot.firstResponseCount) "
+            + "max_first_response_ms=\(snapshot.maximumFirstResponseLatencyMilliseconds) "
+            + "head_first_response_ms=\(snapshot.maximumHeadFirstResponseLatencyMilliseconds) "
+            + "middle_first_response_ms=\(snapshot.maximumMiddleFirstResponseLatencyMilliseconds) "
+            + "tail_first_response_ms=\(snapshot.maximumTailFirstResponseLatencyMilliseconds) "
+            + "priority_bypasses=\(snapshot.priorityBypassCount) "
+            + "bounded_requests=\(snapshot.boundedLoadingRequests) "
+            + "all_to_end_requests=\(snapshot.allToEndLoadingRequests) "
+            + "head_requests=\(snapshot.headLoadingRequests) "
+            + "middle_requests=\(snapshot.middleLoadingRequests) "
+            + "tail_requests=\(snapshot.tailLoadingRequests) "
+            + "max_active_requests=\(snapshot.maximumActiveLoadingRequests) "
+            + "media_type_source=\(snapshot.mediaTypeSource.rawValue) "
             + "fallbacks=\(snapshot.fallbackCount) fallback_reason=\(fallback)"
     }
 }
@@ -141,21 +346,128 @@ private extension NSLock {
     }
 }
 
+private final class E2eeRangeStreamingSessionDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    enum Event {
+        case response(HTTPURLResponse)
+        case data(Data)
+    }
+
+    struct Stream {
+        let events: AsyncThrowingStream<Event, Error>
+        let task: URLSessionDataTask
+    }
+
+    private let lock = NSLock()
+    private let telemetry: E2eeRangeStreamingTelemetry
+    private var continuations: [Int: AsyncThrowingStream<Event, Error>.Continuation] = [:]
+
+    init(telemetry: E2eeRangeStreamingTelemetry) {
+        self.telemetry = telemetry
+    }
+
+    func stream(for request: URLRequest, using session: URLSession) -> Stream {
+        var continuation: AsyncThrowingStream<Event, Error>.Continuation!
+        let events = AsyncThrowingStream<Event, Error> { continuation = $0 }
+        let task = session.dataTask(with: request)
+        let taskIdentifier = task.taskIdentifier
+        lock.withLock { continuations[taskIdentifier] = continuation }
+        continuation.onTermination = { [weak self, weak task] termination in
+            guard case .cancelled = termination else { return }
+            task?.cancel()
+            self?.removeContinuation(for: taskIdentifier)
+        }
+        return Stream(events: events, task: task)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let response = response as? HTTPURLResponse,
+              let continuation = continuation(for: dataTask.taskIdentifier) else {
+            completionHandler(.cancel)
+            return
+        }
+        continuation.yield(.response(response))
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        continuation(for: dataTask.taskIdentifier)?.yield(.data(data))
+    }
+
+    func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
+        telemetry.recordConnectivityWait()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard let continuation = removeContinuation(for: task.taskIdentifier) else { return }
+        if let error {
+            continuation.finish(throwing: error)
+        } else {
+            continuation.finish()
+        }
+    }
+
+    private func continuation(
+        for taskIdentifier: Int
+    ) -> AsyncThrowingStream<Event, Error>.Continuation? {
+        lock.withLock { continuations[taskIdentifier] }
+    }
+
+    @discardableResult
+    private func removeContinuation(
+        for taskIdentifier: Int
+    ) -> AsyncThrowingStream<Event, Error>.Continuation? {
+        lock.withLock { continuations.removeValue(forKey: taskIdentifier) }
+    }
+}
+
 actor E2eeRangeCiphertextReader {
+    typealias ChunkConsumer = @Sendable (Data) async throws -> Void
+
     let grantStore: E2eeRangeStreamingGrantStore
+    private let delegate: E2eeRangeStreamingSessionDelegate
     private let session: URLSession
     private let telemetry: E2eeRangeStreamingTelemetry
+    private let transportClass: E2eeRangeStreamingTransportClass
+    private let taskPriority: Float
 
     init(
         grantStore: E2eeRangeStreamingGrantStore,
         sessionConfiguration: URLSessionConfiguration = .ephemeral,
-        telemetry: E2eeRangeStreamingTelemetry = .init()
+        telemetry: E2eeRangeStreamingTelemetry = .init(),
+        transportClass: E2eeRangeStreamingTransportClass = .continuation,
+        taskPriority: Float = URLSessionTask.defaultPriority
     ) {
         self.grantStore = grantStore
         self.telemetry = telemetry
-        sessionConfiguration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        sessionConfiguration.urlCache = nil
-        session = URLSession(configuration: sessionConfiguration)
+        self.transportClass = transportClass
+        self.taskPriority = taskPriority
+        let sessionConfiguration = Self.playbackSessionConfiguration(from: sessionConfiguration)
+        let delegate = E2eeRangeStreamingSessionDelegate(telemetry: telemetry)
+        self.delegate = delegate
+        session = URLSession(
+            configuration: sessionConfiguration,
+            delegate: delegate,
+            delegateQueue: nil
+        )
+    }
+
+    /// A seek that starts while the device is offline must remain owned by AVFoundation until
+    /// connectivity returns or AVFoundation cancels it. Failing immediately would route a
+    /// temporary outage into whole-download fallback and can leave the media clock advancing while
+    /// the decoder still displays its last frame.
+    nonisolated static func playbackSessionConfiguration(
+        from source: URLSessionConfiguration
+    ) -> URLSessionConfiguration {
+        let configuration = (source.copy() as? URLSessionConfiguration) ?? source
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.waitsForConnectivity = true
+        return configuration
     }
 
     func read(
@@ -181,7 +493,7 @@ actor E2eeRangeCiphertextReader {
                 "bytes=\(range.lowerBound)-\(range.upperBound - 1)",
                 forHTTPHeaderField: "Range"
             )
-            telemetry.recordRangeRequest()
+            telemetry.recordRangeRequest(transport: transportClass)
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse else {
                 throw E2eeRangeStreamingResourceError.invalidResponse
@@ -216,9 +528,115 @@ actor E2eeRangeCiphertextReader {
         throw E2eeRangeStreamingResourceError.invalidResponse
     }
 
+    /// Streams one exact HTTP Range without buffering the entire response body. Headers are
+    /// validated before any ciphertext reaches the frame decoder, and the body must still end at
+    /// the exact declared byte count. Each consumer chunk remains ciphertext until its complete
+    /// frame has independently passed AES-GCM authentication.
+    func stream(
+        assetId: String,
+        range: Range<UInt64>,
+        totalCiphertextSize: UInt64,
+        consume: ChunkConsumer
+    ) async throws {
+        guard range.lowerBound < range.upperBound else {
+            throw E2eeRangeStreamingResourceError.invalidRange
+        }
+        let byteCount = range.upperBound - range.lowerBound
+        guard range.upperBound > 0,
+              range.upperBound <= totalCiphertextSize,
+              byteCount <= UInt64(Int.max) else {
+            throw E2eeRangeStreamingResourceError.invalidRange
+        }
+
+        var grant = try await grantStore.grant(for: assetId)
+        for attempt in 0...1 {
+            try Task.checkCancellation()
+            var request = URLRequest(url: grant.grantURL)
+            request.httpMethod = "GET"
+            request.setValue(
+                "bytes=\(range.lowerBound)-\(range.upperBound - 1)",
+                forHTTPHeaderField: "Range"
+            )
+            telemetry.recordRangeRequest(transport: transportClass)
+            let stream = delegate.stream(for: request, using: session)
+            stream.task.priority = taskPriority
+            stream.task.resume()
+
+            var receivedByteCount: UInt64 = 0
+            var responseWasValidated = false
+            var unauthorizedStatus: Int?
+            do {
+                eventLoop: for try await event in stream.events {
+                    try Task.checkCancellation()
+                    switch event {
+                    case let .response(http):
+                        if http.statusCode == 401 || http.statusCode == 403 {
+                            unauthorizedStatus = http.statusCode
+                            stream.task.cancel()
+                            break eventLoop
+                        }
+                        guard http.statusCode == 206,
+                              Self.hasExactContentLength(http, expected: byteCount),
+                              Self.hasExactContentRange(
+                                http,
+                                expected: range,
+                                totalCiphertextSize: totalCiphertextSize
+                              ) else {
+                            stream.task.cancel()
+                            throw E2eeRangeStreamingResourceError.invalidContentRange
+                        }
+                        responseWasValidated = true
+
+                    case let .data(data):
+                        guard responseWasValidated else {
+                            stream.task.cancel()
+                            throw E2eeRangeStreamingResourceError.invalidResponse
+                        }
+                        let nextCount = receivedByteCount.addingReportingOverflow(UInt64(data.count))
+                        guard !nextCount.overflow, nextCount.partialValue <= byteCount else {
+                            stream.task.cancel()
+                            throw E2eeRangeStreamingResourceError.invalidContentRange
+                        }
+                        try await consume(data)
+                        receivedByteCount = nextCount.partialValue
+                    }
+                }
+            } catch {
+                stream.task.cancel()
+                if unauthorizedStatus == nil { throw error }
+            }
+
+            if let unauthorizedStatus {
+                guard attempt == 0,
+                      let renewed = await grantStore.handleUnauthorized(
+                        assetId: assetId,
+                        httpStatus: unauthorizedStatus,
+                        grantAttempt: attempt,
+                        failedGrantURL: grant.grantURL,
+                        fallback: { _ in }
+                      ) else {
+                    throw E2eeRangeStreamingResourceError.invalidResponse
+                }
+                grant = renewed
+                continue
+            }
+
+            guard responseWasValidated, receivedByteCount == byteCount else {
+                throw E2eeRangeStreamingResourceError.invalidContentRange
+            }
+            telemetry.recordCiphertextBytes(Int(receivedByteCount))
+            return
+        }
+        throw E2eeRangeStreamingResourceError.invalidResponse
+    }
+
     func invalidate(assetId: String) async {
         session.invalidateAndCancel()
         await grantStore.invalidateSession(for: assetId)
+    }
+
+    nonisolated func invalidateTransport() {
+        session.invalidateAndCancel()
     }
 
     private static func hasExactContentLength(
@@ -335,6 +753,12 @@ private final class E2eeRangeFrameWaiterCancellation: @unchecked Sendable {
 /// Per-playback frame cache and in-flight registry. Plaintext never leaves process memory.
 actor E2eeRangePlaintextFrameStore {
     typealias CiphertextFetcher = @Sendable (Range<UInt64>) async throws -> Data
+    typealias CiphertextChunkConsumer = @Sendable (Data) async throws -> Void
+    typealias CiphertextStreamer = @Sendable (
+        Range<UInt64>,
+        Bool,
+        CiphertextChunkConsumer
+    ) async throws -> Void
 
     static let defaultCacheCostLimit = 16 * 1024 * 1024
     static let maximumFrameBatch = 8
@@ -348,14 +772,91 @@ actor E2eeRangePlaintextFrameStore {
         let id: UUID
         let frameRange: ClosedRange<UInt64>
         let cacheGeneration: UInt64
+        let usesPriorityTransport: Bool
         var task: Task<Void, Never>?
-        var waiters: [UUID: CheckedContinuation<[UInt64: Data], Error>]
+        var waiters: [UUID: FrameWaiter]
+        var owners: Set<UUID>
+    }
+
+    private struct FrameWaiter {
+        let frameIndex: UInt64
+        let continuation: CheckedContinuation<Data, Error>
+    }
+
+    private actor FrameStreamDecoder {
+        private let frameRange: ClosedRange<UInt64>
+        private let asset: E2eeAttachmentManifestAssetV1
+        private let contentKey: Data
+        private let noncePrefix: Data
+        private let plaintextSize: UInt64
+        private var nextFrameIndex: UInt64
+        private var didFinishAllFrames = false
+        private var buffer = Data()
+
+        init(
+            frameRange: ClosedRange<UInt64>,
+            asset: E2eeAttachmentManifestAssetV1,
+            contentKey: Data,
+            noncePrefix: Data
+        ) throws {
+            guard let plaintextSize = asset.plaintextSize else {
+                throw E2eeRangeStreamingResourceError.invalidManifest
+            }
+            self.frameRange = frameRange
+            self.asset = asset
+            self.contentKey = contentKey
+            self.noncePrefix = noncePrefix
+            self.plaintextSize = plaintextSize
+            nextFrameIndex = frameRange.lowerBound
+        }
+
+        func consume(_ chunk: Data) throws -> [(UInt64, Data)] {
+            try Task.checkCancellation()
+            guard !chunk.isEmpty else { return [] }
+            buffer.append(chunk)
+            var output: [(UInt64, Data)] = []
+            while !didFinishAllFrames, nextFrameIndex <= frameRange.upperBound {
+                let plainLength = E2eeRangePlaintextFrameStore.plaintextLength(
+                    frameIndex: nextFrameIndex,
+                    asset: asset,
+                    plaintextSize: plaintextSize
+                )
+                let storedLength = Int(plainLength)
+                    + E2eeAttachmentFrameCryptoV1.headerSize
+                    + E2eeAttachmentFrameCryptoV1.tagSize
+                guard buffer.count >= storedLength else { break }
+                let encryptedFrame = buffer.subdata(in: 0..<storedLength)
+                buffer.removeSubrange(0..<storedLength)
+                let plaintext = try E2eeRangePlaintextFrameStore.decryptFrame(
+                    encryptedFrame,
+                    expectedPlaintextLength: Int(plainLength),
+                    frameIndex: UInt32(nextFrameIndex),
+                    contentKey: contentKey,
+                    noncePrefix: noncePrefix
+                )
+                output.append((nextFrameIndex, plaintext))
+                if nextFrameIndex == frameRange.upperBound {
+                    didFinishAllFrames = true
+                    break
+                }
+                nextFrameIndex += 1
+            }
+            return output
+        }
+
+        func finish() throws {
+            try Task.checkCancellation()
+            guard didFinishAllFrames,
+                  buffer.isEmpty else {
+                throw E2eeRangeStreamingResourceError.invalidFrame
+            }
+        }
     }
 
     private let asset: E2eeAttachmentManifestAssetV1
     private let contentKey: Data
     private let noncePrefix: Data
-    private let fetcher: CiphertextFetcher
+    private let streamer: CiphertextStreamer
     private let cacheCostLimit: Int
     private let telemetry: E2eeRangeStreamingTelemetry
     private let frameCount: UInt64
@@ -366,14 +867,29 @@ actor E2eeRangePlaintextFrameStore {
     private var cacheGeneration: UInt64 = 0
     private var flights: [UUID: Flight] = [:]
     private var flightIdByFrame: [UInt64: UUID] = [:]
-    private var previousDemand: Range<UInt64>?
-    private var previousDemandWasSmall = false
+    private var priorityFlightIdByFrame: [UInt64: UUID] = [:]
 
     init(
         asset: E2eeAttachmentManifestAssetV1,
         cacheCostLimit: Int = defaultCacheCostLimit,
         telemetry: E2eeRangeStreamingTelemetry = .init(),
         fetcher: @escaping CiphertextFetcher
+    ) throws {
+        try self.init(
+            asset: asset,
+            cacheCostLimit: cacheCostLimit,
+            telemetry: telemetry,
+            streamingFetcher: { range, _, consume in
+                try await consume(try await fetcher(range))
+            }
+        )
+    }
+
+    init(
+        asset: E2eeAttachmentManifestAssetV1,
+        cacheCostLimit: Int = defaultCacheCostLimit,
+        telemetry: E2eeRangeStreamingTelemetry = .init(),
+        streamingFetcher: @escaping CiphertextStreamer
     ) throws {
         guard asset.kind == .original,
               asset.frameSize > 0,
@@ -387,7 +903,7 @@ actor E2eeRangePlaintextFrameStore {
         self.asset = asset
         self.contentKey = contentKey
         self.noncePrefix = noncePrefix
-        self.fetcher = fetcher
+        streamer = streamingFetcher
         self.cacheCostLimit = max(0, cacheCostLimit)
         self.telemetry = telemetry
         let frameSize = UInt64(asset.frameSize)
@@ -402,63 +918,111 @@ actor E2eeRangePlaintextFrameStore {
         frameCount = computedFrameCount
     }
 
-    /// Returns the first canonical batch. Extra frames are included only after two small,
-    /// forward-moving demands establish sequential playback.
-    func firstBatch(
-        for plaintextRange: Range<UInt64>,
+    /// Returns one bounded batch for both first response and continuation work. The streaming
+    /// decoder publishes the first authenticated frame before the rest of the Range body arrives,
+    /// so splitting that frame into a second HTTP request only amplifies network scheduling.
+    func batch(
         firstFrame: UInt64,
-        lastFrame: UInt64
+        lastFrame: UInt64,
+        prioritizingFirstResponse _: Bool
     ) -> ClosedRange<UInt64> {
-        let frameSize = UInt64(asset.frameSize)
-        let isSmall = plaintextRange.upperBound - plaintextRange.lowerBound <= frameSize
-        let isForwardSequential: Bool
-        if let previousDemand {
-            let upperWithSlack = previousDemand.upperBound.addingReportingOverflow(frameSize)
-            isForwardSequential = previousDemandWasSmall
-                && isSmall
-                && plaintextRange.lowerBound > previousDemand.lowerBound
-                && !upperWithSlack.overflow
-                && plaintextRange.lowerBound <= upperWithSlack.partialValue
-        } else {
-            isForwardSequential = false
-        }
-        previousDemand = plaintextRange
-        previousDemandWasSmall = isSmall
-
-        let demandedEnd = min(lastFrame, firstFrame + UInt64(Self.maximumFrameBatch - 1))
-        guard isForwardSequential else { return firstFrame...demandedEnd }
-        let prefetchedEnd = min(frameCount - 1, firstFrame + UInt64(Self.maximumFrameBatch - 1))
-        return firstFrame...max(demandedEnd, prefetchedEnd)
+        let end = min(lastFrame, firstFrame + UInt64(Self.maximumFrameBatch - 1))
+        return firstFrame...end
     }
 
-    func frames(in requestedRange: ClosedRange<UInt64>) async throws -> [UInt64: Data] {
+    func frames(
+        in requestedRange: ClosedRange<UInt64>,
+        prioritizingFirstResponse: Bool = false
+    ) async throws -> [UInt64: Data] {
+        var output: [UInt64: Data] = [:]
+        try await consumeFrames(
+            in: requestedRange,
+            prioritizingFirstResponse: prioritizingFirstResponse
+        ) { frameIndex, frame in
+            output[frameIndex] = frame
+        }
+        return output
+    }
+
+    /// Keeps one bounded flight owned for the whole AVFoundation batch while yielding verified
+    /// frames in plaintext order. The first complete frame can therefore reach the player before
+    /// the rest of the HTTP Range body has arrived.
+    func consumeFrames(
+        in requestedRange: ClosedRange<UInt64>,
+        prioritizingFirstResponse: Bool = false,
+        consume: (UInt64, Data) async throws -> Void
+    ) async throws {
         guard requestedRange.lowerBound < frameCount,
               requestedRange.upperBound < frameCount,
               requestedRange.count <= Self.maximumFrameBatch else {
             throw E2eeRangeStreamingResourceError.invalidRange
         }
 
-        var output: [UInt64: Data] = [:]
-        while output.count < requestedRange.count {
-            try Task.checkCancellation()
-            var firstMissing: UInt64?
-            for frameIndex in requestedRange where output[frameIndex] == nil {
-                if let cached = cachedFrame(frameIndex) {
-                    output[frameIndex] = cached
-                } else if firstMissing == nil {
-                    firstMissing = frameIndex
+        let ownerId = UUID()
+        let firstMissingFrame = requestedRange.first { cache[$0] == nil }
+        let ownedFlightId = firstMissingFrame.map {
+            acquireFlightOwner(
+                ownerId: ownerId,
+                containing: $0,
+                preferredUpperBound: requestedRange.upperBound,
+                prioritizingFirstResponse: prioritizingFirstResponse
+            )
+        }
+        do {
+            try await withThrowingTaskGroup(of: (UInt64, Data).self) { group in
+                for frameIndex in requestedRange {
+                    group.addTask { [weak self] in
+                        guard let self else { throw CancellationError() }
+                        let frame = try await self.frame(
+                            at: frameIndex,
+                            prefetchThrough: requestedRange.upperBound,
+                            prioritizingFirstResponse: prioritizingFirstResponse
+                                && frameIndex == firstMissingFrame
+                        )
+                        return (frameIndex, frame)
+                    }
+                }
+
+                var nextFrameIndex = requestedRange.lowerBound
+                var ready: [UInt64: Data] = [:]
+                for try await (frameIndex, frame) in group {
+                    ready[frameIndex] = frame
+                    while let next = ready.removeValue(forKey: nextFrameIndex) {
+                        try await consume(nextFrameIndex, next)
+                        if nextFrameIndex == requestedRange.upperBound { break }
+                        nextFrameIndex += 1
+                    }
                 }
             }
-            guard let firstMissing else { break }
-            let fetched = try await waitForFlight(
-                containing: firstMissing,
-                preferredUpperBound: requestedRange.upperBound
-            )
-            for (frameIndex, data) in fetched where requestedRange.contains(frameIndex) {
-                output[frameIndex] = data
+            if let ownedFlightId {
+                releaseFlightOwner(ownerId, flightId: ownedFlightId, cancelIfUnobserved: false)
             }
+        } catch {
+            if let ownedFlightId {
+                releaseFlightOwner(ownerId, flightId: ownedFlightId, cancelIfUnobserved: true)
+            }
+            throw error
         }
-        return output
+    }
+
+    func frame(
+        at frameIndex: UInt64,
+        prefetchThrough upperBound: UInt64,
+        prioritizingFirstResponse: Bool = false
+    ) async throws -> Data {
+        guard frameIndex < frameCount,
+              upperBound >= frameIndex,
+              upperBound < frameCount,
+              upperBound - frameIndex < UInt64(Self.maximumFrameBatch) else {
+            throw E2eeRangeStreamingResourceError.invalidRange
+        }
+        try Task.checkCancellation()
+        if let cached = cachedFrame(frameIndex) { return cached }
+        return try await waitForFlight(
+            containing: frameIndex,
+            preferredUpperBound: upperBound,
+            prioritizingFirstResponse: prioritizingFirstResponse
+        )
     }
 
     func removeAllCachedFrames() {
@@ -469,9 +1033,10 @@ actor E2eeRangePlaintextFrameStore {
 
     func invalidate() {
         let activeTasks = flights.values.compactMap(\.task)
-        let waiters = flights.values.flatMap { $0.waiters.values }
+        let waiters = flights.values.flatMap { $0.waiters.values.map(\.continuation) }
         flights.removeAll()
         flightIdByFrame.removeAll()
+        priorityFlightIdByFrame.removeAll()
         removeAllCachedFrames()
         activeTasks.forEach { $0.cancel() }
         waiters.forEach { $0.resume(throwing: CancellationError()) }
@@ -493,8 +1058,9 @@ actor E2eeRangePlaintextFrameStore {
 
     private func waitForFlight(
         containing frameIndex: UInt64,
-        preferredUpperBound: UInt64
-    ) async throws -> [UInt64: Data] {
+        preferredUpperBound: UInt64,
+        prioritizingFirstResponse: Bool
+    ) async throws -> Data {
         let waiterId = UUID()
         let cancellation = E2eeRangeFrameWaiterCancellation()
         return try await withTaskCancellationHandler(operation: {
@@ -503,7 +1069,8 @@ actor E2eeRangePlaintextFrameStore {
                     waiterId: waiterId,
                     continuation: continuation,
                     frameIndex: frameIndex,
-                    preferredUpperBound: preferredUpperBound
+                    preferredUpperBound: preferredUpperBound,
+                    prioritizingFirstResponse: prioritizingFirstResponse
                 )
                 cancellation.install { [weak self] in
                     Task { await self?.cancelWaiter(waiterId, flightId: flightId) }
@@ -517,57 +1084,124 @@ actor E2eeRangePlaintextFrameStore {
 
     private func registerWaiter(
         waiterId: UUID,
-        continuation: CheckedContinuation<[UInt64: Data], Error>,
+        continuation: CheckedContinuation<Data, Error>,
         frameIndex: UInt64,
-        preferredUpperBound: UInt64
+        preferredUpperBound: UInt64,
+        prioritizingFirstResponse: Bool
     ) -> UUID {
+        let flightId = findOrStartFlight(
+            containing: frameIndex,
+            preferredUpperBound: preferredUpperBound,
+            prioritizingFirstResponse: prioritizingFirstResponse
+        )
+        guard var flight = flights[flightId] else { return flightId }
+        flight.waiters[waiterId] = FrameWaiter(
+            frameIndex: frameIndex,
+            continuation: continuation
+        )
+        flights[flightId] = flight
+        return flightId
+    }
+
+    private func acquireFlightOwner(
+        ownerId: UUID,
+        containing frameIndex: UInt64,
+        preferredUpperBound: UInt64,
+        prioritizingFirstResponse: Bool
+    ) -> UUID {
+        let flightId = findOrStartFlight(
+            containing: frameIndex,
+            preferredUpperBound: preferredUpperBound,
+            prioritizingFirstResponse: prioritizingFirstResponse
+        )
+        if var flight = flights[flightId] {
+            flight.owners.insert(ownerId)
+            flights[flightId] = flight
+        }
+        return flightId
+    }
+
+    private func findOrStartFlight(
+        containing frameIndex: UInt64,
+        preferredUpperBound: UInt64,
+        prioritizingFirstResponse: Bool
+    ) -> UUID {
+        if prioritizingFirstResponse,
+           let priorityId = priorityFlightIdByFrame[frameIndex],
+           flights[priorityId] != nil {
+            return priorityId
+        }
         if let existingId = flightIdByFrame[frameIndex],
-           var existing = flights[existingId] {
-            existing.waiters[waiterId] = continuation
-            flights[existingId] = existing
-            return existingId
+           let existing = flights[existingId] {
+            if !prioritizingFirstResponse || existing.usesPriorityTransport {
+                return existingId
+            }
         }
 
+        let bypassesLowerPriorityFlight = prioritizingFirstResponse
+            && flightIdByFrame[frameIndex] != nil
+        if bypassesLowerPriorityFlight { telemetry.recordPriorityBypass() }
         var upperBound = frameIndex
-        while upperBound < preferredUpperBound {
+        while !bypassesLowerPriorityFlight, upperBound < preferredUpperBound {
             let candidate = upperBound + 1
             guard cache[candidate] == nil,
                   flightIdByFrame[candidate] == nil else { break }
             upperBound = candidate
         }
+        return startFlight(
+            frameRange: frameIndex...upperBound,
+            isPriorityBypass: bypassesLowerPriorityFlight,
+            usesPriorityTransport: prioritizingFirstResponse
+        )
+    }
+
+    private func startFlight(
+        frameRange: ClosedRange<UInt64>,
+        isPriorityBypass: Bool,
+        usesPriorityTransport: Bool
+    ) -> UUID {
         let flightId = UUID()
-        let frameRange = frameIndex...upperBound
         flights[flightId] = Flight(
             id: flightId,
             frameRange: frameRange,
             cacheGeneration: cacheGeneration,
+            usesPriorityTransport: usesPriorityTransport,
             task: nil,
-            waiters: [waiterId: continuation]
+            waiters: [:],
+            owners: []
         )
-        for index in frameRange {
-            flightIdByFrame[index] = flightId
+        if isPriorityBypass {
+            priorityFlightIdByFrame[frameRange.lowerBound] = flightId
+        } else {
+            for index in frameRange { flightIdByFrame[index] = flightId }
         }
 
         let asset = asset
         let key = contentKey
         let noncePrefix = noncePrefix
-        let fetcher = fetcher
+        let streamer = streamer
         let task = Task { [weak self] in
-            let result: Result<[UInt64: Data], Error>
+            let result: Result<Void, Error>
             do {
-                let cipherRange = try Self.ciphertextRange(
-                    for: frameRange,
-                    asset: asset
-                )
-                let ciphertext = try await fetcher(cipherRange)
-                let frames = try Self.decryptFrames(
-                    ciphertext,
+                let cipherRange = try Self.ciphertextRange(for: frameRange, asset: asset)
+                let decoder = try FrameStreamDecoder(
                     frameRange: frameRange,
                     asset: asset,
                     contentKey: key,
                     noncePrefix: noncePrefix
                 )
-                result = .success(frames)
+                try await streamer(cipherRange, usesPriorityTransport) { [weak self] chunk in
+                    let frames = try await decoder.consume(chunk)
+                    for (frameIndex, plaintext) in frames {
+                        await self?.publishFrame(
+                            plaintext,
+                            frameIndex: frameIndex,
+                            flightId: flightId
+                        )
+                    }
+                }
+                try await decoder.finish()
+                result = .success(())
             } catch {
                 result = .failure(error)
             }
@@ -579,11 +1213,11 @@ actor E2eeRangePlaintextFrameStore {
 
     private func cancelWaiter(_ waiterId: UUID, flightId: UUID) {
         guard var flight = flights[flightId],
-              let continuation = flight.waiters.removeValue(forKey: waiterId) else {
+              let waiter = flight.waiters.removeValue(forKey: waiterId) else {
             return
         }
-        continuation.resume(throwing: CancellationError())
-        if flight.waiters.isEmpty {
+        waiter.continuation.resume(throwing: CancellationError())
+        if flight.waiters.isEmpty, flight.owners.isEmpty {
             flight.task?.cancel()
             removeFlight(flight)
         } else {
@@ -591,22 +1225,50 @@ actor E2eeRangePlaintextFrameStore {
         }
     }
 
-    private func completeFlight(
-        _ flightId: UUID,
-        result: Result<[UInt64: Data], Error>
+    private func releaseFlightOwner(
+        _ ownerId: UUID,
+        flightId: UUID,
+        cancelIfUnobserved: Bool
     ) {
+        guard var flight = flights[flightId] else { return }
+        flight.owners.remove(ownerId)
+        if cancelIfUnobserved, flight.owners.isEmpty, flight.waiters.isEmpty {
+            flight.task?.cancel()
+            removeFlight(flight)
+        } else {
+            flights[flightId] = flight
+        }
+    }
+
+    private func publishFrame(_ data: Data, frameIndex: UInt64, flightId: UUID) {
+        guard var flight = flights[flightId] else { return }
+        if flight.cacheGeneration == cacheGeneration {
+            insertCachedFrame(data, frameIndex: frameIndex)
+        }
+        if flightIdByFrame[frameIndex] == flightId { flightIdByFrame[frameIndex] = nil }
+        if priorityFlightIdByFrame[frameIndex] == flightId {
+            priorityFlightIdByFrame[frameIndex] = nil
+        }
+        let matchingWaiterIds = flight.waiters.compactMap { entry in
+            entry.value.frameIndex == frameIndex ? entry.key : nil
+        }
+        let continuations = matchingWaiterIds.compactMap { waiterId in
+            flight.waiters.removeValue(forKey: waiterId)?.continuation
+        }
+        flights[flightId] = flight
+        continuations.forEach { $0.resume(returning: data) }
+    }
+
+    private func completeFlight(_ flightId: UUID, result: Result<Void, Error>) {
         guard let flight = flights[flightId] else { return }
         removeFlight(flight)
         switch result {
-        case let .success(frames):
-            if flight.cacheGeneration == cacheGeneration {
-                for (frameIndex, data) in frames {
-                    insertCachedFrame(data, frameIndex: frameIndex)
-                }
+        case .success:
+            flight.waiters.values.forEach {
+                $0.continuation.resume(throwing: E2eeRangeStreamingResourceError.invalidFrame)
             }
-            flight.waiters.values.forEach { $0.resume(returning: frames) }
         case let .failure(error):
-            flight.waiters.values.forEach { $0.resume(throwing: error) }
+            flight.waiters.values.forEach { $0.continuation.resume(throwing: error) }
         }
     }
 
@@ -614,6 +1276,9 @@ actor E2eeRangePlaintextFrameStore {
         flights[flight.id] = nil
         for frameIndex in flight.frameRange where flightIdByFrame[frameIndex] == flight.id {
             flightIdByFrame[frameIndex] = nil
+        }
+        for frameIndex in flight.frameRange where priorityFlightIdByFrame[frameIndex] == flight.id {
+            priorityFlightIdByFrame[frameIndex] = nil
         }
     }
 
@@ -794,12 +1459,16 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
 
     private let asset: E2eeAttachmentManifestAssetV1
     private let streamURL: URL
+    private let mediaDescription: E2eeRangeMediaDescription
     private let reader: E2eeRangeCiphertextReader
+    private let priorityReader: E2eeRangeCiphertextReader
+    private let grantStore: E2eeRangeStreamingGrantStore
     private let frameStore: E2eeRangePlaintextFrameStore
     private let fallback: E2eeRangeFallbackFile
     private let telemetry: E2eeRangeStreamingTelemetry
     private let loadingRequestCancellationHandler: @Sendable () -> Void
     private let loadingRequestObserver: (AVAssetResourceLoadingRequest) -> Void
+    private let invalidationCompletionHandler: @Sendable () -> Void
     private let lock = NSLock()
     private struct ActiveLoadingRequest {
         let token: UUID
@@ -821,35 +1490,62 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
         cacheCostLimit: Int = E2eeRangePlaintextFrameStore.defaultCacheCostLimit,
         telemetry: E2eeRangeStreamingTelemetry = .init(),
         loadingRequestCancellationHandler: @escaping @Sendable () -> Void = {},
-        loadingRequestObserver: @escaping (AVAssetResourceLoadingRequest) -> Void = { _ in }
+        loadingRequestObserver: @escaping (AVAssetResourceLoadingRequest) -> Void = { _ in },
+        invalidationCompletionHandler: @escaping @Sendable () -> Void = {},
+        attachmentMimeType: String? = nil,
+        attachmentFileName: String? = nil
     ) throws {
-        guard let streamURL = URL(string: "\(Self.scheme)://asset/\(UUID().uuidString)") else {
+        let mediaDescription = E2eeRangeMediaDescription.resolve(
+            asset: asset,
+            attachmentMimeType: attachmentMimeType,
+            attachmentFileName: attachmentFileName
+        )
+        guard let streamURL = URL(
+            string: "\(Self.scheme)://asset/\(UUID().uuidString).\(mediaDescription.fileExtension)"
+        ) else {
             throw E2eeRangeStreamingResourceError.invalidManifest
         }
         self.asset = asset
         self.streamURL = streamURL
+        self.mediaDescription = mediaDescription
         self.telemetry = telemetry
+        telemetry.recordMediaTypeSource(mediaDescription.source)
         self.loadingRequestCancellationHandler = loadingRequestCancellationHandler
         self.loadingRequestObserver = loadingRequestObserver
+        self.invalidationCompletionHandler = invalidationCompletionHandler
+        let continuationConfiguration = Self.copySessionConfiguration(sessionConfiguration)
+        let priorityConfiguration = Self.copySessionConfiguration(sessionConfiguration)
+        priorityConfiguration.networkServiceType = .responsiveData
         let grantStore = E2eeRangeStreamingGrantStore(
             grantProvider: grantProvider,
             eventHandler: { telemetry.recordGrantEvent($0) }
         )
+        self.grantStore = grantStore
         let reader = E2eeRangeCiphertextReader(
             grantStore: grantStore,
-            sessionConfiguration: sessionConfiguration,
+            sessionConfiguration: continuationConfiguration,
             telemetry: telemetry
         )
+        let priorityReader = E2eeRangeCiphertextReader(
+            grantStore: grantStore,
+            sessionConfiguration: priorityConfiguration,
+            telemetry: telemetry,
+            transportClass: .priority,
+            taskPriority: URLSessionTask.highPriority
+        )
         self.reader = reader
+        self.priorityReader = priorityReader
         frameStore = try E2eeRangePlaintextFrameStore(
             asset: asset,
             cacheCostLimit: cacheCostLimit,
             telemetry: telemetry,
-            fetcher: { range in
-                try await reader.read(
+            streamingFetcher: { range, usesPriorityTransport, consume in
+                let selectedReader = usesPriorityTransport ? priorityReader : reader
+                try await selectedReader.stream(
                     assetId: asset.assetId,
                     range: range,
-                    totalCiphertextSize: asset.cipherSize
+                    totalCiphertextSize: asset.cipherSize,
+                    consume: consume
                 )
             }
         )
@@ -894,6 +1590,7 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
                 startGate: startGate,
                 task: nil
             )
+            telemetry.recordActiveLoadingRequestCount(activeLoadingRequests.count)
             return true
         }
         guard accepted else { return false }
@@ -902,7 +1599,7 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
             guard await startGate.wait(), let self else { return }
             defer { self.removeTask(for: key, token: token) }
             do {
-                try await self.fulfill(loadingRequest)
+                try await self.fulfill(loadingRequest, startedAt: startedAt)
                 self.telemetry.recordLoadingRequest(latency: Date().timeIntervalSince(startedAt))
                 loadingRequest.finishLoading()
             } catch is CancellationError {
@@ -965,26 +1662,42 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
             $0.startGate.resolve(false)
             $0.task?.cancel()
         }
+        // Stop byte delivery synchronously at the viewer boundary. The remaining actor cleanup
+        // runs independently below, but no Range task may survive long enough to answer after the
+        // playback lease has been released.
+        priorityReader.invalidateTransport()
+        reader.invalidateTransport()
+        log.info("[E2EE_RANGE_PLAYBACK] state=closing", subsystems: .mls)
 #if canImport(UIKit)
         if let memoryWarningObserver {
             NotificationCenter.default.removeObserver(memoryWarningObserver)
             self.memoryWarningObserver = nil
         }
 #endif
-        let reader = reader
+        let grantStore = grantStore
         let frameStore = frameStore
         let fallback = fallback
         let assetId = asset.assetId
         let telemetry = telemetry
-        Task {
+        let invalidationCompletionHandler = invalidationCompletionHandler
+        // Viewer release can originate from a cancelled UI/resolver task. Cleanup must not inherit
+        // that cancellation state, otherwise the proactive grant timer can outlive the preview.
+        Task.detached(priority: .utility) {
+            await grantStore.invalidateSession(for: assetId)
             await frameStore.invalidate()
-            await reader.invalidate(assetId: assetId)
             await fallback.release()
             log.info(
                 E2eeRangeStreamingTelemetry.summary(telemetry.snapshot()),
                 subsystems: .mls
             )
+            invalidationCompletionHandler()
         }
+    }
+
+    private static func copySessionConfiguration(
+        _ configuration: URLSessionConfiguration
+    ) -> URLSessionConfiguration {
+        (configuration.copy() as? URLSessionConfiguration) ?? configuration
     }
 
     private func removeTask(for key: ObjectIdentifier, token: UUID) {
@@ -994,45 +1707,55 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
         }
     }
 
-    private func fulfill(_ request: AVAssetResourceLoadingRequest) async throws {
+    private func fulfill(
+        _ request: AVAssetResourceLoadingRequest,
+        startedAt: Date
+    ) async throws {
         guard let plaintextSize = asset.plaintextSize else {
             throw E2eeRangeStreamingResourceError.invalidManifest
         }
         populateContentInformation(request.contentInformationRequest, plaintextSize: plaintextSize)
         guard let dataRequest = request.dataRequest else { return }
         guard let range = requestedRange(dataRequest, plaintextSize: plaintextSize) else { return }
-        try await streamPlaintext(range: range, to: dataRequest)
+        let requestsAllDataToEnd = dataRequest.requestsAllDataToEndOfResource
+        let region = telemetry.recordLoadingRequestShape(
+            range: range,
+            plaintextSize: plaintextSize,
+            frameSize: UInt64(asset.frameSize),
+            requestsAllDataToEnd: requestsAllDataToEnd
+        )
+        try await streamPlaintext(range: range, to: dataRequest) { [telemetry] in
+            telemetry.recordFirstResponse(
+                latency: Date().timeIntervalSince(startedAt),
+                region: region,
+                requestsAllDataToEnd: requestsAllDataToEnd
+            )
+        }
     }
 
     private func streamPlaintext(
         range: Range<UInt64>,
-        to request: AVAssetResourceLoadingDataRequest
+        to request: AVAssetResourceLoadingDataRequest,
+        onFirstResponse: () -> Void
     ) async throws {
         guard !range.isEmpty else { return }
         let frameSize = UInt64(asset.frameSize)
         let firstFrame = range.lowerBound / frameSize
         let lastFrame = (range.upperBound - 1) / frameSize
-        let firstBatch = await frameStore.firstBatch(
-            for: range,
-            firstFrame: firstFrame,
-            lastFrame: lastFrame
-        )
         var batchStart = firstFrame
+        var hasResponded = false
         while batchStart <= lastFrame {
             try Task.checkCancellation()
-            let demandedEnd = min(
-                lastFrame,
-                batchStart + UInt64(E2eeRangePlaintextFrameStore.maximumFrameBatch - 1)
+            let batch = await frameStore.batch(
+                firstFrame: batchStart,
+                lastFrame: lastFrame,
+                prioritizingFirstResponse: !hasResponded
             )
-            let fetchEnd = batchStart == firstFrame
-                ? max(demandedEnd, firstBatch.upperBound)
-                : demandedEnd
-            let frames = try await frameStore.frames(in: batchStart...fetchEnd)
-            for frameIndex in batchStart...demandedEnd {
+            try await frameStore.consumeFrames(
+                in: batch,
+                prioritizingFirstResponse: !hasResponded
+            ) { frameIndex, plaintext in
                 try Task.checkCancellation()
-                guard let plaintext = frames[frameIndex] else {
-                    throw E2eeRangeStreamingResourceError.invalidFrame
-                }
                 let framePlainStart = frameIndex * frameSize
                 let overlapStart = max(range.lowerBound, framePlainStart)
                 let overlapEnd = min(range.upperBound, framePlainStart + UInt64(plaintext.count))
@@ -1040,10 +1763,14 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
                     let lower = Int(overlapStart - framePlainStart)
                     let upper = Int(overlapEnd - framePlainStart)
                     try Task.checkCancellation()
+                    if !hasResponded {
+                        hasResponded = true
+                        onFirstResponse()
+                    }
                     request.respond(with: plaintext.subdata(in: lower..<upper))
                 }
             }
-            batchStart = demandedEnd + 1
+            batchStart = batch.upperBound + 1
         }
     }
 
@@ -1099,8 +1826,11 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
         guard let information else { return }
         information.contentLength = Int64(clamping: plaintextSize)
         information.isByteRangeAccessSupported = true
-        if let mime = asset.display?["mime_type"]?.stringValue {
-            information.contentType = UTType(mimeType: mime)?.identifier
+        let allowed = information.allowedContentTypes
+        if allowed == nil
+            || allowed?.isEmpty == true
+            || allowed?.contains(mediaDescription.contentTypeIdentifier) == true {
+            information.contentType = mediaDescription.contentTypeIdentifier
         }
     }
 

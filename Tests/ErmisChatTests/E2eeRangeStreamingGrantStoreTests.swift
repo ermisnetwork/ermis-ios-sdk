@@ -22,6 +22,74 @@ final class E2eeRangeStreamingGrantStoreTests: XCTestCase {
         XCTAssertEqual(E2eeRangeStreamingGrant.renewalLead(for: -1), 0)
     }
 
+    func testRangeStreamingDefaultsOnWhenProcessOverrideIsAbsent() {
+        XCTAssertTrue(E2eeRangeStreamingFeatureFlag.isEnabled(environment: [:]))
+    }
+
+    func testRangeStreamingProcessOverridePreservesOptInAndProvidesKillSwitch() {
+        XCTAssertTrue(
+            E2eeRangeStreamingFeatureFlag.isEnabled(
+                environment: [E2eeRangeStreamingFeatureFlag.environmentKey: "1"]
+            )
+        )
+        XCTAssertFalse(
+            E2eeRangeStreamingFeatureFlag.isEnabled(
+                environment: [E2eeRangeStreamingFeatureFlag.environmentKey: "0"]
+            )
+        )
+        XCTAssertFalse(
+            E2eeRangeStreamingFeatureFlag.isEnabled(
+                environment: [E2eeRangeStreamingFeatureFlag.environmentKey: "invalid"]
+            )
+        )
+    }
+
+    func testPlaybackPolicyUsesRangeForEveryOpaqueVideoWithoutASizeThreshold() {
+        XCTAssertTrue(
+            E2eeVideoPlaybackPolicy.usesRangeStreaming(
+                isOpaqueE2eeVideo: true,
+                clientEnabled: true,
+                processEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            E2eeVideoPlaybackPolicy.usesRangeStreaming(
+                isOpaqueE2eeVideo: false,
+                clientEnabled: true,
+                processEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            E2eeVideoPlaybackPolicy.usesRangeStreaming(
+                isOpaqueE2eeVideo: true,
+                clientEnabled: false,
+                processEnabled: true
+            )
+        )
+        XCTAssertFalse(
+            E2eeVideoPlaybackPolicy.usesRangeStreaming(
+                isOpaqueE2eeVideo: true,
+                clientEnabled: true,
+                processEnabled: false
+            )
+        )
+    }
+
+    func testClientConfigDefaultsRangeStreamingOnAndAllowsRollback() {
+        guard let baseURL = URL(string: "https://example.invalid") else {
+            XCTFail("Expected a valid static test URL")
+            return
+        }
+        var config = ErmisClientConfig(
+            apiKeyString: "test-api-key",
+            endpointEnviroment: .init(baseURL: baseURL)
+        )
+
+        XCTAssertTrue(config.isE2eeRangeStreamingEnabled)
+        config.isE2eeRangeStreamingEnabled = false
+        XCTAssertFalse(config.isE2eeRangeStreamingEnabled)
+    }
+
     func testConcurrentCacheMissIsExactlySingleFlight() async throws {
         let calls = Counter()
         let now = Date()

@@ -276,11 +276,14 @@ class APIClient {
                 return
             }
 
-            log.debug("[APIClient] Operation starting for \(endpoint.path), isRefreshingToken: \(self.isRefreshingToken), operationQueue.isSuspended: \(self.operationQueue.isSuspended)", subsystems: .httpRequests)
+            log.debug(
+                "[API_REQUEST] state=queued refreshing_token=\(self.isRefreshingToken) queue_suspended=\(self.operationQueue.isSuspended)",
+                subsystems: .httpRequests
+            )
             
             guard !self.isRefreshingToken || endpoint.path.isRefreshToken else {
                 // Requeue request
-                log.debug("[APIClient] Token is being refreshed, requeueing request for \(endpoint.path)", subsystems: .httpRequests)
+                log.debug("[API_REQUEST] state=requeued reason=token_refresh", subsystems: .httpRequests)
                 self.request(endpoint: endpoint, completion: completion)
                 done(.continue)
                 return
@@ -341,7 +344,7 @@ class APIClient {
                     done(.continue)
                     return
                 case .success, .failure:
-                    log.debug("Request completed for /\(endpoint.path)", subsystems: .offlineSupport)
+                    log.debug("[API_REQUEST] state=operation_completed", subsystems: .offlineSupport)
                     completion(result)
                     done(.continue)
                     return
@@ -367,7 +370,7 @@ class APIClient {
                     completion(result)
                     done(.continue)
                 case .success, .failure:
-                    log.debug("Request succeeded /\(endpoint.path)", subsystems: .offlineSupport)
+                    log.debug("[API_REQUEST] state=unmanaged_operation_completed", subsystems: .offlineSupport)
                     completion(result)
                     done(.continue)
                 }
@@ -389,23 +392,15 @@ class APIClient {
             do {
                 urlRequest = try requestResult.get()
             } catch {
-                log.error(error, subsystems: .httpRequests)
+                log.error("[API_REQUEST] state=encoding_failed", subsystems: .httpRequests)
                 completion(.failure(error))
                 return
             }
-            
-//            log.debug(
-//                "Making URL request: \(endpoint.method.rawValue.uppercased()) \(endpoint.path)\n"
-//                + "url: \n \(urlRequest.url?.absoluteString) \n"
-//                + "Headers:\n\(String(describing: urlRequest.allHTTPHeaderFields))\n"
-//                + "Body:\n\(urlRequest.httpBody?.debugPrettyPrintedJSON ?? "<Empty>")\n"
-//                + "Query items:\n\(urlRequest.queryItems.prettyPrinted)",
-//                subsystems: .httpRequests
-//            )
-            
-            print("CURL: \(urlRequest.cURL())")
 
-            log.debug("[APIClient] Starting request: \(endpoint.method.rawValue) \(endpoint.path)", subsystems: .httpRequests)
+            log.debug(
+                urlRequest.privacySafeDiagnosticSummary(state: .started),
+                subsystems: .httpRequests
+            )
 
             guard let self = self else {
                 log.warning("Callback called while self is nil", subsystems: .httpRequests)
@@ -414,18 +409,22 @@ class APIClient {
             }
             
             let task = self.session.dataTask(with: urlRequest) { [decoder = self.decoder] (data, response, error) in
-                log.debug("[APIClient] Request completed: \(endpoint.method.rawValue) \(endpoint.path), error: \(String(describing: error))", subsystems: .httpRequests)
-                
                 do {
                     let decodedResponse: Response = try decoder.decodeRequestResponse(
                         data: data,
                         response: response,
                         error: error
                     )
-//                    log.debug("[APIClient] Successfully decoded response for \(endpoint.path)", subsystems: .httpRequests)
+                    log.debug(
+                        urlRequest.privacySafeDiagnosticSummary(state: .succeeded),
+                        subsystems: .httpRequests
+                    )
                     completion(.success(decodedResponse))
                 } catch {
-                    log.debug("[APIClient] Failed to decode response for \(endpoint.path): \(error)", subsystems: .httpRequests)
+                    log.debug(
+                        urlRequest.privacySafeDiagnosticSummary(state: .failed),
+                        subsystems: .httpRequests
+                    )
                     
                     if error is ClientError.ExpiredToken == false {
                         completion(.failure(error))
@@ -450,7 +449,10 @@ class APIClient {
                     }
                 }
             }
-            log.debug("[APIClient] Resuming task for \(endpoint.path)", subsystems: .httpRequests)
+            log.debug(
+                urlRequest.privacySafeDiagnosticSummary(state: .resumed),
+                subsystems: .httpRequests
+            )
             task.resume()
         }
     }
