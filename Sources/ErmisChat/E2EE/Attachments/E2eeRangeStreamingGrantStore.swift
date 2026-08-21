@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import Dispatch
 
 enum E2eeRangeStreamingGrantStoreError: Error, Equatable {
     case mismatchedAsset
@@ -12,6 +13,7 @@ enum E2eeRangeStreamingGrantStoreError: Error, Equatable {
 enum E2eeRangeStreamingGrantStoreEvent: Sendable {
     case initialRequest
     case renewalRequest
+    case renewalSucceeded(latency: TimeInterval)
 }
 
 /// Asset-session grant cache with one real renewal flight and one proactive timer per asset.
@@ -23,6 +25,8 @@ actor E2eeRangeStreamingGrantStore {
     private struct RenewalFlight {
         let id: UUID
         let task: Task<E2eeRangeStreamingGrant, Error>
+        let isRenewal: Bool
+        let startedAtUptimeNanoseconds: UInt64
     }
 
     private struct Session {
@@ -79,7 +83,9 @@ actor E2eeRangeStreamingGrantStore {
             let flightId = UUID()
             flight = RenewalFlight(
                 id: flightId,
-                task: Task { try await provider(assetId) }
+                task: Task { try await provider(assetId) },
+                isRenewal: isRenewal,
+                startedAtUptimeNanoseconds: DispatchTime.now().uptimeNanoseconds
             )
             session.renewalFlight = flight
             sessions[assetId] = session
@@ -99,6 +105,17 @@ actor E2eeRangeStreamingGrantStore {
                 sessions[assetId]?.grant = fresh
                 sessions[assetId]?.renewalFlight = nil
                 scheduleProactiveRenewal(for: assetId, grant: fresh)
+                if flight.isRenewal {
+                    let completedAt = DispatchTime.now().uptimeNanoseconds
+                    let elapsedNanoseconds = completedAt >= flight.startedAtUptimeNanoseconds
+                        ? completedAt - flight.startedAtUptimeNanoseconds
+                        : 0
+                    eventHandler(
+                        .renewalSucceeded(
+                            latency: TimeInterval(elapsedNanoseconds) / 1_000_000_000
+                        )
+                    )
+                }
             }
             return fresh
         } catch {

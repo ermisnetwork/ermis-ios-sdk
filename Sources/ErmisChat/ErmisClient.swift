@@ -740,10 +740,22 @@ public class ErmisClient {
                 guard let expiresAt = DateFormatter.Ermis.rfc3339Date(from: response.expiresAt) else {
                     throw E2eeAttachmentAPIContractError.invalidExpiry
                 }
+#if DEBUG
+                let debugExpiry = E2eeRangeStreamingDebugGrantExpiry.resolve(
+                    serverExpiresAt: expiresAt,
+                    issuedAt: issuedAt
+                )
+                if debugExpiry.wasShortened {
+                    log.info("[E2EE_RANGE_PLAYBACK] state=debug_grant_ttl_shortened")
+                }
+                let effectiveExpiresAt = debugExpiry.expiresAt
+#else
+                let effectiveExpiresAt = expiresAt
+#endif
                 return E2eeRangeStreamingGrant(
                     assetId: assetId,
                     grantURL: response.downloadURL,
-                    expiresAt: expiresAt,
+                    expiresAt: effectiveExpiresAt,
                     issuedAt: issuedAt
                 )
             },

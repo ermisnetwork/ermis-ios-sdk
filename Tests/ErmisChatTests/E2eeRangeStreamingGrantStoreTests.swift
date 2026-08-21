@@ -14,6 +14,32 @@ final class E2eeRangeStreamingGrantStoreTests: XCTestCase {
         }
     }
 
+    private final class EventRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var initialRequests = 0
+        private var renewalRequests = 0
+        private var renewalLatencies: [TimeInterval] = []
+
+        func record(_ event: E2eeRangeStreamingGrantStoreEvent) {
+            lock.lock()
+            defer { lock.unlock() }
+            switch event {
+            case .initialRequest:
+                initialRequests += 1
+            case .renewalRequest:
+                renewalRequests += 1
+            case let .renewalSucceeded(latency):
+                renewalLatencies.append(latency)
+            }
+        }
+
+        func snapshot() -> (initialRequests: Int, renewalRequests: Int, renewalLatencies: [TimeInterval]) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (initialRequests, renewalRequests, renewalLatencies)
+        }
+    }
+
     func testRenewalLeadUsesServerTTLAndNeverExceedsHalf() {
         XCTAssertEqual(E2eeRangeStreamingGrant.renewalLead(for: 600), 60)
         XCTAssertEqual(E2eeRangeStreamingGrant.renewalLead(for: 200), 40)
@@ -43,6 +69,113 @@ final class E2eeRangeStreamingGrantStoreTests: XCTestCase {
             )
         )
     }
+
+#if DEBUG
+    func testDebugGrantExpiryShortensServerTTLWithinAllowedBounds() {
+        let issuedAt = Date(timeIntervalSince1970: 1_000)
+        let serverExpiresAt = issuedAt.addingTimeInterval(300)
+
+        let resolved = E2eeRangeStreamingDebugGrantExpiry.resolve(
+            serverExpiresAt: serverExpiresAt,
+            issuedAt: issuedAt,
+            environment: [
+                E2eeRangeStreamingDebugGrantExpiry.environmentKey: "12"
+            ]
+        )
+
+        XCTAssertTrue(resolved.wasShortened)
+        XCTAssertEqual(resolved.expiresAt, issuedAt.addingTimeInterval(12))
+    }
+
+    func testDebugGrantExpiryRejectsInvalidValuesAndNeverExtendsServerTTL() {
+        let issuedAt = Date(timeIntervalSince1970: 1_000)
+        let serverExpiresAt = issuedAt.addingTimeInterval(30)
+        for rawValue in ["", "nan", "9", "121", "invalid"] {
+            let resolved = E2eeRangeStreamingDebugGrantExpiry.resolve(
+                serverExpiresAt: serverExpiresAt,
+                issuedAt: issuedAt,
+                environment: [
+                    E2eeRangeStreamingDebugGrantExpiry.environmentKey: rawValue
+                ]
+            )
+            XCTAssertFalse(resolved.wasShortened)
+            XCTAssertEqual(resolved.expiresAt, serverExpiresAt)
+        }
+
+        let shorterServerExpiry = issuedAt.addingTimeInterval(5)
+        let resolved = E2eeRangeStreamingDebugGrantExpiry.resolve(
+            serverExpiresAt: shorterServerExpiry,
+            issuedAt: issuedAt,
+            environment: [
+                E2eeRangeStreamingDebugGrantExpiry.environmentKey: "12"
+            ]
+        )
+        XCTAssertFalse(resolved.wasShortened)
+        XCTAssertEqual(resolved.expiresAt, shorterServerExpiry)
+    }
+
+    func testDebugAuthorizationFaultAcceptsOnlyFixedStatusesAndIsOneShot() {
+        for status in [401, 403] {
+            let fault = E2eeRangeStreamingDebugAuthorizationFault(
+                environment: [
+                    E2eeRangeStreamingDebugAuthorizationFault.environmentKey: "\(status)"
+                ]
+            )
+            XCTAssertNil(fault.consumeIfEligible(actualStatus: 200))
+            XCTAssertEqual(fault.consumeIfEligible(actualStatus: 206), status)
+            XCTAssertNil(fault.consumeIfEligible(actualStatus: 206))
+        }
+
+        for rawValue in ["", "200", "401,403", "invalid"] {
+            let fault = E2eeRangeStreamingDebugAuthorizationFault(
+                environment: [
+                    E2eeRangeStreamingDebugAuthorizationFault.environmentKey: rawValue
+                ]
+            )
+            XCTAssertNil(fault.consumeIfEligible(actualStatus: 206))
+        }
+    }
+
+    func testDebugResponseContractFaultLatchesAfterFirstEligibleResponse() {
+        let fault = E2eeRangeStreamingDebugResponseContractFault(
+            environment: [
+                E2eeRangeStreamingDebugResponseContractFault.environmentKey: "1"
+            ]
+        )
+        XCTAssertEqual(fault.consumeConfigurationForLogging(), true)
+        XCTAssertNil(fault.consumeConfigurationForLogging())
+        XCTAssertFalse(fault.isActive)
+        XCTAssertEqual(
+            fault.decision(actualStatus: 200),
+            .init(shouldReject: false, didActivate: false)
+        )
+        XCTAssertFalse(fault.isActive)
+        XCTAssertEqual(
+            fault.decision(actualStatus: 206),
+            .init(shouldReject: true, didActivate: true)
+        )
+        XCTAssertTrue(fault.isActive)
+        XCTAssertEqual(
+            fault.decision(actualStatus: 206),
+            .init(shouldReject: true, didActivate: false)
+        )
+
+        for rawValue in ["", "0", "true", "response_contract", "invalid"] {
+            let invalid = E2eeRangeStreamingDebugResponseContractFault(
+                environment: [
+                    E2eeRangeStreamingDebugResponseContractFault.environmentKey: rawValue
+                ]
+            )
+            XCTAssertEqual(invalid.consumeConfigurationForLogging(), false)
+            XCTAssertNil(invalid.consumeConfigurationForLogging())
+            XCTAssertEqual(
+                invalid.decision(actualStatus: 206),
+                .init(shouldReject: false, didActivate: false)
+            )
+            XCTAssertFalse(invalid.isActive)
+        }
+    }
+#endif
 
     func testPlaybackPolicyUsesRangeForEveryOpaqueVideoWithoutASizeThreshold() {
         XCTAssertTrue(
@@ -145,6 +278,7 @@ final class E2eeRangeStreamingGrantStoreTests: XCTestCase {
 
     func testConcurrentUnauthorizedRequestsShareOneRenewal() async throws {
         let calls = Counter()
+        let events = EventRecorder()
         let now = Date()
         let store = E2eeRangeStreamingGrantStore(
             grantProvider: { assetId in
@@ -158,7 +292,8 @@ final class E2eeRangeStreamingGrantStoreTests: XCTestCase {
                 )
             },
             clock: { now },
-            sleepUntil: { _ in try await Task.sleep(nanoseconds: 5_000_000_000) }
+            sleepUntil: { _ in try await Task.sleep(nanoseconds: 5_000_000_000) },
+            eventHandler: { events.record($0) }
         )
         let stale = try await store.grant(for: "asset")
 
@@ -180,6 +315,11 @@ final class E2eeRangeStreamingGrantStoreTests: XCTestCase {
         XCTAssertTrue(results.allSatisfy { $0 != nil })
         let callCount = await calls.value
         XCTAssertEqual(callCount, 2)
+        let eventSnapshot = events.snapshot()
+        XCTAssertEqual(eventSnapshot.initialRequests, 1)
+        XCTAssertEqual(eventSnapshot.renewalRequests, 1)
+        XCTAssertEqual(eventSnapshot.renewalLatencies.count, 1)
+        XCTAssertGreaterThanOrEqual(eventSnapshot.renewalLatencies[0], 0.005)
         await store.invalidateAll()
     }
 

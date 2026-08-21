@@ -55,6 +55,13 @@ enum E2eeRangeMediaTypeSource: String, Sendable {
     case videoDefault
 }
 
+enum E2eeRangeMediaContainer: String, Sendable {
+    case unknown
+    case quickTime = "quicktime"
+    case mpeg4
+    case otherVideo = "other_video"
+}
+
 enum E2eeRangeLoadingRequestRegion: String, Sendable {
     case head
     case middle
@@ -65,6 +72,7 @@ struct E2eeRangeMediaDescription: Equatable, Sendable {
     let contentTypeIdentifier: String
     let fileExtension: String
     let source: E2eeRangeMediaTypeSource
+    let container: E2eeRangeMediaContainer
 
     static func resolve(
         asset: E2eeAttachmentManifestAssetV1,
@@ -104,10 +112,19 @@ struct E2eeRangeMediaDescription: Equatable, Sendable {
 
     private static func description(type: UTType, source: E2eeRangeMediaTypeSource) -> Self {
         let fileExtension = type.preferredFilenameExtension?.lowercased() ?? "mp4"
+        let container: E2eeRangeMediaContainer
+        if type.conforms(to: .quickTimeMovie) {
+            container = .quickTime
+        } else if type.conforms(to: .mpeg4Movie) {
+            container = .mpeg4
+        } else {
+            container = .otherVideo
+        }
         return .init(
             contentTypeIdentifier: type.identifier,
             fileExtension: fileExtension,
-            source: source
+            source: source,
+            container: container
         )
     }
 }
@@ -127,8 +144,20 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         var priorityTransportRequests = 0
         var continuationTransportRequests = 0
         var connectivityWaitCount = 0
+        var unauthorizedResponseCount = 0
         var ciphertextBytes = 0
         var cacheHitBytes = 0
+        var requestedPlaintextBytes = 0
+        var respondedPlaintextBytes = 0
+        var successfulRenewals = 0
+        var maximumRenewalLatencyMilliseconds = 0
+        var exactRandomDemands = 0
+        var sequentialPrefetchPlans = 0
+        var sequentialPrefetchPlannedFrames = 0
+        var maximumSequentialPrefetchFrames = 0
+        var completedSequentialPrefetches = 0
+        var completedSequentialPrefetchFrames = 0
+        var maximumCompletedSequentialPrefetchFrames = 0
         var completedLoadingRequests = 0
         var startupLatencyMilliseconds = 0
         var maximumSeekLatencyMilliseconds = 0
@@ -145,6 +174,7 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         var tailLoadingRequests = 0
         var maximumActiveLoadingRequests = 0
         var mediaTypeSource: E2eeRangeMediaTypeSource = .videoDefault
+        var mediaContainer: E2eeRangeMediaContainer = .unknown
         var fallbackCount = 0
         var lastFallbackReason: E2eeRangeStreamingFallbackReason?
     }
@@ -159,6 +189,13 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
                 value.initialGrantRequests += 1
             case .renewalRequest:
                 value.grantRenewalRequests += 1
+            case let .renewalSucceeded(latency):
+                value.successfulRenewals += 1
+                let milliseconds = max(0, Int((latency * 1_000).rounded()))
+                value.maximumRenewalLatencyMilliseconds = max(
+                    value.maximumRenewalLatencyMilliseconds,
+                    milliseconds
+                )
             }
         }
     }
@@ -191,9 +228,47 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         )
     }
 
+    func recordUnauthorizedResponse() {
+        lock.withLock { value.unauthorizedResponseCount += 1 }
+    }
+
     func recordCacheHit(bytes: Int) {
         lock.withLock {
             value.cacheHitBytes += max(0, bytes)
+        }
+    }
+
+    func recordRangePlaintextResponse(bytes: Int) {
+        lock.withLock {
+            value.respondedPlaintextBytes += max(0, bytes)
+        }
+    }
+
+    func recordExactRandomDemand() {
+        lock.withLock { value.exactRandomDemands += 1 }
+    }
+
+    func recordSequentialPrefetch(frameCount: Int) {
+        let boundedCount = max(0, frameCount)
+        lock.withLock {
+            value.sequentialPrefetchPlans += 1
+            value.sequentialPrefetchPlannedFrames += boundedCount
+            value.maximumSequentialPrefetchFrames = max(
+                value.maximumSequentialPrefetchFrames,
+                boundedCount
+            )
+        }
+    }
+
+    func recordSequentialPrefetchCompleted(frameCount: Int) {
+        let boundedCount = max(0, frameCount)
+        lock.withLock {
+            value.completedSequentialPrefetches += 1
+            value.completedSequentialPrefetchFrames += boundedCount
+            value.maximumCompletedSequentialPrefetchFrames = max(
+                value.maximumCompletedSequentialPrefetchFrames,
+                boundedCount
+            )
         }
     }
 
@@ -225,6 +300,7 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
             ? plaintextSize
             : min(plaintextSize, batchWindow.partialValue)
         return lock.withLock {
+            value.requestedPlaintextBytes += Int(range.upperBound - range.lowerBound)
             if requestsAllDataToEnd {
                 value.allToEndLoadingRequests += 1
             } else {
@@ -299,6 +375,10 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         lock.withLock { value.mediaTypeSource = source }
     }
 
+    func recordMediaContainer(_ container: E2eeRangeMediaContainer) {
+        lock.withLock { value.mediaContainer = container }
+    }
+
     func recordFallback(_ reason: E2eeRangeStreamingFallbackReason) {
         lock.withLock {
             value.fallbackCount += 1
@@ -317,7 +397,19 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
             + "priority_transport_requests=\(snapshot.priorityTransportRequests) "
             + "continuation_transport_requests=\(snapshot.continuationTransportRequests) "
             + "connectivity_waits=\(snapshot.connectivityWaitCount) "
+            + "unauthorized_responses=\(snapshot.unauthorizedResponseCount) "
             + "ciphertext_bytes=\(snapshot.ciphertextBytes) cache_hit_bytes=\(snapshot.cacheHitBytes) "
+            + "requested_plaintext_bytes=\(snapshot.requestedPlaintextBytes) "
+            + "responded_plaintext_bytes=\(snapshot.respondedPlaintextBytes) "
+            + "successful_renewals=\(snapshot.successfulRenewals) "
+            + "max_renewal_ms=\(snapshot.maximumRenewalLatencyMilliseconds) "
+            + "exact_random_demands=\(snapshot.exactRandomDemands) "
+            + "prefetch_plans=\(snapshot.sequentialPrefetchPlans) "
+            + "prefetch_planned_frames=\(snapshot.sequentialPrefetchPlannedFrames) "
+            + "max_prefetch_frames=\(snapshot.maximumSequentialPrefetchFrames) "
+            + "prefetch_completed=\(snapshot.completedSequentialPrefetches) "
+            + "prefetch_completed_frames=\(snapshot.completedSequentialPrefetchFrames) "
+            + "max_completed_prefetch_frames=\(snapshot.maximumCompletedSequentialPrefetchFrames) "
             + "completed_requests=\(snapshot.completedLoadingRequests) "
             + "startup_ms=\(snapshot.startupLatencyMilliseconds) "
             + "max_seek_ms=\(snapshot.maximumSeekLatencyMilliseconds) "
@@ -334,6 +426,7 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
             + "tail_requests=\(snapshot.tailLoadingRequests) "
             + "max_active_requests=\(snapshot.maximumActiveLoadingRequests) "
             + "media_type_source=\(snapshot.mediaTypeSource.rawValue) "
+            + "media_container=\(snapshot.mediaContainer.rawValue) "
             + "fallbacks=\(snapshot.fallbackCount) fallback_reason=\(fallback)"
     }
 }
@@ -343,6 +436,83 @@ private extension NSLock {
         lock()
         defer { unlock() }
         return body()
+    }
+}
+
+/// Identifies only speculative work beyond AVFoundation's current demand. Splitting a broad
+/// requested range into bounded transport batches is intentionally not counted as prefetch.
+struct E2eeRangeSequentialPrefetchPlanner: Sendable {
+    struct Decision: Equatable, Sendable {
+        let range: ClosedRange<UInt64>?
+        let isInitialOrRandomExactDemand: Bool
+    }
+
+    private(set) var previousDemand: ClosedRange<UInt64>?
+    private(set) var sequentialDemandCount = 0
+
+    mutating func plan(
+        after demand: ClosedRange<UInt64>,
+        frameCount: UInt64
+    ) -> Decision {
+        guard frameCount > 0,
+              demand.lowerBound < frameCount,
+              demand.upperBound < frameCount else {
+            previousDemand = nil
+            sequentialDemandCount = 0
+            return Decision(range: nil, isInitialOrRandomExactDemand: false)
+        }
+
+        let isSequential: Bool
+        if let previousDemand,
+           previousDemand.upperBound < UInt64.max {
+            // AVFoundation commonly advances playback with bounded requests that overlap the
+            // preceding demand. Treat a forward-moving overlap or an adjacent request as
+            // sequential, while a disjoint seek remains exact and resets the baseline. The
+            // eight-frame limit belongs to speculative work below, not to player-owned demand.
+            isSequential = demand.lowerBound <= previousDemand.upperBound + 1
+                && demand.upperBound > previousDemand.upperBound
+        } else {
+            isSequential = false
+        }
+        let isExactDemand = !isSequential
+        sequentialDemandCount = isSequential ? sequentialDemandCount + 1 : 1
+        previousDemand = demand
+
+        guard sequentialDemandCount >= 2,
+              demand.upperBound < frameCount - 1 else {
+            return Decision(range: nil, isInitialOrRandomExactDemand: isExactDemand)
+        }
+        let start = demand.upperBound + 1
+        let maximumEnd = start + UInt64(E2eeRangePlaintextFrameStore.maximumFrameBatch - 1)
+        let end = min(frameCount - 1, maximumEnd)
+        return Decision(
+            range: start...end,
+            isInitialOrRandomExactDemand: isExactDemand
+        )
+    }
+}
+
+/// Keeps speculative sequential work alive while AVFoundation finishes overlapping continuation
+/// requests. Only a new exact/random demand is allowed to preempt it; another sequential plan or
+/// a broad continuation must wait for the bounded active plan to finish.
+enum E2eeRangeSequentialPrefetchSchedulingPolicy {
+    enum Action: Equatable {
+        case preserveExisting
+        case cancelExisting
+        case start(ClosedRange<UInt64>)
+    }
+
+    static func action(
+        for decision: E2eeRangeSequentialPrefetchPlanner.Decision,
+        hasActivePrefetch: Bool
+    ) -> Action {
+        if decision.isInitialOrRandomExactDemand {
+            return .cancelExisting
+        }
+        guard let range = decision.range else {
+            return .preserveExisting
+        }
+        return hasActivePrefetch ? .preserveExisting : .start(range)
     }
 }
 
@@ -498,11 +668,13 @@ actor E2eeRangeCiphertextReader {
             guard let http = response as? HTTPURLResponse else {
                 throw E2eeRangeStreamingResourceError.invalidResponse
             }
-            if http.statusCode == 401 || http.statusCode == 403 {
+            let responseStatus = authorizationStatus(for: http.statusCode)
+            if responseStatus == 401 || responseStatus == 403 {
+                telemetry.recordUnauthorizedResponse()
                 guard attempt == 0,
                       let renewed = await grantStore.handleUnauthorized(
                         assetId: assetId,
-                        httpStatus: http.statusCode,
+                        httpStatus: responseStatus,
                         grantAttempt: attempt,
                         failedGrantURL: grant.grantURL,
                         fallback: { _ in }
@@ -511,6 +683,9 @@ actor E2eeRangeCiphertextReader {
                 }
                 grant = renewed
                 continue
+            }
+            if shouldInjectResponseContractFailure(actualStatus: http.statusCode) {
+                throw E2eeRangeStreamingResourceError.invalidContentRange
             }
             guard http.statusCode == 206,
                   data.count == Int(byteCount),
@@ -570,10 +745,16 @@ actor E2eeRangeCiphertextReader {
                     try Task.checkCancellation()
                     switch event {
                     case let .response(http):
-                        if http.statusCode == 401 || http.statusCode == 403 {
-                            unauthorizedStatus = http.statusCode
+                        let responseStatus = authorizationStatus(for: http.statusCode)
+                        if responseStatus == 401 || responseStatus == 403 {
+                            telemetry.recordUnauthorizedResponse()
+                            unauthorizedStatus = responseStatus
                             stream.task.cancel()
                             break eventLoop
+                        }
+                        if shouldInjectResponseContractFailure(actualStatus: http.statusCode) {
+                            stream.task.cancel()
+                            throw E2eeRangeStreamingResourceError.invalidContentRange
                         }
                         guard http.statusCode == 206,
                               Self.hasExactContentLength(http, expected: byteCount),
@@ -637,6 +818,40 @@ actor E2eeRangeCiphertextReader {
 
     nonisolated func invalidateTransport() {
         session.invalidateAndCancel()
+    }
+
+    private func authorizationStatus(for actualStatus: Int) -> Int {
+#if DEBUG
+        if let injected = E2eeRangeStreamingDebugAuthorizationFault.shared.consumeIfEligible(
+            actualStatus: actualStatus
+        ) {
+            log.info(
+                "[E2EE_RANGE_PLAYBACK] state=debug_authorization_rejected status=\(injected)"
+            )
+            return injected
+        }
+#endif
+        return actualStatus
+    }
+
+    private func shouldInjectResponseContractFailure(actualStatus: Int) -> Bool {
+#if DEBUG
+        let fault = E2eeRangeStreamingDebugResponseContractFault.shared
+        if let isEnabled = fault.consumeConfigurationForLogging() {
+            log.info(
+                "[E2EE_RANGE_PLAYBACK] state=debug_response_contract_configured enabled=\(isEnabled ? 1 : 0)"
+            )
+        }
+        let decision = fault.decision(
+            actualStatus: actualStatus
+        )
+        if decision.didActivate {
+            log.info("[E2EE_RANGE_PLAYBACK] state=debug_response_contract_rejected")
+        }
+        return decision.shouldReject
+#else
+        return false
+#endif
     }
 
     private static func hasExactContentLength(
@@ -859,7 +1074,7 @@ actor E2eeRangePlaintextFrameStore {
     private let streamer: CiphertextStreamer
     private let cacheCostLimit: Int
     private let telemetry: E2eeRangeStreamingTelemetry
-    private let frameCount: UInt64
+    nonisolated let frameCount: UInt64
 
     private var cache: [UInt64: CacheEntry] = [:]
     private var cacheCost = 0
@@ -942,6 +1157,14 @@ actor E2eeRangePlaintextFrameStore {
             output[frameIndex] = frame
         }
         return output
+    }
+
+    /// Warms only verified plaintext frames and never expands beyond the caller's bounded plan.
+    func prefetchFrames(in frameRange: ClosedRange<UInt64>) async throws {
+        guard frameRange.count <= Self.maximumFrameBatch else {
+            throw E2eeRangeStreamingResourceError.invalidRange
+        }
+        try await consumeFrames(in: frameRange) { _, _ in }
     }
 
     /// Keeps one bounded flight owned for the whole AVFoundation batch while yielding verified
@@ -1478,6 +1701,9 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
 
     private var activeLoadingRequests: [ObjectIdentifier: ActiveLoadingRequest] = [:]
     private var isInvalidated = false
+    private var prefetchPlanner = E2eeRangeSequentialPrefetchPlanner()
+    private var prefetchTask: Task<Void, Never>?
+    private var prefetchToken: UUID?
 #if canImport(UIKit)
     private var memoryWarningObserver: NSObjectProtocol?
 #endif
@@ -1510,6 +1736,7 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
         self.mediaDescription = mediaDescription
         self.telemetry = telemetry
         telemetry.recordMediaTypeSource(mediaDescription.source)
+        telemetry.recordMediaContainer(mediaDescription.container)
         self.loadingRequestCancellationHandler = loadingRequestCancellationHandler
         self.loadingRequestObserver = loadingRequestObserver
         self.invalidationCompletionHandler = invalidationCompletionHandler
@@ -1650,18 +1877,22 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
     }
 
     func invalidate() {
-        let active: [ActiveLoadingRequest]? = lock.withLock {
+        let invalidationState: ([ActiveLoadingRequest], Task<Void, Never>?)? = lock.withLock {
             guard !isInvalidated else { return nil }
             isInvalidated = true
             let values = Array(activeLoadingRequests.values)
             activeLoadingRequests.removeAll()
-            return values
+            let activePrefetch = prefetchTask
+            prefetchTask = nil
+            prefetchToken = nil
+            return (values, activePrefetch)
         }
-        guard let active else { return }
+        guard let (active, activePrefetch) = invalidationState else { return }
         active.forEach {
             $0.startGate.resolve(false)
             $0.task?.cancel()
         }
+        activePrefetch?.cancel()
         // Stop byte delivery synchronously at the viewer boundary. The remaining actor cleanup
         // runs independently below, but no Range task may survive long enough to answer after the
         // playback lease has been released.
@@ -1701,7 +1932,7 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
     }
 
     private func removeTask(for key: ObjectIdentifier, token: UUID) {
-        _ = lock.withLock {
+        lock.withLock {
             guard activeLoadingRequests[key]?.token == token else { return }
             activeLoadingRequests.removeValue(forKey: key)
         }
@@ -1717,6 +1948,15 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
         populateContentInformation(request.contentInformationRequest, plaintextSize: plaintextSize)
         guard let dataRequest = request.dataRequest else { return }
         guard let range = requestedRange(dataRequest, plaintextSize: plaintextSize) else { return }
+#if DEBUG
+        // Once the controlled contract fault has reached a real 206, every replacement loading
+        // request must join the same full-original lease. Otherwise AVFoundation can cancel the
+        // one failed probe and silently continue through fresh Range requests, which does not
+        // exercise or prove the fallback lifecycle.
+        if E2eeRangeStreamingDebugResponseContractFault.shared.isActive {
+            throw E2eeRangeStreamingResourceError.invalidContentRange
+        }
+#endif
         let requestsAllDataToEnd = dataRequest.requestsAllDataToEndOfResource
         let region = telemetry.recordLoadingRequestShape(
             range: range,
@@ -1767,10 +2007,89 @@ final class E2eeRangeStreamingResourceLoader: NSObject, AVAssetResourceLoaderDel
                         hasResponded = true
                         onFirstResponse()
                     }
-                    request.respond(with: plaintext.subdata(in: lower..<upper))
+                    let response = plaintext.subdata(in: lower..<upper)
+                    request.respond(with: response)
+                    telemetry.recordRangePlaintextResponse(bytes: response.count)
                 }
             }
             batchStart = batch.upperBound + 1
+        }
+        scheduleAdaptivePrefetch(after: firstFrame...lastFrame)
+    }
+
+    private func scheduleAdaptivePrefetch(after demand: ClosedRange<UInt64>) {
+        let token = UUID()
+        let totalFrameCount = frameStore.frameCount
+        let scheduling: (
+            E2eeRangeSequentialPrefetchPlanner.Decision,
+            E2eeRangeSequentialPrefetchSchedulingPolicy.Action,
+            Task<Void, Never>?
+        )? = lock.withLock {
+            guard !isInvalidated else { return nil }
+            let decision = prefetchPlanner.plan(
+                after: demand,
+                frameCount: totalFrameCount
+            )
+            let action = E2eeRangeSequentialPrefetchSchedulingPolicy.action(
+                for: decision,
+                hasActivePrefetch: prefetchToken != nil
+            )
+            switch action {
+            case .preserveExisting:
+                return (decision, action, nil)
+            case .cancelExisting:
+                let previous = prefetchTask
+                prefetchTask = nil
+                prefetchToken = nil
+                return (decision, action, previous)
+            case .start:
+                // Reserve the slot before constructing the task outside the lock. A concurrent
+                // exact/random demand can clear this token and prevent stale installation.
+                prefetchToken = token
+                return (decision, action, nil)
+            }
+        }
+        guard let (decision, action, previous) = scheduling else { return }
+        if decision.isInitialOrRandomExactDemand {
+            telemetry.recordExactRandomDemand()
+        }
+        switch action {
+        case .preserveExisting:
+            return
+        case .cancelExisting:
+            previous?.cancel()
+            return
+        case .start:
+            break
+        }
+        guard case let .start(range) = action else { return }
+        telemetry.recordSequentialPrefetch(frameCount: range.count)
+
+        let prefetchFrameStore = frameStore
+        let task = Task(priority: .utility) { [weak self] in
+            do {
+                try await prefetchFrameStore.prefetchFrames(in: range)
+                self?.telemetry.recordSequentialPrefetchCompleted(frameCount: range.count)
+            } catch is CancellationError {
+                // A random seek, replacement demand, or viewer close owns cancellation.
+            } catch {
+                // Speculative work must never fail or fall back an AVFoundation request.
+            }
+            self?.clearPrefetchTask(token: token)
+        }
+        let installed = lock.withLock { () -> Bool in
+            guard !isInvalidated, prefetchToken == token else { return false }
+            prefetchTask = task
+            return true
+        }
+        if !installed { task.cancel() }
+    }
+
+    private func clearPrefetchTask(token: UUID) {
+        lock.withLock {
+            guard prefetchToken == token else { return }
+            prefetchTask = nil
+            prefetchToken = nil
         }
     }
 

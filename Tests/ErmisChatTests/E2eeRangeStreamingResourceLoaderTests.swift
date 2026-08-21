@@ -50,6 +50,7 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         XCTAssertEqual(description.source, .manifestMime)
         XCTAssertEqual(description.fileExtension, "mov")
         XCTAssertEqual(description.contentTypeIdentifier, UTType.quickTimeMovie.identifier)
+        XCTAssertEqual(description.container, .quickTime)
     }
 
     func testMediaDescriptionFallsBackToAttachmentNameThenVideoDefault() throws {
@@ -67,8 +68,10 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
 
         XCTAssertEqual(named.source, .attachmentName)
         XCTAssertEqual(named.fileExtension, "mov")
+        XCTAssertEqual(named.container, .quickTime)
         XCTAssertEqual(defaulted.source, .videoDefault)
         XCTAssertEqual(defaulted.fileExtension, "mp4")
+        XCTAssertEqual(defaulted.container, .mpeg4)
     }
 
     func testCiphertextReaderWaitsForConnectivityWithoutMutatingCallerConfiguration() {
@@ -363,6 +366,7 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         let snapshot = telemetry.snapshot()
         XCTAssertEqual(snapshot.initialGrantRequests, 1)
         XCTAssertEqual(snapshot.grantRenewalRequests, 1)
+        XCTAssertEqual(snapshot.unauthorizedResponseCount, 1)
         XCTAssertEqual(snapshot.rangeRequests, 2)
         XCTAssertEqual(snapshot.ciphertextBytes, 4)
         await reader.invalidate(assetId: "opaque-asset")
@@ -408,6 +412,119 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         XCTAssertEqual(providerCalls.value, 2)
         XCTAssertEqual(requestCalls.value, 2)
         await reader.invalidate(assetId: "opaque-asset")
+    }
+
+    func testSequentialPrefetchRequiresAdjacentSmallDemandsAndCapsAtEightFrames() throws {
+        var planner = E2eeRangeSequentialPrefetchPlanner()
+
+        let initial = planner.plan(after: 10...10, frameCount: 40)
+        XCTAssertNil(initial.range)
+        XCTAssertTrue(initial.isInitialOrRandomExactDemand)
+
+        let second = planner.plan(after: 11...11, frameCount: 40)
+        XCTAssertEqual(second.range, 12...19)
+        XCTAssertFalse(second.isInitialOrRandomExactDemand)
+
+        let random = planner.plan(after: 30...30, frameCount: 40)
+        XCTAssertNil(random.range)
+        XCTAssertTrue(random.isInitialOrRandomExactDemand)
+
+        let tail = planner.plan(after: 31...31, frameCount: 35)
+        XCTAssertEqual(tail.range, 32...34)
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(tail.range).count,
+            E2eeRangePlaintextFrameStore.maximumFrameBatch
+        )
+    }
+
+    func testBroadOverlappingContinuationCanTriggerBoundedSequentialPrefetch() {
+        var planner = E2eeRangeSequentialPrefetchPlanner()
+
+        let initial = planner.plan(after: 0...12, frameCount: 80)
+        XCTAssertNil(initial.range)
+        XCTAssertTrue(initial.isInitialOrRandomExactDemand)
+
+        let overlappingContinuation = planner.plan(after: 8...24, frameCount: 80)
+        XCTAssertEqual(overlappingContinuation.range, 25...32)
+        XCTAssertFalse(overlappingContinuation.isInitialOrRandomExactDemand)
+        XCTAssertLessThanOrEqual(
+            overlappingContinuation.range?.count ?? .max,
+            E2eeRangePlaintextFrameStore.maximumFrameBatch
+        )
+
+        let disjointSeek = planner.plan(after: 50...60, frameCount: 80)
+        XCTAssertNil(disjointSeek.range)
+        XCTAssertTrue(disjointSeek.isInitialOrRandomExactDemand)
+    }
+
+    func testActiveSequentialPrefetchSurvivesContinuationChurnButRandomDemandCancelsIt() {
+        var planner = E2eeRangeSequentialPrefetchPlanner()
+
+        _ = planner.plan(after: 10...10, frameCount: 80)
+        let sequential = planner.plan(after: 11...11, frameCount: 80)
+        XCTAssertEqual(
+            E2eeRangeSequentialPrefetchSchedulingPolicy.action(
+                for: sequential,
+                hasActivePrefetch: false
+            ),
+            .start(12...19)
+        )
+
+        let replacementSequential = planner.plan(after: 12...12, frameCount: 80)
+        XCTAssertEqual(
+            E2eeRangeSequentialPrefetchSchedulingPolicy.action(
+                for: replacementSequential,
+                hasActivePrefetch: true
+            ),
+            .preserveExisting
+        )
+
+        let broadContinuation = planner.plan(after: 13...30, frameCount: 80)
+        XCTAssertEqual(
+            E2eeRangeSequentialPrefetchSchedulingPolicy.action(
+                for: broadContinuation,
+                hasActivePrefetch: true
+            ),
+            .preserveExisting
+        )
+
+        let random = planner.plan(after: 50...50, frameCount: 80)
+        XCTAssertTrue(random.isInitialOrRandomExactDemand)
+        XCTAssertEqual(
+            E2eeRangeSequentialPrefetchSchedulingPolicy.action(
+                for: random,
+                hasActivePrefetch: true
+            ),
+            .cancelExisting
+        )
+    }
+
+    func testPrefetchWarmsOnlyTheExplicitEightFramePlan() async throws {
+        let fixture = try makeFixture(frameCount: 16, frameSize: 32)
+        let fetches = RangeStreamingCounter()
+        let ranges = RangeStreamingRangeRecorder()
+        let store = try E2eeRangePlaintextFrameStore(
+            asset: fixture.asset,
+            fetcher: { range in
+                _ = fetches.increment()
+                ranges.append(range)
+                return try fixture.ciphertext.slice(range)
+            }
+        )
+
+        try await store.prefetchFrames(in: 4...11)
+        let warmed = try await store.frames(in: 4...11)
+
+        XCTAssertEqual(warmed.count, 8)
+        XCTAssertEqual(fetches.value, 1)
+        XCTAssertEqual(ranges.values.count, 1)
+        do {
+            try await store.prefetchFrames(in: 0...8)
+            XCTFail("A speculative prefetch must never exceed eight frames")
+        } catch let error as E2eeRangeStreamingResourceError {
+            XCTAssertEqual(error, .invalidRange)
+        }
+        await store.invalidate()
     }
 
     func testCiphertextReaderStreamsOnlyAfterExactRangeHeadersValidate() async throws {
@@ -863,10 +980,16 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         let telemetry = E2eeRangeStreamingTelemetry()
         telemetry.recordGrantEvent(.initialRequest)
         telemetry.recordGrantEvent(.renewalRequest)
+        telemetry.recordGrantEvent(.renewalSucceeded(latency: 0.125))
         telemetry.recordRangeRequest()
         telemetry.recordConnectivityWait()
+        telemetry.recordUnauthorizedResponse()
         telemetry.recordCiphertextBytes(128)
         telemetry.recordCacheHit(bytes: 64)
+        telemetry.recordRangePlaintextResponse(bytes: 96)
+        telemetry.recordExactRandomDemand()
+        telemetry.recordSequentialPrefetch(frameCount: 8)
+        telemetry.recordSequentialPrefetchCompleted(frameCount: 8)
         let headRegion = telemetry.recordLoadingRequestShape(
             range: 0..<128,
             plaintextSize: 4_096,
@@ -882,6 +1005,7 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         telemetry.recordActiveLoadingRequestCount(3)
         telemetry.recordPriorityBypass()
         telemetry.recordMediaTypeSource(.manifestName)
+        telemetry.recordMediaContainer(.quickTime)
         telemetry.recordLoadingRequest(latency: 0.125)
         telemetry.recordFirstResponse(
             latency: 0.075,
@@ -896,7 +1020,19 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         XCTAssertTrue(summary.contains("priority_transport_requests=0"))
         XCTAssertTrue(summary.contains("continuation_transport_requests=1"))
         XCTAssertTrue(summary.contains("connectivity_waits=1"))
+        XCTAssertTrue(summary.contains("unauthorized_responses=1"))
         XCTAssertTrue(summary.contains("ciphertext_bytes=128"))
+        XCTAssertTrue(summary.contains("requested_plaintext_bytes=256"))
+        XCTAssertTrue(summary.contains("responded_plaintext_bytes=96"))
+        XCTAssertTrue(summary.contains("successful_renewals=1"))
+        XCTAssertTrue(summary.contains("max_renewal_ms=125"))
+        XCTAssertTrue(summary.contains("exact_random_demands=1"))
+        XCTAssertTrue(summary.contains("prefetch_plans=1"))
+        XCTAssertTrue(summary.contains("prefetch_planned_frames=8"))
+        XCTAssertTrue(summary.contains("max_prefetch_frames=8"))
+        XCTAssertTrue(summary.contains("prefetch_completed=1"))
+        XCTAssertTrue(summary.contains("prefetch_completed_frames=8"))
+        XCTAssertTrue(summary.contains("max_completed_prefetch_frames=8"))
         XCTAssertTrue(summary.contains("bounded_requests=1"))
         XCTAssertTrue(summary.contains("all_to_end_requests=1"))
         XCTAssertTrue(summary.contains("max_active_requests=3"))
@@ -907,6 +1043,7 @@ final class E2eeRangeStreamingResourceLoaderTests: XCTestCase {
         XCTAssertTrue(summary.contains("middle_first_response_ms=75"))
         XCTAssertTrue(summary.contains("priority_bypasses=1"))
         XCTAssertTrue(summary.contains("media_type_source=manifestName"))
+        XCTAssertTrue(summary.contains("media_container=quicktime"))
         XCTAssertTrue(summary.contains("fallback_reason=responseContract"))
         for forbidden in [
             "http://", "https://", "attachment_id", "message_id", "channel_id",
