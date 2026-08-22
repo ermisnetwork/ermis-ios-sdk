@@ -106,6 +106,22 @@
 "message.actions.download.success-title" = "Download successful.";
 /// Shown as a text in the popup when downloading message failure.
 "message.actions.download.failure-title" = "Download failed. Please try again later.";
+/// Shown beside a file while its verified original is downloading.
+"message.actions.download.in-progress" = "Downloading";
+/// Shown after ciphertext download while attachment integrity is checked.
+"message.actions.download.verifying" = "Verifying…";
+/// Shown when protected data is unavailable after verified ciphertext download.
+"message.actions.download.waiting-for-unlock" = "Waiting for unlock…";
+/// Shown while the verified attachment is decrypted to protected temporary storage.
+"message.actions.download.decrypting" = "Decrypting…";
+/// Shown while the system Files destination picker is presented.
+"message.actions.download.choosing-destination" = "Choose save location…";
+/// Shown after a file has been exported to the selected Files destination.
+"message.actions.download.saved" = "Saved";
+/// Accessibility label for reopening the selected destination in Files.
+"message.actions.download.show-in-files" = "Open Folder";
+/// Starts a new verified download and asks for another destination.
+"message.actions.download.again" = "Download Again Elsewhere";
 /// Shown in the message actions popup for the copy message action.
 "message.actions.copy" = "Copy";
 /// Shown as a text in the popup when copying message success.
@@ -367,6 +383,18 @@
 "composer.picker.camera" = "Camera";
 /// Text for the cancel button in the attachment picker in the composer.
 "composer.picker.cancel" = "Cancel";
+/// Title shown after a video-like document is selected from Files.
+"composer.picker.document-video-title" = "Send selected video";
+/// Explains that Files keeps document semantics unless the user explicitly opts into media playback.
+"composer.picker.document-video-message" = "Send as a file for download only, or as a video with inline playback.";
+/// Sends a video-like document without inline preview or playback.
+"composer.picker.send-as-file" = "Send as file";
+/// Requests inline video playback after a native compatibility check.
+"composer.picker.send-as-video" = "Send as video";
+/// Title shown when AVFoundation cannot play a selected document.
+"composer.picker.video-unsupported-title" = "Video format not supported";
+/// Explains the safe fallback for containers or codecs unavailable to the native player.
+"composer.picker.video-unsupported-message" = "This container or codec cannot be played on this device. You can still send the original as a downloadable file.";
 /// Text for location item title in menu.
 "composer.menu.location" = "Location";
 /// Text for share file item title in menu.

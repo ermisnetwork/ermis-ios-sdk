@@ -315,7 +315,10 @@ class E2eRepository: EventsControllerDelegate {
                 return durableCursor
             }
         } catch {
-            log.error("[E2eSync] Failed to read durable removed cursor: \(error)", subsystems: .mls)
+            log.error(
+                "[E2eSync] state=removed_cursor_read_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                subsystems: .mls
+            )
             return nil
         }
 
@@ -514,11 +517,14 @@ class E2eRepository: EventsControllerDelegate {
         if targetUserId == mlsClient.userId {
             guard mlsClient.isGroupLoaded(cid: cidString) else { return }
             do {
-                log.debug("[MLS] Current user removed from channel, deleting MLS group for \(event.cid)", subsystems: .mls)
+                log.debug("[MLS] state=current_user_removed action=delete_group", subsystems: .mls)
                 try deleteGroup(cid: cidString)
                 try deleteGroups(cids: event.topicCids.map { $0.rawValue })
             } catch {
-                log.error("[MLS] Failed to delete MLS group after removal: \(error)", subsystems: .mls)
+                log.error(
+                    "[MLS] state=group_delete_failed reason=current_user_removed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .mls
+                )
             }
             return
         }
@@ -530,7 +536,7 @@ class E2eRepository: EventsControllerDelegate {
         database.write { session in
             session.savePendingRemoveMember(userId: targetUserId, channelCid: cidString)
         }
-        log.debug("[E2E] Saved pending eviction for self-left member \(targetUserId) in channel \(cidString)", subsystems: .mls)
+        log.debug("[E2E] state=pending_eviction_saved reason=member_self_left", subsystems: .mls)
 
         // Designated evictor performs actual MLS removal.
         if isDesignatedEvictor(cid: event.cid) {
@@ -551,7 +557,7 @@ class E2eRepository: EventsControllerDelegate {
             let isBlocked = self.blockedDurableScopes.contains(cid)
             self.durableApplyLock.unlock()
             guard !isBlocked else {
-                log.error("[MLS] Realtime protocol mutation blocked behind durable repair for \(cid)", subsystems: .mls)
+                log.error("[MLS] state=realtime_protocol_blocked reason=durable_repair", subsystems: .mls)
                 self.performE2eChannelSync(cid: mlsEvent.cid)
                 return
             }
@@ -564,7 +570,7 @@ class E2eRepository: EventsControllerDelegate {
                 case .welcome:
                     //                    break
                     guard !self.shouldSkipWelcome(cid: cid) else {
-                        log.debug("[MLS] Skipping welcome: group already exists for \(cid)", subsystems: .mls)
+                        log.debug("[MLS] state=welcome_skipped reason=group_exists", subsystems: .mls)
                         return
                     }
                     if let targetUserIds = mlsProtocol.targetUserIds,
@@ -591,7 +597,10 @@ class E2eRepository: EventsControllerDelegate {
                     self.performE2eChannelSync(cid: mlsEvent.cid)
                 }
             } catch {
-                log.error("[MLS] Failed to process event: \(mlsEvent)", subsystems: .mls)
+                log.error(
+                    "[MLS] state=realtime_event_process_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .mls
+                )
             }
         }
         // Realtime protocol messages unblock decryption — prioritise them over bulk sync.
@@ -636,7 +645,7 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     private func decryptNewMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
-        log.debug("[MLS] Decrypt message with epoch: \(message.mlsEpoch.map { String($0) } ?? "unknown")")
+        log.debug("[MLS] state=realtime_decrypt_started has_epoch=\(message.mlsEpoch != nil)")
         guard let encryptedData = message.encryptedData else { return }
 
         // The sender cannot decrypt its own current-device MLS ciphertext. Its plaintext was
@@ -648,7 +657,7 @@ class E2eRepository: EventsControllerDelegate {
             hasCachedPlaintext: message.decryptedMessage != nil
         ) {
             log.debug(
-                "[MLS] Skipping own realtime echo with durable plaintext for \(message.id)",
+                "[MLS] state=realtime_decrypt_skipped reason=own_echo_with_cache",
                 subsystems: .mls
             )
             if let cached = message.decryptedMessage {
@@ -683,7 +692,8 @@ class E2eRepository: EventsControllerDelegate {
             // the durable inbox/provider persistence path. `runSync` coalesces this scope when a
             // sync is already active, and a successful commit re-attempts pending ciphertexts.
             log.error(
-                "[MLS] Realtime decrypt failed for \(message.id); requesting scope recovery for \(recoveryCid.rawValue): \(error)",
+                "[MLS] state=realtime_decrypt_failed action=request_scope_recovery "
+                    + PrivacySafeLogMetadata.errorFields(error),
                 subsystems: .mls
             )
             self?.performE2eChannelSync(cid: recoveryCid)
@@ -714,7 +724,7 @@ class E2eRepository: EventsControllerDelegate {
         // MessageDecryptDTO was already updated in MessageUpdater.editMessage().
         // MLS cannot decrypt ciphertext produced by the same device.
         if message.isSentByCurrentUser { return }
-        log.debug("[MLS] Re-decrypt updated message \(message.id) with epoch: \(message.mlsEpoch)")
+        log.debug("[MLS] state=updated_message_redecrypt_started has_epoch=\(message.mlsEpoch != nil)")
         reDecryptUpdatedMessage(
             messageId: message.id,
             encryptedData: encryptedData,
@@ -759,7 +769,11 @@ class E2eRepository: EventsControllerDelegate {
         } catch {
             // Unchanged/already-consumed ciphertext (a non-edit update) or an own-device message:
             // keep the existing decrypted cache rather than regressing to the placeholder.
-            log.debug("[MLS] Skipping re-decrypt of updated message \(messageId) (likely unchanged ciphertext): \(error)", subsystems: .mls)
+            log.debug(
+                "[MLS] state=updated_message_redecrypt_skipped reason=unchanged_or_consumed "
+                    + PrivacySafeLogMetadata.errorFields(error),
+                subsystems: .mls
+            )
             hydrateDurablePayloadIfPresent(
                 messageId: messageId,
                 cid: cid,
@@ -888,7 +902,10 @@ class E2eRepository: EventsControllerDelegate {
                 self.mlsClient.getKeyPackage(count: amountOfKeyPackagesMissing).map(\.uint8Array)
             }
         } catch {
-            log.error("[MLS] Generate missing keypackages failed: \(error)", subsystems: .mls)
+            log.error(
+                "[MLS] state=keypackage_generation_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                subsystems: .mls
+            )
             return
         }
         apiClient.request(endpoint: .uploadKeyPackages(keyPackages: keyPackages)) { result in
@@ -921,7 +938,10 @@ class E2eRepository: EventsControllerDelegate {
                     return durableCursor
                 }
             } catch {
-                log.error("[E2eSync] Failed to read durable fetch cursor for \(cidString): \(error)", subsystems: .mls)
+                log.error(
+                    "[E2eSync] state=fetch_cursor_read_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .mls
+                )
                 return nil
             }
         }
@@ -939,7 +959,11 @@ class E2eRepository: EventsControllerDelegate {
                             try self.mlsClient.deleteGroup(cid: cidString)
                         }
                     } catch {
-                        log.error("[MLS] Remove group: \(cidString) that user has been kick failed with error \(error)", subsystems: .mls)
+                        log.error(
+                            "[MLS] state=group_delete_failed reason=user_removed "
+                                + PrivacySafeLogMetadata.errorFields(error),
+                            subsystems: .mls
+                        )
                     }
                 }
                 return Self.cursor(fromMilliseconds: Int64(memberCreatedAt.timeIntervalSince1970 * 1000))
@@ -1081,7 +1105,10 @@ class E2eRepository: EventsControllerDelegate {
             }
         } completion: { error in
             if let error {
-                log.error("[E2eSync] Failed to persist restored MLS join anchors: \(error)", subsystems: .mls)
+                log.error(
+                    "[E2eSync] state=join_anchor_persist_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .mls
+                )
             }
             startBootstrap()
         }
@@ -1169,7 +1196,10 @@ class E2eRepository: EventsControllerDelegate {
             self.externalJoinChannel(cid: cid) { [weak self] error in
                 guard let self else { return }
                 if let error {
-                    log.error("[E2E] Serialized external join failed for \(cid): \(error)", subsystems: .mls)
+                    log.error(
+                        "[E2E] state=external_join_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                        subsystems: .mls
+                    )
                     self.finishBootstrap(cid: cid, state: .failed)
                     return
                 }
@@ -1216,7 +1246,7 @@ class E2eRepository: EventsControllerDelegate {
             ? readinessCallbacks.removeValue(forKey: cidString) ?? []
             : []
         readinessLock.unlock()
-        log.debug("[E2EReadiness] cid=\(cidString) state=\(state.rawValue)", subsystems: .mls)
+        log.debug("[E2EReadiness] state=\(state.rawValue)", subsystems: .mls)
         callbacks.forEach { $0(state) }
     }
 
@@ -1252,7 +1282,7 @@ class E2eRepository: EventsControllerDelegate {
         } catch {
             // Fail closed: inability to verify durable join proof must never open the send gate.
             log.error(
-                "[E2EReadiness] cid=\(cidString) state=needsRetry reason=join_receipt_unavailable",
+                "[E2EReadiness] state=needsRetry reason=join_receipt_unavailable",
                 subsystems: .mls
             )
             return true
@@ -1351,7 +1381,10 @@ class E2eRepository: EventsControllerDelegate {
             pendingChannelSyncCids.formUnion(cidStrings)
             if let completion { pendingSyncCompletions.append(completion) }
             syncLock.unlock()
-            log.debug("[E2eSync] Queued single-channel sync for \(cidStrings) — another sync is already in progress", subsystems: .mls)
+            log.debug(
+                "[E2eSync] mode=scoped state=coalesced scope_count=\(cidStrings.count)",
+                subsystems: .mls
+            )
             return
         }
         isSyncing = true
@@ -1379,7 +1412,10 @@ class E2eRepository: EventsControllerDelegate {
 
         guard !cursors.isEmpty else {
             finishSync()
-            log.debug("[E2eSync] Skipping sync for \(cidStrings): device has not joined the MLS group yet", subsystems: .mls)
+            log.debug(
+                "[E2eSync] mode=scoped state=skipped reason=group_not_joined scope_count=\(cidStrings.count)",
+                subsystems: .mls
+            )
             return
         }
         log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
@@ -1429,7 +1465,10 @@ class E2eRepository: EventsControllerDelegate {
             guard let self else { return }
             switch result {
             case .failure(let error):
-                log.error("[E2eSync] Request failed: \(error)", subsystems: .mls)
+                log.error(
+                    "[E2eSync] state=request_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .mls
+                )
                 self.finishSync()
             case .success(let payload):
                 guard let accountId = self.mlsClient.userId else {
@@ -1443,7 +1482,7 @@ class E2eRepository: EventsControllerDelegate {
                 for (cidString, channelPayload) in payload.channels {
                     guard let cid = try? ChannelId(cid: cidString) else {
                         failedScopes.insert(cidString)
-                        log.error("[E2eSync] Invalid scope cid '\(cidString)'", subsystems: .mls)
+                        log.error("[E2eSync] state=invalid_scope_cid", subsystems: .mls)
                         continue
                     }
 
@@ -1473,13 +1512,13 @@ class E2eRepository: EventsControllerDelegate {
                         case .backlogLimitExceeded(let scopeCid, let scopePending, let accountPending):
                             repairCategory = "durable_backlog_limit"
                             log.error(
-                                "[E2eTelemetry] durable_inbox_backlog_rejected scope=\(scopeCid) scope_pending=\(scopePending) account_pending=\(accountPending)",
+                                "[E2eTelemetry] durable_inbox_backlog_rejected scope_pending=\(scopePending) account_pending=\(accountPending)",
                                 subsystems: .mls
                             )
                         case .pageTooLarge(let scopeCid, let rawBytes, let maximumRawBytes):
                             repairCategory = "durable_page_too_large"
                             log.error(
-                                "[E2eTelemetry] durable_inbox_page_rejected scope=\(scopeCid) page_raw_bytes=\(rawBytes) maximum_raw_bytes=\(maximumRawBytes)",
+                                "[E2eTelemetry] durable_inbox_page_rejected page_raw_bytes=\(rawBytes) maximum_raw_bytes=\(maximumRawBytes)",
                                 subsystems: .mls
                             )
                         default:
@@ -1494,9 +1533,16 @@ class E2eRepository: EventsControllerDelegate {
                                 details: String(describing: error)
                             )
                         } catch {
-                            log.error("[E2eSync] Failed to record page persistence repair for \(cidString): \(error)", subsystems: .mls)
+                            log.error(
+                                "[E2eSync] state=page_repair_persist_failed "
+                                    + PrivacySafeLogMetadata.errorFields(error),
+                                subsystems: .mls
+                            )
                         }
-                        log.error("[E2eSync] Failed to durably persist page for \(cidString): \(error)", subsystems: .mls)
+                        log.error(
+                            "[E2eSync] state=page_persist_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                            subsystems: .mls
+                        )
                     }
                 }
 
@@ -1507,7 +1553,11 @@ class E2eRepository: EventsControllerDelegate {
                 self.handleRemovedChannels(payload.removedChannels) { result in
                     switch result {
                     case .failure(let error):
-                        log.error("[E2eSync] Removed-channel cleanup blocked sync: \(error)", subsystems: .mls)
+                        log.error(
+                            "[E2eSync] state=removed_cleanup_blocked "
+                                + PrivacySafeLogMetadata.errorFields(error),
+                            subsystems: .mls
+                        )
                         self.finishSync()
                     case .success(let removedHasMore):
                         var remaining: [String: ScopeSyncCursorPayload] = [:]
@@ -1534,7 +1584,7 @@ class E2eRepository: EventsControllerDelegate {
     private func emitDurableInboxTelemetry(_ snapshot: E2eeDurableInboxStore.BacklogSnapshot) {
         guard snapshot.warningThresholdExceeded else { return }
         log.warning(
-            "[E2eTelemetry] durable_inbox_backlog_warning scope=\(snapshot.scopeCid) scope_pending=\(snapshot.scopePendingCount) account_pending=\(snapshot.accountPendingCount) inserted=\(snapshot.insertedEventCount) page_raw_bytes=\(snapshot.pageRawBytes)",
+            "[E2eTelemetry] durable_inbox_backlog_warning scope_pending=\(snapshot.scopePendingCount) account_pending=\(snapshot.accountPendingCount) inserted=\(snapshot.insertedEventCount) page_raw_bytes=\(snapshot.pageRawBytes)",
             subsystems: .mls
         )
     }
@@ -1593,11 +1643,17 @@ class E2eRepository: EventsControllerDelegate {
                         removedAt: event.removedAt,
                         removalType: event.removalType
                     ) {
-                        log.debug("[E2eSync] Skipping stale removal (type=\(event.removalType ?? "unknown")) for \(cidString): re-joined after removed_at=\(event.removedAt ?? "nil")", subsystems: .mls)
+                        log.debug(
+                            "[E2eSync] state=removal_skipped reason=rejoined removal_type=\(event.removalType ?? "unknown")",
+                            subsystems: .mls
+                        )
                         continue
                     }
 
-                    log.debug("[E2eSync] Channel removed (type=\(event.removalType ?? "unknown")): \(cidString); cleaning local state", subsystems: .mls)
+                    log.debug(
+                        "[E2eSync] state=removed_cleanup_started removal_type=\(event.removalType ?? "unknown")",
+                        subsystems: .mls
+                    )
                     if self.mlsClient.isGroupLoaded(cid: cidString) {
                         try self.performMlsMutation(cidString: cidString) {
                             try self.mlsClient.deleteGroup(cid: cidString)
@@ -1637,7 +1693,11 @@ class E2eRepository: EventsControllerDelegate {
                         details: String(describing: error)
                     )
                 } catch {
-                    log.error("[E2eSync] Failed to persist removed cleanup repair: \(error)", subsystems: .mls)
+                    log.error(
+                        "[E2eSync] state=removed_cleanup_repair_persist_failed "
+                            + PrivacySafeLogMetadata.errorFields(error),
+                        subsystems: .mls
+                    )
                 }
                 completion(.failure(error))
             }
@@ -1832,7 +1892,10 @@ class E2eRepository: EventsControllerDelegate {
                         envelope: event,
                         preservingFailure: true
                     )
-                    log.debug("[E2ESyncHealth] cid=\(cidString) sync_health=repairing category=\(category)", subsystems: .mls)
+                    log.debug(
+                        "[E2ESyncHealth] sync_health=repairing category=\(category)",
+                        subsystems: .mls
+                    )
                     return true
                 } catch {
                     self.blockDurableScope(cidString, eventId: event.eventId, error: error)
@@ -1865,7 +1928,11 @@ class E2eRepository: EventsControllerDelegate {
         durableApplyLock.lock()
         blockedDurableScopes.insert(cidString)
         durableApplyLock.unlock()
-        log.error("[E2ESyncHealth] cid=\(cidString) sync_health=protocol_blocked event=\(eventId ?? "scope") error=\(error)", subsystems: .mls)
+        log.error(
+            "[E2ESyncHealth] sync_health=protocol_blocked has_event=\(eventId != nil) "
+                + PrivacySafeLogMetadata.errorFields(error),
+            subsystems: .mls
+        )
     }
 
     private func isPreJoinHistorical(
@@ -1926,7 +1993,8 @@ class E2eRepository: EventsControllerDelegate {
                 self.blockedDurableScopes.insert(cidString)
                 self.durableApplyLock.unlock()
                 log.error(
-                    "[E2eSync] Blocking scope \(cidString) after historical batch persistence failed",
+                    "[E2eSync] state=historical_batch_persist_failed action=scope_blocked "
+                        + PrivacySafeLogMetadata.errorFields(error),
                     subsystems: .mls
                 )
             }
@@ -2015,7 +2083,11 @@ class E2eRepository: EventsControllerDelegate {
                             details: String(describing: error)
                         )
                     } catch {
-                        log.error("[E2eSync] Failed to persist repair issue for \(event.eventId): \(error)", subsystems: .mls)
+                        log.error(
+                            "[E2eSync] state=repair_issue_persist_failed "
+                                + PrivacySafeLogMetadata.errorFields(error),
+                            subsystems: .mls
+                        )
                         // Without a durable repair record, advancing even an application event
                         // would erase the only actionable failure state. Keep the scope blocked
                         // and leave the exact raw inbox event unapplied for the next replay.
@@ -2023,7 +2095,7 @@ class E2eRepository: EventsControllerDelegate {
                         self.blockedDurableScopes.insert(cidString)
                         self.durableApplyLock.unlock()
                         log.error(
-                            "[E2eSync] Apply blocked for \(cidString) because repair persistence failed",
+                            "[E2eSync] state=apply_blocked reason=repair_persistence_failed",
                             subsystems: .mls
                         )
                         return
@@ -2046,13 +2118,15 @@ class E2eRepository: EventsControllerDelegate {
                                 preservingFailure: true
                             )
                             log.error(
-                                "[E2eSync] Application repair persisted; continuing scope \(cidString) after event \(event.eventId): \(error)",
+                                "[E2eSync] state=application_repair_persisted action=continue "
+                                    + PrivacySafeLogMetadata.errorFields(error),
                                 subsystems: .mls
                             )
                             return
                         } catch {
                             log.error(
-                                "[E2eSync] Failed to advance repaired application event \(event.eventId): \(error)",
+                                "[E2eSync] state=repaired_application_advance_failed "
+                                    + PrivacySafeLogMetadata.errorFields(error),
                                 subsystems: .mls
                             )
                         }
@@ -2061,7 +2135,11 @@ class E2eRepository: EventsControllerDelegate {
                     self.durableApplyLock.lock()
                     self.blockedDurableScopes.insert(cidString)
                     self.durableApplyLock.unlock()
-                    log.error("[E2eSync] Apply blocked for \(cidString) at event \(event.eventId): \(error)", subsystems: .mls)
+                    log.error(
+                        "[E2eSync] state=apply_blocked has_event=true "
+                            + PrivacySafeLogMetadata.errorFields(error),
+                        subsystems: .mls
+                    )
                 }
             }
             op.queuePriority = .low
@@ -2207,7 +2285,7 @@ class E2eRepository: EventsControllerDelegate {
             try normalizeHistoricalApplicationsAndWait(cid: cid)
         } catch {
             log.error(
-                "[E2eSync] Failed to normalize historical application state for \(cid.rawValue)",
+                "[E2eSync] state=historical_application_normalize_failed",
                 subsystems: .mls
             )
         }
@@ -2416,7 +2494,11 @@ class E2eRepository: EventsControllerDelegate {
                     }
                 }
             } catch {
-                log.error("[E2eSync] Pending-group retry failed for \(scopeCid)", subsystems: .mls)
+                log.error(
+                    "[E2eSync] state=pending_group_retry_failed "
+                        + PrivacySafeLogMetadata.errorFields(error),
+                    subsystems: .mls
+                )
             }
         }
         op.queuePriority = .low
@@ -2446,12 +2528,12 @@ class E2eRepository: EventsControllerDelegate {
                 try deleteGroup(cid: cidString)
             }
             try deleteGroups(cids: event.topicCids.map { $0.rawValue })
-            log.debug("[E2E] Deleted local MLS group for \(cidString) after current user removed", subsystems: .mls)
+            log.debug("[E2E] state=local_group_deleted reason=current_user_removed", subsystems: .mls)
         } else if event.selfRemove == true {
             try database.writeAndWait { session in
                 session.savePendingRemoveMember(userId: targetUserId, channelCid: cidString)
             }
-            log.debug("[E2E] Saved pending eviction for self-left member \(targetUserId) in channel \(cidString)", subsystems: .mls)
+            log.debug("[E2E] state=pending_eviction_saved reason=member_self_left", subsystems: .mls)
 
             if isDesignatedEvictor(cid: event.cid) {
                 commitEviction(cid: event.cid, targetUserIds: [targetUserId])
@@ -2464,7 +2546,7 @@ class E2eRepository: EventsControllerDelegate {
     /// Handles a `reaction` sync event by saving/updating the reaction snapshot in the database.
     /// Called on `MlsMutationExecutor`.
     private func handleReactionSyncEvent(_ data: ReactionSyncData) throws {
-        log.debug("[E2eSync] Handling reaction sync event for message \(data.message.id)", subsystems: .mls)
+        log.debug("[E2eSync] state=metadata_apply_started type=reaction", subsystems: .mls)
         try database.writeAndWait { session in
             // Save the message first so the reaction has a target
             try session.saveMessage(payload: data.message, for: data.cid, syncOwnReactions: true, cache: nil)
@@ -2476,7 +2558,7 @@ class E2eRepository: EventsControllerDelegate {
     /// Handles a `message_deleted` sync event by removing the message from local cache.
     /// Called on `MlsMutationExecutor`.
     private func handleMessageDeletedSyncEvent(_ data: MessageDeletedSyncData) throws {
-        log.debug("[E2eSync] Handling message_deleted sync event for message \(data.message.id)", subsystems: .mls)
+        log.debug("[E2eSync] state=metadata_apply_started type=message_deleted", subsystems: .mls)
         try database.writeAndWait { session in
             // Save the message payload which includes deletedAt being set
             try session.saveMessage(payload: data.message, for: data.cid, syncOwnReactions: false, cache: nil)
@@ -2487,7 +2569,7 @@ class E2eRepository: EventsControllerDelegate {
     /// Called on `MlsMutationExecutor`.
     private func handleMessageUpdatedSyncEvent(_ data: MessageUpdatedSyncData, cid: ChannelId) throws {
         let messageId = data.message.id
-        log.debug("[E2eSync] Handling message_updated sync event for message \(messageId)", subsystems: .mls)
+        log.debug("[E2eSync] state=metadata_apply_started type=message_updated", subsystems: .mls)
 
         // Check if the message has encrypted data that may need re-decryption
         if let encryptedBytes = data.message.encryptedData {
@@ -2517,7 +2599,7 @@ class E2eRepository: EventsControllerDelegate {
     /// Handles a `message_pin` sync event by patching the pin/unpin state on the message.
     /// Called on `MlsMutationExecutor`.
     private func handleMessagePinSyncEvent(_ data: MessagePinSyncData, cid: ChannelId) throws {
-        log.debug("[E2eSync] Handling message_pin sync event for message \(data.message.id)", subsystems: .mls)
+        log.debug("[E2eSync] state=metadata_apply_started type=message_pin", subsystems: .mls)
         try database.writeAndWait { session in
             // Save the message which includes pin fields (pinnedAt, pinnedBy, pinExpires)
             try session.saveMessage(payload: data.message, for: cid, syncOwnReactions: false, cache: nil)
@@ -2544,13 +2626,13 @@ class E2eRepository: EventsControllerDelegate {
             if mlsClient.isGroupLoaded(cid: cidString) {
                 try deleteGroup(cid: cidString)
             }
-            log.debug("[E2eSync] Deleted local MLS group for \(cidString) after current user removed via sync", subsystems: .mls)
+            log.debug("[E2eSync] state=local_group_deleted reason=current_user_removed", subsystems: .mls)
         } else if data.selfRemove {
             // Another member self-removed → queue ghost cleanup.
             try database.writeAndWait { session in
                 session.savePendingRemoveMember(userId: userId, channelCid: cidString)
             }
-            log.debug("[E2eSync] Saved pending eviction for self-left member \(userId) in channel \(cidString)", subsystems: .mls)
+            log.debug("[E2eSync] state=pending_eviction_saved reason=member_self_left", subsystems: .mls)
 
             // Designated evictor performs actual MLS removal.
             if isDesignatedEvictor(cid: cid) {
@@ -2573,10 +2655,10 @@ class E2eRepository: EventsControllerDelegate {
         if bootstrapping { bootstrapDeferredSyncCids.insert(cid.rawValue) }
         bootstrapLock.unlock()
         if bootstrapping {
-            log.debug("[E2eSync] Coalesced invite sync during bootstrap for \(cid)", subsystems: .mls)
+            log.debug("[E2eSync] state=invite_sync_coalesced reason=bootstrap", subsystems: .mls)
             return
         }
-        log.debug("[E2eSync] Handling invite respond sync event for channel \(cid)", subsystems: .mls)
+        log.debug("[E2eSync] state=invite_response_processing", subsystems: .mls)
         performE2eChannelSync(cid: cid)
     }
 
@@ -2591,7 +2673,10 @@ class E2eRepository: EventsControllerDelegate {
         // Explicit supported no-op: Bellboy system events carry no MLS state transition and the
         // existing iOS message store has no system-message projection. Keeping this branch typed
         // allows the durable inbox to advance without treating the event as an unknown success.
-        log.debug("[E2E] Received system message \(data.id) in \(cid): \(data.text ?? "")", subsystems: .mls)
+        log.debug(
+            "[E2E] state=system_message_received has_text=\(data.text?.isEmpty == false)",
+            subsystems: .mls
+        )
     }
     
     /// Synchronous decryption body. Must only be called from `MlsMutationExecutor`.
@@ -2613,7 +2698,9 @@ class E2eRepository: EventsControllerDelegate {
                 expectedEnvelope: expectedEnvelope
             )))
         } catch {
-            log.error("Failed to decrypt message \(messageId): \(error)")
+            log.error(
+                "[MLS] state=message_decrypt_failed \(PrivacySafeLogMetadata.errorFields(error))"
+            )
             completion?(.failure(error))
         }
     }
@@ -2750,7 +2837,10 @@ class E2eRepository: EventsControllerDelegate {
             }
         }
         guard !pending.isEmpty else { return }
-        log.debug("[MLS] Re-decrypting \(pending.count) pending message(s) in \(cid) after epoch advance", subsystems: .mls)
+        log.debug(
+            "[MLS] state=pending_redecrypt_started message_count=\(pending.count) reason=epoch_advanced",
+            subsystems: .mls
+        )
         for item in pending {
             decryptMessagePayload(
                 messageId: item.id,
@@ -2775,7 +2865,7 @@ class E2eRepository: EventsControllerDelegate {
                 // to current GroupInfo. Marking the commit safe prevents it from blocking the
                 // later Welcome in the same ordered scope page.
                 guard mlsClient.isGroupLoaded(cid: cidString) else {
-                    log.debug("[E2eSync] Skipping commit while no local group exists for \(cidString)", subsystems: .mls)
+                    log.debug("[E2eSync] state=commit_skipped reason=group_missing", subsystems: .mls)
                     return .requiresCursorAdvance
                 }
                 guard let bytes = data.commit else {
@@ -2820,7 +2910,7 @@ class E2eRepository: EventsControllerDelegate {
                     blockedDurableScopes.remove(cidString)
                     durableApplyLock.unlock()
                     log.warning(
-                        "[E2eSync] Superseded historical commit event \(eventId) target_epoch=\(targetEpoch) local_epoch=\(localEpoch)",
+                        "[E2eSync] state=historical_commit_superseded target_epoch=\(targetEpoch) local_epoch=\(localEpoch)",
                         subsystems: .mls
                     )
                     return .cursorAdvancedAtomically
@@ -2914,7 +3004,7 @@ class E2eRepository: EventsControllerDelegate {
             case .welcome:
                 
                 guard !self.shouldSkipWelcome(cid: cidString) else {
-                    log.debug("[MLS] Skipping welcome: group already exists for \(cidString)", subsystems: .mls)
+                    log.debug("[MLS] state=welcome_skipped reason=group_exists", subsystems: .mls)
                     if let existingCid = try? ChannelId(cid: cidString) {
                         // A prior attempt may have persisted the group and then failed its Core
                         // Data normalization. Retry that durable metadata write before advancing
@@ -2929,7 +3019,7 @@ class E2eRepository: EventsControllerDelegate {
                     log.debug("[E2eSync] Skipping welcome not targeted at current user", subsystems: .mls)
                     return .requiresCursorAdvance
                 }
-                log.debug("[MLS] Handle welcome event of cid: \(cidString)", subsystems: .mls)
+                log.debug("[MLS] state=welcome_processing", subsystems: .mls)
                 guard let welcome = data.welcome, let tree = data.ratchetTree else {
                     throw E2eeSyncApplyError.missingProtocolPayload(type: data.type)
                 }
@@ -2946,7 +3036,10 @@ class E2eRepository: EventsControllerDelegate {
                         // Expected on a reinstall/new device: the historical Welcome targets a
                         // KeyPackage owned by another installation. The bootstrap coordinator
                         // observes that no group was created and performs external join.
-                        log.warning("[E2eSync] Skipping stale Welcome without a matching local KeyPackage for \(cidString)", subsystems: .mls)
+                        log.warning(
+                            "[E2eSync] state=welcome_skipped reason=no_matching_keypackage",
+                            subsystems: .mls
+                        )
                         return .requiresCursorAdvance
                     }
                     throw error
@@ -2981,7 +3074,11 @@ class E2eRepository: EventsControllerDelegate {
             dto.mlsFirstDecryptableEpoch = NSNumber(value: epoch)
         } completion: { error in
             if let error {
-                log.error("[E2eSync] Failed to save mlsGroupJoinedAt for \(cidString): \(error)", subsystems: .mls)
+                log.error(
+                    "[E2eSync] state=group_join_timestamp_save_failed "
+                        + PrivacySafeLogMetadata.errorFields(error),
+                    subsystems: .mls
+                )
             }
             completion?(error)
         }
@@ -3030,7 +3127,9 @@ class E2eRepository: EventsControllerDelegate {
                     completion(.failure(error))
                 }
             case .failure(let error):
-                log.error("Failed to comsume key in channel: \(cid) with error: \(error)")
+                log.error(
+                    "[MLS] state=key_consume_failed \(PrivacySafeLogMetadata.errorFields(error))"
+                )
                 completion(.failure(error))
             }
         })
@@ -3054,7 +3153,10 @@ class E2eRepository: EventsControllerDelegate {
                     completion(.failure(error))
                 }
             case .failure(let error):
-                log.error("Failed to comsume key package of user: \(targetUserIds) with error: \(error)")
+                log.error(
+                    "[MLS] state=keypackage_consume_failed target_count=\(targetUserIds.count) "
+                        + PrivacySafeLogMetadata.errorFields(error)
+                )
                 completion(.failure(error))
             }
         })
@@ -3098,7 +3200,9 @@ class E2eRepository: EventsControllerDelegate {
             guard let groupInfo = commitBundle.groupInfo else {
                 throw ClientError("[MLS] add member with removals failed, no group info in commit bundle")
             }
-            log.debug("TTTTTTTT ADD MEMBER WITH REMOVALS CURRENT EPOCH: \(epoch), removed ghosts: \(removeUserIds)")
+            log.debug(
+                "[MLS] state=member_add_with_removals_created epoch=\(epoch) removal_count=\(removeUserIds.count)"
+            )
             return (commitBundle, ratchetTree, groupInfo, epoch)
         }
     }
@@ -3187,7 +3291,7 @@ class E2eRepository: EventsControllerDelegate {
 
             guard !groupInfo.isEmpty else {
                 try clearPendingCommit(in: cid)
-                log.error("[E2E] commitEviction failed: group_info is required for \(cidString)", subsystems: .mls)
+                log.error("[E2E] state=eviction_commit_failed reason=group_info_missing", subsystems: .mls)
                 return
             }
 
@@ -3198,7 +3302,10 @@ class E2eRepository: EventsControllerDelegate {
                 epoch: preMergeEpoch
             )
 
-            log.debug("[E2E] Sending commit eviction for \(targetUserIds.count) ghost member(s) in \(cidString), epoch: \(preMergeEpoch)", subsystems: .mls)
+            log.debug(
+                "[E2E] state=eviction_commit_sending target_count=\(targetUserIds.count) epoch=\(preMergeEpoch)",
+                subsystems: .mls
+            )
 
             apiClient.request(endpoint: .commitEviction(cid: cid, body: body)) { [weak self] result in
                 guard let self else { return }
@@ -3208,22 +3315,41 @@ class E2eRepository: EventsControllerDelegate {
                     do {
                         try self.mergePendingCommit(in: cid)
                         self.deletePendingRemoveMembers(userIds: targetUserIds, channelCid: cidString)
-                        log.debug("[E2E] Commit eviction succeeded for \(cidString), removed \(targetUserIds.count) ghost member(s)", subsystems: .mls)
+                        log.debug(
+                            "[E2E] state=eviction_commit_succeeded target_count=\(targetUserIds.count)",
+                            subsystems: .mls
+                        )
                     } catch {
-                        log.error("[E2E] Failed to merge pending commit after eviction: \(error)", subsystems: .mls)
+                        log.error(
+                            "[E2E] state=eviction_commit_merge_failed "
+                                + PrivacySafeLogMetadata.errorFields(error),
+                            subsystems: .mls
+                        )
                     }
                 case .failure(let error):
                     // 7. Fail → rollback, persist cleanup.
                     do {
                         try self.clearPendingCommit(in: cid)
                     } catch {
-                        log.error("[E2E] Failed to clear pending commit after eviction failure: \(error)", subsystems: .mls)
+                        log.error(
+                            "[E2E] state=eviction_commit_clear_failed "
+                                + PrivacySafeLogMetadata.errorFields(error),
+                            subsystems: .mls
+                        )
                     }
-                    log.error("[E2E] Commit eviction failed for \(cidString): \(error)", subsystems: .mls)
+                    log.error(
+                        "[E2E] state=eviction_commit_failed "
+                            + PrivacySafeLogMetadata.errorFields(error),
+                        subsystems: .mls
+                    )
                 }
             }
         } catch {
-            log.error("[E2E] Failed to create eviction commit for \(cidString): \(error)", subsystems: .mls)
+            log.error(
+                "[E2E] state=eviction_commit_create_failed "
+                    + PrivacySafeLogMetadata.errorFields(error),
+                subsystems: .mls
+            )
         }
     }
 
@@ -3262,12 +3388,18 @@ class E2eRepository: EventsControllerDelegate {
             case .success(let groupInfo):
                 guard !groupInfo.isStale else {
                     guard retriesRemaining > 0 else {
-                        log.error("[E2E] group_info still stale for \(cid) after retries; an active member must publish a fresh group_info", subsystems: .mls)
+                        log.error(
+                            "[E2E] state=external_join_failed reason=group_info_stale retries_remaining=0",
+                            subsystems: .mls
+                        )
                         completion(ClientError("Group info is stale; no fresh group_info available yet."))
                         return
                     }
                     let delaySeconds = TimeInterval(3 * (4 - retriesRemaining)) // 3s, 6s, 9s
-                    log.debug("[E2E] group_info stale for \(cid); retrying external join in \(delaySeconds)s (\(retriesRemaining) left)", subsystems: .mls)
+                    log.debug(
+                        "[E2E] state=external_join_retry reason=group_info_stale delay_seconds=\(Int(delaySeconds)) retries_remaining=\(retriesRemaining)",
+                        subsystems: .mls
+                    )
                     DispatchQueue.global().asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
                         self?.externalJoinChannel(cid: cid, retriesRemaining: retriesRemaining - 1, completion: completion)
                     }
@@ -3284,10 +3416,17 @@ class E2eRepository: EventsControllerDelegate {
                         completion(nil)
                         return
                     }
-                    log.debug("External join group with cid: \(cid) info: \(externalJoinResult.group.epoch())", subsystems: .mls)
+                    log.debug(
+                        "[E2E] state=external_join_group_created epoch=\(externalJoinResult.group.epoch())",
+                        subsystems: .mls
+                    )
                     requestExternalJoin(to: cid, externalJoinResult: externalJoinResult, completion: completion)
                 } catch (let error) {
-                    log.error("[E2E] External join failed to process group_info for \(cid): \(error)", subsystems: .mls)
+                    log.error(
+                        "[E2E] state=external_join_group_info_failed "
+                            + PrivacySafeLogMetadata.errorFields(error),
+                        subsystems: .mls
+                    )
                     completion(error)
                     return
                 }
@@ -3506,18 +3645,6 @@ class E2eRepository: EventsControllerDelegate {
         }
         scopedTrace?.info(stage: "payload_encoded", payloadBytes: data.count)
 
-        #if DEBUG
-        if !message.e2eeAttachments.isEmpty {
-            // This is the exact JSON plaintext passed to OpenMLS below; its ciphertext becomes
-            // `mls_ciphertext` in the send-message request. Keep it out of non-Debug builds because
-            // attachment manifests contain confidential metadata, CEKs, and nonce prefixes.
-            log.debug(
-                "[E2EE_ATTACHMENT_PLAINTEXT_BEFORE_MLS_ENCRYPT] bytes=\(data.count) json=\(String(decoding: data, as: UTF8.self))",
-                subsystems: .mls
-            )
-        }
-        #endif
-
         var result: Result<([UInt8], Int), Error>?
         let enqueuedAt = E2eeSendTrace.nowNanoseconds()
         scopedTrace?.info(stage: "mls_queue_enqueued", payloadBytes: data.count)
@@ -3538,7 +3665,10 @@ class E2eRepository: EventsControllerDelegate {
             do {
                 group = try self.mlsClient.loadGroup(with: groupCid)
             } catch {
-                log.debug("[E2ESendSafety] cid=\(groupCid) send_safety=blocked sync_health=\(self.syncHealth(for: groupCid)) reason=group_load", subsystems: .mls)
+                log.debug(
+                    "[E2ESendSafety] send_safety=blocked sync_health=\(self.syncHealth(for: groupCid)) reason=group_load",
+                    subsystems: .mls
+                )
                 scopedTrace?.failure(
                     stage: "mls_group_load_failed",
                     error: error,
@@ -3557,7 +3687,10 @@ class E2eRepository: EventsControllerDelegate {
                 result = .failure(error)
                 return
             }
-            log.debug("[E2ESendSafety] cid=\(groupCid) send_safety=allowed sync_health=\(self.syncHealth(for: groupCid))", subsystems: .mls)
+            log.debug(
+                "[E2ESendSafety] send_safety=allowed sync_health=\(self.syncHealth(for: groupCid))",
+                subsystems: .mls
+            )
             scopedTrace?.info(
                 stage: "mls_group_load_succeeded",
                 epoch: epoch,
@@ -3616,7 +3749,10 @@ class E2eRepository: EventsControllerDelegate {
         guard !protocolBlocked,
               let accountId = mlsClient.userId,
               let deviceId = mlsClient.currentDeviceId else {
-            log.debug("[E2ESendSafety] cid=\(scopeCid) send_safety=blocked sync_health=protocol_blocked", subsystems: .mls)
+            log.debug(
+                "[E2ESendSafety] send_safety=blocked sync_health=protocol_blocked",
+                subsystems: .mls
+            )
             return false
         }
         do {
@@ -3628,11 +3764,18 @@ class E2eRepository: EventsControllerDelegate {
                 receipt.requestDeviceId == deviceId &&
                 receipt.epoch == UInt64(group.epoch())
             if !safe {
-                log.debug("[E2ESendSafety] cid=\(scopeCid) send_safety=blocked sync_health=repairing", subsystems: .mls)
+                log.debug(
+                    "[E2ESendSafety] send_safety=blocked sync_health=repairing",
+                    subsystems: .mls
+                )
             }
             return safe
         } catch {
-            log.error("[E2ESendSafety] cid=\(scopeCid) send_safety=blocked receipt_read_failed", subsystems: .mls)
+            log.error(
+                "[E2ESendSafety] send_safety=blocked receipt_read_failed "
+                    + PrivacySafeLogMetadata.errorFields(error),
+                subsystems: .mls
+            )
             return false
         }
     }
@@ -3699,7 +3842,10 @@ class E2eRepository: EventsControllerDelegate {
         do {
             try mlsClient.reset()
         } catch (let error) {
-            log.error("[MLS] Failed to release MLS runtime: \(error)", subsystems: .mls)
+            log.error(
+                "[MLS] state=runtime_release_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                subsystems: .mls
+            )
         }
     }
 
@@ -3855,7 +4001,10 @@ class E2eRepository: EventsControllerDelegate {
                 completion(.success(updated))
             case .failure(let error):
                 completion(.failure(error))
-                log.error("Failed to decrypted message: \(error)", subsystems: .mls)
+                log.error(
+                    "[MLS] state=message_decrypt_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .mls
+                )
             }
         }
     }

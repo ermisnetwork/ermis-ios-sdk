@@ -360,7 +360,10 @@ open class ErmisAudioPlayer: AudioPlaying, AppStateObserverDelegate {
                 value.state = .notLoaded
                 value.isSeeking = false
             }
-            log.error(error.localizedDescription, subsystems: .audioPlayback)
+            log.error(
+                "[AUDIO_PLAYBACK] state=asset_load_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                subsystems: .audioPlayback
+            )
         }
     }
 

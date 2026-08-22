@@ -182,6 +182,48 @@ final class AttachmentSourcePersistenceTests: XCTestCase {
         XCTAssertEqual(waveform[1], 0.7, accuracy: 0.0001)
     }
 
+    func testE2eeDisplayAuthenticatesFileAndVideoIntentIndependentlyOfMime() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp4")
+        try Data([1, 2, 3, 4]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let file = try AttachmentFile(url: url, fileSize: 4)
+        let attachmentId = AttachmentId(
+            cid: try ChannelId(cid: cid),
+            messageId: "intent-message",
+            index: 0
+        )
+        let uploading = AttachmentUploadingState(
+            localFileURL: url,
+            state: .uploading(progress: 0),
+            file: file
+        )
+        let fileAttachment = MessageFileAttachment(
+            id: attachmentId,
+            type: .file,
+            payload: FileAttachmentPayload(title: "clip.mp4", assetRemoteURL: url, file: file),
+            thumbnailData: nil,
+            uploadingState: uploading
+        ).asAnyAttachment
+        let videoAttachment = MessageVideoAttachment(
+            id: attachmentId,
+            type: .video,
+            payload: VideoAttachmentPayload(title: "clip.mp4", videoRemoteURL: url, file: file),
+            thumbnailData: nil,
+            uploadingState: uploading
+        ).asAnyAttachment
+
+        XCTAssertEqual(
+            AttachmentQueueUploader.e2eeDisplayMetadata(for: fileAttachment)["attachment_type"]?.stringValue,
+            "file"
+        )
+        XCTAssertEqual(
+            AttachmentQueueUploader.e2eeDisplayMetadata(for: videoAttachment)["attachment_type"]?.stringValue,
+            "video"
+        )
+    }
+
     func testForwardStagerCopiesLeaseOwnedPlaintextIntoDestinationOwnedStorage() throws {
         let sourceURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)

@@ -46,9 +46,13 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
     override open func setUpTheme() {
         super.setUpTheme()
 
-        imageView.backgroundColor = theme.colors.surface
+        imageView.backgroundColor = theme.colors.surfaceContainer
         imageView.contentMode = .scaleAspectFill
         imageView.layer.masksToBounds = true
+        imageView.layer.cornerRadius = 12
+        imageView.layer.borderWidth = 1
+        imageView.layer.borderColor = theme.colors.outline.cgColor
+        imageView.tintColor = theme.colors.subtitleText
 
         playButton.setImage(theme.icons.bigPlay, for: .normal)
 
@@ -134,6 +138,14 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
                     break
                 }
             }
+        } else {
+            // Legacy or foreign E2EE video manifests may legitimately contain only the original.
+            // Keep the outlined video card visible, but do not place another centered symbol under
+            // the play button. The play control is the single visual affordance for this fallback.
+            imageView.contentMode = .center
+            imageView.image = nil
+            loadingIndicator.isHidden = true
+            playButton.isVisible = content?.uploadingState == nil
         }
 
         uploadingOverlay.content = content?.uploadingState
@@ -141,6 +153,7 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
     }
 
     private func showPreview(using thumbnailURL: URL) {
+        imageView.contentMode = .scaleAspectFill
         loadImage(from: thumbnailURL) { [weak self] result in
             self?.loadingIndicator.isHidden = true
             guard case let .success = result else { return }
@@ -149,6 +162,7 @@ open class VideoAttachmentGalleryPreview: _View, UIProvider, RemoteImageDisplaya
     }
 
     private func showPreview(using thumbnail: UIImage) {
+        imageView.contentMode = .scaleAspectFill
         imageView.image = thumbnail
         playButton.isVisible = content?.uploadingState == nil
     }

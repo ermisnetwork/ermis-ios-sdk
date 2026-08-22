@@ -367,6 +367,21 @@ open class GalleryViewController: _ViewController,
         }
     }
 
+    open func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let panGestureRecognizer = gestureRecognizer as? UIPanGestureRecognizer else {
+            return true
+        }
+
+        let beginsInsidePlaybackControls = videoPlaybackBar.frame.contains(
+            panGestureRecognizer.location(in: view)
+        )
+        return GalleryDismissalPanPolicy.shouldBegin(
+            velocity: panGestureRecognizer.velocity(in: view),
+            beginsInsidePlaybackControls: beginsInsidePlaybackControls,
+            hasTransitionController: transitionController != nil
+        )
+    }
+
     /// Called when `closeButton` is tapped.
     @objc open func closeButtonTapped() {
         dismiss(animated: true, completion: nil)
@@ -645,7 +660,9 @@ open class GalleryViewController: _ViewController,
     }
 
     open func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        videoPlaybackBar.player?.pause()
+        guard let player = videoPlaybackBar.player,
+              player.timeControlStatus != .paused else { return }
+        player.pause()
     }
 
     override open func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {

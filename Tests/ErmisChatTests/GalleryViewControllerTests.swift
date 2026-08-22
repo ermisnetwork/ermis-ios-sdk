@@ -27,10 +27,77 @@ final class GalleryViewControllerTests: XCTestCase {
 
         XCTAssertNotEqual(cell.resolutionToken, activeToken)
     }
+
+    func testVideoControlsCannotBeginGalleryDismissalPan() {
+        XCTAssertFalse(
+            GalleryDismissalPanPolicy.shouldBegin(
+                velocity: CGPoint(x: 0, y: 300),
+                beginsInsidePlaybackControls: true,
+                hasTransitionController: true
+            )
+        )
+    }
+
+    func testGalleryDismissalPanRequiresAvailableTransitionAndDominantDownwardMotion() {
+        XCTAssertFalse(
+            GalleryDismissalPanPolicy.shouldBegin(
+                velocity: CGPoint(x: 0, y: 300),
+                beginsInsidePlaybackControls: false,
+                hasTransitionController: false
+            )
+        )
+        XCTAssertFalse(
+            GalleryDismissalPanPolicy.shouldBegin(
+                velocity: CGPoint(x: 300, y: 50),
+                beginsInsidePlaybackControls: false,
+                hasTransitionController: true
+            )
+        )
+        XCTAssertFalse(
+            GalleryDismissalPanPolicy.shouldBegin(
+                velocity: CGPoint(x: 0, y: -300),
+                beginsInsidePlaybackControls: false,
+                hasTransitionController: true
+            )
+        )
+        XCTAssertTrue(
+            GalleryDismissalPanPolicy.shouldBegin(
+                velocity: CGPoint(x: 20, y: 300),
+                beginsInsidePlaybackControls: false,
+                hasTransitionController: true
+            )
+        )
+    }
 }
 
 @MainActor
 final class VideoPlaybackControlViewTests: XCTestCase {
+    func testFailureTelemetryRedactsAssetAndErrorDetails() {
+        let remoteAsset = AVURLAsset(url: URL(string: "https://example.invalid/private/video.mp4?token=secret")!)
+        let localAsset = AVURLAsset(url: URL(fileURLWithPath: "/private/secret/video.mov"))
+
+        XCTAssertEqual(VideoPlaybackFailureTelemetry.source(for: remoteAsset), "remote")
+        XCTAssertEqual(VideoPlaybackFailureTelemetry.source(for: localAsset), "local")
+        XCTAssertEqual(
+            VideoPlaybackFailureTelemetry.errorDomain(
+                for: NSError(domain: AVFoundationErrorDomain, code: -11_800)
+            ),
+            "avfoundation"
+        )
+        XCTAssertEqual(
+            VideoPlaybackFailureTelemetry.errorDomain(
+                for: NSError(domain: "private.server.error", code: 403)
+            ),
+            "other"
+        )
+        XCTAssertEqual(
+            VideoPlaybackFailureTelemetry.errorCode(
+                for: NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotDecodeContentData)
+            ),
+            NSURLErrorCannotDecodeContentData
+        )
+    }
+
     func testResumePolicyPreservesPlaybackIntentWhilePlayerIsWaiting() {
         XCTAssertTrue(VideoPlaybackResumePolicy.shouldResume(after: .playing))
         XCTAssertTrue(VideoPlaybackResumePolicy.shouldResume(after: .waitingToPlayAtSpecifiedRate))

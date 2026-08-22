@@ -492,12 +492,10 @@ class AttachmentLoadOperation: Foundation.Operation, @unchecked Sendable {
                     return
                 }
                 if let fileURL  = item as? URL {
-                    var attachmentType = AttachmentType(fileExtension: fileURL.pathExtension)
-                    if attachmentType == .audio {
-                        attachmentType = .file
-                    }
                     do {
-                        let attachment = try self.getAttachment(from: fileURL, type: attachmentType, info: [:])
+                        // A file-URL share carries document intent. UTType.movie above remains the
+                        // explicit media-share lane; this branch must stay download-only.
+                        let attachment = try self.getAttachment(from: fileURL, type: .file, info: [:])
                         result.attachment = attachment
                     } catch let error {
                         completion(error)

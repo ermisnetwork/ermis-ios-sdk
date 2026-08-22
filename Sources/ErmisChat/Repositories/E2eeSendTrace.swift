@@ -15,17 +15,20 @@ enum E2eeSendTrace {
         let messageId: MessageId
         let cid: ChannelId
         let groupCid: String?
+        let traceSequence: UInt64
         let startedAtNanoseconds: UInt64
 
         init(
             messageId: MessageId,
             cid: ChannelId,
             groupCid: String? = nil,
+            traceSequence: UInt64? = nil,
             startedAtNanoseconds: UInt64 = DispatchTime.now().uptimeNanoseconds
         ) {
             self.messageId = messageId
             self.cid = cid
             self.groupCid = groupCid
+            self.traceSequence = traceSequence ?? E2eeSendTrace.nextSequence()
             self.startedAtNanoseconds = startedAtNanoseconds
         }
 
@@ -34,6 +37,7 @@ enum E2eeSendTrace {
                 messageId: messageId,
                 cid: cid,
                 groupCid: groupCid,
+                traceSequence: traceSequence,
                 startedAtNanoseconds: startedAtNanoseconds
             )
         }
@@ -91,14 +95,24 @@ enum E2eeSendTrace {
         DispatchTime.now().uptimeNanoseconds
     }
 
+    private static let sequenceLock = NSLock()
+    private static var sequence: UInt64 = 0
+
+    private static func nextSequence() -> UInt64 {
+        sequenceLock.lock()
+        defer { sequenceLock.unlock() }
+        sequence &+= 1
+        return sequence
+    }
+
     static func elapsedMilliseconds(since start: UInt64) -> UInt64 {
         let now = nowNanoseconds()
         guard now >= start else { return 0 }
         return (now - start) / 1_000_000
     }
 
-    /// Builds a deterministic line so diagnostics can be filtered in Console or
-    /// an exported TestFlight log using `[E2EE_SEND] message_id=<id>`.
+    /// Builds a deterministic line that can be correlated only inside the current process.
+    /// Message/channel/group identifiers are intentionally excluded.
     static func makeLine(
         stage: String,
         context: Context,
@@ -116,13 +130,8 @@ enum E2eeSendTrace {
         var fields = [
             "[E2EE_SEND]",
             "stage=\(safeToken(stage))",
-            "message_id=\(safeToken(context.messageId))",
-            "cid=\(safeToken(context.cid.rawValue))",
+            "trace_seq=\(context.traceSequence)",
         ]
-
-        if let groupCid = context.groupCid {
-            fields.append("group_cid=\(safeToken(groupCid))")
-        }
         if let epoch {
             fields.append("epoch=\(epoch)")
         }
@@ -152,14 +161,7 @@ enum E2eeSendTrace {
         }
 
         if let error {
-            let nsError = error as NSError
-            fields.append("error_type=\(safeToken(String(reflecting: type(of: error))))")
-            fields.append("error_domain=\(safeToken(nsError.domain))")
-            fields.append("error_code=\(nsError.code)")
-            if let apiError = error as? ErmisApiError {
-                fields.append("http_status=\(apiError.httpStatusCode)")
-                fields.append("api_code=\(apiError.code)")
-            }
+            fields.append(PrivacySafeLogMetadata.errorFields(error))
         }
 
         fields.append("elapsed_ms=\(elapsedMilliseconds(since: context.startedAtNanoseconds))")
@@ -167,7 +169,9 @@ enum E2eeSendTrace {
     }
 
     private static func safeToken(_ value: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.:/"))
-        return String(value.unicodeScalars.map { allowed.contains($0) ? Character(String($0)) : "_" })
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_."))
+        return String(value.unicodeScalars.prefix(64).map {
+            allowed.contains($0) ? Character(String($0)) : "_"
+        })
     }
 }

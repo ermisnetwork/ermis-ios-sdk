@@ -2,10 +2,12 @@
 // Copyright 2025 Ermis Inc.
 //
 
+import AVFoundation
 import Foundation
 import ErmisChat
 import UIKit
 import PhotosUI
+import UniformTypeIdentifiers
 
 struct ComposerDraftPersistenceGate {
     private(set) var submittedRevision: UInt64?
@@ -48,6 +50,74 @@ struct ComposerPhotoPickerVideoSource {
             .appendingPathComponent("photospicker", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent(safeName.isEmpty ? "video.mov" : safeName)
+    }
+}
+
+enum ComposerDocumentVideoRouting {
+    /// Extensions are deliberately broader than AVFoundation's native playback matrix. They only
+    /// decide whether Files should offer "Send as video"; the selected bytes still have to pass
+    /// the runtime AVAsset probe before they can enter the video/preview lane.
+    private static let candidateExtensions: Set<String> = [
+        "3g2", "3gp", "avi", "flv", "h264", "h265", "hevc", "m2ts", "m4v",
+        "mkv", "mov", "mp4", "mpeg", "mpg", "mts", "ogv", "ts", "webm", "wmv"
+    ]
+
+    static func isVideoCandidate(_ url: URL) -> Bool {
+        let ext = url.pathExtension.lowercased()
+        if candidateExtensions.contains(ext) { return true }
+        if let type = UTType(filenameExtension: ext), type.conforms(to: .movie) { return true }
+        if let values = try? url.resourceValues(forKeys: [.contentTypeKey]),
+           values.contentType?.conforms(to: .movie) == true {
+            return true
+        }
+        return false
+    }
+
+    static func isNativelyPlayable(_ url: URL, timeout: TimeInterval = 10) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let asset = AVURLAsset(url: url)
+            let gate = ComposerDocumentVideoProbeGate(continuation)
+            let keys = ["playable", "tracks"]
+            asset.loadValuesAsynchronously(forKeys: keys) {
+                var playableError: NSError?
+                var tracksError: NSError?
+                let playableLoaded = asset.statusOfValue(
+                    forKey: "playable",
+                    error: &playableError
+                ) == .loaded
+                let tracksLoaded = asset.statusOfValue(
+                    forKey: "tracks",
+                    error: &tracksError
+                ) == .loaded
+                gate.resolve(
+                    playableLoaded
+                        && tracksLoaded
+                        && asset.isPlayable
+                        && !asset.tracks(withMediaType: .video).isEmpty
+                )
+            }
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeout) {
+                asset.cancelLoading()
+                gate.resolve(false)
+            }
+        }
+    }
+}
+
+private final class ComposerDocumentVideoProbeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Bool) {
+        let continuation = lock.withLock { () -> CheckedContinuation<Bool, Never>? in
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume(returning: value)
     }
 }
 
@@ -2102,11 +2172,79 @@ open class ComposerViewController: _ViewController,
     // MARK: - UIDocumentPickerViewControllerDelegate
 
     open func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
-        for fileURL in urls {
-            var attachmentType = AttachmentType(fileExtension: fileURL.pathExtension)
-            if attachmentType == .audio {
-                attachmentType = .file
+        let videoCandidates = urls.filter(ComposerDocumentVideoRouting.isVideoCandidate)
+        guard !videoCandidates.isEmpty else {
+            addDocumentAttachments(urls, videoURLs: [])
+            return
+        }
+
+        let presentChoice: () -> Void = { [weak self] in
+            guard let self else { return }
+            self.presentDocumentVideoChoice(urls: urls, videoCandidates: videoCandidates)
+        }
+        if controller.presentingViewController != nil {
+            controller.dismiss(animated: true, completion: presentChoice)
+        } else {
+            DispatchQueue.main.async(execute: presentChoice)
+        }
+    }
+
+    private func presentDocumentVideoChoice(urls: [URL], videoCandidates: [URL]) {
+        let sendAsFile = UIAlertAction(
+            title: L10n.Composer.Picker.sendAsFile,
+            style: .default
+        ) { [weak self] _ in
+            self?.addDocumentAttachments(urls, videoURLs: [])
+        }
+        let sendAsVideo = UIAlertAction(
+            title: L10n.Composer.Picker.sendAsVideo,
+            style: .default
+        ) { [weak self] _ in
+            self?.validateAndAddVideoDocuments(urls, videoCandidates: videoCandidates)
+        }
+        let cancel = UIAlertAction(title: L10n.Alert.Actions.cancel, style: .cancel)
+        presentAlert(
+            title: L10n.Composer.Picker.documentVideoTitle,
+            message: L10n.Composer.Picker.documentVideoMessage,
+            preferredStyle: .actionSheet,
+            actions: [sendAsFile, sendAsVideo, cancel],
+            sourceView: composerView.composerMenuButton
+        )
+    }
+
+    private func validateAndAddVideoDocuments(_ urls: [URL], videoCandidates: [URL]) {
+        _Concurrency.Task { [weak self] in
+            var playable = true
+            for url in videoCandidates where playable {
+                playable = await ComposerDocumentVideoRouting.isNativelyPlayable(url)
             }
+            await MainActor.run {
+                guard let self else { return }
+                if playable {
+                    self.addDocumentAttachments(urls, videoURLs: Set(videoCandidates))
+                } else {
+                    let sendAsFile = UIAlertAction(
+                        title: L10n.Composer.Picker.sendAsFile,
+                        style: .default
+                    ) { [weak self] _ in
+                        self?.addDocumentAttachments(urls, videoURLs: [])
+                    }
+                    self.presentAlert(
+                        title: L10n.Composer.Picker.videoUnsupportedTitle,
+                        message: L10n.Composer.Picker.videoUnsupportedMessage,
+                        actions: [
+                            sendAsFile,
+                            UIAlertAction(title: L10n.Alert.Actions.cancel, style: .cancel)
+                        ]
+                    )
+                }
+            }
+        }
+    }
+
+    private func addDocumentAttachments(_ urls: [URL], videoURLs: Set<URL>) {
+        for fileURL in urls {
+            let attachmentType: AttachmentType = videoURLs.contains(fileURL) ? .video : .file
             do {
                 try addAttachmentToContent(from: fileURL, type: attachmentType, info: [:])
             } catch {

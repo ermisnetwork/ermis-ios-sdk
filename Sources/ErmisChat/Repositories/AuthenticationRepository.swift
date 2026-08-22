@@ -559,7 +559,10 @@ class AuthenticationRepository {
                 return
             }
             if let error = error {
-                log.error("Error when getting token: \(error)", subsystems: .authentication)
+                log.error(
+                    "[AUTH] state=token_fetch_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .authentication
+                )
             } else {
                 log.debug("Successfully retrieved token", subsystems: .authentication)
             }
@@ -626,7 +629,7 @@ class AuthenticationRepository {
                     self?._tokenExpirationRetryStrategy.resetConsecutiveFailures()
                 }
             case let .failure(error):
-                log.info("Failed fetching token with error: \(error)")
+                log.info("[AUTH] state=token_provider_failed \(PrivacySafeLogMetadata.errorFields(error))")
                 retryFetchIfPossible(error)
             }
         }

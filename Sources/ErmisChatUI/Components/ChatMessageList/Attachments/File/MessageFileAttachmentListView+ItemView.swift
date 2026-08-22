@@ -5,6 +5,18 @@
 import ErmisChat
 import UIKit
 
+/// Process-scoped presentation for an explicit file download/export.
+///
+/// The destination URL stays owned by the message-list controller and is never exposed through
+/// this public UI value. Cells receive only non-sensitive progress and action state.
+public enum FileAttachmentDownloadPresentation: Equatable {
+    case idle
+    case progress(AttachmentOriginalDownloadProgress)
+    case choosingDestination
+    case saved
+    case failed
+}
+
 extension MessageFileAttachmentListView {
     open class ItemView: _View, UIProvider {
         /// Content of the attachment `MessageFileAttachment`
@@ -17,6 +29,11 @@ extension MessageFileAttachmentListView {
 
         /// Closure which notifies when the user tapped an attachment action. (Ex: Retry)
         open var didTapActionOnAttachment: ((MessageFileAttachment) -> Void)?
+
+        /// Download/export state supplied by the owning message-list controller.
+        public var downloadPresentation: FileAttachmentDownloadPresentation = .idle {
+            didSet { applyDownloadPresentation() }
+        }
 
         /// Label which shows name of the file, usually with extension (file.pdf)
         open private(set) lazy var fileNameLabel = UILabel()
@@ -37,6 +54,12 @@ extension MessageFileAttachmentListView {
             .loadingIndicator
             .init()
             .withoutAutoresizingMaskConstraints
+
+        /// Byte progress for an explicit original download. It shares the file-size row and uses
+        /// the primary accent color so it cannot be confused with upload activity.
+        open private(set) lazy var downloadProgressView = UIProgressView(progressViewStyle: .default)
+            .withoutAutoresizingMaskConstraints
+            .withAccessibilityIdentifier(identifier: "downloadProgressView")
 
         /// imageView indicating action for the file attachment. (Download / Retry upload...)
         open private(set) lazy var actionIconImageView = UIImageView()
@@ -80,6 +103,9 @@ extension MessageFileAttachmentListView {
             fileNameLabel.font = theme.fonts.body.bold
             fileNameLabel.lineBreakMode = .byTruncatingMiddle
             fileIconImageView.contentMode = .center
+            downloadProgressView.progressTintColor = .systemCyan
+            downloadProgressView.trackTintColor = .systemGray3
+            actionIconImageView.tintColor = theme.colors.primary
             backgroundColor = theme.colors.surfaceContainer
             layer.cornerRadius = 12
             layer.masksToBounds = true
@@ -92,12 +118,16 @@ extension MessageFileAttachmentListView {
             addSubview(mainContainerStackView)
             mainContainerStackView.pin(to: layoutMarginsGuide)
 
-            spinnerAndSizeStack.addArrangedSubviews([loadingIndicator, fileSizeLabel])
+            spinnerAndSizeStack.addArrangedSubviews([loadingIndicator, fileSizeLabel, downloadProgressView])
             fileNameAndSizeStack.addArrangedSubviews([fileNameLabel, spinnerAndSizeStack])
             mainContainerStackView.addArrangedSubviews([fileIconImageView, fileNameAndSizeStack, actionIconImageView])
 
+            downloadProgressView.widthAnchor.pin(equalToConstant: 84).isActive = true
+            downloadProgressView.isHidden = true
+
             spinnerAndSizeStack.axis = .horizontal
-            spinnerAndSizeStack.alignment = .leading
+            spinnerAndSizeStack.alignment = .center
+            spinnerAndSizeStack.spacing = 8
 
             fileNameAndSizeStack.axis = .vertical
             fileNameAndSizeStack.alignment = .leading
@@ -111,6 +141,9 @@ extension MessageFileAttachmentListView {
             super.contentDidChanged()
 
             fileIconImageView.image = fileIcon
+            fileSizeLabel.isHidden = false
+            fileSizeLabel.textColor = theme.colors.subtitleText
+            actionIconImageView.accessibilityLabel = nil
             // If we cannot fetch filename, let's use only content type.
             fileNameLabel.text = content?.payload.title ?? content?.type.rawValue
 
@@ -140,6 +173,8 @@ extension MessageFileAttachmentListView {
                 fileNameLabel.text = L10n.Message.unsupportedAttachment
                 fileSizeLabel.isHidden = true
             }
+
+            applyDownloadPresentation()
         }
 
         @objc open func didTapOnAttachment(_ recognizer: UITapGestureRecognizer) {
@@ -161,6 +196,79 @@ extension MessageFileAttachmentListView {
             let fileType: AttachmentFileType = file.type == .aac ? .mp3 : file.type
 
             return theme.icons.fileIcons[fileType] ?? theme.icons.fileFallback
+        }
+
+        private func applyDownloadPresentation() {
+            guard let content else {
+                downloadProgressView.isHidden = true
+                return
+            }
+            if let uploadState = content.uploadingState?.state,
+               uploadState != .uploaded {
+                downloadProgressView.isHidden = true
+                return
+            }
+
+            switch downloadPresentation {
+            case .idle:
+                downloadProgressView.isHidden = true
+                downloadProgressView.progress = 0
+                fileSizeLabel.text = content.payload.file.sizeString
+                fileSizeLabel.textColor = theme.colors.subtitleText
+                actionIconImageView.image = theme.fileAttachmentActionIcon(for: .uploaded)
+                actionIconImageView.accessibilityLabel = L10n.Message.Actions.download
+
+            case .progress(let progress):
+                downloadProgressView.isHidden = false
+                let fraction = Float(progress.fractionCompleted ?? 0)
+                downloadProgressView.setProgress(fraction, animated: true)
+                fileSizeLabel.textColor = .systemCyan
+                actionIconImageView.image = theme.fileAttachmentActionIcon(for: .uploaded)
+                actionIconImageView.accessibilityLabel = L10n.Message.Actions.Download.inProgress
+
+                switch progress.phase {
+                case .queued, .downloading:
+                    let logicalBytes = Int64(
+                        Double(content.payload.file.size) * Double(max(0, min(1, fraction)))
+                    )
+                    let downloadedSize = AttachmentFile.sizeFormatter.string(fromByteCount: logicalBytes)
+                    fileSizeLabel.text = "\(downloadedSize)/\(content.payload.file.sizeString)"
+                    downloadProgressView.accessibilityValue = "\(Int(fraction * 100))%"
+                case .verifying:
+                    downloadProgressView.setProgress(1, animated: true)
+                    fileSizeLabel.text = L10n.Message.Actions.Download.verifying
+                case .waitingForUnlock:
+                    downloadProgressView.setProgress(1, animated: true)
+                    fileSizeLabel.text = L10n.Message.Actions.Download.waitingForUnlock
+                case .decrypting:
+                    downloadProgressView.setProgress(1, animated: true)
+                    fileSizeLabel.text = L10n.Message.Actions.Download.decrypting
+                }
+
+            case .choosingDestination:
+                downloadProgressView.isHidden = false
+                downloadProgressView.setProgress(1, animated: true)
+                fileSizeLabel.text = L10n.Message.Actions.Download.choosingDestination
+                fileSizeLabel.textColor = .systemCyan
+                actionIconImageView.image = theme.fileAttachmentActionIcon(for: .uploaded)
+                actionIconImageView.accessibilityLabel = L10n.Message.Actions.Download.choosingDestination
+
+            case .saved:
+                downloadProgressView.isHidden = true
+                fileSizeLabel.text = "\(L10n.Message.Actions.Download.saved) • \(L10n.Message.Actions.Download.showInFiles)"
+                fileSizeLabel.textColor = .systemGreen
+                actionIconImageView.image = UIImage(systemName: "folder")?.withRenderingMode(.alwaysTemplate)
+                actionIconImageView.tintColor = .systemGreen
+                actionIconImageView.accessibilityLabel = L10n.Message.Actions.Download.showInFiles
+
+            case .failed:
+                downloadProgressView.isHidden = true
+                downloadProgressView.progress = 0
+                fileSizeLabel.text = L10n.Message.Actions.Download.failureTitle
+                fileSizeLabel.textColor = theme.colors.error
+                actionIconImageView.image = theme.fileAttachmentActionIcon(for: .uploaded)
+                actionIconImageView.accessibilityLabel = L10n.Message.Actions.download
+            }
         }
     }
 }

@@ -116,11 +116,15 @@ class CurrentUserUpdater: Worker {
                 ),
                 completion: { result in
                     if let error = result.error {
-                        log.debug("Device token \(fcmToken) failed to be registered on backend.\n Reason: \(error.localizedDescription)")
+                        log.debug(
+                            "[PUSH_REGISTRATION] state=failed \(PrivacySafeLogMetadata.errorFields(error))"
+                        )
                         completion?(error)
                         return
                     }
-                    log.debug("Device token \(fcmToken), \(deviceToken) was successfully registered on backend.")
+                    log.debug(
+                        "[PUSH_REGISTRATION] state=succeeded has_voip_token=\(deviceToken != nil)"
+                    )
                     completion?(nil)
                 }
             )
@@ -178,7 +182,7 @@ class CurrentUserUpdater: Worker {
                         try session.saveUser(payload: user, projectId: projectId)
                     }, completion: { error in
                         if let error = error {
-                            log.error("Failed to save user with id: <\(userId)> to the database. Error: \(error)")
+                            log.error("[CURRENT_USER] state=persist_failed \(PrivacySafeLogMetadata.errorFields(error))")
                         }
                         completion?(error)
                     })

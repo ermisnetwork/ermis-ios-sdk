@@ -33,16 +33,16 @@ final class WatchChannelOperation: AsyncOperation {
                 return
             }
 
-            let cidString = (controller.cid?.rawValue ?? "unknown")
-            log.info("2. Watching active channel \(cidString)", subsystems: .offlineSupport)
+            log.info("[SYNC] stage=watch_active_channel_started", subsystems: .offlineSupport)
             controller.recoverWatchedChannel { error in
                 if let cid = controller.cid, error == nil {
-                    log.info("Successfully watched active channel \(cidString)", subsystems: .offlineSupport)
+                    log.info("[SYNC] stage=watch_active_channel_succeeded", subsystems: .offlineSupport)
                     context.watchedAndSynchedChannelIds.insert(cid)
                     done(.continue)
                 } else {
-                    let errorMessage = error?.localizedDescription ?? "missing cid"
-                    log.error("Failed watching active channel \(cidString): \(errorMessage)", subsystems: .offlineSupport)
+                    let fields = error.map(PrivacySafeLogMetadata.errorFields)
+                        ?? "error_type=missing_channel error_domain=other error_code=0"
+                    log.error("[SYNC] stage=watch_active_channel_failed \(fields)", subsystems: .offlineSupport)
                     done(.retry)
                 }
             }
@@ -58,7 +58,6 @@ final class RefetchChannelListQueryOperation: AsyncOperation {
                 return
             }
 
-            let query = controller.query
             log.info("3 & 4. Refetching channel lists queries & Cleaning up local message history", subsystems: .offlineSupport)
             controller.resetQuery(
                 watchedAndSynchedChannelIds: context.watchedAndSynchedChannelIds,
@@ -66,14 +65,14 @@ final class RefetchChannelListQueryOperation: AsyncOperation {
             ) { result in
                 switch result {
                 case let .success((watchedChannels, unwantedCids)):
-                    log.info("Successfully refetched query for \(query.debugDescription)", subsystems: .offlineSupport)
+                    log.info("[SYNC] stage=channel_query_refetch_succeeded", subsystems: .offlineSupport)
                     let queryChannelIds = watchedChannels.map(\.cid)
                     context.watchedAndSynchedChannelIds = context.watchedAndSynchedChannelIds.union(queryChannelIds)
                     context.unwantedChannelIds = context.unwantedChannelIds.union(unwantedCids)
                     done(.continue)
                 case let .failure(error):
                     log.error(
-                        "Failed refetching query for \(query.debugDescription): \(error)",
+                        "[SYNC] stage=channel_query_refetch_failed \(PrivacySafeLogMetadata.errorFields(error))",
                         subsystems: .offlineSupport
                     )
                     done(.retry)
@@ -104,7 +103,7 @@ final class DeleteUnwantedChannelsOperation: AsyncOperation {
             } completion: { error in
                 if let error = error {
                     log.error(
-                        "Failed removing unwanted channels: \(error)",
+                        "[SYNC] stage=unwanted_channel_cleanup_failed \(PrivacySafeLogMetadata.errorFields(error))",
                         subsystems: .offlineSupport
                     )
                     done(.retry)

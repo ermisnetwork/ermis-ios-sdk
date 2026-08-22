@@ -4,6 +4,7 @@
 
 import ErmisChat
 import UIKit
+import UniformTypeIdentifiers
 
 /// Controller that shows list of messages and composer together in the selected channel.
 @available(iOSApplicationExtension, unavailable)
@@ -39,8 +40,21 @@ open class MessageListViewController: _ViewController,
         .messageListRouter
         .init(rootViewController: self)
 
+    /// Presents scoped attachment download/export errors from the message timeline.
+    public private(set) lazy var alertRouter = components
+        .alertsRouter
+        .init(rootViewController: self)
+
     /// Strong reference of message actions view controller to allow performing async operations.
     private var messageActionsVC: MessageActionsViewController?
+
+    /// Explicit file-intent downloads are process-scoped UI operations. Keep them separate from
+    /// immutable message/upload state so a download can survive cell reuse without making a
+    /// received attachment look like an outgoing upload.
+    private var fileDownloadTasks: [AttachmentId: _Concurrency.Task<Void, Never>] = [:]
+    private var fileDownloadPresentations: [AttachmentId: FileAttachmentDownloadPresentation] = [:]
+    private var exportedFileURLs: [AttachmentId: URL] = [:]
+    private lazy var fileAttachmentSaver = client.attachmentSaver(presentingFrom: self)
 
     /// A View used to display the messages.
     open private(set) lazy var listView: MessageListView = components
@@ -815,6 +829,7 @@ open class MessageListViewController: _ViewController,
         cell.messageContentView?.delegate = self
         cell.messageContentView?.channel = channel
         cell.messageContentView?.content = message
+        applyFileDownloadPresentations(to: cell, message: message)
 
         /// Process cell decorations
         cell.setDecoration(for: .header, decorationView: delegate?.messageListVC(self, headerViewForMessage: message, at: indexPath))
@@ -1060,7 +1075,7 @@ open class MessageListViewController: _ViewController,
         _ attachment: MessageFileAttachment,
         at indexPath: IndexPath?
     ) {
-        router.showFilePreview(attachment: attachment, client: client)
+        startOrRevealFileDownload(attachment, sourceIndexPath: indexPath)
     }
 
     open func didTapActionOnAttachment(_ attachment: MessageFileAttachment, at indexPath: IndexPath?) {
@@ -1070,8 +1085,221 @@ open class MessageListViewController: _ViewController,
                 .messageController(cid: attachment.id.cid, messageId: attachment.id.messageId)
                 .restartFailedAttachmentUploading(with: attachment.id)
         default:
-            break
+            startOrRevealFileDownload(attachment, sourceIndexPath: indexPath)
         }
+    }
+
+    private func startOrRevealFileDownload(
+        _ attachment: MessageFileAttachment,
+        sourceIndexPath: IndexPath?
+    ) {
+        guard let client else { return }
+        let attachmentId = attachment.id
+        if exportedFileURLs[attachmentId] != nil,
+           fileDownloadPresentations[attachmentId] == .saved {
+            showSavedFileActions(for: attachment, sourceIndexPath: sourceIndexPath)
+            return
+        }
+        guard fileDownloadTasks[attachmentId] == nil,
+              fileDownloadPresentations[attachmentId] != .choosingDestination else {
+            return
+        }
+
+        updateFileDownloadPresentation(.choosingDestination, for: attachmentId)
+        log.info("[E2EE_FILE_DOWNLOAD] state=destination_picker")
+        fileAttachmentSaver.chooseVerifiedFileExportDirectory { [weak self, client] result in
+            guard let self else { return }
+            switch result {
+            case .success(let directoryURL):
+                log.info("[E2EE_FILE_DOWNLOAD] state=destination_selected")
+                self.beginFileDownload(
+                    attachment,
+                    destinationDirectoryURL: directoryURL,
+                    client: client
+                )
+            case .failure(let error) where error is CancellationError:
+                self.updateFileDownloadPresentation(.idle, for: attachmentId)
+            case .failure:
+                self.updateFileDownloadPresentation(.failed, for: attachmentId)
+                self.alertRouter.showDownloadAttachmentAlertResult(isSuccess: false)
+            }
+        }
+    }
+
+    private func showSavedFileActions(
+        for attachment: MessageFileAttachment,
+        sourceIndexPath: IndexPath?
+    ) {
+        let attachmentId = attachment.id
+        let alert = UIAlertController(
+            title: attachment.payload.title ?? L10n.Message.Actions.Download.saved,
+            message: nil,
+            preferredStyle: .actionSheet
+        )
+        if let exportedURL = exportedFileURLs[attachmentId] {
+            alert.addAction(UIAlertAction(
+                title: L10n.Message.Actions.Download.showInFiles,
+                style: .default,
+                handler: { [weak self] _ in self?.showExportedFileLocation(exportedURL) }
+            ))
+        }
+        alert.addAction(UIAlertAction(
+            title: L10n.Message.Actions.Download.again,
+            style: .default,
+            handler: { [weak self] _ in
+                guard let self else { return }
+                self.exportedFileURLs[attachmentId] = nil
+                self.updateFileDownloadPresentation(.idle, for: attachmentId)
+                self.startOrRevealFileDownload(attachment, sourceIndexPath: sourceIndexPath)
+            }
+        ))
+        alert.addAction(UIAlertAction(title: L10n.Alert.Actions.cancel, style: .cancel))
+
+        loadViewIfNeeded()
+        guard let sourceView = sourceIndexPath.flatMap({ listView.cellForRow(at: $0) }) ?? view else {
+            return
+        }
+        alert.popoverPresentationController?.sourceView = sourceView
+        alert.popoverPresentationController?.sourceRect = CGRect(
+            x: sourceView.bounds.midX,
+            y: sourceView.bounds.midY,
+            width: 1,
+            height: 1
+        )
+        present(alert, animated: true)
+    }
+
+    private func beginFileDownload(
+        _ attachment: MessageFileAttachment,
+        destinationDirectoryURL: URL,
+        client: ErmisClient
+    ) {
+        let attachmentId = attachment.id
+        let isAccessingSecurityScopedDirectory = destinationDirectoryURL
+            .startAccessingSecurityScopedResource()
+        log.info("[E2EE_FILE_DOWNLOAD] state=started")
+        let initialProgress = E2eeAttachmentOriginalDownloadProgress(
+            phase: .queued,
+            completedCiphertextBytes: 0,
+            totalCiphertextBytes: UInt64(clamping: attachment.payload.file.size)
+        )
+        updateFileDownloadPresentation(.progress(initialProgress), for: attachmentId)
+        let erasedAttachment = attachment.asAnyAttachment
+
+        let task = _Concurrency.Task { [weak self, client, erasedAttachment] in
+            do {
+                let progressHandler: @Sendable (AttachmentOriginalDownloadProgress) -> Void = {
+                    [weak self] progress in
+                    DispatchQueue.main.async {
+                        self?.updateFileDownloadPresentation(.progress(progress), for: attachmentId)
+                    }
+                }
+                let lease: E2eeAttachmentOriginalLease
+                if client.requiresVerifiedE2eeOriginal(erasedAttachment) {
+                    lease = try await client.acquireAttachmentForViewing(
+                        erasedAttachment,
+                        progress: progressHandler
+                    )
+                } else {
+                    lease = try await client.acquireStandardAttachmentForDownload(
+                        erasedAttachment,
+                        progress: progressHandler
+                    )
+                }
+                try _Concurrency.Task.checkCancellation()
+                await MainActor.run { [weak self] in
+                    guard let self else {
+                        lease.release()
+                        if isAccessingSecurityScopedDirectory {
+                            destinationDirectoryURL.stopAccessingSecurityScopedResource()
+                        }
+                        return
+                    }
+                    self.fileDownloadTasks[attachmentId] = nil
+                    self.fileAttachmentSaver.exportDownloadedFile(
+                        at: lease.localURL,
+                        attachment: erasedAttachment,
+                        to: destinationDirectoryURL,
+                        completion: { [weak self] result in
+                            lease.release()
+                            if isAccessingSecurityScopedDirectory {
+                                destinationDirectoryURL.stopAccessingSecurityScopedResource()
+                            }
+                            guard let self else { return }
+                            switch result {
+                            case .success(let destinationURL):
+                                log.info("[E2EE_FILE_DOWNLOAD] state=saved")
+                                self.exportedFileURLs[attachmentId] = destinationURL
+                                self.updateFileDownloadPresentation(.saved, for: attachmentId)
+                                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                                self.alertRouter.showDownloadAttachmentAlertResult(isSuccess: true)
+                            case .failure(let error) where error is CancellationError:
+                                self.updateFileDownloadPresentation(.idle, for: attachmentId)
+                            case .failure:
+                                self.updateFileDownloadPresentation(.failed, for: attachmentId)
+                                self.alertRouter.showDownloadAttachmentAlertResult(isSuccess: false)
+                            }
+                        }
+                    )
+                }
+            } catch is CancellationError {
+                await MainActor.run { [weak self] in
+                    if isAccessingSecurityScopedDirectory {
+                        destinationDirectoryURL.stopAccessingSecurityScopedResource()
+                    }
+                    self?.fileDownloadTasks[attachmentId] = nil
+                    self?.updateFileDownloadPresentation(.idle, for: attachmentId)
+                }
+            } catch {
+                log.error("[E2EE_FILE_DOWNLOAD] state=failed error=\(type(of: error))")
+                await MainActor.run { [weak self] in
+                    if isAccessingSecurityScopedDirectory {
+                        destinationDirectoryURL.stopAccessingSecurityScopedResource()
+                    }
+                    self?.fileDownloadTasks[attachmentId] = nil
+                    self?.updateFileDownloadPresentation(.failed, for: attachmentId)
+                    self?.alertRouter.showDownloadAttachmentAlertResult(isSuccess: false)
+                }
+            }
+        }
+        fileDownloadTasks[attachmentId] = task
+    }
+
+    private func updateFileDownloadPresentation(
+        _ presentation: FileAttachmentDownloadPresentation,
+        for attachmentId: AttachmentId
+    ) {
+        fileDownloadPresentations[attachmentId] = presentation
+        guard let indexPath = getIndexPath(forMessageId: attachmentId.messageId),
+              let cell = listView.cellForRow(at: indexPath) as? MessageCell,
+              let injector = cell.messageContentView?.customCellViewInjector
+                as? FilesAttachmentViewInjector else {
+            return
+        }
+        injector.fileAttachmentView.setDownloadPresentation(presentation, for: attachmentId)
+    }
+
+    private func applyFileDownloadPresentations(to cell: MessageCell, message: ChatMessage) {
+        guard let injector = cell.messageContentView?.customCellViewInjector
+                as? FilesAttachmentViewInjector else {
+            return
+        }
+        for attachment in message.fileAttachments {
+            injector.fileAttachmentView.setDownloadPresentation(
+                fileDownloadPresentations[attachment.id] ?? .idle,
+                for: attachment.id
+            )
+        }
+    }
+
+    private func showExportedFileLocation(_ fileURL: URL) {
+        log.info("[E2EE_FILE_DOWNLOAD] state=show_location")
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: [.item],
+            asCopy: false
+        )
+        picker.directoryURL = fileURL.deletingLastPathComponent()
+        present(picker, animated: true)
     }
 
     open func messageContentViewDidTapOnReactionsView(_ indexPath: IndexPath?) {

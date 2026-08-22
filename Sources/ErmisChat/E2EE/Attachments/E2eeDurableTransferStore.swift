@@ -9,6 +9,7 @@ enum E2eeDurableTransferStoreError: Error, Equatable {
     case attemptNotFound
     case duplicateTaskToken
     case invalidRecordFile
+    case invalidExpiredUploadReset
 }
 
 /// A protected, excluded-from-backup record store hydrated before callback-journal drain. One file
@@ -97,6 +98,85 @@ final class E2eeDurableTransferStore {
             try repaired.validate()
             try writeLocked(repaired)
             return repaired
+        }
+    }
+
+    /// Starts a new Bellboy init/idempotency attempt while retaining the exact canonical
+    /// ciphertext and sealed attachment secret. This is the only supported progress reset: an
+    /// expired presigned upload cannot reuse its server attachment IDs, URLs, multipart ETags, or
+    /// byte progress, but re-encrypting would change the attachment payload unnecessarily.
+    func resetExpiredUploadForFreshInit(
+        attemptId: String
+    ) throws -> PendingE2eeTransferAttempt {
+        try lock.withLock {
+            try prepareDirectoryLocked()
+            let previous = try loadLocked(attemptId: attemptId)
+            let hasReusableCiphertext = !previous.assets.isEmpty
+                && previous.assets.allSatisfy({ asset in
+                      guard let canonicalURL = asset.canonicalCiphertextURL,
+                            let ciphertextSize = asset.ciphertextSize,
+                            ciphertextSize >= UInt64(E2eeAttachmentFrameCryptoV1.emptyCiphertextSize) else {
+                          return false
+                      }
+                      return fileManager.fileExists(atPath: canonicalURL.path)
+                  })
+
+            // A process may have died after this reset was persisted but before `/init` returned.
+            // The same state also remains after a retryable `/init` failure. Reuse those pending
+            // identifiers so the next Retry repeats the same idempotent init instead of leaking
+            // another server attachment attempt.
+            let alreadyReset = previous.assets.allSatisfy { asset in
+                asset.uploadMode == nil
+                    && asset.uploadExpiresAt == nil
+                    && asset.putURL == nil
+                    && asset.objectKey == nil
+                    && asset.multipartUploadId == nil
+                    && asset.parts.isEmpty
+                    && asset.isUploaded == false
+                    && UUID(uuidString: asset.idempotencyKey ?? "") != nil
+            }
+            guard previous.phase == .failedRetryable,
+                  hasReusableCiphertext,
+                  previous.failureReason == .uploadExpired || alreadyReset else {
+                throw E2eeDurableTransferStoreError.invalidExpiredUploadReset
+            }
+            guard !alreadyReset else { return previous }
+
+            var fresh = previous
+            var logicalIdentifiers: [String: (attachmentId: String, idempotencyKey: String)] = [:]
+            for index in fresh.assets.indices {
+                let previousAttachmentId = fresh.assets[index].attachmentId
+                let identifiers: (attachmentId: String, idempotencyKey: String)
+                if let existing = logicalIdentifiers[previousAttachmentId] {
+                    identifiers = existing
+                } else {
+                    identifiers = (UUID().uuidString, UUID().uuidString)
+                    logicalIdentifiers[previousAttachmentId] = identifiers
+                }
+
+                fresh.assets[index].attachmentId = identifiers.attachmentId
+                fresh.assets[index].assetId = UUID().uuidString
+                fresh.assets[index].idempotencyKey = identifiers.idempotencyKey
+                fresh.assets[index].uploadMode = nil
+                fresh.assets[index].uploadExpiresAt = nil
+                fresh.assets[index].putURL = nil
+                fresh.assets[index].objectKey = nil
+                fresh.assets[index].multipartUploadId = nil
+                fresh.assets[index].multipartPartSize = nil
+                fresh.assets[index].maxPartRetries = nil
+                fresh.assets[index].retryMaxElapsedSeconds = nil
+                fresh.assets[index].completedBytes = 0
+                fresh.assets[index].taskIdentifier = nil
+                fresh.assets[index].taskToken = nil
+                fresh.assets[index].isUploaded = false
+                fresh.assets[index].parts = []
+            }
+            fresh.completedBytes = 0
+            fresh.completionIntents = nil
+            fresh.updatedAt = Date()
+            try fresh.validate()
+            try writeLocked(fresh)
+            return fresh
         }
     }
 

@@ -237,6 +237,10 @@ public enum L10n {
       public static var camera: String { L10n.tr("Localizable", "composer.picker.camera") }
       /// Cancel
       public static var cancel: String { L10n.tr("Localizable", "composer.picker.cancel") }
+      /// Send as a file for download only, or as a video with inline playback.
+      public static var documentVideoMessage: String { L10n.tr("Localizable", "composer.picker.document-video-message") }
+      /// Send selected video
+      public static var documentVideoTitle: String { L10n.tr("Localizable", "composer.picker.document-video-title") }
       /// File
       public static var file: String { L10n.tr("Localizable", "composer.picker.file") }
       /// Choose attachment type: 
@@ -245,6 +249,14 @@ public enum L10n {
       public static var media: String { L10n.tr("Localizable", "composer.picker.media") }
       /// Choose images source: 
       public static var photoTitle: String { L10n.tr("Localizable", "composer.picker.photo-title") }
+      /// Send as file
+      public static var sendAsFile: String { L10n.tr("Localizable", "composer.picker.send-as-file") }
+      /// Send as video
+      public static var sendAsVideo: String { L10n.tr("Localizable", "composer.picker.send-as-video") }
+      /// This container or codec cannot be played on this device. You can still send the original as a downloadable file.
+      public static var videoUnsupportedMessage: String { L10n.tr("Localizable", "composer.picker.video-unsupported-message") }
+      /// Video format not supported
+      public static var videoUnsupportedTitle: String { L10n.tr("Localizable", "composer.picker.video-unsupported-title") }
     }
     public enum Placeholder {
       /// Write a message
@@ -329,12 +341,6 @@ public enum L10n {
   public enum Encryption {
     /// End-to-end message encryption
     public static var e2eMessageEncrytion: String { L10n.tr("Localizable", "encryption.e2e-message-encrytion") }
-    public enum ForwardDowngradeAlert {
-      /// The destination is a standard channel. Forwarded content will no longer have end-to-end encryption.
-      public static var message: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.message") }
-      /// Remove E2EE Protection?
-      public static var title: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.title") }
-    }
     public enum EnableE2eAlert {
       /// End-to-end encryption protects your data by encrypting it from the sender to the recipient, allowing only the intended recipient to decrypt it
       public static var message: String { L10n.tr("Localizable", "encryption.enable-e2e-alert.message") }
@@ -348,6 +354,12 @@ public enum L10n {
       public static func title(_ p1: Any) -> String {
         return L10n.tr("Localizable", "encryption.enable-group-e2e-alert.title", String(describing: p1))
       }
+    }
+    public enum ForwardDowngradeAlert {
+      /// The destination is a standard channel. Forwarded content will no longer have end-to-end encryption.
+      public static var message: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.message") }
+      /// Remove E2EE Protection?
+      public static var title: String { L10n.tr("Localizable", "encryption.forward-downgrade-alert.title") }
     }
   }
 
@@ -459,10 +471,26 @@ public enum L10n {
         public static var confirmationTitle: String { L10n.tr("Localizable", "message.actions.delete.confirmation-title") }
       }
       public enum Download {
+        /// Download Again Elsewhere
+        public static var again: String { L10n.tr("Localizable", "message.actions.download.again") }
+        /// Choose save location…
+        public static var choosingDestination: String { L10n.tr("Localizable", "message.actions.download.choosing-destination") }
+        /// Decrypting…
+        public static var decrypting: String { L10n.tr("Localizable", "message.actions.download.decrypting") }
         /// Download failed. Please try again later.
         public static var failureTitle: String { L10n.tr("Localizable", "message.actions.download.failure-title") }
+        /// Downloading
+        public static var inProgress: String { L10n.tr("Localizable", "message.actions.download.in-progress") }
+        /// Saved
+        public static var saved: String { L10n.tr("Localizable", "message.actions.download.saved") }
+        /// Open Folder
+        public static var showInFiles: String { L10n.tr("Localizable", "message.actions.download.show-in-files") }
         /// Download successful.
         public static var successTitle: String { L10n.tr("Localizable", "message.actions.download.success-title") }
+        /// Verifying…
+        public static var verifying: String { L10n.tr("Localizable", "message.actions.download.verifying") }
+        /// Waiting for unlock…
+        public static var waitingForUnlock: String { L10n.tr("Localizable", "message.actions.download.waiting-for-unlock") }
       }
       public enum Flag {
         /// Do you want to send a copy of this message to a moderator for further investigation?

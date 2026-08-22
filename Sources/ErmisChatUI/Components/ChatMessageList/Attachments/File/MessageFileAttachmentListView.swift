@@ -43,4 +43,16 @@ open class MessageFileAttachmentListView: _View, ComponentsProvider {
             containerStackView.addArrangedSubview(item)
         }
     }
+
+    /// Applies process-scoped download state to the matching visible item without mutating the
+    /// immutable message attachment model or conflating download progress with upload state.
+    open func setDownloadPresentation(
+        _ presentation: FileAttachmentDownloadPresentation,
+        for attachmentId: AttachmentId
+    ) {
+        containerStackView.subviews
+            .compactMap { $0 as? ItemView }
+            .first(where: { $0.content?.id == attachmentId })?
+            .downloadPresentation = presentation
+    }
 }

@@ -253,6 +253,22 @@ The four seed invocations intentionally report an XCTest process failure because
 `SIGKILL` after its durable boundary. The script succeeds only when every following invocation
 reopens the same on-disk OpenMLS/Core Data state and verifies TCR-005 through TCR-008.
 
+#### Privacy-safe production diagnostics
+
+SDK diagnostics expose only fixed lifecycle stages, bounded counters/timings, HTTP status, stable
+API code, and allowlisted system-error domains with numeric codes. They never render request or
+response bodies, WebSocket/SSE payloads, URL/query values, error descriptions, credentials, push
+tokens, filenames/paths, presigned URLs, or user/channel/message/attachment/device identifiers.
+Outbound E2EE stages use a process-local `trace_seq`; it is intentionally not a stable message or
+channel correlation key and resets when the process restarts.
+
+`URLRequest.cURL()` remains available for source compatibility, but production request execution
+does not invoke it. Host applications should apply the same rule to their own logs and must not
+wrap SDK errors by printing `localizedDescription`, because provider/server descriptions are not
+part of the privacy-safe diagnostic contract. Background transfer `taskDescription` and the
+before-first-unlock callback journal contain only random UUID task tokens plus bounded transfer
+status/count metadata.
+
 #### E2EE attachment original download and export
 
 An E2EE attachment's `remoteURL` is an opaque SDK reference, not a storage URL. Do not pass it to a
@@ -305,6 +321,23 @@ The message long-press **Download** action uses this same verified-original boun
 file it resolves the opaque reference first and presents the verified plaintext copy in the Files
 document picker; it never forwards `ermis-e2ee-attachment://...` to the generic HTTP downloader.
 Standard attachment downloads keep their existing behavior.
+
+#### File versus video send intent
+
+Selecting media through Photos creates an inline image/video attachment. Selecting the same bytes
+through Files keeps document intent by default: the message renders as a file and opens only through
+the verified-original download path. For a video-like document, the composer also offers **Send as
+video**. That option performs a bounded local AVFoundation capability check before creating a video
+bubble, encrypted preview, or player. A container or codec that the current device cannot play is
+never silently promoted; the user may still send its original bytes as a file.
+
+The encrypted manifest authenticates `attachment_type` independently from `mime_type`. Updated iOS
+and Web receivers treat `file`, `video`, `image`, and `voiceRecording` as authoritative, while old
+manifests without the marker retain MIME-based compatibility. Extensions such as MKV, WebM, raw HEVC,
+and H.265 are recognized as video candidates so the choice is available, but recognition is not a
+claim of native playback support. HEVC inside a device-supported MOV/MP4 container may pass the probe;
+unsupported MKV/codecs remain lossless downloadable files unless a future decoder/transcode subsystem
+is introduced explicitly.
 
 #### E2EE video range playback
 

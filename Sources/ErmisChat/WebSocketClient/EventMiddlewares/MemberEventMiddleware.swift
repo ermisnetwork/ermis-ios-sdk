@@ -103,13 +103,13 @@ struct MemberEventMiddleware: EventMiddleware {
             case let event as NotificationRemovedFromChannelEventDTO:
                 guard let channel = session.channel(cid: event.cid) else {
                     // No need to throw ChannelNotFound error here
-                    log.debug("Channel \(event.cid) not found for NotificationRemovedFromChannelEventDTO")
+                    log.debug("[WebSocket] state=member_removal_skipped reason=channel_missing")
                     break
                 }
 
                 guard let member = channel.members.first(where: { $0.user.userId == event.member.userId }) else {
                     // No need to throw MemberNotFound error here
-                    log.debug("Member \(event.member.userId) not found for NotificationRemovedFromChannelEventDTO")
+                    log.debug("[WebSocket] state=member_removal_skipped reason=member_missing")
                     break
                 }
 

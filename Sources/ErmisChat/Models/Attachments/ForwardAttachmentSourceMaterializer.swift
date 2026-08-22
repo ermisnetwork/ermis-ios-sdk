@@ -40,16 +40,24 @@ final class ForwardAttachmentRemoteSourceMaterializer {
 
     func materialize(
         remoteURL: URL,
-        preferredFileExtension: String?
+        preferredFileExtension: String?,
+        expectedBytes: UInt64 = 0,
+        progress: @escaping @Sendable (AttachmentOriginalDownloadProgress) -> Void = { _ in }
     ) async throws -> E2eeAttachmentOriginalLease {
         guard let scheme = remoteURL.scheme?.lowercased(),
               scheme == "http" || scheme == "https" else {
             throw ForwardAttachmentSourceMaterializationError.invalidRemoteURL
         }
 
-        let session = URLSession(configuration: sessionConfiguration)
-        defer { session.finishTasksAndInvalidate() }
-        let (temporaryURL, response) = try await session.download(for: URLRequest(url: remoteURL))
+        let delegate = AttachmentOriginalDownloadDelegate(
+            expectedCiphertextBytes: expectedBytes,
+            sessionConfiguration: sessionConfiguration,
+            progress: progress
+        )
+        let (temporaryURL, response) = try await delegate.download(
+            request: URLRequest(url: remoteURL)
+        )
+        defer { try? fileManager.removeItem(at: temporaryURL) }
         guard let http = response as? HTTPURLResponse else {
             throw ForwardAttachmentSourceMaterializationError.invalidHTTPResponse
         }

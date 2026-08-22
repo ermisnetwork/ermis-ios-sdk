@@ -7,6 +7,136 @@ import CoreData
 import XCTest
 
 final class E2eeAttachmentOriginalDownloadCoordinatorTests: XCTestCase {
+#if DEBUG
+    override func tearDown() {
+        R2RangeProofURLProtocol.removeHandler()
+        super.tearDown()
+    }
+
+    func testDebugR2RangeProofRequiresExact206AndByteIdenticalBody() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("R2RangeProof-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localURL = root.appendingPathComponent("verified.cipher")
+        let canonical = Data((0..<200_000).map { UInt8($0 % 251) })
+        try canonical.write(to: localURL)
+        let range = try E2eeR2RangeProofVerifier.proofRange(
+            totalCiphertextSize: UInt64(canonical.count)
+        )
+        let expected = canonical.subdata(in: Int(range.lowerBound)..<Int(range.upperBound))
+        R2RangeProofURLProtocol.installHandler { request in
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "Range"),
+                "bytes=\(range.lowerBound)-\(range.upperBound - 1)"
+            )
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+            return .init(
+                statusCode: 206,
+                headers: [
+                    "Content-Length": String(expected.count),
+                    "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(canonical.count)"
+                ],
+                data: expected
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [R2RangeProofURLProtocol.self]
+
+        let result = try await E2eeR2RangeProofVerifier.verify(
+            grantURL: try XCTUnwrap(URL(string: "https://r2-proof.invalid/object")),
+            verifiedCiphertextURL: localURL,
+            totalCiphertextSize: UInt64(canonical.count),
+            sessionConfiguration: configuration
+        )
+
+        XCTAssertEqual(result.byteCount, Int(E2eeR2RangeProofVerifier.maximumProofBytes))
+    }
+
+    func testDebugR2RangeProofRejectsBodyMismatch() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("R2RangeProofMismatch-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localURL = root.appendingPathComponent("verified.cipher")
+        let canonical = Data(repeating: 7, count: 100_000)
+        try canonical.write(to: localURL)
+        let range = try E2eeR2RangeProofVerifier.proofRange(
+            totalCiphertextSize: UInt64(canonical.count)
+        )
+        let byteCount = Int(range.upperBound - range.lowerBound)
+        R2RangeProofURLProtocol.installHandler { _ in
+            .init(
+                statusCode: 206,
+                headers: [
+                    "Content-Length": String(byteCount),
+                    "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(canonical.count)"
+                ],
+                data: Data(repeating: 8, count: byteCount)
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [R2RangeProofURLProtocol.self]
+
+        do {
+            _ = try await E2eeR2RangeProofVerifier.verify(
+                grantURL: try XCTUnwrap(URL(string: "https://r2-proof.invalid/object")),
+                verifiedCiphertextURL: localURL,
+                totalCiphertextSize: UInt64(canonical.count),
+                sessionConfiguration: configuration
+            )
+            XCTFail("A same-length but non-identical Range body must fail closed")
+        } catch let error as E2eeR2RangeProofError {
+            XCTAssertEqual(error, .bodyMismatch)
+        }
+    }
+
+    func testDebugR2RangeProofRequiresExactTotalAndRunsOnce() async throws {
+        let gate = E2eeR2RangeProofGate(environment: [
+            E2eeR2RangeProofGate.environmentKey: "1"
+        ])
+        XCTAssertTrue(gate.claim())
+        XCTAssertFalse(gate.claim())
+        XCTAssertFalse(E2eeR2RangeProofGate(environment: [:]).claim())
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("R2RangeProofHeaders-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let localURL = root.appendingPathComponent("verified.cipher")
+        let canonical = Data(repeating: 9, count: 128)
+        try canonical.write(to: localURL)
+        let range = try E2eeR2RangeProofVerifier.proofRange(
+            totalCiphertextSize: UInt64(canonical.count)
+        )
+        R2RangeProofURLProtocol.installHandler { _ in
+            .init(
+                statusCode: 206,
+                headers: [
+                    "Content-Length": String(canonical.count),
+                    "Content-Range": "bytes \(range.lowerBound)-\(range.upperBound - 1)/*"
+                ],
+                data: canonical
+            )
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [R2RangeProofURLProtocol.self]
+
+        do {
+            _ = try await E2eeR2RangeProofVerifier.verify(
+                grantURL: try XCTUnwrap(URL(string: "https://r2-proof.invalid/object")),
+                verifiedCiphertextURL: localURL,
+                totalCiphertextSize: UInt64(canonical.count),
+                sessionConfiguration: configuration
+            )
+            XCTFail("A wildcard total is not an exact Content-Range proof")
+        } catch let error as E2eeR2RangeProofError {
+            XCTAssertEqual(error, .invalidContentRange)
+        }
+    }
+#endif
+
     func testSchedulerBoundsConcurrentDownloadsAndReleasesNextWaiter() async throws {
         let scheduler = E2eeAttachmentOriginalDownloadScheduler(maximumConcurrentDownloads: 1)
         let first = try await scheduler.acquire()
@@ -830,3 +960,53 @@ private final class LockedCounter: @unchecked Sendable {
         lock.unlock()
     }
 }
+
+#if DEBUG
+private final class R2RangeProofURLProtocol: URLProtocol {
+    struct Response {
+        let statusCode: Int
+        let headers: [String: String]
+        let data: Data
+    }
+
+    typealias Handler = @Sendable (URLRequest) -> Response
+
+    private static let handlerLock = NSLock()
+    private static var handler: Handler?
+
+    static func installHandler(_ handler: @escaping Handler) {
+        handlerLock.withLock { self.handler = handler }
+    }
+
+    static func removeHandler() {
+        handlerLock.withLock { handler = nil }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let handler = Self.handlerLock.withLock { Self.handler }
+        guard let handler, let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        let result = handler(request)
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: result.statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: result.headers
+        ) else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+            return
+        }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: result.data)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+#endif

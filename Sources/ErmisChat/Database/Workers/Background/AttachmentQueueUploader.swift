@@ -110,7 +110,7 @@ class AttachmentQueueUploader: Worker {
             let changes = observer.items.map { ListChange.insert($0, index: .init(item: 0, section: 0)) }
             handleChanges(changes: changes)
         } catch {
-            log.error("Failed to start Uploader worker. \(error)")
+            log.error("[ATTACHMENT_UPLOAD] state=observer_start_failed \(PrivacySafeLogMetadata.errorFields(error))")
         }
     }
 
@@ -257,7 +257,8 @@ class AttachmentQueueUploader: Worker {
     private func uploadStandardAttachment(with id: AttachmentId) {
         prepareAttachmentForUpload(with: id) { [weak self] attachment, error in
             guard error == nil else {
-                log.error("Attachment source preparation failed before standard upload: \(String(describing: error))")
+                let fields = error.map(PrivacySafeLogMetadata.errorFields) ?? "error_type=unknown error_domain=other error_code=0"
+                log.error("[ATTACHMENT_UPLOAD] state=source_prepare_failed \(fields)")
                 self?.updateAttachmentIfNeeded(attachmentId: id, uploadedAttachment: nil, newState: .uploadingFailed)
                 return
             }
@@ -595,7 +596,10 @@ class AttachmentQueueUploader: Worker {
         for attachment: AnyMessageAttachment
     ) -> [String: RawJSON] {
         var display: [String: RawJSON] = [
-            "size": .number(Double(attachment.uploadingState?.file.size ?? 0))
+            "size": .number(Double(attachment.uploadingState?.file.size ?? 0)),
+            // Sender intent is authenticated inside the manifest. Receivers must not turn a file
+            // attachment into an inline player merely because its original MIME starts with video/.
+            "attachment_type": .string(attachment.type.rawValue)
         ]
         if let title = attachment.title { display["name"] = .string(title) }
         if let mimeType = attachment.mimetype { display["mime_type"] = .string(mimeType) }
@@ -606,7 +610,6 @@ class AttachmentQueueUploader: Worker {
                   let duration = video.duration {
             display["duration"] = .number(duration)
         } else if let voice = attachment.attachment(payloadType: VoiceRecordingAttachmentPayload.self) {
-            display["attachment_type"] = .string("voiceRecording")
             if let duration = voice.duration {
                 display["duration"] = .number(duration)
             }
@@ -787,7 +790,7 @@ class AttachmentQueueUploader: Worker {
                     )
                 } catch {
                     log.error(
-                        "Could not copy attachment to local storage: \(error.localizedDescription)",
+                        "[ATTACHMENT_UPLOAD] state=source_copy_failed \(PrivacySafeLogMetadata.errorFields(error))",
                         subsystems: .offlineSupport
                     )
                     self.finishStandardSourcePreparation(
@@ -869,7 +872,10 @@ class AttachmentQueueUploader: Worker {
                 )
             } catch {
                 try? FileManager.default.removeItem(at: partialURL)
-                log.error("Photo asset copy failed: \(error.localizedDescription)", subsystems: .offlineSupport)
+                log.error(
+                    "[ATTACHMENT_UPLOAD] state=photo_copy_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .offlineSupport
+                )
                 self.finishStandardSourcePreparation(
                     completion: completion,
                     model: nil,
@@ -970,7 +976,7 @@ class AttachmentQueueUploader: Worker {
             }
         }, completion: {
             if let error = $0 {
-                log.error("Error changing localState for attachment with id \(attachmentId) to `\(newState)`: \(error)")
+                log.error("[ATTACHMENT_UPLOAD] state=local_state_persist_failed \(PrivacySafeLogMetadata.errorFields(error))")
             }
             completion()
         })
@@ -1073,7 +1079,7 @@ final class AttachmentStorage {
         do {
             try fileManager.createDirectory(at: self.baseURL, withIntermediateDirectories: true)
         } catch {
-            log.error("Could not create a directory to store attachments: \(error.localizedDescription)")
+            log.error("[ATTACHMENT_STORAGE] state=directory_create_failed \(PrivacySafeLogMetadata.errorFields(error))")
         }
     }
 

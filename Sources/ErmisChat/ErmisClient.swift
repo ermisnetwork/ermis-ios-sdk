@@ -643,7 +643,7 @@ public class ErmisClient {
     /// verified plaintext without invalidating one another.
     public func acquireAttachmentForViewing(
         _ attachment: AnyMessageAttachment,
-        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void = { _ in }
+        progress: @escaping @Sendable (AttachmentOriginalDownloadProgress) -> Void = { _ in }
     ) async throws -> E2eeAttachmentOriginalLease {
         try await e2eeAttachmentOriginalDownloadCoordinator.localOriginalLease(
             for: attachment,
@@ -690,6 +690,42 @@ public class ErmisClient {
         log.info(
             "[ATTACHMENT_FORWARD] stage=source_materialization state=remote_download_completed"
         )
+        return lease
+    }
+
+    /// Streams a standard/legacy HTTP(S) attachment into a lease-owned protected local file.
+    /// This is the non-E2EE counterpart of `acquireAttachmentForViewing`: it reports byte
+    /// progress but performs no frame-GCM work, and never materializes the whole file as `Data`.
+    public func acquireStandardAttachmentForDownload(
+        _ attachment: AnyMessageAttachment,
+        progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void = { _ in }
+    ) async throws -> E2eeAttachmentOriginalLease {
+        guard !requiresVerifiedE2eeOriginal(attachment),
+              let sourceURL = attachment.remoteURL else {
+            throw ForwardAttachmentSourceMaterializationError.invalidRemoteURL
+        }
+        if sourceURL.isFileURL {
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw ForwardAttachmentSourceMaterializationError.downloadedFileUnavailable
+            }
+            return E2eeAttachmentOriginalLease(localURL: sourceURL, releaseHandler: {})
+        }
+
+        let expectedBytes = attachment
+            .attachment(payloadType: FileAttachmentPayload.self)
+            .map { UInt64(clamping: $0.payload.file.size) }
+            ?? 0
+        log.info("[STANDARD_FILE_DOWNLOAD] state=started")
+        let lease = try await ForwardAttachmentRemoteSourceMaterializer(
+            maximumBytes: config.maxAttachmentSize
+        ).materialize(
+            remoteURL: sourceURL,
+            preferredFileExtension: ForwardAttachmentRemoteSourceMaterializer
+                .preferredFileExtension(for: attachment),
+            expectedBytes: expectedBytes,
+            progress: progress
+        )
+        log.info("[STANDARD_FILE_DOWNLOAD] state=completed")
         return lease
     }
 

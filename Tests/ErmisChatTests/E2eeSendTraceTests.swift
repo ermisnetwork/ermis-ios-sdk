@@ -9,6 +9,7 @@ final class E2eeSendTraceTests: XCTestCase {
             messageId: "message-1",
             cid: cid,
             groupCid: "team:project:parent-1",
+            traceSequence: 7,
             startedAtNanoseconds: E2eeSendTrace.nowNanoseconds()
         )
 
@@ -26,9 +27,10 @@ final class E2eeSendTraceTests: XCTestCase {
 
         XCTAssertTrue(line.hasPrefix("[E2EE_SEND] "))
         XCTAssertTrue(line.contains("stage=mls_create_succeeded"))
-        XCTAssertTrue(line.contains("message_id=message-1"))
-        XCTAssertTrue(line.contains("cid=team:project:channel-1"))
-        XCTAssertTrue(line.contains("group_cid=team:project:parent-1"))
+        XCTAssertTrue(line.contains("trace_seq=7"))
+        XCTAssertFalse(line.contains("message-1"))
+        XCTAssertFalse(line.contains("team:project:channel-1"))
+        XCTAssertFalse(line.contains("team:project:parent-1"))
         XCTAssertTrue(line.contains("epoch=12"))
         XCTAssertTrue(line.contains("payload_bytes=24"))
         XCTAssertTrue(line.contains("ciphertext_bytes=96"))
@@ -44,6 +46,7 @@ final class E2eeSendTraceTests: XCTestCase {
         let context = E2eeSendTrace.Context(
             messageId: "message-1",
             cid: cid,
+            traceSequence: 8,
             startedAtNanoseconds: E2eeSendTrace.nowNanoseconds()
         )
         let sensitiveMarker = "SECRET_PLAINTEXT_AND_SERVER_MESSAGE"
@@ -59,8 +62,11 @@ final class E2eeSendTraceTests: XCTestCase {
             error: error
         )
 
-        XCTAssertTrue(line.contains("error_domain=network.ermis.send"))
+        XCTAssertTrue(line.contains("error_domain=other"))
         XCTAssertTrue(line.contains("error_code=-42"))
+        XCTAssertFalse(line.contains("network.ermis.send"))
+        XCTAssertFalse(line.contains("message-1"))
+        XCTAssertFalse(line.contains("team:project:channel-1"))
         XCTAssertFalse(line.contains(sensitiveMarker))
         XCTAssertFalse(line.localizedCaseInsensitiveContains("plaintext"))
         XCTAssertFalse(line.localizedCaseInsensitiveContains("ciphertext="))
@@ -73,6 +79,7 @@ final class E2eeSendTraceTests: XCTestCase {
         let context = E2eeSendTrace.Context(
             messageId: "message-1",
             cid: cid,
+            traceSequence: 9,
             startedAtNanoseconds: E2eeSendTrace.nowNanoseconds()
         )
         let sensitiveMarker = "SECRET_SERVER_RESPONSE_MESSAGE"

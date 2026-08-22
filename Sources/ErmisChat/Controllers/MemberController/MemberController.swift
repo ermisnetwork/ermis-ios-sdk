@@ -145,7 +145,7 @@ public class ChannelMemberController: DataController, DelegateCallable, DataStor
             try memberObserver.startObserving()
             state = .localDataFetched
         } catch {
-            log.error("Observing member with id <\(userId)> failed: \(error). Accessing `member` will always return `nil`")
+            log.error("[MEMBER] state=observer_start_failed \(PrivacySafeLogMetadata.errorFields(error))")
             state = .localDataFetchFailed(ClientError(with: error))
         }
     }

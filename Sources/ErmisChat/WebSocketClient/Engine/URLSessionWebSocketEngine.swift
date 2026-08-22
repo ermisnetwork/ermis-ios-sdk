@@ -77,7 +77,10 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
     func sendPing() {
         task?.send(.string(""), completionHandler: { error in
             if let error = error {
-                log.error(error.localizedDescription)
+                log.error(
+                    "[WebSocket] state=connect_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                    subsystems: .webSocket
+                )
             }
         })
     }
@@ -100,9 +103,15 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
 
             case let .failure(error):
                 if error.isSocketNotConnectedError {
-                    log.debug("Web Socket got disconnected with error: \(error)", subsystems: .webSocket)
+                    log.debug(
+                        "[WebSocket] state=disconnected \(PrivacySafeLogMetadata.errorFields(error))",
+                        subsystems: .webSocket
+                    )
                 } else {
-                    log.error("Failed receiving Web Socket Message with error: \(error)", subsystems: .webSocket)
+                    log.error(
+                        "[WebSocket] state=receive_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                        subsystems: .webSocket
+                    )
                 }
             }
         }

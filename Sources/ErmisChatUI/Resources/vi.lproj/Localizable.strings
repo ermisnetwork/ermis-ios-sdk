@@ -106,6 +106,22 @@
 "message.actions.download.success-title" = "Tải về thành công.";
 /// Shown as a text in the popup when downloading message failure.
 "message.actions.download.failure-title" = "Không thể tải xuống";
+/// Shown beside a file while its verified original is downloading.
+"message.actions.download.in-progress" = "Đang tải xuống";
+/// Shown after ciphertext download while attachment integrity is checked.
+"message.actions.download.verifying" = "Đang xác minh…";
+/// Shown when protected data is unavailable after verified ciphertext download.
+"message.actions.download.waiting-for-unlock" = "Đang chờ mở khóa…";
+/// Shown while the verified attachment is decrypted to protected temporary storage.
+"message.actions.download.decrypting" = "Đang giải mã…";
+/// Shown while the system Files destination picker is presented.
+"message.actions.download.choosing-destination" = "Chọn nơi lưu…";
+/// Shown after a file has been exported to the selected Files destination.
+"message.actions.download.saved" = "Đã lưu";
+/// Accessibility label for reopening the selected destination in Files.
+"message.actions.download.show-in-files" = "Mở thư mục";
+/// Starts a new verified download and asks for another destination.
+"message.actions.download.again" = "Tải lại vào nơi khác";
 /// Shown in the message actions popup for the copy message action.
 "message.actions.copy" = "Sao chép";
 /// Shown as a text in the popup when copying message success.
@@ -367,6 +383,18 @@
 "composer.picker.camera" = "Máy ảnh";
 /// Text for the cancel button in the attachment picker in the composer.
 "composer.picker.cancel" = "Hủy";
+/// Tiêu đề hiển thị sau khi chọn tài liệu có vẻ là video từ Tệp.
+"composer.picker.document-video-title" = "Gửi video đã chọn";
+/// Giải thích rằng đường Tệp giữ nguyên ngữ nghĩa tài liệu nếu người dùng không chọn phát video.
+"composer.picker.document-video-message" = "Gửi dưới dạng tệp để chỉ tải xuống, hoặc dưới dạng video để phát trực tiếp trong tin nhắn.";
+/// Gửi tài liệu giống video mà không tạo xem trước hoặc trình phát.
+"composer.picker.send-as-file" = "Gửi dưới dạng tệp";
+/// Yêu cầu phát video sau khi kiểm tra tương thích với trình phát hệ thống.
+"composer.picker.send-as-video" = "Gửi dưới dạng video";
+/// Tiêu đề khi AVFoundation không phát được tài liệu đã chọn.
+"composer.picker.video-unsupported-title" = "Định dạng video chưa được hỗ trợ";
+/// Giải thích phương án an toàn cho container hoặc codec không được trình phát hệ thống hỗ trợ.
+"composer.picker.video-unsupported-message" = "Thiết bị này không phát được container hoặc codec đã chọn. Bạn vẫn có thể gửi tệp gốc để người nhận tải xuống.";
 /// Text for location item title in menu.
 "composer.menu.location" = "Vị trí";
 /// Text for share file item title in menu.

@@ -529,7 +529,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
                 case .success:
                     self?.callback { completion?(nil) }
                 case let .failure(error):
-                    log.error("Not able to load message around messageId: \(messageId). Error: \(error)")
+                    log.error("[CHANNEL] state=load_around_message_failed \(PrivacySafeLogMetadata.errorFields(error))")
                     self?.callback { completion?(error) }
                 }
             }
@@ -865,7 +865,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
         /// Perform action only if channel is already created on backend side and have a valid `cid`.
         guard let channel = channel else {
             let error = ClientError.ChannelNotCreatedYet()
-            log.error(error.localizedDescription)
+            log.error("[CHANNEL] state=mark_unread_blocked \(PrivacySafeLogMetadata.errorFields(error))")
             callback {
                 completion?(.failure(error))
             }
@@ -1575,7 +1575,7 @@ private extension ChannelController {
     /// ie. VCs should use the `are{FEATURE_NAME}Enabled` props (ie. `areReadEventsEnabled`) before using any feature
     private func channelFeatureDisabled(feature: String, completion: ((Error?) -> Void)?) {
         let error = ClientError.ChannelFeatureDisabled("Channel feature: \(feature) is disabled for this channel.")
-        log.error(error.localizedDescription)
+        log.error("[CHANNEL] state=feature_disabled")
         callback {
             completion?(error)
         }
@@ -1585,7 +1585,7 @@ private extension ChannelController {
     // So before any modification attempt we need to check if channel is already created and call this function if not.
     private func channelModificationFailed(_ completion: ((Error?) -> Void)?) {
         let error = ClientError.ChannelNotCreatedYet()
-        log.error(error.localizedDescription)
+        log.error("[CHANNEL] state=modification_blocked reason=not_created")
         callback {
             completion?(error)
         }

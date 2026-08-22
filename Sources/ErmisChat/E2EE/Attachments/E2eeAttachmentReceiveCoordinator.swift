@@ -600,6 +600,7 @@ final class E2eeAttachmentReceiveCoordinator {
         let width = display["width"]?.numberValue
         let height = display["height"]?.numberValue
         let duration = display["duration"]?.numberValue
+        let explicitType = display["attachment_type"]?.stringValue
         let file = AttachmentFile(
             type: AttachmentFileType(mimeType: mimeType ?? "application/octet-stream"),
             size: Int64(clamping: original.plaintextSize ?? 0),
@@ -633,7 +634,16 @@ final class E2eeAttachmentReceiveCoordinator {
             )
             data = try JSONEncoder.ermis.encode(payload)
             type = .voiceRecording
-        } else if mimeType?.hasPrefix("video/") == true {
+        } else if explicitType == AttachmentType.file.rawValue {
+            let payload = FileAttachmentPayload(
+                title: title,
+                assetRemoteURL: opaqueURL,
+                file: file
+            )
+            data = try JSONEncoder.ermis.encode(payload)
+            type = .file
+        } else if explicitType == AttachmentType.video.rawValue
+                    || (explicitType == nil && mimeType?.hasPrefix("video/") == true) {
             var payload = VideoAttachmentPayload(
                 title: title,
                 videoRemoteURL: opaqueURL,
@@ -644,7 +654,8 @@ final class E2eeAttachmentReceiveCoordinator {
             payload.duration = duration
             data = try JSONEncoder.ermis.encode(payload)
             type = .video
-        } else if mimeType?.hasPrefix("image/") == true {
+        } else if explicitType == AttachmentType.image.rawValue
+                    || (explicitType == nil && mimeType?.hasPrefix("image/") == true) {
             let payload = ImageAttachmentPayload(
                 title: title,
                 imageRemoteURL: opaqueURL,

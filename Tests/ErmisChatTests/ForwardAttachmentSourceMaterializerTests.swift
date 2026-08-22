@@ -27,15 +27,22 @@ final class ForwardAttachmentSourceMaterializerTests: XCTestCase {
             .appendingPathComponent("forward-materializer-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let materializer = makeMaterializer(rootURL: root, maximumBytes: 1_024)
+        let progressRecorder = ForwardAttachmentProgressRecorder()
 
         let lease = try await materializer.materialize(
             remoteURL: try XCTUnwrap(URL(string: "https://cdn.example.test/movie.mp4")),
-            preferredFileExtension: "mp4"
+            preferredFileExtension: "mp4",
+            expectedBytes: UInt64(bytes.count),
+            progress: { progressRecorder.append($0) }
         )
 
         XCTAssertTrue(lease.localURL.isFileURL)
         XCTAssertEqual(lease.localURL.pathExtension, "mp4")
         XCTAssertEqual(try Data(contentsOf: lease.localURL), bytes)
+        let finalProgress = try XCTUnwrap(progressRecorder.values.last)
+        XCTAssertEqual(finalProgress.phase, .downloading)
+        XCTAssertEqual(finalProgress.completedCiphertextBytes, UInt64(bytes.count))
+        XCTAssertEqual(finalProgress.totalCiphertextBytes, UInt64(bytes.count))
         var metadata = AnyAttachmentLocalMetadata()
         metadata.mimeType = "video/mp4"
         let uploadPayload = try AnyAttachmentPayload(
@@ -121,6 +128,23 @@ final class ForwardAttachmentSourceMaterializerTests: XCTestCase {
             rootURL: rootURL,
             maximumBytes: maximumBytes
         )
+    }
+}
+
+private final class ForwardAttachmentProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [AttachmentOriginalDownloadProgress] = []
+
+    var values: [AttachmentOriginalDownloadProgress] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ progress: AttachmentOriginalDownloadProgress) {
+        lock.lock()
+        storage.append(progress)
+        lock.unlock()
     }
 }
 

@@ -133,7 +133,7 @@ public class ChatUserController: DataController, DelegateCallable, DataStoreProv
             try userObserver.startObserving()
             state = .localDataFetched
         } catch {
-            log.error("Observing user with id <\(userId)> failed: \(error). Accessing `user` will always return `nil`")
+            log.error("[USER] state=observer_start_failed \(PrivacySafeLogMetadata.errorFields(error))")
             state = .localDataFetchFailed(ClientError(with: error))
         }
     }

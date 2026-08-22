@@ -5,6 +5,7 @@
 import Foundation
 import UIKit
 import Photos
+import UniformTypeIdentifiers
 /// A class for save donwloaded attachment.
 public class AttachmentSaver: NSObject, UIDocumentPickerDelegate {
     let client: ErmisClient
@@ -13,7 +14,7 @@ public class AttachmentSaver: NSObject, UIDocumentPickerDelegate {
     let downloadPath = "downloads"
     let fileManager = FileManager.default
     private weak var verifiedDocumentPicker: UIDocumentPickerViewController?
-    private var verifiedDocumentPickerCompletion: ((Error?) -> Void)?
+    private var verifiedDocumentPickerCompletion: ((Result<[URL], Error>) -> Void)?
 
     init(client: ErmisClient, presenttingViewController: UIViewController) {
         self.client = client
@@ -80,6 +81,67 @@ public class AttachmentSaver: NSObject, UIDocumentPickerDelegate {
         completion: @escaping (Error?) -> Void
     ) {
         saveVerifiedAttachments([(localURL, attachment)], completion: completion)
+    }
+
+    /// Asks the user for a Files directory before an explicit file download begins. iOS labels
+    /// this folder-selection action Open; the public picker API does not provide a custom label.
+    public func chooseVerifiedFileExportDirectory(
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        presentVerifiedDocumentPicker(
+            picker: UIDocumentPickerViewController(
+                forOpeningContentTypes: [.folder],
+                asCopy: false
+            )
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard let directory = urls.first else {
+                    completion(.failure(ClientError.Unexpected("The export directory is unavailable.")))
+                    return
+                }
+                completion(.success(directory))
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    /// Copies one already-downloaded local file into a previously selected Files directory.
+    ///
+    /// The destination receives a sibling partial first and exposes the final filename only after
+    /// the copy succeeds, so download/decrypt failure cannot leave a corrupt user-visible file.
+    public func exportDownloadedFile(
+        at localURL: URL,
+        attachment: AnyMessageAttachment,
+        to directoryURL: URL,
+        completion: @escaping (Result<URL, Error>) -> Void
+    ) {
+        guard attachment.type != .image,
+              attachment.type != .video,
+              localURL.isFileURL,
+              directoryURL.isFileURL,
+              fileManager.fileExists(atPath: localURL.path) else {
+            completion(.failure(ClientError.Unexpected("Downloaded attachment file is unavailable.")))
+            return
+        }
+
+        operationQueue.addOperation { [weak self] in
+            guard let self else {
+                DispatchQueue.main.async { completion(.failure(CancellationError())) }
+                return
+            }
+            do {
+                let destination = try self.copyVerifiedFile(
+                    at: localURL,
+                    attachment: attachment,
+                    to: directoryURL
+                )
+                self.callback { completion(.success(destination)) }
+            } catch {
+                self.callback { completion(.failure(error)) }
+            }
+        }
     }
 
     private func downloadVerifiedAttachments(
@@ -182,24 +244,83 @@ public class AttachmentSaver: NSObject, UIDocumentPickerDelegate {
         urls: [URL],
         completion: @escaping (Error?) -> Void
     ) {
+        presentVerifiedDocumentPicker(
+            picker: UIDocumentPickerViewController(forExporting: urls, asCopy: true)
+        ) { result in
+            switch result {
+            case .success:
+                completion(nil)
+            case .failure(let error):
+                completion(error)
+            }
+        }
+    }
+
+    private func presentVerifiedDocumentPicker(
+        picker: UIDocumentPickerViewController,
+        completion: @escaping (Result<[URL], Error>) -> Void
+    ) {
         DispatchQueue.main.async { [weak self] in
             guard let self else {
-                completion(CancellationError())
+                completion(.failure(CancellationError()))
                 return
             }
             guard self.verifiedDocumentPickerCompletion == nil else {
-                completion(ClientError.Unexpected("An attachment export is already active."))
+                completion(.failure(ClientError.Unexpected("An attachment export is already active.")))
                 return
             }
-            let picker = UIDocumentPickerViewController(forExporting: urls, asCopy: true)
             picker.delegate = self
             self.verifiedDocumentPicker = picker
             self.verifiedDocumentPickerCompletion = completion
             log.info(
                 "[ATTACHMENT_EXPORT] route=verified_e2ee state=presenting_document_picker " +
-                "file_count=\(urls.count)"
+                "mode=\(picker.allowsMultipleSelection ? "multiple" : "single")"
             )
             self.presenttingViewController.present(picker, animated: true)
+        }
+    }
+
+    private func copyVerifiedFile(
+        at sourceURL: URL,
+        attachment: AnyMessageAttachment,
+        to directoryURL: URL
+    ) throws -> URL {
+        let payload = attachment.attachment(payloadType: FileAttachmentPayload.self)?.payload
+        let authenticatedName = payload?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sourceExtension = sourceURL.pathExtension
+        var fileName = authenticatedName.flatMap { $0.isEmpty ? nil : $0 }
+            ?? sourceURL.lastPathComponent
+        fileName = URL(fileURLWithPath: fileName).lastPathComponent
+        if fileName.isEmpty || fileName == "." || fileName == ".." {
+            fileName = sourceExtension.isEmpty ? "Attachment" : "Attachment.\(sourceExtension)"
+        } else if URL(fileURLWithPath: fileName).pathExtension.isEmpty,
+                  !sourceExtension.isEmpty {
+            fileName += ".\(sourceExtension)"
+        }
+
+        let baseName = (fileName as NSString).deletingPathExtension
+        let pathExtension = (fileName as NSString).pathExtension
+        var destinationURL = directoryURL.appendingPathComponent(fileName, isDirectory: false)
+        var suffix = 1
+        while fileManager.fileExists(atPath: destinationURL.path) {
+            let candidate = pathExtension.isEmpty
+                ? "\(baseName) (\(suffix))"
+                : "\(baseName) (\(suffix)).\(pathExtension)"
+            destinationURL = directoryURL.appendingPathComponent(candidate, isDirectory: false)
+            suffix += 1
+        }
+
+        let partialURL = directoryURL.appendingPathComponent(
+            ".ermis-\(UUID().uuidString).partial",
+            isDirectory: false
+        )
+        do {
+            try fileManager.copyItem(at: sourceURL, to: partialURL)
+            try fileManager.moveItem(at: partialURL, to: destinationURL)
+            return destinationURL
+        } catch {
+            try? fileManager.removeItem(at: partialURL)
+            throw error
         }
     }
 
@@ -372,24 +493,24 @@ public class AttachmentSaver: NSObject, UIDocumentPickerDelegate {
     // MARK: - UIDocumentPickerDelegate
     public func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
         guard controller === verifiedDocumentPicker else { return }
-        finishVerifiedDocumentExport(with: CancellationError())
+        finishVerifiedDocumentExport(with: .failure(CancellationError()))
     }
 
     public func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
         guard controller === verifiedDocumentPicker else { return }
-        finishVerifiedDocumentExport(with: nil)
+        finishVerifiedDocumentExport(with: .success(urls))
     }
 
     public func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentAt url: URL) {
         guard controller === verifiedDocumentPicker else { return }
-        finishVerifiedDocumentExport(with: nil)
+        finishVerifiedDocumentExport(with: .success([url]))
     }
 
-    private func finishVerifiedDocumentExport(with error: Error?) {
+    private func finishVerifiedDocumentExport(with result: Result<[URL], Error>) {
         let completion = verifiedDocumentPickerCompletion
         verifiedDocumentPicker = nil
         verifiedDocumentPickerCompletion = nil
-        completion?(error)
+        completion?(result)
     }
 }
 

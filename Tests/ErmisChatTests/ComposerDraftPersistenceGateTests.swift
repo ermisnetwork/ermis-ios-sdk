@@ -62,4 +62,28 @@ final class ComposerDraftPersistenceGateTests: XCTestCase {
         XCTAssertEqual(url.lastPathComponent, "IMG_2831.MOV")
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
+
+    func testFilesRecognizesBroadVideoCandidatesWithoutClaimingNativePlayback() {
+        for name in ["clip.mp4", "clip.mov", "clip.mkv", "clip.webm", "clip.hevc", "clip.h265"] {
+            XCTAssertTrue(
+                ComposerDocumentVideoRouting.isVideoCandidate(URL(fileURLWithPath: "/tmp/\(name)")),
+                name
+            )
+        }
+        XCTAssertFalse(
+            ComposerDocumentVideoRouting.isVideoCandidate(URL(fileURLWithPath: "/tmp/document.pdf"))
+        )
+    }
+
+    func testInvalidMkvCandidateCannotEnterNativeVideoLane() async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mkv")
+        try Data([0, 1, 2, 3]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        XCTAssertTrue(ComposerDocumentVideoRouting.isVideoCandidate(url))
+        let isPlayable = await ComposerDocumentVideoRouting.isNativelyPlayable(url, timeout: 1)
+        XCTAssertFalse(isPlayable)
+    }
 }

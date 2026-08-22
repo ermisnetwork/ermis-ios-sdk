@@ -276,9 +276,12 @@ extension Array where Element == EventPayload {
                 return try $0.event()
             } catch {
                 if error is ClientError.IgnoredEventType {
-                    log.info("Skipping unsupported event type: \($0.eventType)")
+                    log.info("[WebSocket] state=unsupported_event_skipped")
                 } else {
-                    log.error("Failed to decode event from event payload: \($0), error: \(error)")
+                    log.error(
+                        "[WebSocket] state=event_decode_failed "
+                            + PrivacySafeLogMetadata.errorFields(error)
+                    )
                 }
                 return nil
             }

@@ -44,7 +44,7 @@ class UserUpdater: Worker {
                         try session.saveUser(payload: user, projectId: projectId)
                     }, completion: { error in
                         if let error = error {
-                            log.error("Failed to save user with id: <\(userId)> to the database. Error: \(error)")
+                            log.error("[USER] state=persist_failed \(PrivacySafeLogMetadata.errorFields(error))")
                         }
                         completion?(error)
                     })

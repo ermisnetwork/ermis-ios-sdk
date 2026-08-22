@@ -107,6 +107,13 @@ final class VoiceRecordingAttachmentItemViewTests: XCTestCase {
 
         XCTAssertFalse(preview.durationLabel.isHidden)
         XCTAssertEqual(preview.durationLabel.text, DefaultVideoDurationFormatter().format(24))
+        XCTAssertTrue(preview.loadingIndicator.isHidden)
+        XCTAssertNil(preview.imageView.image)
+        XCTAssertNotNil(preview.imageView.backgroundColor)
+        XCTAssertEqual(preview.imageView.layer.cornerRadius, 12)
+        XCTAssertEqual(preview.imageView.layer.borderWidth, 1)
+        XCTAssertNotNil(preview.imageView.layer.borderColor)
+        XCTAssertTrue(preview.playButton.isVisible)
     }
 
     private func makeAttachment(url: URL) throws -> MessageVoiceRecordingAttachment {

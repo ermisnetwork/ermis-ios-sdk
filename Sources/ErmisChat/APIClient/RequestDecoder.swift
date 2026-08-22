@@ -44,7 +44,6 @@ struct DefaultRequestDecoder: RequestDecoder {
             throw ClientError.Unexpected("Expected an HTTP response.")
         }
 
-//        log.debug("URL request response: \(httpResponse), data:\n\(data.debugPrettyPrintedJSON))", subsystems: .httpRequests)
         // Handler ermis api error.
         if let ermisErrorPayload = try? JSONDecoder.default.decode(ErmisErrorPayload.self, from: data) {
             let ermisApiError: ErmisApiError

@@ -7,7 +7,6 @@ import ErmisShared
 
 private struct ElementWrapper<T: Decodable>: Decodable {
     let value: T?
-    var rawJSON: [String: RawJSON]?
     var error: Error?
     init(from decoder: Decoder) throws {
         do {
@@ -15,8 +14,6 @@ private struct ElementWrapper<T: Decodable>: Decodable {
         } catch {
             value = nil
             self.error = error
-            // We decode the payload as RawJSON to be able to display the payload in case of error
-            rawJSON = try? [String: RawJSON](from: decoder)
         }
     }
 }
@@ -43,13 +40,11 @@ extension KeyedDecodingContainer {
     }
 
     private func logError<T: Decodable>(forWrapper wrapper: ElementWrapper<T>) {
-        let rawJSONPrettyPrinted = (try? JSONEncoder.default.encode(wrapper.rawJSON))?.debugPrettyPrintedJSON
-            ?? String(describing: wrapper.rawJSON)
-        var errorDescription = String(describing: wrapper.error)
-        if let error = wrapper.error as? DecodingError {
-            errorDescription = error.prettyPrintedDescription
-        }
-        log.error("Failed to decode \(T.self) in array: \(rawJSONPrettyPrinted), error: \(errorDescription)")
+        guard let error = wrapper.error else { return }
+        log.error(
+            "[DECODING] state=array_element_failed model=\(T.self) "
+                + PrivacySafeLogMetadata.errorFields(error)
+        )
     }
 }
 

@@ -131,7 +131,7 @@ struct E2eeRangeMediaDescription: Equatable, Sendable {
 
 /// Lock-backed because grant, URLSession and AVFoundation callbacks arrive on different executors.
 /// The snapshot and log line intentionally contain counters and fixed categories only.
-enum E2eeRangeStreamingTransportClass: Sendable {
+enum E2eeRangeStreamingTransportClass: String, Sendable {
     case priority
     case continuation
 }
@@ -143,6 +143,18 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
         var rangeRequests = 0
         var priorityTransportRequests = 0
         var continuationTransportRequests = 0
+        var maximumPriorityGrantWaitMilliseconds = 0
+        var maximumContinuationGrantWaitMilliseconds = 0
+        var maximumPriorityHeaderLatencyMilliseconds = 0
+        var maximumContinuationHeaderLatencyMilliseconds = 0
+        var maximumPriorityFirstChunkLatencyMilliseconds = 0
+        var maximumContinuationFirstChunkLatencyMilliseconds = 0
+        var maximumPriorityTransportLatencyMilliseconds = 0
+        var maximumContinuationTransportLatencyMilliseconds = 0
+        var maximumActivePriorityTransports = 0
+        var maximumActiveContinuationTransports = 0
+        var maximumPriorityCiphertextRequestBytes = 0
+        var maximumContinuationCiphertextRequestBytes = 0
         var connectivityWaitCount = 0
         var unauthorizedResponseCount = 0
         var ciphertextBytes = 0
@@ -181,6 +193,8 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var value = Snapshot()
+    private var activePriorityTransports = 0
+    private var activeContinuationTransports = 0
 
     func recordGrantEvent(_ event: E2eeRangeStreamingGrantStoreEvent) {
         lock.withLock {
@@ -210,6 +224,133 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
                 value.priorityTransportRequests += 1
             case .continuation:
                 value.continuationTransportRequests += 1
+            }
+        }
+    }
+
+    func recordGrantWait(
+        transport: E2eeRangeStreamingTransportClass,
+        latency: TimeInterval
+    ) {
+        let milliseconds = Self.milliseconds(latency)
+        lock.withLock {
+            switch transport {
+            case .priority:
+                value.maximumPriorityGrantWaitMilliseconds = max(
+                    value.maximumPriorityGrantWaitMilliseconds,
+                    milliseconds
+                )
+            case .continuation:
+                value.maximumContinuationGrantWaitMilliseconds = max(
+                    value.maximumContinuationGrantWaitMilliseconds,
+                    milliseconds
+                )
+            }
+        }
+    }
+
+    func recordTransportStarted(
+        transport: E2eeRangeStreamingTransportClass,
+        ciphertextBytes: UInt64
+    ) {
+        let bytes = Int(clamping: ciphertextBytes)
+        lock.withLock {
+            switch transport {
+            case .priority:
+                activePriorityTransports += 1
+                value.maximumActivePriorityTransports = max(
+                    value.maximumActivePriorityTransports,
+                    activePriorityTransports
+                )
+                value.maximumPriorityCiphertextRequestBytes = max(
+                    value.maximumPriorityCiphertextRequestBytes,
+                    bytes
+                )
+            case .continuation:
+                activeContinuationTransports += 1
+                value.maximumActiveContinuationTransports = max(
+                    value.maximumActiveContinuationTransports,
+                    activeContinuationTransports
+                )
+                value.maximumContinuationCiphertextRequestBytes = max(
+                    value.maximumContinuationCiphertextRequestBytes,
+                    bytes
+                )
+            }
+        }
+    }
+
+    func recordTransportHeader(
+        transport: E2eeRangeStreamingTransportClass,
+        latency: TimeInterval
+    ) {
+        let milliseconds = Self.milliseconds(latency)
+        lock.withLock {
+            switch transport {
+            case .priority:
+                value.maximumPriorityHeaderLatencyMilliseconds = max(
+                    value.maximumPriorityHeaderLatencyMilliseconds,
+                    milliseconds
+                )
+            case .continuation:
+                value.maximumContinuationHeaderLatencyMilliseconds = max(
+                    value.maximumContinuationHeaderLatencyMilliseconds,
+                    milliseconds
+                )
+            }
+        }
+        log.info(
+            "[E2EE_RANGE_PLAYBACK] state=transport_header transport=\(transport.rawValue) "
+                + "latency_ms=\(milliseconds)",
+            subsystems: .mls
+        )
+    }
+
+    func recordTransportFirstChunk(
+        transport: E2eeRangeStreamingTransportClass,
+        latency: TimeInterval
+    ) {
+        let milliseconds = Self.milliseconds(latency)
+        lock.withLock {
+            switch transport {
+            case .priority:
+                value.maximumPriorityFirstChunkLatencyMilliseconds = max(
+                    value.maximumPriorityFirstChunkLatencyMilliseconds,
+                    milliseconds
+                )
+            case .continuation:
+                value.maximumContinuationFirstChunkLatencyMilliseconds = max(
+                    value.maximumContinuationFirstChunkLatencyMilliseconds,
+                    milliseconds
+                )
+            }
+        }
+        log.info(
+            "[E2EE_RANGE_PLAYBACK] state=transport_first_chunk transport=\(transport.rawValue) "
+                + "latency_ms=\(milliseconds)",
+            subsystems: .mls
+        )
+    }
+
+    func recordTransportCompleted(
+        transport: E2eeRangeStreamingTransportClass,
+        latency: TimeInterval
+    ) {
+        let milliseconds = Self.milliseconds(latency)
+        lock.withLock {
+            switch transport {
+            case .priority:
+                activePriorityTransports = max(0, activePriorityTransports - 1)
+                value.maximumPriorityTransportLatencyMilliseconds = max(
+                    value.maximumPriorityTransportLatencyMilliseconds,
+                    milliseconds
+                )
+            case .continuation:
+                activeContinuationTransports = max(0, activeContinuationTransports - 1)
+                value.maximumContinuationTransportLatencyMilliseconds = max(
+                    value.maximumContinuationTransportLatencyMilliseconds,
+                    milliseconds
+                )
             }
         }
     }
@@ -396,6 +537,18 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
             + "renewals=\(snapshot.grantRenewalRequests) range_requests=\(snapshot.rangeRequests) "
             + "priority_transport_requests=\(snapshot.priorityTransportRequests) "
             + "continuation_transport_requests=\(snapshot.continuationTransportRequests) "
+            + "priority_grant_wait_ms=\(snapshot.maximumPriorityGrantWaitMilliseconds) "
+            + "continuation_grant_wait_ms=\(snapshot.maximumContinuationGrantWaitMilliseconds) "
+            + "priority_header_ms=\(snapshot.maximumPriorityHeaderLatencyMilliseconds) "
+            + "continuation_header_ms=\(snapshot.maximumContinuationHeaderLatencyMilliseconds) "
+            + "priority_first_chunk_ms=\(snapshot.maximumPriorityFirstChunkLatencyMilliseconds) "
+            + "continuation_first_chunk_ms=\(snapshot.maximumContinuationFirstChunkLatencyMilliseconds) "
+            + "priority_transport_ms=\(snapshot.maximumPriorityTransportLatencyMilliseconds) "
+            + "continuation_transport_ms=\(snapshot.maximumContinuationTransportLatencyMilliseconds) "
+            + "max_active_priority_transports=\(snapshot.maximumActivePriorityTransports) "
+            + "max_active_continuation_transports=\(snapshot.maximumActiveContinuationTransports) "
+            + "max_priority_cipher_request_bytes=\(snapshot.maximumPriorityCiphertextRequestBytes) "
+            + "max_continuation_cipher_request_bytes=\(snapshot.maximumContinuationCiphertextRequestBytes) "
             + "connectivity_waits=\(snapshot.connectivityWaitCount) "
             + "unauthorized_responses=\(snapshot.unauthorizedResponseCount) "
             + "ciphertext_bytes=\(snapshot.ciphertextBytes) cache_hit_bytes=\(snapshot.cacheHitBytes) "
@@ -428,6 +581,10 @@ final class E2eeRangeStreamingTelemetry: @unchecked Sendable {
             + "media_type_source=\(snapshot.mediaTypeSource.rawValue) "
             + "media_container=\(snapshot.mediaContainer.rawValue) "
             + "fallbacks=\(snapshot.fallbackCount) fallback_reason=\(fallback)"
+    }
+
+    private static func milliseconds(_ latency: TimeInterval) -> Int {
+        max(0, Int((latency * 1_000).rounded()))
     }
 }
 
@@ -527,24 +684,50 @@ private final class E2eeRangeStreamingSessionDelegate: NSObject, URLSessionDataD
         let task: URLSessionDataTask
     }
 
-    private let lock = NSLock()
-    private let telemetry: E2eeRangeStreamingTelemetry
-    private var continuations: [Int: AsyncThrowingStream<Event, Error>.Continuation] = [:]
-
-    init(telemetry: E2eeRangeStreamingTelemetry) {
-        self.telemetry = telemetry
+    private struct Entry {
+        let continuation: AsyncThrowingStream<Event, Error>.Continuation
+        let startedAt: Date
+        var receivedFirstChunk: Bool
     }
 
-    func stream(for request: URLRequest, using session: URLSession) -> Stream {
+    private let lock = NSLock()
+    private let telemetry: E2eeRangeStreamingTelemetry
+    private let transportClass: E2eeRangeStreamingTransportClass
+    private var entries: [Int: Entry] = [:]
+
+    init(
+        telemetry: E2eeRangeStreamingTelemetry,
+        transportClass: E2eeRangeStreamingTransportClass
+    ) {
+        self.telemetry = telemetry
+        self.transportClass = transportClass
+    }
+
+    func stream(
+        for request: URLRequest,
+        using session: URLSession,
+        expectedBytes: UInt64
+    ) -> Stream {
         var continuation: AsyncThrowingStream<Event, Error>.Continuation!
         let events = AsyncThrowingStream<Event, Error> { continuation = $0 }
         let task = session.dataTask(with: request)
         let taskIdentifier = task.taskIdentifier
-        lock.withLock { continuations[taskIdentifier] = continuation }
+        let startedAt = Date()
+        lock.withLock {
+            entries[taskIdentifier] = Entry(
+                continuation: continuation,
+                startedAt: startedAt,
+                receivedFirstChunk: false
+            )
+        }
+        telemetry.recordTransportStarted(
+            transport: transportClass,
+            ciphertextBytes: expectedBytes
+        )
         continuation.onTermination = { [weak self, weak task] termination in
             guard case .cancelled = termination else { return }
             task?.cancel()
-            self?.removeContinuation(for: taskIdentifier)
+            self?.removeEntry(for: taskIdentifier)
         }
         return Stream(events: events, task: task)
     }
@@ -556,16 +739,21 @@ private final class E2eeRangeStreamingSessionDelegate: NSObject, URLSessionDataD
         completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
         guard let response = response as? HTTPURLResponse,
-              let continuation = continuation(for: dataTask.taskIdentifier) else {
+              let entry = entry(for: dataTask.taskIdentifier) else {
             completionHandler(.cancel)
             return
         }
-        continuation.yield(.response(response))
+        telemetry.recordTransportHeader(
+            transport: transportClass,
+            latency: Date().timeIntervalSince(entry.startedAt)
+        )
+        entry.continuation.yield(.response(response))
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        continuation(for: dataTask.taskIdentifier)?.yield(.data(data))
+        guard let entry = markFirstChunkIfNeeded(for: dataTask.taskIdentifier) else { return }
+        entry.continuation.yield(.data(data))
     }
 
     func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
@@ -573,25 +761,50 @@ private final class E2eeRangeStreamingSessionDelegate: NSObject, URLSessionDataD
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        guard let continuation = removeContinuation(for: task.taskIdentifier) else { return }
+        guard let entry = removeEntry(for: task.taskIdentifier) else { return }
         if let error {
-            continuation.finish(throwing: error)
+            entry.continuation.finish(throwing: error)
         } else {
-            continuation.finish()
+            entry.continuation.finish()
         }
     }
 
-    private func continuation(
+    private func entry(
         for taskIdentifier: Int
-    ) -> AsyncThrowingStream<Event, Error>.Continuation? {
-        lock.withLock { continuations[taskIdentifier] }
+    ) -> Entry? {
+        lock.withLock { entries[taskIdentifier] }
+    }
+
+    private func markFirstChunkIfNeeded(for taskIdentifier: Int) -> Entry? {
+        let result: (Entry, Bool)? = lock.withLock {
+            guard var entry = entries[taskIdentifier] else { return nil }
+            let isFirst = !entry.receivedFirstChunk
+            entry.receivedFirstChunk = true
+            entries[taskIdentifier] = entry
+            return (entry, isFirst)
+        }
+        guard let (entry, isFirst) = result else { return nil }
+        if isFirst {
+            telemetry.recordTransportFirstChunk(
+                transport: transportClass,
+                latency: Date().timeIntervalSince(entry.startedAt)
+            )
+        }
+        return entry
     }
 
     @discardableResult
-    private func removeContinuation(
+    private func removeEntry(
         for taskIdentifier: Int
-    ) -> AsyncThrowingStream<Event, Error>.Continuation? {
-        lock.withLock { continuations.removeValue(forKey: taskIdentifier) }
+    ) -> Entry? {
+        let entry = lock.withLock { entries.removeValue(forKey: taskIdentifier) }
+        if let entry {
+            telemetry.recordTransportCompleted(
+                transport: transportClass,
+                latency: Date().timeIntervalSince(entry.startedAt)
+            )
+        }
+        return entry
     }
 }
 
@@ -617,7 +830,10 @@ actor E2eeRangeCiphertextReader {
         self.transportClass = transportClass
         self.taskPriority = taskPriority
         let sessionConfiguration = Self.playbackSessionConfiguration(from: sessionConfiguration)
-        let delegate = E2eeRangeStreamingSessionDelegate(telemetry: telemetry)
+        let delegate = E2eeRangeStreamingSessionDelegate(
+            telemetry: telemetry,
+            transportClass: transportClass
+        )
         self.delegate = delegate
         session = URLSession(
             configuration: sessionConfiguration,
@@ -654,7 +870,12 @@ actor E2eeRangeCiphertextReader {
               byteCount <= UInt64(Int.max) else {
             throw E2eeRangeStreamingResourceError.invalidRange
         }
+        let grantStartedAt = Date()
         var grant = try await grantStore.grant(for: assetId)
+        telemetry.recordGrantWait(
+            transport: transportClass,
+            latency: Date().timeIntervalSince(grantStartedAt)
+        )
         for attempt in 0...1 {
             try Task.checkCancellation()
             var request = URLRequest(url: grant.grantURL)
@@ -723,7 +944,12 @@ actor E2eeRangeCiphertextReader {
             throw E2eeRangeStreamingResourceError.invalidRange
         }
 
+        let grantStartedAt = Date()
         var grant = try await grantStore.grant(for: assetId)
+        telemetry.recordGrantWait(
+            transport: transportClass,
+            latency: Date().timeIntervalSince(grantStartedAt)
+        )
         for attempt in 0...1 {
             try Task.checkCancellation()
             var request = URLRequest(url: grant.grantURL)
@@ -733,7 +959,11 @@ actor E2eeRangeCiphertextReader {
                 forHTTPHeaderField: "Range"
             )
             telemetry.recordRangeRequest(transport: transportClass)
-            let stream = delegate.stream(for: request, using: session)
+            let stream = delegate.stream(
+                for: request,
+                using: session,
+                expectedBytes: byteCount
+            )
             stream.task.priority = taskPriority
             stream.task.resume()
 

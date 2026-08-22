@@ -85,6 +85,10 @@ final class E2eeAttachmentPreparationCoordinator {
         label: "network.ermis.e2ee.attachment-preparation",
         qos: .utility
     )
+    /// Repeated Retry taps must join the durable idempotent init instead of issuing parallel
+    /// `/init` requests. The task completion crosses executors, so the set has its own lock.
+    private let expiredRetryLock = NSLock()
+    private var expiredRetryAttemptIds = Set<String>()
 
     init(
         transferCoordinator: E2eeBackgroundTransferCoordinator,
@@ -112,10 +116,118 @@ final class E2eeAttachmentPreparationCoordinator {
     }
 
     func retryAndResumeDurableTransfer(messageId: String, accountId: String) {
-        transferCoordinator.retryAndResumeDurableTransfer(
-            messageId: messageId,
-            accountId: accountId
-        )
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                guard let attempt = try self.transferCoordinator.store.hydrate()
+                    .filter({ $0.messageId == messageId && $0.accountId == accountId })
+                    .max(by: { $0.createdAt < $1.createdAt }),
+                      attempt.phase == .failedRetryable,
+                      attempt.failureReason == .uploadExpired
+                        || Self.hasFreshInitPending(attempt) else {
+                    self.transferCoordinator.retryAndResumeDurableTransfer(
+                        messageId: messageId,
+                        accountId: accountId
+                    )
+                    return
+                }
+                guard self.expiredRetryLock.withLock({
+                    self.expiredRetryAttemptIds.insert(attempt.attemptId).inserted
+                }) else {
+                    log.info(
+                        "[E2EE_ATTACHMENT] stage=retry_reinit state=joined target=selected",
+                        subsystems: .mls
+                    )
+                    return
+                }
+
+                let initAttempt: PendingE2eeTransferAttempt
+                if attempt.failureReason == .uploadExpired {
+                    initAttempt = try self.transferCoordinator.store.resetExpiredUploadForFreshInit(
+                        attemptId: attempt.attemptId
+                    )
+                } else {
+                    initAttempt = attempt
+                }
+                let logicalAttachments = try Self.logicalAttachmentsForFreshInit(initAttempt)
+                self.transferCoordinator.notifyTransferStoreChanged()
+                log.info(
+                    "[E2EE_ATTACHMENT] stage=retry_reinit state=requesting target=selected attachment_count=\(logicalAttachments.count)",
+                    subsystems: .mls
+                )
+                Task {
+                    defer {
+                        self.expiredRetryLock.withLock {
+                            self.expiredRetryAttemptIds.remove(attempt.attemptId)
+                        }
+                    }
+                    do {
+                        try await self.initializeAndSchedule(
+                            attemptId: attempt.attemptId,
+                            logicalAttachments: logicalAttachments
+                        )
+                        log.info(
+                            "[E2EE_ATTACHMENT] stage=retry_reinit state=accepted target=selected",
+                            subsystems: .mls
+                        )
+                    } catch {
+                        self.markFailedIfDurable(attemptId: attempt.attemptId, error: error)
+                    }
+                }
+            } catch {
+                log.error(
+                    "[E2EE_ATTACHMENT] stage=retry_reinit state=failed error=\(e2eeTransferDiagnostic(error))",
+                    subsystems: .mls
+                )
+            }
+        }
+    }
+
+    private static func logicalAttachmentsForFreshInit(
+        _ attempt: PendingE2eeTransferAttempt
+    ) throws -> [PreparedLogicalAttachment] {
+        var seenAttachmentIds = Set<String>()
+        var result: [PreparedLogicalAttachment] = []
+        for asset in attempt.assets where seenAttachmentIds.insert(asset.attachmentId).inserted {
+            let logicalAssets = attempt.assets.filter { $0.attachmentId == asset.attachmentId }
+            if logicalAssets.allSatisfy({ $0.uploadMode != nil }) {
+                continue
+            }
+            guard logicalAssets.allSatisfy({ $0.uploadMode == nil }) else {
+                throw E2eeDurableTransferStoreError.invalidExpiredUploadReset
+            }
+            guard UUID(uuidString: asset.attachmentId) != nil,
+                  let idempotencyKey = asset.idempotencyKey,
+                  UUID(uuidString: idempotencyKey) != nil else {
+                throw E2eeDurableTransferStoreError.invalidExpiredUploadReset
+            }
+            result.append(
+                PreparedLogicalAttachment(
+                    placeholderAttachmentId: asset.attachmentId,
+                    idempotencyKey: idempotencyKey
+                )
+            )
+        }
+        guard !result.isEmpty else {
+            throw E2eeDurableTransferStoreError.invalidExpiredUploadReset
+        }
+        return result
+    }
+
+    private static func hasFreshInitPending(_ attempt: PendingE2eeTransferAttempt) -> Bool {
+        let pendingAssets = attempt.assets.filter { $0.uploadMode == nil }
+        return !pendingAssets.isEmpty && pendingAssets.allSatisfy { asset in
+            asset.uploadExpiresAt == nil
+                && asset.putURL == nil
+                && asset.objectKey == nil
+                && asset.multipartUploadId == nil
+                && asset.parts.isEmpty
+                && asset.isUploaded == false
+                && UUID(uuidString: asset.idempotencyKey ?? "") != nil
+                && asset.canonicalCiphertextURL.map {
+                    FileManager.default.fileExists(atPath: $0.path)
+                } == true
+        }
     }
 
     func prepareAndSchedule(

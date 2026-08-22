@@ -27,7 +27,7 @@ public struct AnyAttachmentUpdater {
                 attachment.payload = try JSONEncoder.ermis.encode(payload.asAnyEncodable)
             }
         } catch {
-            log.error(error.localizedDescription)
+            log.error("[ATTACHMENT] state=update_failed \(PrivacySafeLogMetadata.errorFields(error))")
         }
     }
 }

@@ -210,7 +210,7 @@ extension WebSocketClient: WebSocketEngineDelegate {
     func webSocketDidReceiveMessage(_ message: String) {
         do {
             let messageData = Data(message.utf8)
-            log.debug("Event received:\n\(messageData.debugPrettyPrintedJSON)", subsystems: .webSocket)
+            log.debug("[WebSocket] state=event_received bytes=\(messageData.count)", subsystems: .webSocket)
 
             let event = try eventDecoder.decode(from: messageData)
             if let healthCheckEvent = event as? HealthCheckEvent {
@@ -227,7 +227,7 @@ extension WebSocketClient: WebSocketEngineDelegate {
                 eventsBatcher.append(event)
             }
         } catch is ClientError.IgnoredEventType {
-            log.info("Skipping unsupported event type with payload: \(message)", subsystems: .webSocket)
+            log.info("[WebSocket] state=unsupported_event_skipped", subsystems: .webSocket)
         } catch {
             // Check if the message contains an error object from the server
             let webSocketError = message
@@ -252,7 +252,7 @@ extension WebSocketClient: WebSocketEngineDelegate {
             let serverError = engineError.map { ClientError.WebSocket(with: $0) }
             connectionState = .disconnected(source: source)
         case .initialized, .disconnected:
-            log.error("Web socket can not be disconnected when in \(connectionState) state.")
+            log.error("[WebSocket] state=disconnect_ignored reason=invalid_lifecycle_state")
         }
     }
 }

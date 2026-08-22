@@ -42,6 +42,11 @@ public struct E2eeAttachmentOriginalDownloadProgress: Equatable, Sendable {
     }
 }
 
+/// Transport-neutral spelling used by file-download UI shared by standard and E2EE channels.
+/// For E2EE attachments the byte counters represent ciphertext; for standard attachments they
+/// represent the directly downloaded file bytes.
+public typealias AttachmentOriginalDownloadProgress = E2eeAttachmentOriginalDownloadProgress
+
 /// Owns one consumer's access to a verified plaintext attachment original.
 ///
 /// The local file remains valid until every lease for the same original is released. Gallery,
@@ -192,12 +197,13 @@ final class E2eeAttachmentPlaintextLaunchCleanupRegistry: @unchecked Sendable {
 /// delegate callback. KVO on `URLSessionTask.progress` is intentionally avoided: it can publish
 /// an initial unit count without matching the task's byte stream and previously caused some media
 /// requests to remain stuck at that initial value.
-private final class E2eeAttachmentOriginalDownloadDelegate: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate, @unchecked Sendable {
+final class AttachmentOriginalDownloadDelegate: NSObject, URLSessionDownloadDelegate, URLSessionTaskDelegate, @unchecked Sendable {
     typealias DownloadResult = (URL, URLResponse)
 
     private let lock = NSLock()
     private let expectedCiphertextBytes: UInt64
     private let progress: @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
+    private let sessionConfiguration: URLSessionConfiguration
 
     private var session: URLSession?
     private var task: URLSessionDownloadTask?
@@ -207,9 +213,11 @@ private final class E2eeAttachmentOriginalDownloadDelegate: NSObject, URLSession
 
     init(
         expectedCiphertextBytes: UInt64,
+        sessionConfiguration: URLSessionConfiguration = .ephemeral,
         progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
     ) {
         self.expectedCiphertextBytes = expectedCiphertextBytes
+        self.sessionConfiguration = sessionConfiguration
         self.progress = progress
         super.init()
     }
@@ -217,7 +225,8 @@ private final class E2eeAttachmentOriginalDownloadDelegate: NSObject, URLSession
     func download(request: URLRequest) async throws -> DownloadResult {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
-                let configuration = URLSessionConfiguration.ephemeral
+                let configuration = sessionConfiguration.copy() as? URLSessionConfiguration
+                    ?? sessionConfiguration
                 configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
                 let session = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
                 let task = session.downloadTask(with: request)
@@ -249,10 +258,16 @@ private final class E2eeAttachmentOriginalDownloadDelegate: NSObject, URLSession
         totalBytesExpectedToWrite: Int64
     ) {
         guard totalBytesWritten >= 0 else { return }
+        let responseBytes = totalBytesExpectedToWrite > 0
+            ? UInt64(totalBytesExpectedToWrite)
+            : 0
+        let totalBytes = expectedCiphertextBytes > 0
+            ? expectedCiphertextBytes
+            : max(responseBytes, UInt64(totalBytesWritten))
         progress(.init(
             phase: .downloading,
-            completedCiphertextBytes: min(UInt64(totalBytesWritten), expectedCiphertextBytes),
-            totalCiphertextBytes: expectedCiphertextBytes
+            completedCiphertextBytes: min(UInt64(totalBytesWritten), totalBytes),
+            totalCiphertextBytes: totalBytes
         ))
     }
 
@@ -977,6 +992,49 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
             }
         }
 
+#if DEBUG
+        if E2eeR2RangeProofGate.shared.claim() {
+            log.info(
+                "[E2EE_R2_RANGE_PROOF] state=started full_cipher_sha256=verified",
+                subsystems: .mls
+            )
+            do {
+                // Do not trust the provider label alone for this release proof. Re-read the exact
+                // comparison source and prove its complete size/global hash immediately before
+                // asking R2 for one raw byte range.
+                try validateCiphertext(
+                    at: ciphertextForDecryptionURL,
+                    expectedSize: original.cipherSize,
+                    expectedSHA256: original.cipherSha256,
+                    fileManager: fileManager,
+                    progress: progress
+                )
+                let proofGrantURL = try await grantURLProvider(
+                    attachmentId.cid,
+                    manifest.attachmentId,
+                    original.assetId
+                )
+                let proof = try await E2eeR2RangeProofVerifier.verify(
+                    grantURL: proofGrantURL,
+                    verifiedCiphertextURL: ciphertextForDecryptionURL,
+                    totalCiphertextSize: original.cipherSize
+                )
+                log.info(
+                    "[E2EE_R2_RANGE_PROOF] state=succeeded status=206 content_length=exact content_range=exact body=identical bytes=\(proof.byteCount)",
+                    subsystems: .mls
+                )
+            } catch {
+                let category = (error as? E2eeR2RangeProofError)?.category
+                    ?? "prerequisite_or_transport"
+                log.error(
+                    "[E2EE_R2_RANGE_PROOF] state=failed category=\(category)",
+                    subsystems: .mls
+                )
+                throw E2eeAttachmentOriginalDownloadError.invalidHTTPResponse
+            }
+        }
+#endif
+
         try await plaintextPermissionWaiter(original.cipherSize, progress)
         do {
             try Task.checkCancellation()
@@ -1105,7 +1163,7 @@ actor E2eeAttachmentOriginalDownloadCoordinator {
         expectedCiphertextBytes: UInt64,
         progress: @escaping @Sendable (E2eeAttachmentOriginalDownloadProgress) -> Void
     ) async throws -> (URL, URLResponse) {
-        let delegate = E2eeAttachmentOriginalDownloadDelegate(
+        let delegate = AttachmentOriginalDownloadDelegate(
             expectedCiphertextBytes: expectedCiphertextBytes,
             progress: progress
         )

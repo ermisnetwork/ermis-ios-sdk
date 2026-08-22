@@ -338,7 +338,10 @@ final class E2eeAttachmentSecureStorageTests: XCTestCase {
         let attempt = try coordinator.store.attempt(attemptId: attemptId)
         let asset = try XCTUnwrap(attempt.assets.first)
         XCTAssertEqual(initializer.requestCount, 1)
-        XCTAssertEqual(attempt.phase, .uploading)
+        XCTAssertTrue(
+            [.uploading, .reconciling].contains(attempt.phase),
+            "An active URLSession task may already be in the coordinator's reconciliation pass"
+        )
         XCTAssertNotNil(asset.sealedSecret)
         XCTAssertEqual(asset.uploadMode, .singlePut)
         XCTAssertTrue(
@@ -350,6 +353,159 @@ final class E2eeAttachmentSecureStorageTests: XCTestCase {
 
         let canceled = expectation(description: "cancel prepared upload")
         coordinator.cancelTasks(accountId: "account-a") { _ in canceled.fulfill() }
+        wait(for: [canceled], timeout: 2)
+    }
+
+    func testExpiredUploadRetryReinitializesWithFreshIdempotencyAndSameCiphertext() throws {
+        let descriptor = E2eeBackgroundSessionDescriptor(
+            bundleIdentifier: "network.ermis.expired-retry-tests.\(UUID().uuidString)",
+            endpoint: try XCTUnwrap(URL(string: "https://chat.example.test")),
+            applicationGroupIdentifier: nil
+        )
+        let coordinator = E2eeBackgroundTransferCoordinator(
+            descriptor: descriptor,
+            rootURL: directory,
+            applicationGroupIdentifier: nil,
+            sessionConfigurationBuilder: { _, _ in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [PreparationHoldingURLProtocol.self]
+                return configuration
+            }
+        )
+        let initializer = PreparationAttachmentInitializer(failureRequestNumbers: [2])
+        let preparation = E2eeAttachmentPreparationCoordinator(
+            transferCoordinator: coordinator,
+            initializingClient: initializer,
+            wrappingKeyStore: E2eeAttachmentWrappingKeyStore(
+                keychain: FakeAttachmentKeychain(),
+                defaults: defaults,
+                access: .mainApp
+            )
+        )
+        try coordinator.stagingStore.prepareEncryptedDirectories()
+        let canonicalURL = coordinator.stagingStore.canonicalCiphertextDirectory
+            .appendingPathComponent("\(UUID().uuidString).cipher")
+        let canonicalBytes = Data((0..<48).map(UInt8.init))
+        try canonicalBytes.write(to: canonicalURL)
+        let secondCanonicalURL = coordinator.stagingStore.canonicalCiphertextDirectory
+            .appendingPathComponent("\(UUID().uuidString).cipher")
+        let secondCanonicalBytes = Data((48..<96).map(UInt8.init))
+        try secondCanonicalBytes.write(to: secondCanonicalURL)
+
+        let oldAttachmentId = UUID().uuidString
+        let oldAssetId = UUID().uuidString
+        let oldIdempotencyKey = UUID().uuidString
+        var asset = PendingE2eeAsset(
+            attachmentId: oldAttachmentId,
+            assetId: oldAssetId,
+            kind: .original,
+            idempotencyKey: oldIdempotencyKey,
+            sourceURL: nil,
+            canonicalCiphertextURL: canonicalURL,
+            ciphertextSize: UInt64(canonicalBytes.count),
+            ciphertextSha256: String(repeating: "a", count: 64),
+            sealedSecret: nil,
+            uploadMode: .singlePut,
+            uploadExpiresAt: Date().addingTimeInterval(-60),
+            putURL: try XCTUnwrap(URL(string: "https://upload.example.test/expired")),
+            taskIdentifier: nil,
+            taskToken: nil,
+            isUploaded: false,
+            parts: []
+        )
+        asset.completedBytes = 24
+        let secondOldAttachmentId = UUID().uuidString
+        let secondOldAssetId = UUID().uuidString
+        let secondOldIdempotencyKey = UUID().uuidString
+        var secondAsset = asset
+        secondAsset.attachmentId = secondOldAttachmentId
+        secondAsset.assetId = secondOldAssetId
+        secondAsset.idempotencyKey = secondOldIdempotencyKey
+        secondAsset.canonicalCiphertextURL = secondCanonicalURL
+        var attempt = PendingE2eeTransferAttempt(
+            accountId: "account-a",
+            messageId: UUID().uuidString,
+            cid: "messaging:expired-retry-tests:\(UUID().uuidString)",
+            phase: .failedRetryable,
+            totalBytes: Int64(canonicalBytes.count + secondCanonicalBytes.count)
+        )
+        attempt.completedBytes = 24
+        attempt.failureReason = .uploadExpired
+        attempt.assets = [asset, secondAsset]
+        try coordinator.store.insert(attempt)
+
+        let firstInitFailed = expectation(description: "first fresh init failed retryably")
+        let reinitialized = expectation(description: "expired upload reinitialized and scheduled")
+        let observationLock = NSLock()
+        var observedRetryableInitFailure = false
+        var observedActiveSnapshot = false
+        let observerId = preparation.addTransferObserver { snapshot in
+            guard snapshot.attemptId == attempt.attemptId else { return }
+            let fulfillments: (failed: Bool, active: Bool) = observationLock.withLock {
+                var failed = false
+                var active = false
+                if !observedRetryableInitFailure,
+                   snapshot.phase == .failedRetryable,
+                   snapshot.failureReason == .networkUnavailable,
+                   snapshot.assets.contains(where: { $0.uploadMode != nil }),
+                   snapshot.assets.contains(where: { $0.uploadMode == nil }) {
+                    observedRetryableInitFailure = true
+                    failed = true
+                }
+                if !observedActiveSnapshot,
+                   [.uploading, .reconciling].contains(snapshot.phase),
+                   snapshot.assets.allSatisfy({ $0.taskToken != nil }) {
+                    observedActiveSnapshot = true
+                    active = true
+                }
+                return (failed, active)
+            }
+            if fulfillments.failed { firstInitFailed.fulfill() }
+            if fulfillments.active { reinitialized.fulfill() }
+        }
+        preparation.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+        wait(for: [firstInitFailed], timeout: 4)
+
+        let failedRequest = try XCTUnwrap(initializer.requestSnapshot.last)
+        XCTAssertEqual(initializer.requestCount, 2)
+        preparation.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+        preparation.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+        wait(for: [reinitialized], timeout: 4)
+        preparation.removeTransferObserver(observerId)
+
+        let updated = try coordinator.store.attempt(attemptId: attempt.attemptId)
+        let updatedAsset = try XCTUnwrap(updated.assets.first)
+        let updatedSecondAsset = try XCTUnwrap(updated.assets.last)
+        let request = try XCTUnwrap(initializer.requestSnapshot.last)
+        XCTAssertEqual(initializer.requestCount, 3)
+        XCTAssertNotEqual(updatedAsset.idempotencyKey, oldIdempotencyKey)
+        XCTAssertNotEqual(request.idempotencyKey, secondOldIdempotencyKey)
+        XCTAssertEqual(request.idempotencyKey, failedRequest.idempotencyKey)
+        XCTAssertEqual(updatedSecondAsset.idempotencyKey, request.idempotencyKey)
+        XCTAssertNotEqual(updatedAsset.attachmentId, oldAttachmentId)
+        XCTAssertNotEqual(updatedAsset.assetId, oldAssetId)
+        XCTAssertNotEqual(updatedSecondAsset.attachmentId, secondOldAttachmentId)
+        XCTAssertNotEqual(updatedSecondAsset.assetId, secondOldAssetId)
+        XCTAssertEqual(updatedAsset.canonicalCiphertextURL, canonicalURL)
+        XCTAssertEqual(updatedSecondAsset.canonicalCiphertextURL, secondCanonicalURL)
+        XCTAssertNotNil(updatedAsset.taskToken)
+        XCTAssertNotNil(updatedSecondAsset.taskToken)
+        XCTAssertEqual(try Data(contentsOf: canonicalURL), canonicalBytes)
+        XCTAssertEqual(try Data(contentsOf: secondCanonicalURL), secondCanonicalBytes)
+        XCTAssertEqual(updated.completedBytes, 0)
+        XCTAssertNil(updated.failureReason)
+
+        let canceled = expectation(description: "cancel fresh upload")
+        coordinator.cancelTasks(accountId: attempt.accountId) { _ in canceled.fulfill() }
         wait(for: [canceled], timeout: 2)
     }
 
@@ -409,14 +565,26 @@ final class E2eeAttachmentSecureStorageTests: XCTestCase {
 private final class PreparationAttachmentInitializer: E2eeAttachmentInitializing {
     private let lock = NSLock()
     private var requests: [InitE2eeAttachmentRequest] = []
+    private var failureRequestNumbers: Set<Int>
+
+    init(failureRequestNumbers: Set<Int> = []) {
+        self.failureRequestNumbers = failureRequestNumbers
+    }
 
     var requestCount: Int { lock.withLock { requests.count } }
+    var requestSnapshot: [InitE2eeAttachmentRequest] { lock.withLock { requests } }
 
     func initializeE2eeAttachment(
         cid: ChannelId,
         request: InitE2eeAttachmentRequest
     ) async throws -> InitE2eeAttachmentResponse {
-        lock.withLock { requests.append(request) }
+        let shouldFail = lock.withLock {
+            requests.append(request)
+            return failureRequestNumbers.remove(requests.count) != nil
+        }
+        if shouldFail {
+            throw E2eeAttachmentRemoteError(category: .networkUnavailable, isRetryable: true)
+        }
         let requested = try XCTUnwrap(request.assets.first)
         let expiry = try XCTUnwrap(
             DateFormatter.Ermis.rfc3339DateString(from: Date().addingTimeInterval(600))

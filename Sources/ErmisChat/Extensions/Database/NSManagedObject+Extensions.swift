@@ -57,7 +57,7 @@ extension NSManagedObject {
         do {
             return try context.fetch(request, using: FetchCache.shared)
         } catch {
-            log.error("Could not load \(error), \(error.localizedDescription)")
+            log.error("[DATABASE] state=object_load_failed \(PrivacySafeLogMetadata.errorFields(error))")
             return []
         }
     }

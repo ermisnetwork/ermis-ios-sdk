@@ -172,21 +172,27 @@ class APIClient {
                     for await event in await dataTask.events() {
                         switch event {
                         case .open:
-                            log.debug("SSE connection was openned.", subsystems: .httpRequests)
+                            log.debug("[SSE] state=opened", subsystems: .httpRequests)
                         case .error(let error):
-                            log.debug("SSE Connection was error \(error.localizedDescription)", subsystems: .httpRequests)
+                            log.debug(
+                                "[SSE] state=failed \(PrivacySafeLogMetadata.errorFields(error))",
+                                subsystems: .httpRequests
+                            )
                             completion(nil, error)
                         case .event(let event):
-                            log.debug("SSE Received a message \(event.data ?? "")", subsystems: .httpRequests)
+                            log.debug("[SSE] state=event_received has_data=\(event.data != nil)", subsystems: .httpRequests)
                             if let response: Response = try? decoder.decodeSSEMessage(message: event.data) {
                                 completion(response, nil)
                             }
                         case .closed:
-                            log.debug("SSE Connection was closed.", subsystems: .httpRequests)
+                            log.debug("[SSE] state=closed", subsystems: .httpRequests)
                         }
                     }
                 } catch {
-                    log.debug("SSE failsed with error: \(error)", subsystems: .httpRequests)
+                    log.debug(
+                        "[SSE] state=stream_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                        subsystems: .httpRequests
+                    )
                 }
             }
         }

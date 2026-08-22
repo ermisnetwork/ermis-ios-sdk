@@ -43,7 +43,7 @@ class MessageRepository {
             }
 
             guard let dto = self.database.backgroundReadOnlyContext.message(id: messageId) else {
-                log.error("Trying to send a message with id \(messageId) but the message was deleted.")
+                log.error("[MESSAGE_SEND] state=blocked reason=message_missing")
                 completion(.failure(.messageDoesNotExist))
                 return
             }
@@ -52,13 +52,13 @@ class MessageRepository {
             let localState = dto.localMessageState
             let isEpochStaleRetry = localState == .pendingSendAfterE2eeEpochStale
             guard localState == .pendingSend || isEpochStaleRetry else {
-                log.info("Skipping sending message with id \(dto.id) because it doesn't have `pendingSend` local state.")
+                log.info("[MESSAGE_SEND] state=skipped reason=not_pending")
                 completion(.failure(.messageNotPendingSend))
                 return
             }
 
             guard let channelDTO = dto.channel, let cid = try? ChannelId(cid: channelDTO.cid) else {
-                log.info("Skipping sending message with id \(dto.id) because it doesn't have a valid channel.")
+                log.info("[MESSAGE_SEND] state=skipped reason=channel_missing")
                 completion(.failure(.messageDoesNotHaveValidChannel))
                 return
             }
@@ -262,7 +262,7 @@ class MessageRepository {
                             )
                         )
                     } else {
-                        log.error("Error changing localMessageState message with id \(messageId) to `sending`: \(error)")
+                        log.error("[MESSAGE_SEND] state=sending_state_persist_failed \(PrivacySafeLogMetadata.errorFields(error))")
                     }
                     self.markMessageAsFailedToSend(id: messageId, trace: e2eeTrace) {
                         completion(.failure(.failedToSendMessage(error)))
@@ -390,7 +390,10 @@ class MessageRepository {
                         )
                     )
                 } else {
-                    log.error("Error saving sent message with id \(message.id): \(error)", subsystems: .offlineSupport)
+                    log.error(
+                        "[MESSAGE_SEND] state=response_persist_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                        subsystems: .offlineSupport
+                    )
                 }
                 completion(.failure(error))
             } else {
@@ -417,7 +420,7 @@ class MessageRepository {
         completion: @escaping (Result<ChatMessage, MessageRepositoryError>) -> Void
     ) {
         if trace == nil {
-            log.error("Sending the message with id \(messageId) failed with error: \(error)")
+            log.error("[MESSAGE_SEND] state=request_failed \(PrivacySafeLogMetadata.errorFields(error))")
         }
         // In case no internet connection, we will mark it as sending.
         // Other type of error, we will mark message as failed.
@@ -458,7 +461,7 @@ class MessageRepository {
                     )
                 } else {
                     log.error(
-                        "Error changing localMessageState message with id \(id) to `sendingFailed`: \(error)",
+                        "[MESSAGE_SEND] state=failure_state_persist_failed \(PrivacySafeLogMetadata.errorFields(error))",
                         subsystems: .offlineSupport
                     )
                 }
@@ -555,10 +558,9 @@ class MessageRepository {
             dto?.localMessageState = localState
         }, completion: { error in
             if let error = error {
-                log
-                    .error(
-                        "Error changing localMessageState for message with id \(id) to `\(String(describing: localState))`: \(error)"
-                    )
+                log.error(
+                    "[MESSAGE_STATE] state=persist_failed \(PrivacySafeLogMetadata.errorFields(error))"
+                )
             }
             completion()
         })
@@ -574,7 +576,7 @@ class MessageRepository {
             reaction?.localState = .sendingFailed
         } completion: { error in
             if let error = error {
-                log.error("Error removing reaction for message with id \(messageId): \(error)")
+                log.error("[MESSAGE_REACTION] state=remove_rollback_failed \(PrivacySafeLogMetadata.errorFields(error))")
             }
             completion?()
         }
@@ -589,7 +591,7 @@ class MessageRepository {
             _ = try $0.addReaction(to: messageId, type: type, localState: .deletingFailed)
         } completion: { error in
             if let error = error {
-                log.error("Error adding reaction for message with id \(messageId): \(error)")
+                log.error("[MESSAGE_REACTION] state=add_rollback_failed \(PrivacySafeLogMetadata.errorFields(error))")
             }
             completion?()
         }

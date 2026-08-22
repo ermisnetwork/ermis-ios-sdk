@@ -30,6 +30,40 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
         XCTAssertTrue(payload.videoURL.path.contains(manifest.attachmentId))
     }
 
+    func testExplicitFileIntentOverridesVideoMimeType() throws {
+        let manifest = makeManifest(
+            mimeType: "video/x-matroska",
+            name: "archive.mkv",
+            width: nil,
+            height: nil,
+            duration: 20.5,
+            attachmentType: "file"
+        )
+
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest)
+        let payload = try JSONDecoder.ermis.decode(FileAttachmentPayload.self, from: renderable.data)
+
+        XCTAssertEqual(renderable.type, .file)
+        XCTAssertEqual(payload.title, "archive.mkv")
+        XCTAssertEqual(payload.file.mimeType, "video/x-matroska")
+        XCTAssertEqual(payload.assetURL.scheme, "ermis-e2ee-attachment")
+    }
+
+    func testExplicitVideoIntentBuildsVideoEvenWhenMimeIsGeneric() throws {
+        let manifest = makeManifest(
+            mimeType: "application/octet-stream",
+            name: "device-playable-video",
+            width: nil,
+            height: nil,
+            duration: 4,
+            attachmentType: "video"
+        )
+
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest)
+        XCTAssertEqual(renderable.type, .video)
+        _ = try JSONDecoder.ermis.decode(VideoAttachmentPayload.self, from: renderable.data)
+    }
+
     func testImageManifestBuildsRenderableImageAttachment() throws {
         let manifest = makeManifest(
             mimeType: "image/jpeg",
@@ -381,7 +415,8 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
         name: String,
         width: Double?,
         height: Double?,
-        duration: Double?
+        duration: Double?,
+        attachmentType: String? = nil
     ) -> E2eeAttachmentManifestV1 {
         var display: [String: RawJSON] = [
             "mime_type": .string(mimeType),
@@ -390,6 +425,7 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
         display["width"] = width.map(RawJSON.number)
         display["height"] = height.map(RawJSON.number)
         display["duration"] = duration.map(RawJSON.number)
+        display["attachment_type"] = attachmentType.map(RawJSON.string)
 
         let key = Data(repeating: 7, count: E2eeAttachmentFrameCryptoV1.keySize)
         let nonce = Data(repeating: 9, count: E2eeAttachmentFrameCryptoV1.noncePrefixSize)

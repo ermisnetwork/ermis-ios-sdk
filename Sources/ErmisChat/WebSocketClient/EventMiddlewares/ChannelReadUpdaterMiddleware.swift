@@ -138,7 +138,7 @@ struct ChannelReadUpdaterMiddleware: EventMiddleware {
         // If the message exists in the database before processing the current batch of events, it means it was
         // already processed and we don't have to increase the unread count
         guard newProcessedMessageIds().contains(message.id) else {
-            return log.debug("Not incrementing count for \(message.id) as this message has already been processed")
+            return log.debug("[WebSocket] state=unread_increment_skipped reason=message_already_processed")
         }
 
         guard let user = currentUser.user(of: cid.projectId),

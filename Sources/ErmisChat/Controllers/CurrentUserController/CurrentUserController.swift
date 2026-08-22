@@ -127,10 +127,7 @@ public class CurrentUserController: DataController, DelegateCallable, DataStoreP
             try currentUserObserver.startObserving()
             state = .localDataFetched
         } catch {
-            log.error("""
-            Observing current user failed: \(error).\n
-            Accessing `currentUser` will always return `nil`, `unreadCount` with `.noUnread`
-            """)
+            log.error("[CURRENT_USER] state=observer_start_failed \(PrivacySafeLogMetadata.errorFields(error))")
             state = .localDataFetchFailed(ClientError(with: error))
         }
 
@@ -232,9 +229,13 @@ public extension CurrentUserController {
                                      projectId: client.projectId,
                                      completion: { error in
             if let error {
-                log.debug("[ErmisChat] registerDevice with fcmToken: \(fcmToken), deviceToken: \(deviceToken ?? "nil"), failed: \(error)")
+                log.debug(
+                    "[PUSH_REGISTRATION] owner=controller state=failed \(PrivacySafeLogMetadata.errorFields(error))"
+                )
             } else {
-                log.debug("[ErmisChat] registerDevice success with fcmToken: \(fcmToken), deviceToken: \(deviceToken ?? "nil")")
+                log.debug(
+                    "[PUSH_REGISTRATION] owner=controller state=succeeded has_voip_token=\(deviceToken != nil)"
+                )
             }
             self.callback {
                 completion?(error)

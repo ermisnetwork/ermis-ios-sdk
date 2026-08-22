@@ -89,6 +89,43 @@ enum VideoPlaybackResumePolicy {
     }
 }
 
+enum VideoPlaybackFailureTelemetry {
+    static func source(for asset: AVAsset) -> String {
+        guard let url = (asset as? AVURLAsset)?.url,
+              let scheme = url.scheme?.lowercased() else {
+            return "asset"
+        }
+        switch scheme {
+        case "http", "https":
+            return "remote"
+        case "file":
+            return "local"
+        default:
+            return "custom"
+        }
+    }
+
+    static func errorDomain(for error: Error?) -> String {
+        guard let domain = (error as NSError?)?.domain else { return "none" }
+        switch domain {
+        case AVFoundationErrorDomain:
+            return "avfoundation"
+        case NSURLErrorDomain:
+            return "url"
+        case NSOSStatusErrorDomain:
+            return "osstatus"
+        case "CoreMediaErrorDomain":
+            return "coremedia"
+        default:
+            return "other"
+        }
+    }
+
+    static func errorCode(for error: Error?) -> Int {
+        (error as NSError?)?.code ?? 0
+    }
+}
+
 /// A view that shows playback controls and timeline for the given player.
 open class VideoPlaybackControlView: _View, UIProvider {
     /// The type describing the content of the view.
@@ -566,7 +603,14 @@ open class VideoPlaybackControlView: _View, UIProvider {
                 default:
                     state = "unknown"
                 }
-                log.info("[VIDEO_PLAYER] item_state=\(state)", subsystems: .mls)
+                if item.status == .failed {
+                    log.info(
+                        "[VIDEO_PLAYER] item_state=failed source=\(VideoPlaybackFailureTelemetry.source(for: item.asset)) error_domain=\(VideoPlaybackFailureTelemetry.errorDomain(for: item.error)) error_code=\(VideoPlaybackFailureTelemetry.errorCode(for: item.error))",
+                        subsystems: .mls
+                    )
+                } else {
+                    log.info("[VIDEO_PLAYER] item_state=\(state)", subsystems: .mls)
+                }
             }
 
             NotificationCenter.default.addObserver(

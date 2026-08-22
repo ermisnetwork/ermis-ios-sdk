@@ -13,14 +13,17 @@ open class ZoomDismissalInteractionController: NSObject, UIViewControllerInterac
 
     /// Update interactive dismissal.
     open func handlePan(with gestureRecognizer: UIPanGestureRecognizer) {
+        guard let transitionContext else { return }
         guard
-            let transitionContext = transitionContext,
             let animator = animator as? ZoomAnimator,
             let fromVC = transitionContext.viewController(forKey: .from),
             let fromImageView = animator.fromImageView,
             let toImageView = animator.toImageView,
             let transitionImageView = animator.transitionImageView
-        else { return }
+        else {
+            cancelUnavailableTransition(transitionContext)
+            return
+        }
 
         fromImageView.isHidden = true
         toImageView.isHidden = true
@@ -100,8 +103,41 @@ open class ZoomDismissalInteractionController: NSObject, UIViewControllerInterac
 
         guard
             let animator = self.animator as? ZoomAnimator
-        else { return }
+        else {
+            cancelUnavailableTransition(transitionContext)
+            return
+        }
 
         animator.prepareZoomOutTransition(using: transitionContext)
+        guard animator.fromImageView != nil,
+              animator.toImageView != nil,
+              animator.transitionImageView != nil else {
+            // A video uploaded without a preview has no image that can drive the zoom
+            // transition. UIKit has already handed ownership to this interactive
+            // controller, so returning here would leave the presentation permanently
+            // in-flight and make the gallery's close button unresponsive.
+            cancelUnavailableTransition(transitionContext)
+            return
+        }
+    }
+
+    private func cancelUnavailableTransition(
+        _ transitionContext: UIViewControllerContextTransitioning
+    ) {
+        transitionContext.cancelInteractiveTransition()
+        transitionContext.completeTransition(false)
+        self.transitionContext = nil
+    }
+}
+
+enum GalleryDismissalPanPolicy {
+    static func shouldBegin(
+        velocity: CGPoint,
+        beginsInsidePlaybackControls: Bool,
+        hasTransitionController: Bool
+    ) -> Bool {
+        guard hasTransitionController,
+              !beginsInsidePlaybackControls else { return false }
+        return velocity.y > 0 && abs(velocity.y) > abs(velocity.x)
     }
 }

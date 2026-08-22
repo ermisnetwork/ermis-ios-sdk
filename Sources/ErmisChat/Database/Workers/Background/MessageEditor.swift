@@ -47,7 +47,7 @@ class MessageEditor: Worker {
             let changes = observer.items.map { ListChange.insert($0, index: .init(item: 0, section: 0)) }
             handleChanges(changes: changes)
         } catch {
-            log.error("Failed to start MessageEditor worker. \(error)")
+            log.error("[MESSAGE_EDIT] state=observer_start_failed \(PrivacySafeLogMetadata.errorFields(error))")
         }
     }
 
@@ -107,7 +107,7 @@ class MessageEditor: Worker {
                     case .success:
                         self.processMessage(messageId, epochRecoveryCompleted: true)
                     case .failure(let error):
-                        log.error("Failed to recover stale E2EE edit epoch for \(messageId): \(error)")
+                        log.error("[MESSAGE_EDIT] state=epoch_recovery_failed \(PrivacySafeLogMetadata.errorFields(error))")
                         messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
                             self.removeMessageIDAndContinue(messageId)
                         }
@@ -121,14 +121,14 @@ class MessageEditor: Worker {
             // consumes a new sender secret and makes crash recovery non-idempotent.
             if isEncrypted {
                 guard let e2eRepository else {
-                    log.error("Missing E2E repository while editing encrypted message \(messageId)")
+                    log.error("[MESSAGE_EDIT] state=blocked reason=e2ee_repository_missing")
                     messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
                         self.removeMessageIDAndContinue(messageId)
                     }
                     return
                 }
                 guard !requestBody.requiresE2eeAuthenticatedSendLane else {
-                    log.error("Refusing unauthenticated E2EE attachment/forward edit for message \(messageId)")
+                    log.error("[MESSAGE_EDIT] state=blocked reason=authenticated_lane_required")
                     messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
                         self.removeMessageIDAndContinue(messageId)
                     }
@@ -196,7 +196,7 @@ class MessageEditor: Worker {
                     self.removeMessageIDAndContinue(messageId)
                     return
                 } catch {
-                    log.error("Failed to encrypt edited message \(messageId): \(error)")
+                    log.error("[MESSAGE_EDIT] state=encryption_failed \(PrivacySafeLogMetadata.errorFields(error))")
                     messageRepository?.updateMessage(withID: messageId, localState: .syncingFailed) {
                         self.removeMessageIDAndContinue(messageId)
                     }
