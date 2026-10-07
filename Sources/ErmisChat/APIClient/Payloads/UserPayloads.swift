@@ -31,6 +31,8 @@ enum UserPayloadsCodingKeys: String, CodingKey, CaseIterable {
     case phone
     case email
     case keyPackagesRemaining = "key_packages_remaining"
+    case keyPackageRefillTarget = "key_package_refill_target"
+    case keyPackageRefillLowWatermark = "key_package_refill_low_watermark"
 }
 
 // MARK: - GET users

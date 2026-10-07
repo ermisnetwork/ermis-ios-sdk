@@ -26,16 +26,30 @@ The minimum requirements for ErmisChat SDK for iOS are:
 
 ### OpenMLS compatibility
 
-The SDK pins `open-mls-ios` to the exact prerelease tag `0.1.0-m0.1`. This version contains the
-AAD and plaintext-first persistence APIs required by the E2EE implementation. PIN/Epoch Archive
-APIs are intentionally not exposed in this release.
+This checkout's `Package.swift` links the **vendored local**
+`Vendor/open-mls-ios` package, not the older remote `0.1.0-m0.1` tag.
+That vendor contains generated Swift, an `OpenMlsUniFFI.xcframework` for
+device/simulator, `RELEASE_METADATA.json` and `ARTIFACT_CHECKSUMS.sha256`.
+Generation-aware GroupId, trusted historical processing and archive v2 must
+be verified against the binary actually linked by the app; changing OpenMLS
+source or a package version string alone does not update it.
 
-Do not commit a local path dependency for release builds. When developing both repositories
-locally, use SwiftPM editable mode:
+For an MLS upgrade, follow this repository's
+[`MLS_UPGRADE_HANDOFF.md`](MLS_UPGRADE_HANDOFF.md). Do not replace this vendor
+with the old remote tag. If a remote artifact is later published, review its generated
+Swift/XCFramework checksums, update `Package.swift` explicitly and rerun
+`ErmisChat-Package` build-for-testing plus focused linked-artifact tests.
+The sibling `../ermis-shared-ios` package is also required to build this SDK.
 
-```bash
-swift package edit open-mls-ios --path ../open-mls-ios
-```
+<details>
+<summary>Change log</summary>
+
+- `2026-09-13`: Corrected the linked OpenMLS package description.
+  - Reason: the previous remote-tag instructions disagreed with current `Package.swift`.
+  - Integrator action: ship/verify the vendored generated Swift and XCFramework with the SDK, and test the linked binary.
+  - Compatibility/default: no dependency or runtime behavior changed; old binary must not replace a generation-capable artifact.
+
+</details>
 
 ## Getting started
 
@@ -174,6 +188,45 @@ To logout, call `logout` function in ```ErmisClient```
 ```swift
 client.logout(completion: completion)
 ```
+
+#### Returning session offline reads
+
+For a returning session, `canReadCachedSession(afterConnectionFailure:token:)` can authorize
+displaying saved chat after `connectUser` reports `ConnectionNotSuccessful`. It requires the
+existing network monitor to be explicitly unavailable, a non-expired token and matching current
+account/project/user storage scope, a real SQLite store and a matching cached current-user row.
+Unknown/available networking, server/authentication errors and missing/mismatched cache are denied.
+`ConnectionNotSuccessful.isOffline` recognizes known offline URL/socket-engine causes, including
+the SDK WebSocket wrapper; timeouts, absent causes and server/authentication errors return false.
+Eligibility also excludes the logical SQLite memory store at `/dev/null`. An absent connection cause
+can qualify only with the explicit unavailable monitor and all other cache/account guards.
+Keep first-login admission dependent on authentication. This query does not complete the connection
+or authorize MLS sends; normal connection recovery and synchronization still apply when online.
+
+#### Owner field capture (Debug opt-in)
+
+`MlsFieldLogDestination` is an optional destination for fixed MLS markers only. The Uhm host
+adds it alongside `ConsoleLogDestination` only in Debug `live.sub2s.uhm`, before creating
+its client. Default SDK and production logging remain unchanged. The bundled
+`MlsFieldMarkerContract.json` is the shared enum/regex privacy contract with the workspace exporter.
+
+Two private, backup-excluded files in `Documents/mls-field-capture/` retain at most 256KiB each.
+Original device UTC timestamps are retained. Unknown fields, IDs, trace sequences, epochs,
+plaintext, keys, tokens and raw errors are omitted/rejected before disk. Newline/oversized messages
+are rejected. A recovered write failure leaves a fixed failure marker. Diagnostics run on the
+Logger queue and are best-effort; they do not establish crash atomicity or authorize cursor/readiness.
+Only the opted-in main app is covered, not the notification extension or other processes.
+
+From the workspace root, the read-only exporter lists and copies the fixed files without
+restarting the app:
+
+```sh
+python3 bellboy/scripts/mls_ios_file_capture.py --device <DEVICE_UUID> --bundle live.sub2s.uhm --output <EVIDENCE_PATH>.log --since <SCENARIO_START_UTC>
+```
+
+Keep the adjacent `.log.json` metadata. A validated snapshot is not a passed test: require owner
+confirmation, expected receive/persist chains, adequate retained time coverage, no write-failure
+markers and reviewed source/artifact provenance. Never mix its row counts with console capture.
 
 #### MLS device identity storage
 

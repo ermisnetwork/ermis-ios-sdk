@@ -64,6 +64,9 @@ public class ErmisClient {
     /// Background worker that takes care about client connection recovery when the Internet comes back OR app transitions from background to foreground.
     private(set) var connectionRecoveryHandler: ConnectionRecoveryHandler?
 
+    /// The same monitor used by connection recovery; cached reads must not infer offline from a timeout.
+    private(set) var internetConnection: InternetConnection?
+
     /// The notification center used to send and receive notifications about incoming events.
     private(set) var eventNotificationCenter: EventNotificationCenter
 
@@ -283,6 +286,7 @@ public class ErmisClient {
             mlsClient,
             apiClient
         )
+        e2eRepository.mlsRolloutControls = config.e2eeMlsRolloutControls
         
         let messageRepository = environment.messageRepositoryBuilder(
             databaseContainer,
@@ -403,12 +407,15 @@ public class ErmisClient {
         }
 
         connectionRecoveryHandler = nil
+        let internetConnection = self.internetConnection
+            ?? environment.internetConnection(eventNotificationCenter, environment.internetMonitor)
+        self.internetConnection = internetConnection
         connectionRecoveryHandler = environment.connectionRecoveryHandlerBuilder(
             webSocketClient,
             eventNotificationCenter,
             extensionLifecycle,
             environment.backgroundTaskSchedulerBuilder(),
-            environment.internetConnection(eventNotificationCenter, environment.internetMonitor),
+            internetConnection,
             config.continueConnectSocketInBackground
         )
     }
@@ -472,8 +479,55 @@ public class ErmisClient {
         authenticationRepository.connectUser(
             userInfo: userInfo,
             tokenProvider: tokenProvider,
-            completion: { completion?($0) }
+            completion: { error in
+                log.info("mls_auth_checkpoint stage=connect result=\(error == nil ? "accepted" : "rejected")", subsystems: .mls)
+                if let error { log.info(ErmisAuthenticationDiagnostics.marker(for: error), subsystems: .mls) }
+                completion?(error)
+            }
         )
+    }
+
+    /// Whether a returning app may display this account's saved chat after an offline connection failure.
+    /// This is local read eligibility only: it does not authenticate a session, complete a connection,
+    /// or authorize sending. First-login admission remains the host application's responsibility.
+    public func canReadCachedSession(afterConnectionFailure error: Error, token: Token) -> Bool {
+        func denied(_ reason: StaticString) -> Bool {
+            log.info("mls_cached_session_checkpoint result=blocked reason=\(reason)", subsystems: .mls)
+            return false
+        }
+        guard let connectionError = error as? ClientError.ConnectionNotSuccessful else {
+            return denied("connection_type")
+        }
+        guard internetConnection?.status == .unavailable else {
+            return denied(internetConnection?.status.isAvailable == true ? "network_available" : "network_unknown")
+        }
+        guard !token.isExpired else { return denied("token_expired") }
+        guard currentUserId == token.userId else { return denied("account") }
+        guard projectId == token.projectId else { return denied("project") }
+        guard config.isLocalStorageEnabled else { return denied("storage_disabled") }
+        guard config.localStorageScope == .user(token.userId) else { return denied("scope") }
+
+        // A server rejection must remain a failure even if the network disappeared afterwards.
+        if connectionError.underlyingError != nil, !connectionError.isOffline {
+            return denied("connection_other")
+        }
+
+        var hasCachedAccount = false
+        var reason: StaticString = "cache_missing"
+        databaseContainer.viewContext.performAndWait {
+            guard databaseContainer.persistentStoreCoordinator.persistentStores.contains(where: {
+                // Logical memory storage is also SQLite on supported iOS versions, backed by /dev/null.
+                $0.type == NSSQLiteStoreType && $0.url?.isFileURL == true && $0.url?.path != "/dev/null"
+            }) else {
+                reason = "memory_store"
+                return
+            }
+            guard databaseContainer.viewContext.currentUser != nil else { return }
+            reason = "cached_account"
+            hasCachedAccount = databaseContainer.viewContext.currentUser?
+                .user(of: token.projectId)?.userId == token.userId
+        }
+        return hasCachedAccount ? true : denied(reason)
     }
 
     public func register(email: String, password: String, apiKey: String, completion: @escaping ((Result<EmptyResponse, Error>) -> Void)) {
@@ -967,6 +1021,17 @@ public class ErmisClient {
         }
     }
 
+    /// Renews the connected session using its installed token provider. The same
+    /// single-flight and credential validation used for an expired-token response apply.
+    /// This does not log out the user or reset local MLS state.
+    public func refreshAuthentication(completion: @escaping (Error?) -> Void) {
+        guard currentUserId != nil else {
+            completion(ClientError.MissingTokenProvider())
+            return
+        }
+        authenticationRepository.refreshToken(completion: completion)
+    }
+
     public func ermisRefreshToken(_ token: Token, refreshToken: String, completion: @escaping ((Result<AuthenticationPayload, Error>) -> Void)) {
         apiClient.refreshTokenRequest(endpoint: .refreshToken(token, refresToken: refreshToken), completion: completion)
     }
@@ -1005,31 +1070,29 @@ public class ErmisClient {
                 return
             }
             if let initialToken = refreshTokenHelper.consumeInitialTokenIfValid() {
+                log.info("mls_auth_checkpoint stage=initial_token result=accepted", subsystems: .mls)
                 completion(.success(initialToken))
                 return
             }
 
-            guard let refreshToken = refreshTokenHelper.refreshToken else {
-                let error = ClientError("Token refresh failed with error: Can't not find refresh token")
+            guard let refreshToken = refreshTokenHelper.refreshToken, !refreshToken.isEmpty else {
+                log.info("mls_auth_checkpoint stage=refresh_token result=missing", subsystems: .mls)
+                let error = ClientError.MissingRefreshToken()
                 completion(.failure(error))
                 return
             }
 
-            self.ermisRefreshToken(refreshTokenHelper.token, refreshToken: refreshToken) { [weak self] result in
+            log.info("mls_auth_checkpoint stage=refresh_token result=started", subsystems: .mls)
+            refreshTokenHelper.loadRefreshedToken(request: { previous, refresh, callback in
+                self.ermisRefreshToken(previous, refreshToken: refresh, completion: callback)
+            }) { result in
                 switch result {
-                case .success(let authResponse):
-                    if let token = try? Token(rawValue: authResponse.token) {
-                        refreshTokenHelper.update(
-                            token: token,
-                            refreshToken: authResponse.refreshToken
-                        )
-                        refreshTokenHelper.onAuthorizationChanged?(authResponse)
-                        completion(.success(token))
-                    } else {
-                        let error = ClientError("Can't refresh token")
-                        completion(.failure(error))
-                    }
+                case .success(let token):
+                    log.info("mls_auth_checkpoint stage=refresh_token result=accepted", subsystems: .mls)
+                    completion(.success(token))
                 case .failure(let error):
+                    log.info("mls_auth_checkpoint stage=refresh_token result=rejected", subsystems: .mls)
+                    log.info(ErmisAuthenticationDiagnostics.marker(for: error), subsystems: .mls)
                     if error is ClientError.ExpiredToken {
                         refreshTokenHelper.onRefreshTokenExpired?()
                         completion(.failure(ClientError.RefreshTokenExpired()))
@@ -1157,9 +1220,8 @@ public class ErmisClient {
                 completion(result.error)
                 return
             }
-            // After accepting, check if the channel is MLS-enabled.
-            // If so, perform an external join so the device can decrypt messages,
-            // then trigger an E2E sync for that channel.
+            // Reconcile server membership before the ordered MLS bootstrap; do not
+            // depend on this device receiving its own accept notification.
             var isMlsEnabled = false
             self.databaseContainer.viewContext.performAndWait {
                 if let dto = ChannelDTO.load(cid: cid, context: self.databaseContainer.viewContext) {
@@ -1170,7 +1232,7 @@ public class ErmisClient {
                 completion(nil)
                 return
             }
-            self.e2eRepository.performE2eChannelSync(cid: cid)
+            self.e2eRepository.reconcileAcceptedMembership(in: cid)
             completion(result.error)
         }
     }
@@ -1291,6 +1353,18 @@ extension ClientError {
     }
 
     public class ConnectionNotSuccessful: ClientError {
+        /// True only for recognized offline transport causes, including the SDK's socket/engine wrappers.
+        /// A timeout, absent cause or server/authentication rejection is not an offline cause.
+        public var isOffline: Bool {
+            let cause: Error?
+            if let socketError = underlyingError as? ClientError.WebSocket {
+                cause = socketError.underlyingError
+            } else {
+                cause = underlyingError
+            }
+            return cause?.isInternetOfflineError == true
+        }
+
         override public var localizedDescription: String {
             """
             Connection to the API has failed.

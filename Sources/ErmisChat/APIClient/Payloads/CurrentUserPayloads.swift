@@ -14,6 +14,10 @@ class CurrentUserPayload: UserPayload {
     let unreadCount: UnreadCount?
     /// Number of key packages remaining on the server
     let keyPackagesRemaining: Int?
+    /// Server-owned KeyPackage target for the current device.
+    let keyPackageRefillTarget: Int?
+    /// Server-owned threshold that opens a durable refill demand.
+    let keyPackageRefillLowWatermark: Int?
 
     init(
         id: String,
@@ -39,12 +43,16 @@ class CurrentUserPayload: UserPayload {
         isEmailVerified: Bool,
         bellBoyId: String,
         aboutMe: String,
-        keyPackagesRemaining: Int? = nil
+        keyPackagesRemaining: Int? = nil,
+        keyPackageRefillTarget: Int? = nil,
+        keyPackageRefillLowWatermark: Int? = nil
     ) {
         self.devices = devices
         self.mutedUsers = mutedUsers
         self.unreadCount = unreadCount
         self.keyPackagesRemaining = keyPackagesRemaining
+        self.keyPackageRefillTarget = keyPackageRefillTarget
+        self.keyPackageRefillLowWatermark = keyPackageRefillLowWatermark
         
         super.init(
             id: id,
@@ -75,6 +83,11 @@ class CurrentUserPayload: UserPayload {
         mutedUsers = try container.decodeIfPresent([MutedUserPayload].self, forKey: .mutedUsers) ?? []
         unreadCount = try? UnreadCount(from: decoder)
         keyPackagesRemaining = try container.decodeIfPresent(Int.self, forKey: .keyPackagesRemaining)
+        keyPackageRefillTarget = try container.decodeIfPresent(Int.self, forKey: .keyPackageRefillTarget)
+        keyPackageRefillLowWatermark = try container.decodeIfPresent(
+            Int.self,
+            forKey: .keyPackageRefillLowWatermark
+        )
 
         try super.init(from: decoder)
     }

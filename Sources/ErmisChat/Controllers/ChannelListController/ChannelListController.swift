@@ -329,6 +329,15 @@ extension ChannelListController: EventsControllerDelegate {
     public func eventsController(_ controller: EventsController, didReceiveEvent event: Event) {
         if let channelAddedEvent = event as? NotificationAddedToChannelEvent {
             linkChannelIfNeeded(channelAddedEvent.channel)
+        } else if let membershipEvent = event as? ChannelMembershipRefreshedEvent {
+            linkChannelIfNeeded(membershipEvent.channel)
+        } else if let acceptedEvent = event as? NotificationInviteRespondBackEvent,
+                  acceptedEvent.respondBackType == .accept,
+                  acceptedEvent.member.userId == client.currentUserId {
+            linkChannelIfNeeded(acceptedEvent.channel)
+        } else if let removedEvent = event as? MemberRemovedEvent,
+                  removedEvent.member.userId == client.currentUserId {
+            _watchedLinkedCids.mutate { $0.remove(removedEvent.cid) }
         } else if let messageNewEvent = event as? MessageNewEvent {
             linkChannelIfNeeded(messageNewEvent.channel)
         } else if let messageNewEvent = event as? NotificationMessageNewEvent {

@@ -12,6 +12,8 @@ public class HealthCheckEvent: ConnectionEvent, EventDTO {
     public let connectionId: String
     public let projectId: String?
     let keyPackagesRemaining: Int?
+    let keyPackageRefillTarget: Int?
+    let keyPackageRefillLowWatermark: Int?
     var currentUser: CurrentUserPayload?
     let payload: EventPayload
 
@@ -23,6 +25,8 @@ public class HealthCheckEvent: ConnectionEvent, EventDTO {
         self.currentUser = eventResponse.currentUser
         self.projectId = eventResponse.projectId
         self.keyPackagesRemaining = eventResponse.currentUser?.keyPackagesRemaining
+        self.keyPackageRefillTarget = eventResponse.currentUser?.keyPackageRefillTarget
+        self.keyPackageRefillLowWatermark = eventResponse.currentUser?.keyPackageRefillLowWatermark
         payload = eventResponse
     }
 
@@ -30,6 +34,8 @@ public class HealthCheckEvent: ConnectionEvent, EventDTO {
         self.connectionId = connectionId
         self.projectId = nil
         self.keyPackagesRemaining = nil
+        self.keyPackageRefillTarget = nil
+        self.keyPackageRefillLowWatermark = nil
         payload = EventPayload(
             eventType: .healthCheck,
             connectionId: connectionId,

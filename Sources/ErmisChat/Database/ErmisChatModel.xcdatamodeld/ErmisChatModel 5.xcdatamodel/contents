@@ -263,6 +263,7 @@
         <attribute name="mentionedAll" attributeType="Boolean" usesScalarValueType="YES"/>
         <attribute name="mentionedUserIds" optional="YES" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer"/>
         <attribute name="mlsEpoch" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
+        <attribute name="mlsGroupGeneration" optional="YES" attributeType="Integer 64" defaultValueString="0" usesScalarValueType="YES"/>
         <attribute name="newestReplyAt" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
         <attribute name="originalLanguage" optional="YES" attributeType="String"/>
         <attribute name="ownReactions" attributeType="Transformable" valueTransformerName="NSSecureUnarchiveFromDataTransformer"/>

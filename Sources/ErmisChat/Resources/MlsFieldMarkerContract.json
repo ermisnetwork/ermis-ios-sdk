@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "maximum_input_bytes": 4096,
+  "maximum_marker_bytes": 512,
+  "plain_patterns": [
+    "(?:mls_application_checkpoint|application_checkpoint) stage=(plaintext_prepared|provider_saved|proof_finalized|decoded_committed|cursor_replay|consumed_replay|cache_replay|scope_cursor_saved|legacy_cache|retire|cursor_identity) result=(stored|proof_reused|recovered|retryable|committed|legacy_committed|proof_unavailable|proof_missing|provider_state_reconciled|consumed_proof_reused|missing)(?![a-z_])",
+    "mls_scope_cursor_checkpoint result=committed scopes=1(?![0-9])",
+    "mls_decrypt_failed category=(group_missing|provider_save|epoch_mismatch|consumed|process|unexpected)(?![a-z_])",
+    "mls_scope_cursor_save_failed category=preferences(?![a-z_])",
+    "mls_storage_checkpoint mode=(account_disk|legacy_disk|disk|memory) result=(selected|loaded|path_unavailable|setup_failed|load_failed)(?![a-z_])",
+    "mls_cached_session_checkpoint result=(admitted|blocked)(?![a-z_])(?: reason=(connection_type|network_available|network_unknown|token_expired|account|project|storage_disabled|scope|connection_other|memory_store|cache_missing|cached_account)(?![a-z_]))?",
+    "mls_connection_failure category=(offline|other)(?![a-z_])",
+    "mls_history_state result=incomplete source=server_reason(?![a-z_])",
+    "(?:scope_sync_checkpoint result=no_progress|receive_checkpoint category=(?:sync_wait|future_epoch|past_epoch|decrypt_error|consumed_no_proof))(?![a-z_])",
+    "scope_sync_state status=(idle|syncing|needs_retry|ready|joined_welcome|joined_external|pending_external_join|stale_group_info|skipped|failed) buffered=(present|empty)(?![a-z_])",
+    "mls_commit_failed mode=(historical|live) category=(epoch_gap|process)(?![a-z_])",
+    "mls_application_skipped reason=own_echo_with_cache(?![a-z_])",
+    "(?:mls_scope_apply_barrier result=held|mls_application_deferred reason=decrypt_retryable|mls_scope_scan_blocked category=(?:no_progress|cursor_identity))(?![a-z_])",
+    "(?:mls_historical_replay_blocked category=event_processing|mls_welcome_failed category=(?:checkpoint|process)|mls_scope_sync_failed category=transport)(?![a-z_])",
+    "mls_recovery_local_group result=preserved generation=(legacy|current)(?![a-z_])",
+    "mls_field_log_checkpoint result=(started|write_failed)",
+    "mls_membership_refresh result=(started|coalesced|joined|not_joined|failed|superseded)(?![a-z_])",
+    "mls_membership_signal type=(member_added|member_updated|member_joined|invite_accepted) result=refresh(?![a-z_])",
+    "mls_auth_checkpoint stage=(initial_token|refresh_token|connect|persisted_token) result=(accepted|missing|started|invalid|rejected|stored|discarded)(?![a-z_])",
+    "mls_membership_validation role=(owner|admin|moder|member|pending|rejected|skipped|unknown) banned=(true|false|unknown) blocked=(true|false|unknown)(?![a-z_])",
+    "mls_auth_failure category=(api|offline|transport|other) http_status=(0|[1-5][0-9]{2}) code=(-?[0-9]{1,6})(?![0-9a-z_])"
+  ],
+  "join_stages": [
+    "application_epoch_classified",
+    "bootstrap_finished",
+    "bootstrap_postsync_finished",
+    "bootstrap_presync_finished",
+    "bootstrap_started",
+    "commit_applied",
+    "commit_epoch_classified",
+    "commit_skipped",
+    "current_user_removed",
+    "external_commit_accepted",
+    "external_commit_finalize_selected",
+    "external_commit_finalized",
+    "external_commit_finalizing",
+    "external_commit_merge_failed",
+    "external_commit_merged",
+    "external_commit_request_failed",
+    "external_join_failed",
+    "external_join_finished",
+    "external_join_group_created",
+    "external_join_group_info_failed",
+    "external_join_identity_missing",
+    "external_join_recovery_failed",
+    "external_join_recovery_finished",
+    "external_join_recovery_merged",
+    "external_join_recovery_selected",
+    "external_join_retry_scheduled",
+    "external_join_selected",
+    "external_join_started",
+    "generation_external_join_failed",
+    "generation_repair_export_failed",
+    "generation_repair_failed",
+    "group_info_publish_failed",
+    "group_info_published",
+    "group_info_received",
+    "group_info_request_failed",
+    "group_info_requested",
+    "invite_accept_followup",
+    "invite_accepted",
+    "invite_response_received",
+    "join_receipt_discarded",
+    "join_receipt_prepare_failed",
+    "join_receipt_prepared",
+    "join_receipt_preparing",
+    "join_receipt_read_failed",
+    "join_receipt_recovery_started",
+    "local_group_delete_failed",
+    "local_group_delete_finished",
+    "protocol_apply_started",
+    "protocol_deferred",
+    "protocol_ignored",
+    "protocol_processing_failed",
+    "protocol_received",
+    "readiness_changed",
+    "rebootstrap_claim_failed",
+    "rebootstrap_claim_intent_failed",
+    "rebootstrap_preparation_failed",
+    "rebootstrap_receipt_apply_failed",
+    "welcome_anchor_persist_failed",
+    "welcome_anchor_persisted",
+    "welcome_fallback_requested",
+    "welcome_join_failed",
+    "welcome_joined",
+    "welcome_processing",
+    "welcome_rejected",
+    "welcome_skipped"
+  ],
+  "join_sources": [
+    "bootstrap",
+    "external_join",
+    "generation_state",
+    "operation_receipt",
+    "readiness",
+    "recovery",
+    "scope_sync",
+    "websocket"
+  ],
+  "join_fields": [
+    {
+      "name": "protocol_type",
+      "values": [
+        "commit",
+        "external_commit",
+        "proposal",
+        "welcome"
+      ]
+    },
+    {
+      "name": "reason",
+      "values": [
+        "current_device",
+        "durable_apply_required",
+        "durable_repair",
+        "group_exists",
+        "group_missing",
+        "no_matching_keypackage",
+        "not_targeted",
+        "not_targeted_device",
+        "payload_invalid"
+      ]
+    },
+    {
+      "name": "group_loaded",
+      "values": [
+        "false",
+        "true"
+      ]
+    },
+    {
+      "name": "targeted_current_user",
+      "values": [
+        "false",
+        "true"
+      ]
+    },
+    {
+      "name": "external_join_scheduled",
+      "values": [
+        "false",
+        "true"
+      ]
+    },
+    {
+      "name": "deferred_sync",
+      "values": [
+        "false",
+        "true"
+      ]
+    },
+    {
+      "name": "error_category",
+      "values": [
+        "api",
+        "mls",
+        "other",
+        "storage",
+        "transport"
+      ]
+    },
+    {
+      "name": "readiness",
+      "values": [
+        "clientUpgradeRequired",
+        "failed",
+        "joining",
+        "needsRetry",
+        "ready",
+        "rebootstrapping",
+        "syncing",
+        "waitingForRepair"
+      ]
+    }
+  ]
+}

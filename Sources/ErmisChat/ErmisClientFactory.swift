@@ -106,6 +106,7 @@ class ErmisClientFactory {
                     // Internal/test initializers can still reach this branch. Preserve the legacy
                     // API-key path; the public initializer always resolves `.automatic` first.
                     dbFileURL = storeURL.appendingPathComponent(config.apiKey.apiKeyString)
+                    log.info("mls_storage_checkpoint mode=legacy_disk result=selected", subsystems: .mls)
                 case .inMemory:
                     preconditionFailure("The in-memory scope must not create an on-disk store.")
                 case .user(let userId):
@@ -123,6 +124,7 @@ class ErmisClientFactory {
                         destinationURL: dbFileURL,
                         userId: userId
                     )
+                    log.info("mls_storage_checkpoint mode=account_disk result=selected", subsystems: .mls)
                 }
                 return environment.databaseContainerBuilder(
                     .onDisk(databaseFileURL: dbFileURL),
@@ -135,12 +137,15 @@ class ErmisClientFactory {
             }
 
         } catch is ClientError.MissingLocalStorageURL {
+            log.error("mls_storage_checkpoint mode=memory result=path_unavailable", subsystems: .mls)
             log.assertionFailure("The URL provided in ErmisClientConfig can't be `nil`. Falling back to the in-memory option.")
 
         } catch {
+            log.error("mls_storage_checkpoint mode=memory result=setup_failed", subsystems: .mls)
             log.error("Failed to initialize the local storage with error: \(error). Falling back to the in-memory option.")
         }
 
+        log.info("mls_storage_checkpoint mode=memory result=selected", subsystems: .mls)
         return environment.databaseContainerBuilder(
             .inMemory,
             config.shouldFlushLocalStorageOnStart,

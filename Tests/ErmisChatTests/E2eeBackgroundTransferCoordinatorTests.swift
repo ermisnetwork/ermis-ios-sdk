@@ -663,6 +663,166 @@ final class E2eeBackgroundTransferCoordinatorTests: XCTestCase {
         XCTAssertEqual(repeated.assets.first?.parts.filter { $0.taskToken != nil }.count, 3)
     }
 
+    func testPreparationRetryPreservesActiveMultipartTasksProgressAndETag() throws {
+        let descriptor = E2eeBackgroundSessionDescriptor(
+            bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",
+            endpoint: try XCTUnwrap(URL(string: "https://chat.example.test")),
+            applicationGroupIdentifier: nil
+        )
+        let scopedRoot = directory
+            .appendingPathComponent("sessions", isDirectory: true)
+            .appendingPathComponent(descriptor.storageNamespace, isDirectory: true)
+        let stagingStore = E2eeAttachmentStagingStore(
+            rootURL: scopedRoot,
+            capacityProvider: BackgroundFixedCapacityProvider(capacity: UInt64.max)
+        )
+        try stagingStore.prepareEncryptedDirectories()
+        let canonicalURL = stagingStore.canonicalCiphertextDirectory
+            .appendingPathComponent("\(UUID().uuidString).cipher")
+        try Data((0..<50).map(UInt8.init)).write(to: canonicalURL)
+
+        let parts = try (1...5).map { number in
+            PendingE2eeMultipartPart(
+                number: number,
+                offset: UInt64((number - 1) * 10),
+                size: 10,
+                putURL: try XCTUnwrap(URL(string: "https://upload.example.test/part-\(number)")),
+                eTag: number == 1 ? "etag-1" : nil,
+                taskIdentifier: nil,
+                taskToken: nil,
+                localFileURL: nil
+            )
+        }
+        var asset = PendingE2eeAsset(
+            attachmentId: UUID().uuidString,
+            assetId: UUID().uuidString,
+            kind: .original,
+            sourceURL: nil,
+            canonicalCiphertextURL: canonicalURL,
+            ciphertextSize: 50,
+            ciphertextSha256: String(repeating: "a", count: 64),
+            sealedSecret: nil,
+            uploadMode: .multipart,
+            uploadExpiresAt: Date().addingTimeInterval(600),
+            taskIdentifier: nil,
+            taskToken: nil,
+            parts: parts
+        )
+        asset.multipartPartSize = 10
+        asset.multipartUploadId = "opaque-upload"
+        var attempt = PendingE2eeTransferAttempt(
+            accountId: "account-a",
+            messageId: UUID().uuidString,
+            cid: "messaging:\(UUID().uuidString)",
+            phase: .uploading,
+            totalBytes: 50
+        )
+        attempt.completedBytes = 10
+        attempt.assets = [asset]
+
+        let durableStore = E2eeDurableTransferStore(rootURL: scopedRoot)
+        try durableStore.insert(attempt)
+        let coordinator = E2eeBackgroundTransferCoordinator(
+            descriptor: descriptor,
+            rootURL: directory,
+            applicationGroupIdentifier: nil,
+            sessionConfigurationBuilder: { _, _ in
+                let configuration = URLSessionConfiguration.ephemeral
+                configuration.protocolClasses = [HoldingUploadURLProtocol.self]
+                return configuration
+            }
+        )
+
+        let initiallyScheduled = expectation(description: "active multipart tasks scheduled")
+        coordinator.resumeMultipartUploads { result in
+            if case .failure(let error) = result {
+                XCTFail("Unexpected initial scheduling failure: \(error)")
+            }
+            initiallyScheduled.fulfill()
+        }
+        wait(for: [initiallyScheduled], timeout: 2)
+
+        let scheduled = try durableStore.attempt(attemptId: attempt.attemptId)
+        let activeMappings = Dictionary(uniqueKeysWithValues: try XCTUnwrap(
+            scheduled.assets.first
+        ).parts.compactMap { part -> (Int, String)? in
+            guard let taskIdentifier = part.taskIdentifier,
+                  let taskToken = part.taskToken else { return nil }
+            return (taskIdentifier, taskToken)
+        })
+        XCTAssertEqual(activeMappings.count, 3)
+        XCTAssertEqual(scheduled.completedBytes, 10)
+        XCTAssertEqual(scheduled.assets.first?.parts.first?.eTag, "etag-1")
+
+        _ = try durableStore.update(attemptId: attempt.attemptId) { record in
+            record.phase = .failedRetryable
+            record.failureReason = .backgroundTaskMissing
+        }
+        let initializer = UnexpectedAttachmentInitializer()
+        let preparation = E2eeAttachmentPreparationCoordinator(
+            transferCoordinator: coordinator,
+            initializingClient: initializer
+        )
+        preparation.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+
+        let resumed = expectation(description: "active multipart mappings preserved")
+        DispatchQueue.global().async {
+            for _ in 0..<40 {
+                guard let updated = try? durableStore.attempt(attemptId: attempt.attemptId),
+                      updated.failureReason == nil,
+                      let updatedAsset = updated.assets.first else {
+                    usleep(50_000)
+                    continue
+                }
+                let updatedMappings = Dictionary(uniqueKeysWithValues: updatedAsset.parts.compactMap {
+                    part -> (Int, String)? in
+                    guard let taskIdentifier = part.taskIdentifier,
+                          let taskToken = part.taskToken else { return nil }
+                    return (taskIdentifier, taskToken)
+                })
+                if updatedMappings == activeMappings {
+                    resumed.fulfill()
+                    return
+                }
+                usleep(50_000)
+            }
+        }
+        wait(for: [resumed], timeout: 2)
+
+        let updated = try durableStore.attempt(attemptId: attempt.attemptId)
+        XCTAssertTrue([.uploading, .reconciling, .waitingForSystem].contains(updated.phase))
+        XCTAssertEqual(updated.completedBytes, 10)
+        XCTAssertEqual(updated.assets.first?.parts.first?.eTag, "etag-1")
+        XCTAssertEqual(initializer.requestCount, 0)
+
+        preparation.retryAndResumeDurableTransfer(
+            messageId: attempt.messageId,
+            accountId: attempt.accountId
+        )
+        let repeatedRetrySettled = expectation(description: "active retry remains bounded")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) {
+            repeatedRetrySettled.fulfill()
+        }
+        wait(for: [repeatedRetrySettled], timeout: 1)
+        let repeated = try durableStore.attempt(attemptId: attempt.attemptId)
+        let repeatedMappings = Dictionary(uniqueKeysWithValues: try XCTUnwrap(
+            repeated.assets.first
+        ).parts.compactMap { part -> (Int, String)? in
+            guard let taskIdentifier = part.taskIdentifier,
+                  let taskToken = part.taskToken else { return nil }
+            return (taskIdentifier, taskToken)
+        })
+        XCTAssertEqual(repeatedMappings, activeMappings)
+        XCTAssertEqual(initializer.requestCount, 0)
+
+        let canceled = expectation(description: "active multipart tasks canceled")
+        coordinator.cancelTasks(accountId: attempt.accountId) { _ in canceled.fulfill() }
+        wait(for: [canceled], timeout: 2)
+    }
+
     func testRetryRoutesCompletedTransportToFinalizingAndKeepsLocalFailureBlocked() throws {
         let descriptor = E2eeBackgroundSessionDescriptor(
             bundleIdentifier: "network.ermis.tests.\(UUID().uuidString)",
@@ -1258,6 +1418,21 @@ private final class HoldingUploadURLProtocol: URLProtocol {
     override func startLoading() {}
 
     override func stopLoading() {}
+}
+
+private final class UnexpectedAttachmentInitializer: E2eeAttachmentInitializing {
+    private let lock = NSLock()
+    private var requests = 0
+
+    var requestCount: Int { lock.withLock { requests } }
+
+    func initializeE2eeAttachment(
+        cid: ChannelId,
+        request: InitE2eeAttachmentRequest
+    ) async throws -> InitE2eeAttachmentResponse {
+        lock.withLock { requests += 1 }
+        throw E2eeAttachmentPreparationError.invalidInitResponse
+    }
 }
 
 private struct BackgroundFixedCapacityProvider: E2eeAttachmentCapacityProviding {

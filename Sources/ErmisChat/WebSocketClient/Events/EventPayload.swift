@@ -45,9 +45,23 @@ class EventPayload: Decodable {
         case callAction = "action"
         case metadata
         case keyPackagesRemaining = "key_packages_remaining"
+        case idempotencyKey = "idempotency_key"
+        case deviceId = "device_id"
+        case usableCount = "usable_count"
+        case target
+        case requestedDelta = "requested_delta"
+        case generation
         case mlsProtocol = "protocol_data"
         case mlsEnabled = "mls_enabled"
         case selfRemove = "self_remove"
+        case requestId = "request_id"
+        case minimumEpoch = "minimum_epoch"
+        case deadlineAt = "deadline_at"
+        case expiresAt = "expires_at"
+        case attemptCount = "attempt_count"
+        case epoch
+        case hash
+        case version
     }
 
     let eventType: EventType
@@ -86,9 +100,23 @@ class EventPayload: Decodable {
     let callAction: CallAction?
     let metadata: Metadata?
     let keyPackagesRemaining: Int?
+    let idempotencyKey: String?
+    let deviceId: String?
+    let usableCount: Int?
+    let target: Int?
+    let requestedDelta: Int?
+    let generation: Int?
     let mlsProtocol: MLSProtocolMessagePayload?
     let mlsEnabled: Bool?
     let selfRemove: Bool?
+    let requestId: String?
+    let minimumEpoch: Int?
+    let deadlineAt: Date?
+    let expiresAt: Date?
+    let attemptCount: Int?
+    let epoch: Int?
+    let hash: String?
+    let version: Int?
 
     init(
         eventType: EventType,
@@ -126,9 +154,23 @@ class EventPayload: Decodable {
         callAction: CallAction? = nil,
         metadata: Metadata? = nil,
         keyPackagesRemaining: Int? = nil,
+        idempotencyKey: String? = nil,
+        deviceId: String? = nil,
+        usableCount: Int? = nil,
+        target: Int? = nil,
+        requestedDelta: Int? = nil,
+        generation: Int? = nil,
         mlsProtocol: MLSProtocolMessagePayload? = nil,
         mlsEnabled: Bool? = nil,
-        selfRemove: Bool? = nil
+        selfRemove: Bool? = nil,
+        requestId: String? = nil,
+        minimumEpoch: Int? = nil,
+        deadlineAt: Date? = nil,
+        expiresAt: Date? = nil,
+        attemptCount: Int? = nil,
+        epoch: Int? = nil,
+        hash: String? = nil,
+        version: Int? = nil
     ) {
         self.eventType = eventType
         self.connectionId = connectionId
@@ -165,9 +207,23 @@ class EventPayload: Decodable {
         self.channelId = channelId
         self.metadata = metadata
         self.keyPackagesRemaining = keyPackagesRemaining
+        self.idempotencyKey = idempotencyKey
+        self.deviceId = deviceId
+        self.usableCount = usableCount
+        self.target = target
+        self.requestedDelta = requestedDelta
+        self.generation = generation
         self.mlsProtocol = mlsProtocol
         self.mlsEnabled = mlsEnabled
         self.selfRemove = selfRemove
+        self.requestId = requestId
+        self.minimumEpoch = minimumEpoch
+        self.deadlineAt = deadlineAt
+        self.expiresAt = expiresAt
+        self.attemptCount = attemptCount
+        self.epoch = epoch
+        self.hash = hash
+        self.version = version
     }
 
     required init(from decoder: Decoder) throws {
@@ -209,9 +265,23 @@ class EventPayload: Decodable {
         channelId = try container.decodeIfPresent(String.self, forKey: .channelId)
         metadata = try container.decodeIfPresent(Metadata.self, forKey: .metadata)
         keyPackagesRemaining = try container.decodeIfPresent(Int.self, forKey: .keyPackagesRemaining)
+        idempotencyKey = try container.decodeIfPresent(String.self, forKey: .idempotencyKey)
+        deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
+        usableCount = try container.decodeIfPresent(Int.self, forKey: .usableCount)
+        target = try container.decodeIfPresent(Int.self, forKey: .target)
+        requestedDelta = try container.decodeIfPresent(Int.self, forKey: .requestedDelta)
+        generation = try container.decodeIfPresent(Int.self, forKey: .generation)
         mlsProtocol = try container.decodeIfPresent(MLSProtocolMessagePayload.self, forKey: .mlsProtocol)
         mlsEnabled = try container.decodeIfPresent(Bool.self, forKey: .mlsEnabled)
         selfRemove = try container.decodeIfPresent(Bool.self, forKey: .selfRemove)
+        requestId = try container.decodeIfPresent(String.self, forKey: .requestId)
+        minimumEpoch = try container.decodeIfPresent(Int.self, forKey: .minimumEpoch)
+        deadlineAt = try container.decodeIfPresent(Date.self, forKey: .deadlineAt)
+        expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+        attemptCount = try container.decodeIfPresent(Int.self, forKey: .attemptCount)
+        epoch = try container.decodeIfPresent(Int.self, forKey: .epoch)
+        hash = try container.decodeIfPresent(String.self, forKey: .hash)
+        version = try container.decodeIfPresent(Int.self, forKey: .version)
     }
 
     func event() throws -> Event {

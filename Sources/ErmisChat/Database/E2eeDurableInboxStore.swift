@@ -12,6 +12,7 @@ import Foundation
 /// complete local transaction.
 final class E2eeDurableInboxStore {
     static let supersededCommitCategory = "protocol_superseded"
+    static let noMatchingKeyPackageJoinCategory = "welcome_no_matching_key_package"
 
     struct Limits: Equatable {
         let scopeWarningCount: Int
@@ -1161,6 +1162,75 @@ final class E2eeDurableInboxStore {
                 details: details,
                 context: context
             )
+        }
+    }
+
+    /// Persists the only prerequisite that authorizes the partial-Welcome external-join path.
+    /// Replaying the same Welcome is idempotent and retains the original evidence row.
+    func recordNoMatchingKeyPackageJoinPrerequisite(
+        accountId: String,
+        scopeCid: String,
+        eventId: String
+    ) throws {
+        try database.writeAndWait { context in
+            guard let context = context as? NSManagedObjectContext else {
+                throw ClientError.Unexpected("Core Data writer context is unavailable.")
+            }
+            let request = NSFetchRequest<E2eeRepairIssueDTO>(entityName: E2eeRepairIssueDTO.entityName)
+            request.predicate = NSPredicate(
+                format: "accountId == %@ AND scopeCid == %@ AND eventId == %@ AND category == %@ AND resolvedAt == nil",
+                accountId,
+                scopeCid,
+                eventId,
+                Self.noMatchingKeyPackageJoinCategory
+            )
+            request.fetchLimit = 1
+            guard try context.fetch(request).isEmpty else { return }
+            E2eeRepairIssueDTO.create(
+                accountId: accountId,
+                scopeCid: scopeCid,
+                eventId: eventId,
+                category: Self.noMatchingKeyPackageJoinCategory,
+                details: nil,
+                context: context
+            )
+        }
+    }
+
+    func hasNoMatchingKeyPackageJoinPrerequisite(
+        accountId: String,
+        scopeCid: String
+    ) throws -> Bool {
+        try readAndWait { context in
+            let request = NSFetchRequest<E2eeRepairIssueDTO>(entityName: E2eeRepairIssueDTO.entityName)
+            request.predicate = NSPredicate(
+                format: "accountId == %@ AND scopeCid == %@ AND category == %@ AND resolvedAt == nil",
+                accountId,
+                scopeCid,
+                Self.noMatchingKeyPackageJoinCategory
+            )
+            request.fetchLimit = 1
+            return try context.count(for: request) > 0
+        }
+    }
+
+    func clearNoMatchingKeyPackageJoinPrerequisite(
+        accountId: String,
+        scopeCid: String
+    ) throws {
+        try database.writeAndWait { context in
+            guard let context = context as? NSManagedObjectContext else {
+                throw ClientError.Unexpected("Core Data writer context is unavailable.")
+            }
+            let request = NSFetchRequest<E2eeRepairIssueDTO>(entityName: E2eeRepairIssueDTO.entityName)
+            request.predicate = NSPredicate(
+                format: "accountId == %@ AND scopeCid == %@ AND category == %@ AND resolvedAt == nil",
+                accountId,
+                scopeCid,
+                Self.noMatchingKeyPackageJoinCategory
+            )
+            let resolvedAt = Date().bridgeDate
+            try context.fetch(request).forEach { $0.resolvedAt = resolvedAt }
         }
     }
 

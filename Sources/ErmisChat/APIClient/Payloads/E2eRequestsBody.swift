@@ -4,27 +4,184 @@
 
 import Foundation
 
+struct E2eeMlsRolloutTelemetryRequestBody: Encodable {
+    let platform = "ios"
+    let observations: [E2eeMlsRolloutMetricObservation]
+}
+
 /// Request body for uploading GroupInfo after a successful MLS commit.
 public struct UploadGroupInfoRequestBody: Encodable {
     /// TLS-serialized GroupInfo bytes.
     public let groupInfo: [UInt8]
     /// New epoch after the commit.
     public let epoch: Int
+    public let requestId: String?
+    public let leaseToken: String?
 
-    public init(groupInfo: Data, epoch: Int) {
+    public init(groupInfo: Data, epoch: Int, requestId: String? = nil, leaseToken: String? = nil) {
         self.groupInfo = groupInfo.uint8Array
         self.epoch = epoch
+        self.requestId = requestId
+        self.leaseToken = leaseToken
     }
 
     enum CodingKeys: String, CodingKey {
         case groupInfo = "group_info"
         case epoch
+        case requestId = "request_id"
+        case leaseToken = "lease_token"
     }
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
         try container.encode(epoch, forKey: .epoch)
+        try container.encodeIfPresent(requestId, forKey: .requestId)
+        try container.encodeIfPresent(leaseToken, forKey: .leaseToken)
+    }
+}
+
+struct ClaimGroupInfoRefreshRequestBody: Encodable {
+    let requestId: String
+
+    enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+    }
+}
+
+struct ReportGroupInfoFailureRequestBody: Encodable {
+    let reason: String
+    let observedEpoch: Int
+    let observedHash: String
+
+    enum CodingKeys: String, CodingKey {
+        case reason
+        case observedEpoch = "observed_epoch"
+        case observedHash = "observed_hash"
+    }
+}
+
+struct ClaimMlsRebootstrapRequestBody: Encodable, Equatable {
+    let operationKey: String
+    let expectedGeneration: Int
+    let expectedEpoch: Int
+    let protocolVersion: Int
+
+    enum CodingKeys: String, CodingKey {
+        case operationKey = "operation_key"
+        case expectedGeneration = "expected_generation"
+        case expectedEpoch = "expected_epoch"
+        case protocolVersion = "protocol_version"
+    }
+}
+
+struct MlsRebootstrapRecipientBody: Codable, Equatable {
+    let userId: String
+    let deviceId: String
+    let keyPackageId: String
+
+    enum CodingKeys: String, CodingKey {
+        case userId = "user_id"
+        case deviceId = "device_id"
+        case keyPackageId = "key_package_id"
+    }
+}
+
+struct CompleteMlsRebootstrapRequestBody: Codable, Equatable {
+    let operationId: String
+    let operationKey: String
+    let leaseToken: String
+    let expectedGeneration: Int
+    let expectedEpoch: Int
+    let newGeneration: Int
+    let newEpoch: Int
+    let membershipVersion: String
+    let groupId: [UInt8]
+    let groupInfo: [UInt8]
+    let ratchetTree: [UInt8]
+    let welcome: [UInt8]?
+    let recipients: [MlsRebootstrapRecipientBody]
+
+    enum CodingKeys: String, CodingKey {
+        case operationId = "operation_id"
+        case operationKey = "operation_key"
+        case leaseToken = "lease_token"
+        case expectedGeneration = "expected_generation"
+        case expectedEpoch = "expected_epoch"
+        case newGeneration = "new_generation"
+        case newEpoch = "new_epoch"
+        case membershipVersion = "membership_version"
+        case groupId = "group_id"
+        case groupInfo = "group_info"
+        case ratchetTree = "ratchet_tree"
+        case welcome
+        case recipients
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(operationId, forKey: .operationId)
+        try container.encode(operationKey, forKey: .operationKey)
+        try container.encode(leaseToken, forKey: .leaseToken)
+        try container.encode(expectedGeneration, forKey: .expectedGeneration)
+        try container.encode(expectedEpoch, forKey: .expectedEpoch)
+        try container.encode(newGeneration, forKey: .newGeneration)
+        try container.encode(newEpoch, forKey: .newEpoch)
+        try container.encode(membershipVersion, forKey: .membershipVersion)
+        try container.encodeE2eeBytes(groupId, forKey: .groupId)
+        try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
+        try container.encodeE2eeBytes(ratchetTree, forKey: .ratchetTree)
+        if let welcome {
+            try container.encodeE2eeBytes(welcome, forKey: .welcome)
+        }
+        try container.encode(recipients, forKey: .recipients)
+    }
+
+    init(
+        operationId: String,
+        operationKey: String,
+        leaseToken: String,
+        expectedGeneration: Int,
+        expectedEpoch: Int,
+        newGeneration: Int,
+        newEpoch: Int,
+        membershipVersion: String,
+        groupId: [UInt8],
+        groupInfo: [UInt8],
+        ratchetTree: [UInt8],
+        welcome: [UInt8]?,
+        recipients: [MlsRebootstrapRecipientBody]
+    ) {
+        self.operationId = operationId
+        self.operationKey = operationKey
+        self.leaseToken = leaseToken
+        self.expectedGeneration = expectedGeneration
+        self.expectedEpoch = expectedEpoch
+        self.newGeneration = newGeneration
+        self.newEpoch = newEpoch
+        self.membershipVersion = membershipVersion
+        self.groupId = groupId
+        self.groupInfo = groupInfo
+        self.ratchetTree = ratchetTree
+        self.welcome = welcome
+        self.recipients = recipients
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        operationId = try container.decode(String.self, forKey: .operationId)
+        operationKey = try container.decode(String.self, forKey: .operationKey)
+        leaseToken = try container.decode(String.self, forKey: .leaseToken)
+        expectedGeneration = try container.decode(Int.self, forKey: .expectedGeneration)
+        expectedEpoch = try container.decode(Int.self, forKey: .expectedEpoch)
+        newGeneration = try container.decode(Int.self, forKey: .newGeneration)
+        newEpoch = try container.decode(Int.self, forKey: .newEpoch)
+        membershipVersion = try container.decode(String.self, forKey: .membershipVersion)
+        groupId = try container.decodeE2eeBytes(forKey: .groupId)
+        groupInfo = try container.decodeE2eeBytes(forKey: .groupInfo)
+        ratchetTree = try container.decodeE2eeBytes(forKey: .ratchetTree)
+        welcome = try container.decodeE2eeBytesIfPresent(forKey: .welcome)
+        recipients = try container.decode([MlsRebootstrapRecipientBody].self, forKey: .recipients)
     }
 }
 
@@ -34,14 +191,25 @@ public struct ExternalJoinRequestBody: Encodable {
     public let commit: [UInt8]
     /// New epoch after the external join.
     public let epoch: Int
+    public let groupGeneration: Int
+    public let groupId: [UInt8]?
     /// Project ID (required for ermis app).
     public let projectId: String?
     /// Two member IDs used to compute `channel_id` via hash (Messaging channels only).
     public let members: [String]?
 
-    public init(commit: Data, epoch: Int, projectId: String? = nil, members: [String]? = nil) {
+    public init(
+        commit: Data,
+        epoch: Int,
+        groupGeneration: Int = 0,
+        groupId: Data? = nil,
+        projectId: String? = nil,
+        members: [String]? = nil
+    ) {
         self.commit = commit.uint8Array
         self.epoch = epoch
+        self.groupGeneration = groupGeneration
+        self.groupId = groupId?.uint8Array
         self.projectId = projectId
         self.members = members
     }
@@ -49,6 +217,8 @@ public struct ExternalJoinRequestBody: Encodable {
     enum CodingKeys: String, CodingKey {
         case commit
         case epoch
+        case groupGeneration = "group_generation"
+        case groupId = "group_id"
         case projectId = "project_id"
         case members
     }
@@ -57,6 +227,10 @@ public struct ExternalJoinRequestBody: Encodable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeE2eeBytes(commit, forKey: .commit)
         try container.encode(epoch, forKey: .epoch)
+        try container.encode(groupGeneration, forKey: .groupGeneration)
+        if let groupId {
+            try container.encodeE2eeBytes(groupId, forKey: .groupId)
+        }
         try container.encodeIfPresent(projectId, forKey: .projectId)
         try container.encodeIfPresent(members, forKey: .members)
     }

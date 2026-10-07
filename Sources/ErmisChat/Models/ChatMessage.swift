@@ -25,6 +25,9 @@ public struct ChatMessage {
 
     public var mlsEpoch: Int?
 
+    /// MLS group generation that produced `encryptedData`. Missing legacy data is generation 0.
+    public var mlsGroupGeneration: Int?
+
     public let oldTexts: [MessageEditHistory]?
 
     /// A type of the message.
@@ -251,6 +254,7 @@ public struct ChatMessage {
         text: String,
         encryptedData: Data?,
         mlsEpoch: Int?,
+        mlsGroupGeneration: Int? = nil,
         oldTexts: [MessageEditHistory]?,
         type: MessageType,
         command: String?,
@@ -296,6 +300,7 @@ public struct ChatMessage {
         self.text = text
         self.encryptedData = encryptedData
         self.mlsEpoch = mlsEpoch
+        self.mlsGroupGeneration = mlsGroupGeneration
         self.type = type
         self.oldTexts = oldTexts
         self.command = command

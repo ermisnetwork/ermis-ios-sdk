@@ -15,6 +15,63 @@ public enum ErmisLocalStorageScope: Equatable {
     case user(UserId)
 }
 
+public enum E2eeMlsRolloutMetricName: String, Codable, Sendable {
+    case externalJoinFallback = "external_join_fallback"
+    case delayedCommit = "delayed_commit"
+}
+
+public enum E2eeMlsRolloutMetricOutcome: String, Codable, Sendable {
+    case attempt
+    case success
+    case failure
+    case disabled
+}
+
+public enum E2eeMlsRolloutMetricReason: String, Codable, Sendable {
+    case noMatchingKeyPackage = "no_matching_key_package"
+    case rolloutDisabled = "rollout_disabled"
+    case processError = "process_error"
+    case historicalReplayDisabled = "historical_replay_disabled"
+}
+
+public struct E2eeMlsRolloutMetricObservation: Codable, Equatable, Sendable {
+    public let name: E2eeMlsRolloutMetricName
+    public let outcome: E2eeMlsRolloutMetricOutcome
+    public let reason: E2eeMlsRolloutMetricReason?
+
+    public init(
+        name: E2eeMlsRolloutMetricName,
+        outcome: E2eeMlsRolloutMetricOutcome,
+        reason: E2eeMlsRolloutMetricReason? = nil
+    ) {
+        self.name = name
+        self.outcome = outcome
+        self.reason = reason
+    }
+}
+
+public struct E2eeMlsRolloutControls {
+    public var historicalReplayEnabled: Bool
+    public var partialWelcomeFallbackEnabled: Bool
+    public var groupInfoRepairEnabled: Bool
+    public var clientTelemetryEnabled: Bool
+    public var metricObserver: ((E2eeMlsRolloutMetricObservation) -> Void)?
+
+    public init(
+        historicalReplayEnabled: Bool = true,
+        partialWelcomeFallbackEnabled: Bool = true,
+        groupInfoRepairEnabled: Bool = true,
+        clientTelemetryEnabled: Bool = true,
+        metricObserver: ((E2eeMlsRolloutMetricObservation) -> Void)? = nil
+    ) {
+        self.historicalReplayEnabled = historicalReplayEnabled
+        self.partialWelcomeFallbackEnabled = partialWelcomeFallbackEnabled
+        self.groupInfoRepairEnabled = groupInfoRepairEnabled
+        self.clientTelemetryEnabled = clientTelemetryEnabled
+        self.metricObserver = metricObserver
+    }
+}
+
 /// A configuration object used to configure a `ErmisClient` instance.
 ///
 /// The default configuration can be changed the following way:
@@ -28,6 +85,9 @@ public struct ErmisClientConfig {
     /// The `APIKey` unique for your chat app.
     public let apiKey: APIKey
     public var isErmis: Bool = false
+
+    /// Independent, fail-closed controls for staged MLS replay, fallback, and repair rollout.
+    public var e2eeMlsRolloutControls = E2eeMlsRolloutControls()
 
     public var applicationGroupIdentifier: String? {
         didSet {

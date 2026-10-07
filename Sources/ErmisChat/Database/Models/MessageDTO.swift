@@ -26,6 +26,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var text: String
     @NSManaged var encryptedData: Data?
     @NSManaged var mlsEpoch: Int64
+    @NSManaged var mlsGroupGeneration: Int64
     @NSManaged var type: String
     @NSManaged var command: String?
     @NSManaged var createdAt: DBDate
@@ -607,6 +608,7 @@ extension MessageDTO {
         guard channel?.isE2eeEnabled == true else { return }
         encryptedData = nil
         mlsEpoch = 0
+        mlsGroupGeneration = 0
         decryptedMessage?.ciphertextHash = nil
     }
 
@@ -626,6 +628,7 @@ extension MessageDTO {
         }
         encryptedData = nil
         mlsEpoch = rejection.currentGroupEpoch
+        mlsGroupGeneration = 0
         decryptedMessage?.ciphertextHash = nil
         localMessageState = isEdit
             ? .pendingSyncAfterE2eeEpochStale
@@ -757,6 +760,7 @@ extension NSManagedObjectContext: MessageDatabaseSession {
             dto.encryptedData = Data(encryptedData)
         }
         dto.mlsEpoch = Int64(payload.mlsEpoch ?? 0)
+        dto.mlsGroupGeneration = Int64(payload.groupGeneration)
         dto.createdAt = payload.createdAt.bridgeDate
         dto.updatedAt = payload.updatedAt.bridgeDate
         // `preview(for:)` can run later in this same Core Data transaction. Waiting for
@@ -1198,6 +1202,7 @@ extension MessageDTO {
             text: text,
             encryptedData: encryptedData?.uint8Array,
             mslEpoch: encryptedData == nil ? nil : Int(mlsEpoch),
+            groupGeneration: encryptedData == nil ? nil : Int(mlsGroupGeneration),
             oldTexts: Array(oldTexts?.map { MessageEditHistoryPayload(text: $0.text, createdAt: $0.createdAt) } ?? []),
             command: command,
             args: args,
@@ -1248,6 +1253,7 @@ private extension ChatMessage {
         text = dto.text
         encryptedData = dto.encryptedData
         mlsEpoch = Int(dto.mlsEpoch)
+        mlsGroupGeneration = Int(dto.mlsGroupGeneration)
         type = MessageType(rawValue: dto.type) ?? .regular
         oldTexts = dto.oldTexts?.map { $0.asModel() }
         stickerUrl = dto.stickerUrl

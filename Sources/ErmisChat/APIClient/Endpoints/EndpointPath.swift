@@ -114,10 +114,18 @@ enum EndpointPath: Codable {
     case enableEncryption(ChannelId)
     case uploadGroupInfo(ChannelId)
     case getGroupInfo(ChannelId)
+    case getGroupInfoRefresh(ChannelId)
+    case claimGroupInfoRefresh(ChannelId)
+    case reportGroupInfoFailure(ChannelId)
+    case mlsGeneration(ChannelId)
+    case claimMlsRebootstrap(ChannelId)
+    case completeMlsRebootstrap(ChannelId)
+    case mlsRebootstrapReceipt(ChannelId, String)
     case externalJoin(ChannelId)
     case e2eSync
     case e2eChannelSync(ChannelId)
     case commitEviction(ChannelId)
+    case mlsRolloutTelemetry
     case initE2eeAttachment(ChannelId)
     case queryE2eeAttachments(ChannelId)
     case completeE2eeAttachment(ChannelId, String)
@@ -316,6 +324,18 @@ enum EndpointPath: Codable {
             return "v1/e2ee/channels/\(channelId.apiPath)/group_info"
         case .getGroupInfo(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/group_info"
+        case .getGroupInfoRefresh(let channelId), .reportGroupInfoFailure(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/group_info/refresh"
+        case .claimGroupInfoRefresh(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/group_info/refresh/claim"
+        case .mlsGeneration(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/generation"
+        case .claimMlsRebootstrap(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/rebootstrap/claim"
+        case .completeMlsRebootstrap(let channelId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/rebootstrap/complete"
+        case .mlsRebootstrapReceipt(let channelId, let operationId):
+            return "v1/e2ee/channels/\(channelId.apiPath)/rebootstrap/operations/\(operationId)"
         case .externalJoin(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/external_join"
         case .e2eSync:
@@ -324,6 +344,8 @@ enum EndpointPath: Codable {
             return "v1/e2ee/channels/\(channelId.apiPath)/sync"
         case .commitEviction(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/commit_eviction"
+        case .mlsRolloutTelemetry:
+            return "v1/e2ee/rollout/telemetry"
         case .initE2eeAttachment(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/attachments/init"
         case .queryE2eeAttachments(let channelId):

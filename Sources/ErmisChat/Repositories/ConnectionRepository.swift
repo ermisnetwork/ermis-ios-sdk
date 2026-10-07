@@ -82,16 +82,19 @@ class ConnectionRepository {
                 completion?(nil)
             case let .failure(waiterError):
                 // Try to get a concrete error
+                let connectionError: ClientError.ConnectionNotSuccessful
                 if case let .disconnected(source) = webSocketClient?.connectionState {
-                    completion?(ClientError.ConnectionNotSuccessful(with: source.serverError))
+                    connectionError = ClientError.ConnectionNotSuccessful(with: source.serverError)
                 } else {
                     log.error(
                         "Web socket connection did not become healthy: state=\(String(describing: webSocketClient?.connectionState)) "
                             + "error=\(type(of: waiterError))",
                         subsystems: .webSocket
                     )
-                    completion?(ClientError.ConnectionNotSuccessful(with: waiterError))
+                    connectionError = ClientError.ConnectionNotSuccessful(with: waiterError)
                 }
+                log.info("mls_connection_failure category=\(connectionError.isOffline ? "offline" : "other")", subsystems: .mls)
+                completion?(connectionError)
             }
         }
         webSocketClient?.connect()

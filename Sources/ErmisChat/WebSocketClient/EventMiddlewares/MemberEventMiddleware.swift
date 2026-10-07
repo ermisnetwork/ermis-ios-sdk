@@ -11,10 +11,12 @@ struct MemberEventMiddleware: EventMiddleware {
         do {
             switch event {
             case let event as MemberUpdatedEventDTO:
-                try session.saveMember(payload: event.member, channelId: event.cid)
+                let currentUserId = session.currentUser?.user(of: event.cid.projectId)?.userId
+                let member = try session.saveMember(payload: event.member, channelId: event.cid)
                 if let channel = session.channel(cid: event.cid) {
-                    if channel.membership?.user.userId == event.member.userId {
-                        channel.membership = try session.saveMember(payload: event.member, channelId: event.cid)
+                    channel.members.insert(member)
+                    if currentUserId == event.member.userId {
+                        channel.membership = member
                     }
                 }
             case let event as MemberBannedEventDTO:
@@ -22,18 +24,22 @@ struct MemberEventMiddleware: EventMiddleware {
             case let event as MemberUnbannedEventDTO:
                 try session.saveMember(payload: event.member, channelId: event.cid)
             case let event as MemberAddedEventDTO:
+                let currentUserId = session.currentUser?.user(of: event.cid.projectId)?.userId
+                let member = try session.saveMember(payload: event.member, channelId: event.cid)
                 if let channel = session.channel(cid: event.cid) {
-                    let member = try session.saveMember(payload: event.member, channelId: event.cid)
-                    if channel.membership?.user.userId == event.member.userId {
-                        channel.membership = try session.saveMember(payload: event.member, channelId: event.cid)
+                    channel.members.insert(member)
+                    if currentUserId == event.member.userId {
+                        channel.membership = member
                     }
                     insertMemberToMemberListQueries(channel, member)
                 }
             case let event as MemberJoinnedEventDTO:
+                let currentUserId = session.currentUser?.user(of: event.cid.projectId)?.userId
+                let member = try session.saveMember(payload: event.member, channelId: event.cid)
                 if let channel = session.channel(cid: event.cid) {
-                    let member = try session.saveMember(payload: event.member, channelId: event.cid)
-                    if channel.membership == nil {
-                        channel.membership = try session.saveMember(payload: event.member, channelId: event.cid)
+                    channel.members.insert(member)
+                    if currentUserId == event.member.userId {
+                        channel.membership = member
                     }
                     insertMemberToMemberListQueries(channel, member)
                 }
@@ -123,10 +129,19 @@ struct MemberEventMiddleware: EventMiddleware {
                 member.queries.removeAll()
 
             case let event as NotificationInviteAcceptedEventDTO:
-                let channel = try session.channel(cid: event.cid)
+                // Read authentication before saveMember/saveUser can attach a user
+                // from this event's project to CurrentUserDTO's relationships.
+                let currentUserId = session.currentUser?.user(of: event.cid.projectId)?.userId
                 let member = try session.saveMember(payload: event.member, channelId: event.cid)
-                if channel?.membership?.user.userId == member.user.userId {
-                    channel?.membership = member
+                if let channel = session.channel(cid: event.cid) {
+                    channel.members.insert(member)
+                    insertMemberToMemberListQueries(channel, member)
+
+                    // A removal clears membership. Match the authenticated project user
+                    // so acceptance on another device restores this account's membership.
+                    if currentUserId == member.user.userId || channel.membership?.user.userId == member.user.userId {
+                        channel.membership = member
+                    }
                 }
             case let event as NotificationInviteSkippedEventDTO:
                 let member = try session.saveMember(payload: event.member, channelId: event.cid)

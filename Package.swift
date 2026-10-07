@@ -29,10 +29,7 @@ let package = Package(
         .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2"),
 //        .package(url: "https://github.com/ermisnetwork/ermis-shared-ios", exact: "1.0.0"),
         .package(path: "../ermis-shared-ios"),
-        .package(
-            url: "https://github.com/ermisnetwork/open-mls-ios.git",
-            exact: "0.1.0-m0.1"
-        )
+        .package(path: "Vendor/open-mls-ios")
     ],
     targets: [
         .target(
@@ -43,7 +40,7 @@ let package = Package(
                 .product(name: "EventSource", package: "EventSource"),
             ],
             exclude: ["Info.plist"],
-            resources: [.copy("Database/ErmisChatModel.xcdatamodeld")]
+            resources: [.process("Database/ErmisChatModel.xcdatamodeld"), .process("Resources")]
         ),
         .target(
             name: "ErmisChatUI",

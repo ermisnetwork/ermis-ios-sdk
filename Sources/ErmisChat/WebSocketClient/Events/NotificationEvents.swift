@@ -496,6 +496,15 @@ public struct NotificationInviteRespondBackEvent: MemberEvent, ChannelSpecificEv
     public let createdAt: Date
 }
 
+/// A cache-independent wake-up for MLS membership reconciliation. This does not
+/// grant membership or synthesize channel metadata; the authenticated query does.
+struct E2eeInviteAcceptedSignalEvent: ChannelSpecificEvent {
+    let cid: ChannelId
+    let targetUserId: String
+    let topicCids: [ChannelId]
+    var parentCid: ChannelId? { nil }
+}
+
 class NotificationInviteAcceptedEventDTO: EventDTO {
     let cid: ChannelId
     let mlsEnabled: Bool
@@ -515,19 +524,22 @@ class NotificationInviteAcceptedEventDTO: EventDTO {
     }
 
     func toDomainEvent(session: DatabaseSession) -> Event? {
-        guard
-            let channelDTO = session.channel(cid: cid),
-            let memberDTO = session.member(userId: member.userId, cid: cid)
-        else { return nil }
-
-        return try? NotificationInviteRespondBackEvent(
-            topicCids: topicCids,
-            channel: channelDTO.asModel(),
-            mlsEnabled: mlsEnabled,
-            member: memberDTO.asModel(),
-            respondBackType: .accept,
-            createdAt: createdAt
-        )
+        if let channelDTO = session.channel(cid: cid),
+           let memberDTO = session.member(userId: member.userId, cid: cid),
+           let event = try? NotificationInviteRespondBackEvent(
+               topicCids: topicCids,
+               channel: channelDTO.asModel(),
+               mlsEnabled: mlsEnabled,
+               member: memberDTO.asModel(),
+               respondBackType: .accept,
+               createdAt: createdAt
+           ) {
+            return event
+        }
+        // Removal cleanup may delete ChannelDTO. A pending invitation query
+        // deliberately does not restore it, so acceptance must survive this gap.
+        guard mlsEnabled else { return nil }
+        return E2eeInviteAcceptedSignalEvent(cid: cid, targetUserId: member.userId, topicCids: topicCids)
     }
 }
 

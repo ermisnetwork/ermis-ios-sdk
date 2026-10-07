@@ -1354,6 +1354,55 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         }
     }
 
+    func testTypedNoMatchingKeyPackagePrerequisiteIsIdempotentAndSurvivesRestart() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("E2eeJoinPrerequisiteTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let databaseURL = directory.appendingPathComponent("chat.sqlite")
+
+        let initialDatabase = try makeDatabase(kind: .onDisk(databaseFileURL: databaseURL))
+        let initialStore = E2eeDurableInboxStore(database: initialDatabase)
+        try initialStore.recordNoMatchingKeyPackageJoinPrerequisite(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            eventId: "99999999-9999-4999-8999-999999999999"
+        )
+        try initialStore.recordNoMatchingKeyPackageJoinPrerequisite(
+            accountId: accountId,
+            scopeCid: scopeCid,
+            eventId: "99999999-9999-4999-8999-999999999999"
+        )
+        XCTAssertTrue(
+            try initialStore.hasNoMatchingKeyPackageJoinPrerequisite(
+                accountId: accountId,
+                scopeCid: scopeCid
+            )
+        )
+        try close([initialDatabase])
+
+        let reopenedDatabase = try makeDatabase(kind: .onDisk(databaseFileURL: databaseURL))
+        let reopenedStore = E2eeDurableInboxStore(database: reopenedDatabase)
+        XCTAssertTrue(
+            try reopenedStore.hasNoMatchingKeyPackageJoinPrerequisite(
+                accountId: accountId,
+                scopeCid: scopeCid
+            )
+        )
+        try reopenedStore.clearNoMatchingKeyPackageJoinPrerequisite(
+            accountId: accountId,
+            scopeCid: scopeCid
+        )
+        XCTAssertFalse(
+            try reopenedStore.hasNoMatchingKeyPackageJoinPrerequisite(
+                accountId: accountId,
+                scopeCid: scopeCid
+            )
+        )
+
+        try close([reopenedDatabase])
+        try FileManager.default.removeItem(at: directory)
+    }
+
     func testVersionTwoStoreLightweightMigratesToCurrentDurabilitySchema() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("E2eeDurabilityMigrationTests-\(UUID().uuidString)", isDirectory: true)

@@ -160,8 +160,14 @@ class MessageRepository {
                     return
                 }
                 do {
+                    let currentGroupGeneration = e2eRepository.groupGeneration(for: cid)
                     if let durableCiphertext = requestBody.encryptedData,
                        let durableEpoch = requestBody.mlsEpoch {
+                        guard (requestBody.groupGeneration ?? 0) == currentGroupGeneration else {
+                            throw ClientError.Unexpected(
+                                "Durable E2EE ciphertext belongs to an inactive MLS group generation."
+                            )
+                        }
                         e2eeTrace?.info(
                             stage: "durable_intent_reused",
                             epoch: UInt64(max(0, durableEpoch)),
@@ -170,7 +176,8 @@ class MessageRepository {
                         )
                         requestBody.bindE2eeNetworkIntent(
                             ciphertext: durableCiphertext,
-                            epoch: durableEpoch
+                            epoch: durableEpoch,
+                            groupGeneration: currentGroupGeneration
                         )
                     } else {
                         e2eeTrace?.info(stage: "encrypt_requested", reusedIntent: false)
@@ -210,6 +217,7 @@ class MessageRepository {
                             }
                             messageDTO.encryptedData = Data(encryptedData)
                             messageDTO.mlsEpoch = Int64(epoch)
+                            messageDTO.mlsGroupGeneration = Int64(currentGroupGeneration)
                             try session.saveMessageDecrypt(
                                 payload: e2ePayload,
                                 messageId: messageId,
@@ -225,7 +233,11 @@ class MessageRepository {
                             ),
                             reusedIntent: false
                         )
-                        requestBody.bindE2eeNetworkIntent(ciphertext: encryptedData, epoch: epoch)
+                        requestBody.bindE2eeNetworkIntent(
+                            ciphertext: encryptedData,
+                            epoch: epoch,
+                            groupGeneration: currentGroupGeneration
+                        )
                     }
                 } catch (let error) {
                     e2eeTrace?.failure(stage: "encrypt_or_intent_persist_failed", error: error)

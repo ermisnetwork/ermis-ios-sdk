@@ -135,6 +135,9 @@ struct ErmisApiError: Error {
     public let httpStatusCode: Int
     public let message: String
     public let channelConditions: [ChannelConditionPayload]?
+    let mlsRebootstrapState: MlsRebootstrapState?
+    let mlsRebootstrapReason: MlsRebootstrapReason?
+    let mlsRebootstrapRetryable: Bool?
 
     init(payload: ErmisErrorPayload, httpStatusCode: Int) {
         self.type = ErmisErrorType(code: payload.ermisCode)
@@ -142,6 +145,9 @@ struct ErmisApiError: Error {
         self.httpStatusCode = httpStatusCode
         self.message = payload.message
         self.channelConditions = payload.channelCondtions
+        self.mlsRebootstrapState = payload.mlsRebootstrapState
+        self.mlsRebootstrapReason = payload.mlsRebootstrapReason
+        self.mlsRebootstrapRetryable = payload.mlsRebootstrapRetryable
     }
 
     init(type: ErmisErrorType, statusCode: Int, message: String) {
@@ -150,6 +156,9 @@ struct ErmisApiError: Error {
         self.httpStatusCode = statusCode
         self.message = message
         self.channelConditions = nil
+        self.mlsRebootstrapState = nil
+        self.mlsRebootstrapReason = nil
+        self.mlsRebootstrapRetryable = nil
     }
 
     var ermisErrorPayload: ErmisErrorPayload {

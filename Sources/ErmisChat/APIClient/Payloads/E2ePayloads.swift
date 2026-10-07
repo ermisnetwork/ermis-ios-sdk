@@ -4,6 +4,10 @@
 
 import Foundation
 
+struct E2eeMlsRolloutTelemetryPayload: Decodable {
+    let accepted: Int
+}
+
 /// Request body for uploading KeyPackages.
 public struct UploadKeyPackagesRequestBody: Encodable {
     /// TLS-serialized KeyPackages as arrays of bytes.
@@ -29,10 +33,26 @@ public class UploadKeyPackagesPayload: Decodable {
     public let stored: Int
     /// Total remaining KeyPackages available for the device.
     public let totalRemaining: Int
+    /// Server-owned inventory target for this device.
+    public let target: Int
+    /// Server-owned threshold at or below which a durable refill demand exists.
+    public let lowWatermark: Int
+    /// Exact delta required to restore the current server target.
+    public let requestedDelta: Int
+    /// Durable demand generation. `nil` means no refill demand is active.
+    public let refillGeneration: Int?
+    public let batchId: String
+    public let validationVersion: Int
 
     enum CodingKeys: String, CodingKey {
         case stored
         case totalRemaining = "total_remaining"
+        case target
+        case lowWatermark = "low_watermark"
+        case requestedDelta = "requested_delta"
+        case refillGeneration = "refill_generation"
+        case batchId = "batch_id"
+        case validationVersion = "validation_version"
     }
 }
 
@@ -40,6 +60,18 @@ public class UploadKeyPackagesPayload: Decodable {
 public class KeyPackagesCountPayload: Decodable {
     /// Number of remaining KeyPackages available for the current device.
     public let remaining: Int
+    public let target: Int
+    public let lowWatermark: Int
+    public let requestedDelta: Int
+    public let refillGeneration: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case remaining
+        case target
+        case lowWatermark = "low_watermark"
+        case requestedDelta = "requested_delta"
+        case refillGeneration = "refill_generation"
+    }
 }
 
 /// A single KeyPackage entry returned when consuming KeyPackages for a user.
@@ -103,12 +135,18 @@ public class GroupInfoPayload: Decodable {
     public let groupInfo: [UInt8]
     /// The MLS epoch at which this GroupInfo was produced.
     public let epoch: Int
+    public let groupGeneration: Int
+    public let groupId: [UInt8]?
+    public let hash: String
     /// `true` when `groupInfo.epoch < channel.mlsEpoch`, meaning the stored GroupInfo is outdated.
     public let isStale: Bool
 
     enum CodingKeys: String, CodingKey {
         case groupInfo = "group_info"
         case epoch
+        case groupGeneration = "group_generation"
+        case groupId = "group_id"
+        case hash
         case isStale = "is_stale"
     }
 
@@ -117,8 +155,231 @@ public class GroupInfoPayload: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.groupInfo = try container.decodeE2eeBytes(forKey: .groupInfo)
         self.epoch = try container.decode(Int.self, forKey: .epoch)
+        self.groupGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration) ?? 0
+        self.groupId = try container.decodeE2eeBytesIfPresent(forKey: .groupId)
+        self.hash = try container.decode(String.self, forKey: .hash)
         self.isStale = try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false
     }
+}
+
+enum MlsRebootstrapState: String, Codable, Equatable {
+    case repairing
+    case eligible
+    case preparing
+    case activated
+    case cancelledRepairWon = "cancelled_repair_won"
+    case preparationFailedRetryable = "preparation_failed_retryable"
+    case deliveryFailedRetryable = "delivery_failed_retryable"
+    case upgradeRequired = "upgrade_required"
+    case incompatibleServerClient = "incompatible_server_client"
+}
+
+enum MlsRebootstrapReason: String, Codable, Equatable {
+    case groupInfoMissing = "group_info_missing"
+    case groupInfoStale = "group_info_stale"
+    case groupInfoInvalid = "group_info_invalid"
+    case repairWindowOpen = "repair_window_open"
+    case repairTimeoutElapsed = "repair_timeout_elapsed"
+    case repairWonRace = "repair_won_race"
+    case leaseUnavailable = "lease_unavailable"
+    case leaseExpired = "lease_expired"
+    case membershipChanged = "membership_changed"
+    case generationChanged = "generation_changed"
+    case operationConflict = "operation_conflict"
+    case featureDisabled = "feature_disabled"
+    case clientUpgradeRequired = "client_upgrade_required"
+    case unsupportedProtocolVersion = "unsupported_protocol_version"
+    case infrastructureUnavailable = "infrastructure_unavailable"
+    case deliveryPending = "delivery_pending"
+    case historyIncomplete = "history_incomplete"
+}
+
+struct MlsRebootstrapCapabilityPayload: Decodable, Equatable {
+    static let currentProtocolVersion = 1
+
+    let protocolVersion: Int
+    let automaticEnabled: Bool
+    let repairTimeoutSeconds: Int
+    let maxGroupInfoBytes: Int
+    let maxRatchetTreeBytes: Int
+    let maxWelcomeRecipients: Int
+    let maxWelcomeBytes: Int
+
+    enum CodingKeys: String, CodingKey {
+        case protocolVersion = "protocol_version"
+        case automaticEnabled = "automatic_enabled"
+        case repairTimeoutSeconds = "repair_timeout_seconds"
+        case maxGroupInfoBytes = "max_group_info_bytes"
+        case maxRatchetTreeBytes = "max_ratchet_tree_bytes"
+        case maxWelcomeRecipients = "max_welcome_recipients"
+        case maxWelcomeBytes = "max_welcome_bytes"
+    }
+}
+
+struct MlsGenerationStatePayload: Decodable, Equatable {
+    let groupGeneration: Int
+    let groupId: [UInt8]?
+    let currentEpoch: Int
+    let membershipVersion: String
+    let state: MlsRebootstrapState
+    let reason: MlsRebootstrapReason
+    let retryable: Bool
+    let firstUnresolvedAt: Date?
+    let incidentDeadlineAt: Date?
+    let capability: MlsRebootstrapCapabilityPayload
+
+    enum CodingKeys: String, CodingKey {
+        case groupGeneration = "group_generation"
+        case groupId = "group_id"
+        case currentEpoch = "current_epoch"
+        case membershipVersion = "membership_version"
+        case state
+        case reason
+        case retryable
+        case firstUnresolvedAt = "first_unresolved_at"
+        case incidentDeadlineAt = "incident_deadline_at"
+        case capability
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        groupGeneration = try container.decode(Int.self, forKey: .groupGeneration)
+        groupId = try container.decodeE2eeBytesIfPresent(forKey: .groupId)
+        currentEpoch = try container.decode(Int.self, forKey: .currentEpoch)
+        membershipVersion = try container.decode(String.self, forKey: .membershipVersion)
+        state = try container.decode(MlsRebootstrapState.self, forKey: .state)
+        reason = try container.decode(MlsRebootstrapReason.self, forKey: .reason)
+        retryable = try container.decode(Bool.self, forKey: .retryable)
+        firstUnresolvedAt = try container.decodeIfPresent(Date.self, forKey: .firstUnresolvedAt)
+        incidentDeadlineAt = try container.decodeIfPresent(Date.self, forKey: .incidentDeadlineAt)
+        capability = try container.decode(MlsRebootstrapCapabilityPayload.self, forKey: .capability)
+    }
+}
+
+struct MlsRebootstrapKeyPackagePayload: Decodable, Equatable {
+    let keyPackageId: String
+    let userId: String
+    let deviceId: String
+    let keyPackage: [UInt8]
+
+    enum CodingKeys: String, CodingKey {
+        case keyPackageId = "key_package_id"
+        case userId = "user_id"
+        case deviceId = "device_id"
+        case keyPackage = "key_package"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyPackageId = try container.decode(String.self, forKey: .keyPackageId)
+        userId = try container.decode(String.self, forKey: .userId)
+        deviceId = try container.decode(String.self, forKey: .deviceId)
+        keyPackage = try container.decodeE2eeBytes(forKey: .keyPackage)
+    }
+}
+
+struct MlsRebootstrapClaimPayload: Decodable, Equatable {
+    let operationId: String
+    let operationKey: String
+    let expectedGeneration: Int
+    let nextGeneration: Int
+    let expectedEpoch: Int
+    let membershipVersion: String
+    let leaseToken: String
+    let leaseExpiresAt: Date
+    let incidentDeadlineAt: Date
+    let state: MlsRebootstrapState
+    let reason: MlsRebootstrapReason
+    let retryable: Bool
+    let recipientKeyPackages: [MlsRebootstrapKeyPackagePayload]
+
+    enum CodingKeys: String, CodingKey {
+        case operationId = "operation_id"
+        case operationKey = "operation_key"
+        case expectedGeneration = "expected_generation"
+        case nextGeneration = "next_generation"
+        case expectedEpoch = "expected_epoch"
+        case membershipVersion = "membership_version"
+        case leaseToken = "lease_token"
+        case leaseExpiresAt = "lease_expires_at"
+        case incidentDeadlineAt = "incident_deadline_at"
+        case state
+        case reason
+        case retryable
+        case recipientKeyPackages = "recipient_key_packages"
+    }
+}
+
+struct MlsRebootstrapReceiptPayload: Decodable, Equatable {
+    let operationId: String
+    let operationKey: String
+    let state: MlsRebootstrapState
+    let reason: MlsRebootstrapReason
+    let retryable: Bool
+    let expectedGeneration: Int
+    let currentGeneration: Int
+    let currentEpoch: Int
+    let groupId: [UInt8]?
+    let membershipVersion: String
+    let activatedAt: Date?
+    let deliveryPending: Int
+
+    enum CodingKeys: String, CodingKey {
+        case operationId = "operation_id"
+        case operationKey = "operation_key"
+        case state
+        case reason
+        case retryable
+        case expectedGeneration = "expected_generation"
+        case currentGeneration = "current_generation"
+        case currentEpoch = "current_epoch"
+        case groupId = "group_id"
+        case membershipVersion = "membership_version"
+        case activatedAt = "activated_at"
+        case deliveryPending = "delivery_pending"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        operationId = try container.decode(String.self, forKey: .operationId)
+        operationKey = try container.decode(String.self, forKey: .operationKey)
+        state = try container.decode(MlsRebootstrapState.self, forKey: .state)
+        reason = try container.decode(MlsRebootstrapReason.self, forKey: .reason)
+        retryable = try container.decode(Bool.self, forKey: .retryable)
+        expectedGeneration = try container.decode(Int.self, forKey: .expectedGeneration)
+        currentGeneration = try container.decode(Int.self, forKey: .currentGeneration)
+        currentEpoch = try container.decode(Int.self, forKey: .currentEpoch)
+        groupId = try container.decodeE2eeBytesIfPresent(forKey: .groupId)
+        membershipVersion = try container.decode(String.self, forKey: .membershipVersion)
+        activatedAt = try container.decodeIfPresent(Date.self, forKey: .activatedAt)
+        deliveryPending = try container.decode(Int.self, forKey: .deliveryPending)
+    }
+}
+
+struct GroupInfoRefreshRequestPayload: Codable, Equatable {
+    let requestId: String
+    let minimumEpoch: Int
+    let deadlineAt: Date
+    let expiresAt: Date
+    let reason: String
+    let attemptCount: Int
+    let leaseToken: String?
+    let leaseExpiresAt: Date?
+
+    enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case minimumEpoch = "minimum_epoch"
+        case deadlineAt = "deadline_at"
+        case expiresAt = "expires_at"
+        case reason
+        case attemptCount = "attempt_count"
+        case leaseToken = "lease_token"
+        case leaseExpiresAt = "lease_expires_at"
+    }
+}
+
+struct GroupInfoRefreshResponsePayload: Decodable {
+    let request: GroupInfoRefreshRequestPayload?
 }
 
 public struct E2ePayload: Codable, Equatable {
@@ -587,6 +848,8 @@ enum E2eSyncEventPayload: Decodable {
 /// The `data` payload for a `protocol` sync event.
 struct E2eSyncProtocolData: Decodable {
     let epoch: Int
+    let groupGeneration: Int
+    let groupId: [UInt8]?
     let user: UserPayload
     let type: MLSProtocolType
     let commit: [UInt8]?
@@ -595,10 +858,13 @@ struct E2eSyncProtocolData: Decodable {
     let proposal: [UInt8]?
     let deviceId: String?
     let targetUserIds: [String]?
+    let targetDeviceIds: [String]?
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
         case epoch
+        case groupGeneration = "group_generation"
+        case groupId = "group_id"
         case user
         case type
         case commit
@@ -607,12 +873,15 @@ struct E2eSyncProtocolData: Decodable {
         case proposal
         case deviceId = "device_id"
         case targetUserIds = "target_user_ids"
+        case targetDeviceIds = "target_device_ids"
         case createdAt = "created_at"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         epoch = try container.decode(Int.self, forKey: .epoch)
+        groupGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration) ?? 0
+        groupId = try container.decodeE2eeBytesIfPresent(forKey: .groupId)
         user = try container.decode(UserPayload.self, forKey: .user)
         type = try container.decode(MLSProtocolType.self, forKey: .type)
         commit = try container.decodeE2eeBytesIfPresent(forKey: .commit)
@@ -621,6 +890,7 @@ struct E2eSyncProtocolData: Decodable {
         proposal = try container.decodeE2eeBytesIfPresent(forKey: .proposal)
         deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
         targetUserIds = try container.decodeIfPresent([String].self, forKey: .targetUserIds)
+        targetDeviceIds = try container.decodeIfPresent([String].self, forKey: .targetDeviceIds)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }
 }
@@ -640,6 +910,7 @@ struct E2eSyncApplicationData: Decodable {
     /// TLS-serialized MLS ciphertext bytes. Present only for regular (encrypted) messages.
     let mlsCiphertext: [UInt8]?
     let mlsEpoch: Int64?
+    let groupGeneration: Int
     let contentType: String
     let createdAt: Date
     let forwardCid: String?
@@ -655,6 +926,7 @@ struct E2eSyncApplicationData: Decodable {
         case text
         case mlsCiphertext = "mls_ciphertext"
         case mlsEpoch = "mls_epoch"
+        case groupGeneration = "group_generation"
         case contentType = "content_type"
         case createdAt = "created_at"
         case forwardCid = "forward_cid"
@@ -672,6 +944,7 @@ struct E2eSyncApplicationData: Decodable {
         text = try container.decodeIfPresent(String.self, forKey: .text)
         mlsCiphertext = try container.decodeE2eeBytesIfPresent(forKey: .mlsCiphertext)
         mlsEpoch = try container.decodeIfPresent(Int64.self, forKey: .mlsEpoch)
+        groupGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration) ?? 0
         contentType = try container.decode(String.self, forKey: .contentType)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         forwardCid = try container.decodeIfPresent(String.self, forKey: .forwardCid)
@@ -857,12 +1130,15 @@ public enum MLSProtocolType: String, Decodable {
 public struct MLSProtocolMessagePayload: Decodable {
     let type: MLSProtocolType
     let epoch: Int
+    let groupGeneration: Int
+    let groupId: [UInt8]?
     let user: UserPayload
     let deviceId: String?
     let commit: [UInt8]?
     let welcome: [UInt8]?
     let ratchetTree: [UInt8]?
     let targetUserIds: [String]?
+    let targetDeviceIds: [String]?
     let proposal: [UInt8]?
 
     var processData: Data? {
@@ -881,12 +1157,15 @@ public struct MLSProtocolMessagePayload: Decodable {
     enum CodingKeys: String, CodingKey {
         case type
         case epoch
+        case groupGeneration = "group_generation"
+        case groupId = "group_id"
         case user
         case deviceId = "device_id"
         case commit
         case welcome
         case ratchetTree = "ratchet_tree"
         case targetUserIds = "target_user_ids"
+        case targetDeviceIds = "target_device_ids"
         case proposal
     }
 
@@ -894,12 +1173,15 @@ public struct MLSProtocolMessagePayload: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         type = try container.decode(MLSProtocolType.self, forKey: .type)
         epoch = try container.decode(Int.self, forKey: .epoch)
+        groupGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration) ?? 0
+        groupId = try container.decodeE2eeBytesIfPresent(forKey: .groupId)
         user = try container.decode(UserPayload.self, forKey: .user)
         deviceId = try container.decodeIfPresent(String.self, forKey: .deviceId)
         commit = try container.decodeE2eeBytesIfPresent(forKey: .commit)
         welcome = try container.decodeE2eeBytesIfPresent(forKey: .welcome)
         ratchetTree = try container.decodeE2eeBytesIfPresent(forKey: .ratchetTree)
         targetUserIds = try container.decodeIfPresent([String].self, forKey: .targetUserIds)
+        targetDeviceIds = try container.decodeIfPresent([String].self, forKey: .targetDeviceIds)
         proposal = try container.decodeE2eeBytesIfPresent(forKey: .proposal)
     }
 }

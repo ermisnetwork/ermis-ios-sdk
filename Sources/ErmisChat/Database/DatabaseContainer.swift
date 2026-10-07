@@ -103,22 +103,32 @@ class DatabaseContainer: NSPersistentContainer {
 
         setUpPersistentStoreDescription(with: kind)
 
+        let storageMode: String
+        switch kind {
+        case .inMemory: storageMode = "memory"
+        case .onDisk: storageMode = "disk"
+        }
+
         let persistentStoreCreatedCompletion: (Error?) -> Void = { [weak self] error in
             if let error = error {
+                log.error("mls_storage_checkpoint mode=\(storageMode) result=load_failed", subsystems: .mls)
                 log.error("Failed to initialize the local storage with error: \(error). Falling back to the in-memory option.")
                 self?.setUpPersistentStoreDescription(with: .inMemory)
                 self?.recreatePersistentStore { error in
                     if let error = error {
+                        log.error("mls_storage_checkpoint mode=memory result=load_failed", subsystems: .mls)
                         fatalError(
                             "Failed to initialize the in-memory storage with error: \(error). This is a non-recoverable error."
                         )
                     }
+                    log.info("mls_storage_checkpoint mode=memory result=loaded", subsystems: .mls)
                     if shouldResetEphemeralValuesOnStart {
                         self?.resetEphemeralValues()
                     }
                 }
                 return
             }
+            log.info("mls_storage_checkpoint mode=\(storageMode) result=loaded", subsystems: .mls)
             if shouldResetEphemeralValuesOnStart {
                 self?.resetEphemeralValues()
             }

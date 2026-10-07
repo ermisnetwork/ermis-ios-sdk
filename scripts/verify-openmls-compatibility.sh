@@ -2,35 +2,97 @@
 set -euo pipefail
 
 REPOSITORY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXPECTED_VERSION="0.1.0-m0.1"
-EXPECTED_REVISION="1479aad14ab85bce7f884c1dd1dfa42006ed9834"
-DEPENDENCY_PATH="${1:-$REPOSITORY_ROOT/.build/checkouts/open-mls-ios}"
+DEPENDENCY_PATH="${1:-$REPOSITORY_ROOT/Vendor/open-mls-ios}"
+METADATA="$DEPENDENCY_PATH/RELEASE_METADATA.json"
+CHECKSUMS="$DEPENDENCY_PATH/ARTIFACT_CHECKSUMS.sha256"
+GENERATED_SWIFT="$DEPENDENCY_PATH/Sources/open-mls-ios/open_mls_ios.swift"
+XCFRAMEWORK="$DEPENDENCY_PATH/OpenMlsUniFFI.xcframework"
+DEVICE_LIBRARY="$XCFRAMEWORK/ios-arm64/libopenmls_uniffi-aarch64-apple-ios.a"
+SIMULATOR_LIBRARY="$XCFRAMEWORK/ios-arm64-simulator/libopenmls_uniffi-aarch64-apple-ios-sim.a"
 
 cd "$REPOSITORY_ROOT"
 
-if ! grep -Fq 'url: "https://github.com/ermisnetwork/open-mls-ios.git"' Package.swift ||
-   ! grep -Fq "exact: \"$EXPECTED_VERSION\"" Package.swift; then
-    echo "Package.swift must pin open-mls-ios exactly to $EXPECTED_VERSION" >&2
+if ! grep -Fq '.package(path: "Vendor/open-mls-ios")' Package.swift; then
+    echo "Package.swift must link the reviewed Vendor/open-mls-ios package" >&2
     exit 1
 fi
 
-if [[ ! -d "$DEPENDENCY_PATH/.git" ]]; then
-    echo "Resolved open-mls-ios checkout not found at $DEPENDENCY_PATH" >&2
+for required_file in \
+    "$METADATA" \
+    "$CHECKSUMS" \
+    "$GENERATED_SWIFT" \
+    "$XCFRAMEWORK/Info.plist" \
+    "$DEVICE_LIBRARY" \
+    "$SIMULATOR_LIBRARY"; do
+    if [[ ! -f "$required_file" ]]; then
+        echo "Missing OpenMLS artifact file: $required_file" >&2
+        exit 1
+    fi
+done
+
+jq -e '
+    .schema_version == 1 and
+    (.package_version | type == "string" and length > 0) and
+    (.openmls_source_revision | test("^[0-9a-f]{40}$")) and
+    (.openmls_tracked_diff_sha256 | test("^[0-9a-f]{64}$")) and
+    (.cargo_lock_sha256 | test("^[0-9a-f]{64}$")) and
+    .minimum_ios_version == "15.0" and
+    (.slices | sort == ["arm64-apple-ios", "arm64-apple-ios-simulator"])
+' "$METADATA" >/dev/null
+
+required_capabilities=(
+    process_message_at
+    no_matching_key_package_error
+    create_with_group_id
+    load_from_storage_with_group_id
+    save_state
+    archive_epoch_v2
+    decrypt_epoch_archive_v2
+)
+for capability in "${required_capabilities[@]}"; do
+    if ! jq -e --arg capability "$capability" \
+        '.required_ios_sdk_capabilities | index($capability) != null' \
+        "$METADATA" >/dev/null; then
+        echo "OpenMLS artifact metadata is missing capability: $capability" >&2
+        exit 1
+    fi
+done
+
+(
+    cd "$DEPENDENCY_PATH"
+    shasum -a 256 -c ARTIFACT_CHECKSUMS.sha256
+)
+plutil -lint "$XCFRAMEWORK/Info.plist" >/dev/null
+
+if [[ "$(lipo -archs "$DEVICE_LIBRARY")" != "arm64" ]] ||
+   [[ "$(lipo -archs "$SIMULATOR_LIBRARY")" != "arm64" ]]; then
+    echo "OpenMLS XCFramework must contain arm64 device and simulator slices" >&2
     exit 1
 fi
 
-resolved_revision="$(git -C "$DEPENDENCY_PATH" rev-parse HEAD)"
-if [[ "$resolved_revision" != "$EXPECTED_REVISION" ]]; then
-    echo "Resolved open-mls-ios revision $resolved_revision; expected $EXPECTED_REVISION" >&2
+required_symbols=(
+    uniffi_openmls_uniffi_fn_constructor_group_create_with_group_id
+    uniffi_openmls_uniffi_fn_constructor_group_load_from_storage_with_group_id
+    uniffi_openmls_uniffi_fn_method_group_process_message_at
+)
+for library in "$DEVICE_LIBRARY" "$SIMULATOR_LIBRARY"; do
+    symbols="$(nm -gU "$library" 2>/dev/null)"
+    for symbol in "${required_symbols[@]}"; do
+        if ! grep -Fq "_$symbol" <<<"$symbols"; then
+            echo "OpenMLS slice is missing ABI symbol $symbol: $library" >&2
+            exit 1
+        fi
+    done
+done
+
+if ! grep -Fq 'func processMessageAt' "$GENERATED_SWIFT" ||
+   ! grep -Fq 'createWithGroupId' "$GENERATED_SWIFT" ||
+   ! grep -Fq 'loadFromStorageWithGroupId' "$GENERATED_SWIFT" ||
+   ! grep -Fq 'case NoMatchingKeyPackage' "$GENERATED_SWIFT"; then
+    echo "Generated Swift binding does not expose the required MLS compatibility API" >&2
     exit 1
 fi
 
-resolved_version="$(jq -r '.package_version' "$DEPENDENCY_PATH/RELEASE_METADATA.json")"
-if [[ "$resolved_version" != "$EXPECTED_VERSION" ]]; then
-    echo "Resolved metadata version $resolved_version; expected $EXPECTED_VERSION" >&2
-    exit 1
-fi
-
-"$DEPENDENCY_PATH/scripts/verify-release-artifact.sh"
-
-echo "ErmisChat/OpenMLS compatibility pin verified at $EXPECTED_VERSION ($EXPECTED_REVISION)."
+package_version="$(jq -r '.package_version' "$METADATA")"
+source_revision="$(jq -r '.openmls_source_revision' "$METADATA")"
+echo "ErmisChat/OpenMLS vendored artifact verified: $package_version ($source_revision)."

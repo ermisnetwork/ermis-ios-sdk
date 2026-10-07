@@ -5,6 +5,17 @@
 import Foundation
 
 extension Endpoint {
+    static func reportMlsRolloutTelemetry(
+        observations: [E2eeMlsRolloutMetricObservation]
+    ) -> Endpoint<E2eeMlsRolloutTelemetryPayload> {
+        .init(
+            path: .mlsRolloutTelemetry,
+            method: .post,
+            body: E2eeMlsRolloutTelemetryRequestBody(observations: observations),
+            needDeviceId: true
+        )
+    }
+
 
     /// Create the endpoint to upload TLS-serialized KeyPackages for the current device.
     ///
@@ -22,10 +33,11 @@ extension Endpoint {
     /// Create the endpoint to check how many KeyPackages remain for the current device.
     ///
     /// - Returns: The endpoint to fetch the remaining KeyPackages count.
-    static func keyPackagesCount() -> Endpoint<KeyPackagesCountPayload> {
+    static func keyPackagesCount(reason: String = "manual") -> Endpoint<KeyPackagesCountPayload> {
         .init(
             path: .keyPackagesCount,
             method: .get,
+            query: ["reason": reason],
             needDeviceId: true
         )
     }
@@ -100,6 +112,63 @@ extension Endpoint {
     static func getGroupInfo(cid: ChannelId) -> Endpoint<GroupInfoPayload> {
         .init(
             path: .getGroupInfo(cid),
+            method: .get,
+            needDeviceId: true
+        )
+    }
+
+    static func getGroupInfoRefresh(cid: ChannelId) -> Endpoint<GroupInfoRefreshResponsePayload> {
+        .init(path: .getGroupInfoRefresh(cid), method: .get, needDeviceId: true)
+    }
+
+    static func claimGroupInfoRefresh(
+        cid: ChannelId,
+        requestId: String
+    ) -> Endpoint<GroupInfoRefreshRequestPayload> {
+        .init(
+            path: .claimGroupInfoRefresh(cid),
+            method: .post,
+            body: ClaimGroupInfoRefreshRequestBody(requestId: requestId),
+            needDeviceId: true
+        )
+    }
+
+    static func reportGroupInfoFailure(
+        cid: ChannelId,
+        body: ReportGroupInfoFailureRequestBody
+    ) -> Endpoint<GroupInfoRefreshResponsePayload> {
+        .init(path: .reportGroupInfoFailure(cid), method: .post, body: body, needDeviceId: true)
+    }
+
+    static func mlsGeneration(cid: ChannelId) -> Endpoint<MlsGenerationStatePayload> {
+        .init(
+            path: .mlsGeneration(cid),
+            method: .get,
+            query: ["protocol_version": String(MlsRebootstrapCapabilityPayload.currentProtocolVersion)],
+            needDeviceId: true
+        )
+    }
+
+    static func claimMlsRebootstrap(
+        cid: ChannelId,
+        body: ClaimMlsRebootstrapRequestBody
+    ) -> Endpoint<MlsRebootstrapClaimPayload> {
+        .init(path: .claimMlsRebootstrap(cid), method: .post, body: body, needDeviceId: true)
+    }
+
+    static func completeMlsRebootstrap(
+        cid: ChannelId,
+        body: CompleteMlsRebootstrapRequestBody
+    ) -> Endpoint<MlsRebootstrapReceiptPayload> {
+        .init(path: .completeMlsRebootstrap(cid), method: .post, body: body, needDeviceId: true)
+    }
+
+    static func mlsRebootstrapReceipt(
+        cid: ChannelId,
+        operationId: String
+    ) -> Endpoint<MlsRebootstrapReceiptPayload> {
+        .init(
+            path: .mlsRebootstrapReceipt(cid, operationId),
             method: .get,
             needDeviceId: true
         )

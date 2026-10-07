@@ -12,6 +12,7 @@ enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
     case user
     case encryptedData = "mls_ciphertext"
     case mlsEpoch = "mls_epoch"
+    case groupGeneration = "group_generation"
     case createdAt = "created_at"
     case updatedAt = "updated_at"
     case deletedAt = "deleted_at"
@@ -80,6 +81,7 @@ class MessagePayload: Decodable {
     let text: String
     let encryptedData: [UInt8]?
     let mlsEpoch: Int?
+    let groupGeneration: Int
     let oldTexts: [MessageEditHistoryPayload]?
     let command: String?
     let args: String?
@@ -132,6 +134,7 @@ class MessagePayload: Decodable {
         text = try container.decodeIfPresent(String.self, forKey: .text)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         encryptedData = try container.decodeE2eeBytesIfPresent(forKey: .encryptedData)
         mlsEpoch = try container.decodeIfPresent(Int.self, forKey: .mlsEpoch)
+        groupGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration) ?? 0
         oldTexts = try container.decodeIfPresent([MessageEditHistoryPayload].self, forKey: .oldTexts)
         isSilent = try container.decodeIfPresent(Bool.self, forKey: .isSilent) ?? false
         isShadowed = try container.decodeIfPresent(Bool.self, forKey: .shadowed) ?? false
@@ -184,6 +187,7 @@ class MessagePayload: Decodable {
         text: String,
         encryptedData: [UInt8]? = nil,
         mlsEpoch: Int? = nil,
+        groupGeneration: Int = 0,
         oldTexts: [MessageEditHistoryPayload],
         command: String? = nil,
         args: String? = nil,
@@ -225,6 +229,7 @@ class MessagePayload: Decodable {
         self.text = text
         self.encryptedData = encryptedData
         self.mlsEpoch = mlsEpoch
+        self.groupGeneration = groupGeneration
         self.oldTexts = oldTexts
         self.command = command
         self.args = args
@@ -267,6 +272,7 @@ struct MessageRequestBody: Encodable {
     var text: String
     var encryptedData: [UInt8]?
     var mlsEpoch: Int?
+    var groupGeneration: Int?
     let type: MessageType?
     let oldTexts: [MessageEditHistoryPayload]?
     var cid: ChannelId?
@@ -311,9 +317,14 @@ struct MessageRequestBody: Encodable {
         encryptedData != nil && mlsEpoch != nil
     }
 
-    mutating func bindE2eeNetworkIntent(ciphertext: [UInt8], epoch: Int) {
+    mutating func bindE2eeNetworkIntent(
+        ciphertext: [UInt8],
+        epoch: Int,
+        groupGeneration: Int = 0
+    ) {
         encryptedData = ciphertext
         mlsEpoch = epoch
+        self.groupGeneration = groupGeneration
         text = ""
         attachments = []
         stickerUrl = nil
@@ -369,6 +380,7 @@ struct MessageRequestBody: Encodable {
         text: String,
         encryptedData: [UInt8]? = nil,
         mslEpoch: Int? = nil,
+        groupGeneration: Int? = nil,
         oldTexts: [MessageEditHistoryPayload]? = nil,
         type: MessageType? = nil,
         cid: ChannelId? = nil,
@@ -393,6 +405,7 @@ struct MessageRequestBody: Encodable {
         self.text = text
         self.encryptedData = encryptedData
         self.mlsEpoch = mslEpoch
+        self.groupGeneration = groupGeneration
         self.oldTexts = oldTexts
         self.type = type
         self.cid = cid
@@ -419,6 +432,7 @@ struct MessageRequestBody: Encodable {
         self.text = message.text
         self.encryptedData = message.encryptedData != nil ? message.encryptedData!.uint8Array : nil
         self.mlsEpoch = message.mlsEpoch
+        self.groupGeneration = message.mlsGroupGeneration
         self.oldTexts = message.oldTexts?.map {
             MessageEditHistoryPayload(text: $0.text, createdAt: $0.createdAt)
         }
@@ -454,6 +468,7 @@ struct MessageRequestBody: Encodable {
         try container.encode(text, forKey: .text)
         try container.encodeE2eeBytesIfPresent(encryptedData, forKey: .encryptedData)
         try container.encodeIfPresent(mlsEpoch, forKey: .mlsEpoch)
+        try container.encodeIfPresent(groupGeneration, forKey: .groupGeneration)
         try container.encodeIfPresent(oldTexts, forKey: .oldTexts)
         try container.encodeIfPresent(type, forKey: .type)
         try container.encodeIfPresent(cid, forKey: .cid)

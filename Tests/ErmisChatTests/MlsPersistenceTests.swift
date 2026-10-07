@@ -99,6 +99,56 @@ final class MlsPersistenceTests: XCTestCase {
         XCTAssertNotNil(client.identity)
     }
 
+    func testGeneratedKeyPackageSurvivesProviderResetAndJoinsWelcome() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ermis-kp-reopen-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "io.ermis.tests.kp-reopen.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let deviceStore = MlsDeviceIdStore(
+            defaults: defaults, legacyDefaults: defaults, secureStore: DeviceIdSecureStore()
+        )
+        let receiver = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
+        try receiver.setup(with: "receiver")
+        let deviceId = try XCTUnwrap(receiver.currentDeviceId)
+        let uploadedBytes = try XCTUnwrap(receiver.getKeyPackage())
+        try receiver.reset()
+        try receiver.setup(with: "receiver")
+        XCTAssertEqual(receiver.currentDeviceId, deviceId)
+
+        let senderProvider = Provider()
+        let sender = try Identity(provider: senderProvider, userId: "sender")
+        let cid = "messaging:kp-reopen"
+        let senderGroup = try Group.createWithCid(provider: senderProvider, founder: sender, cid: cid)
+        let bundle = try senderGroup.addMembers(
+            provider: senderProvider, sender: sender,
+            newMembers: [try KeyPackage.fromBytes(data: uploadedBytes)]
+        )
+        try senderGroup.mergePendingCommit(provider: senderProvider)
+        let receiverGroup = try receiver.joinWithWelcome(
+            cid: cid, welcome: XCTUnwrap(bundle.welcome), ratchetTree: senderGroup.exportRatchetTree()
+        )
+        XCTAssertEqual(receiverGroup.epoch(), senderGroup.epoch())
+        let ciphertext = try senderGroup.createMessage(
+            provider: senderProvider, sender: sender, plaintext: Data("persisted-key".utf8)
+        )
+        let processed = try receiverGroup.processMessageDeferred(
+            provider: XCTUnwrap(receiver.provider), msg: ciphertext
+        )
+        XCTAssertEqual(processed.content, Data("persisted-key".utf8))
+    }
+
+    func testKeyPackageBatchRejectsUnavailableProviderAndInvalidCount() throws {
+        let client = MlsClient()
+        XCTAssertThrowsError(try client.getKeyPackage(count: 1))
+        // Validate before any UInt32 conversion or native allocation.
+        XCTAssertThrowsError(try client.getKeyPackage(count: -1))
+        XCTAssertThrowsError(try client.getKeyPackage(count: 0))
+        XCTAssertThrowsError(try client.getKeyPackage(count: 101))
+    }
+
     func testExplicitMlsPurgeDeletesProviderAndUserDeviceId() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ermis-mls-purge-\(UUID().uuidString)", isDirectory: true)
@@ -434,6 +484,50 @@ final class MlsPersistenceTests: XCTestCase {
         try client.saveState(of: pair.bobGroup)
         let reloaded = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
         XCTAssertEqual(reloaded.epoch(), startingEpoch + 1)
+    }
+
+    func testContextualAddCommitUsesServerTimeAndSurvivesProviderReload() throws {
+        let cid = "team:project:contextual-add-replay"
+        let pair = try makeGroupPair(cid: cid)
+        let charlieProvider = Provider()
+        let charlie = try Identity(provider: charlieProvider, userId: "charlie")
+        let add = try pair.aliceGroup.addMembers(
+            provider: pair.aliceProvider,
+            sender: pair.alice,
+            newMembers: [charlie.keyPackage(provider: charlieProvider)]
+        )
+        let startingEpoch = pair.bobGroup.epoch()
+        let client = MlsClient()
+        client.provider = pair.bobProvider
+
+        XCTAssertThrowsError(
+            try client.processProtocolMessage(
+                data: add.commit,
+                in: pair.bobGroup,
+                serverAcceptedAt: Date.distantFuture
+            )
+        )
+
+        let reloadedAfterRejectedTime = try Group.loadFromStorage(
+            provider: pair.bobProvider,
+            cid: cid
+        )
+        XCTAssertEqual(reloadedAfterRejectedTime.epoch(), startingEpoch)
+
+        let processed = try client.processProtocolMessage(
+            data: add.commit,
+            in: reloadedAfterRejectedTime,
+            serverAcceptedAt: Date()
+        )
+        guard case .commit(let metadata) = processed else {
+            return XCTFail("Expected contextual Add commit")
+        }
+        XCTAssertEqual(metadata.groupEpochBefore, startingEpoch)
+        XCTAssertEqual(metadata.groupEpochAfter, startingEpoch + 1)
+        try client.saveState(of: reloadedAfterRejectedTime)
+
+        let persisted = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+        XCTAssertEqual(persisted.epoch(), startingEpoch + 1)
     }
 
     func testTypedApplicationProcessingPreservesPlaintextAndMetadataBeforeExplicitSave() throws {

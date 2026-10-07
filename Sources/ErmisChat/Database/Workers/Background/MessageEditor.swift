@@ -141,10 +141,16 @@ class MessageEditor: Worker {
                     stickerUrl: requestBody.stickerUrl
                 )
                 do {
+                    let currentGroupGeneration = e2eRepository.groupGeneration(for: cid)
                     let encryptedData: [UInt8]
                     let epoch: Int
                     if let durableCiphertext = requestBody.encryptedData,
                        let durableEpoch = requestBody.mlsEpoch {
+                        guard (requestBody.groupGeneration ?? 0) == currentGroupGeneration else {
+                            throw ClientError.Unexpected(
+                                "Durable E2EE edit belongs to an inactive MLS group generation."
+                            )
+                        }
                         encryptedData = durableCiphertext
                         epoch = durableEpoch
                     } else {
@@ -171,12 +177,14 @@ class MessageEditor: Worker {
 
                         if let storedCiphertext = current.encryptedData {
                             guard storedCiphertext.uint8Array == encryptedData,
-                                  Int(current.mlsEpoch) == epoch else {
+                                  Int(current.mlsEpoch) == epoch,
+                                  Int(current.mlsGroupGeneration) == currentGroupGeneration else {
                                 throw MessageEditIntentError.generationChanged
                             }
                         } else {
                             current.encryptedData = Data(encryptedData)
                             current.mlsEpoch = Int64(epoch)
+                            current.mlsGroupGeneration = Int64(currentGroupGeneration)
                             try session.saveMessageDecrypt(
                                 payload: e2ePayload,
                                 messageId: messageId,
@@ -187,7 +195,11 @@ class MessageEditor: Worker {
                             ? .syncingAfterE2eeEpochStale
                             : .syncing
                     }
-                    requestBody.bindE2eeNetworkIntent(ciphertext: encryptedData, epoch: epoch)
+                    requestBody.bindE2eeNetworkIntent(
+                        ciphertext: encryptedData,
+                        epoch: epoch,
+                        groupGeneration: currentGroupGeneration
+                    )
                 } catch MessageEditIntentError.generationChanged {
                     // Keep the ID queued. The next pass snapshots and encrypts the newer edit.
                     self.processNextMessage()

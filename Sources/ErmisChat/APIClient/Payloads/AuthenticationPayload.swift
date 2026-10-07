@@ -29,4 +29,21 @@ public class AuthenticationPayload: Decodable {
         isFirstLogin = try container.decodeIfPresent(Bool.self, forKey: .isFirstLogin) ?? false
     }
 
+    /// Decode a refresh response for the existing session. This checks claim consistency;
+    /// server authentication still owns signature validation and connection authorization.
+    public func validatedToken(matching previous: Token) throws -> Token {
+        let refreshed = try Token(rawValue: token)
+        guard refreshed.userId == previous.userId,
+              refreshed.projectId == previous.projectId,
+              refreshed.clientId == previous.clientId,
+              refreshed.chainId == previous.chainId,
+              refreshed.isErmis == previous.isErmis,
+              userId == refreshed.userId,
+              projectId == nil || projectId == refreshed.projectId else {
+            throw ClientError.InvalidToken("Refreshed session does not match the current account.")
+        }
+        guard !refreshed.isExpired else { throw ClientError.ExpiredToken() }
+        return refreshed
+    }
+
 }

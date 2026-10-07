@@ -1,0 +1,4 @@
+module openmls_uniffiFFI {
+    header "openmls_uniffiFFI.h"
+    export *
+}

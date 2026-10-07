@@ -482,9 +482,8 @@ class ChannelUpdater: Worker {
                 completion?(result.error)
                 return
             }
-            // After accepting, check if the channel is MLS-enabled.
-            // If so, perform an external join so the device can decrypt messages,
-            // then trigger an E2E sync for that channel.
+            // Fetch accepted membership before the ordered MLS bootstrap even if
+            // the realtime accept notification was missed.
             var isMlsEnabled = false
             self.database.viewContext.performAndWait {
                 if let dto = ChannelDTO.load(cid: cid, context: self.database.viewContext) {
@@ -495,7 +494,7 @@ class ChannelUpdater: Worker {
                 completion?(nil)
                 return
             }
-            self.e2eRepository.performE2eChannelSync(cid: cid)
+            self.e2eRepository.reconcileAcceptedMembership(in: cid)
             completion?(result.error)
         }
     }

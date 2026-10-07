@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "package_version": "0.1.0-local-pre-ownership-recovered",
+  "openmls_source_repository": "../../../openmls",
+  "openmls_source_revision": "d0aefc1baea3b80ebe0b9427c7c3dbec976281c9",
+  "cargo_lock_sha256": "202c66eb84ce92571bac3af92a5cdb82d0ff26b6d691d24ec6cee8ca81056d31",
+  "minimum_ios_version": "15.0",
+  "slices": [
+    "arm64-apple-ios",
+    "arm64-apple-ios-simulator"
+  ],
+  "required_ios_sdk_capabilities": [
+    "archive_epoch_v2",
+    "create_message_with_aad",
+    "create_with_group_id",
+    "decrypt_epoch_archive_v2",
+    "invalid_group_id_error",
+    "load_from_storage_with_group_id",
+    "message_already_consumed_error",
+    "no_matching_key_package_error",
+    "process_message_at",
+    "process_message_deferred",
+    "save_state"
+  ],
+  "intentionally_not_exposed": [
+    "sender_data_peek"
+  ],
+  "verification_status": "Recovered exact pre-task archive/header/binding hashes; historical verification retained in Bellboy evidence. No new physical acceptance claimed.",
+  "openmls_tracked_diff_sha256": "2de0337e9b8e633e0a1b061325f6dba3d8e93e1f47f3f0f87e358161d5be696b",
+  "metadata_recovery": "Metadata bytes reconstructed; binary/header/binding bytes match pre-task evidence exactly. See isolation bundle artifact-recovery.json."
+}
