@@ -45,6 +45,13 @@ final class E2eeMlsRolloutControlsTests: XCTestCase {
     func testKeyPackageRefillPolicyRejectsContradictoryOrUnboundedContracts() {
         XCTAssertEqual(
             E2eeKeyPackageRefillPolicy.batchSize(
+                remaining: 60, target: 100, lowWatermark: 50,
+                requestedDelta: 40, refillGeneration: 3
+            ),
+            40, "An open durable demand must reach target even above the watermark."
+        )
+        XCTAssertEqual(
+            E2eeKeyPackageRefillPolicy.batchSize(
                 remaining: 60,
                 target: 100,
                 lowWatermark: 50,
@@ -223,6 +230,45 @@ final class E2eeMlsRolloutControlsTests: XCTestCase {
             ),
             .eligible
         )
+    }
+
+    func testInviteActionsUseAuthenticatedChatAPI() throws {
+        let cid = try ChannelId(cid: "messaging:project:channel")
+        let accept: Endpoint<EmptyResponse> = .acceptInvite(cid: cid)
+        let join: Endpoint<EmptyResponse> = .joinPublicChannel(cid: cid)
+        XCTAssertEqual(accept.path.value, "invites/messaging/project:channel/accept")
+        XCTAssertEqual(join.path.value, "invites/messaging/project:channel/join")
+        for endpoint in [accept, join] {
+            XCTAssertEqual(endpoint.method, .post)
+            XCTAssertEqual(endpoint.urlType, .normal)
+            XCTAssertTrue(endpoint.needToken)
+            XCTAssertNil(endpoint.query)
+        }
+    }
+
+    func testFreshLoginGroupInfoDecodesActiveRecoveryAndFailsClosed() throws {
+        func payload(reason: String? = "active_member_recovery", stale: Bool = false,
+                     generation: Int = 0, groupId: String? = nil) throws -> GroupInfoPayload {
+            var object: [String: Any] = [
+                "channel": ["cid": "messaging:project:channel", "type": "messaging",
+                            "created_at": "2026-10-08T00:00:00Z", "updated_at": "2026-10-08T00:00:00Z", "mls_enabled": true],
+                "group_info": "AQID", "epoch": 6, "hash": "hash", "is_stale": stale,
+                "group_generation": generation
+            ]
+            if let reason { object["external_join_prerequisite"] = ["reason": reason] }
+            if let groupId { object["group_id"] = groupId }
+            return try JSONDecoder.ermis.decode(GroupInfoPayload.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let active = try payload()
+        XCTAssertEqual(active.externalJoinPrerequisite?.reason, "active_member_recovery")
+        XCTAssertTrue(active.authorizesActiveMemberRecovery)
+        XCTAssertTrue(active.isValidExternalJoinIdentity(installedGeneration: 0))
+        XCTAssertFalse(try payload(reason: nil).authorizesActiveMemberRecovery)
+        XCTAssertFalse(try payload(reason: "generic_failure").authorizesActiveMemberRecovery)
+        XCTAssertFalse(try payload(stale: true).authorizesActiveMemberRecovery)
+        XCTAssertFalse(try payload(generation: 2).isValidExternalJoinIdentity(installedGeneration: 0))
+        XCTAssertTrue(try payload(generation: 2, groupId: "AQID").isValidExternalJoinIdentity(installedGeneration: 2))
+        XCTAssertFalse(active.isValidExternalJoinIdentity(installedGeneration: 2))
     }
 
     func testConcurrentBootstrapAdmissionCreatesOneJoinCandidatePerScope() throws {

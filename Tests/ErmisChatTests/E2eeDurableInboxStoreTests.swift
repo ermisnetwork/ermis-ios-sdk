@@ -292,6 +292,27 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         }
     }
 
+    func testRecoveredOldCommitPreservesFutureFetchAndApplyCursor() throws {
+        let store = E2eeDurableInboxStore(database: try makeDatabase())
+        let newer = try envelope(createdAt: "2026-10-08T10:00:00.123456Z")
+        let future = ScopeSyncCursorPayload(createdAt: "2026-10-08T10:00:00.123456Z", eventId: newer.eventId)
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid,
+                                  events: [newer], hasMore: false, nextCursor: future)
+        try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: newer)
+        let old = try envelope(eventId: "22222222-2222-4222-8222-222222222222", createdAt: "2026-09-19T10:00:00.123456Z")
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid,
+                                  events: [old], hasMore: false, nextCursor: nil)
+        XCTAssertThrowsError(try store.markRecoveredCommitApplied(accountId: accountId, scopeCid: scopeCid, eventId: old.eventId))
+        let hash = Data(repeating: 0xa5, count: 32)
+        try store.markCommitProofPersisted(accountId: accountId, scopeCid: scopeCid, eventId: old.eventId, ciphertextHash: hash, targetEpoch: 2)
+        XCTAssertThrowsError(try store.markRecoveredCommitApplied(accountId: accountId, scopeCid: scopeCid, eventId: old.eventId))
+        try store.markCommitStatePersisted(accountId: accountId, scopeCid: scopeCid, eventId: old.eventId, ciphertextHash: hash, targetEpoch: 2)
+        try store.markRecoveredCommitApplied(accountId: accountId, scopeCid: scopeCid, eventId: old.eventId)
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), future)
+        XCTAssertEqual(try store.applyCursor(accountId: accountId, scopeCid: scopeCid), future)
+        XCTAssertTrue(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).isEmpty)
+    }
+
     func testCommitProofPersistsBeforeMlsStateMarker() throws {
         let store = E2eeDurableInboxStore(database: try makeDatabase())
         let event = try envelope()

@@ -188,6 +188,22 @@ final class E2eeDurableInboxStore {
         )
     }
 
+    /// A retained-group recovery processes only cryptographically proven missing commits.
+    /// Preserve both ordinary cursors; older protocol must not erase later durable fetch state.
+    func markRecoveredCommitApplied(accountId: String, scopeCid: String, eventId: String) throws {
+        try database.writeAndWait { context in
+            guard let context = context as? NSManagedObjectContext,
+                  let event = try E2eeInboxEventDTO.load(accountId: accountId, scopeCid: scopeCid,
+                                                       eventId: eventId, context: context),
+                  event.mlsStatePersisted, event.protocolCiphertextHash != nil,
+                  event.protocolTargetEpoch > 0 else {
+                throw E2eeDurableInboxError.protocolCommitProofMismatch(eventId: eventId)
+            }
+            event.appliedAt = Date().bridgeDate
+            event.failureCategory = nil
+        }
+    }
+
     func loadPendingEvents(accountId: String, scopeCid: String) throws -> [E2eSyncEventEnvelope] {
         try readAndWait { context in
             let events = try E2eeInboxEventDTO.loadPending(

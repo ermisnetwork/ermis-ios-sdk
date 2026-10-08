@@ -39,6 +39,23 @@ final class MlsGenerationRebootstrapTests: XCTestCase {
         XCTAssertEqual(state.capability.protocolVersion, 1)
         XCTAssertEqual(state.capability.repairTimeoutSeconds, 15 * 60)
         XCTAssertEqual(state.capability.maxWelcomeRecipients, 200)
+        XCTAssertTrue(state.requiresAuthoritativeJoin(installedGeneration: 1, groupLoaded: true))
+        XCTAssertTrue(state.requiresAuthoritativeJoin(installedGeneration: 2, groupLoaded: false))
+        XCTAssertFalse(state.requiresAuthoritativeJoin(installedGeneration: 2, groupLoaded: true))
+        XCTAssertFalse(state.isValidIdentity(installedGeneration: 3))
+
+        let deliveryFailed = try JSONDecoder.ermis.decode(
+            MlsGenerationStatePayload.self,
+            from: Data(String(decoding: data, as: UTF8.self)
+                .replacingOccurrences(of: "\"activated\"", with: "\"delivery_failed_retryable\"").utf8)
+        )
+        XCTAssertTrue(deliveryFailed.requiresAuthoritativeJoin(installedGeneration: 2, groupLoaded: false))
+        let missingGroupId = try JSONDecoder.ermis.decode(
+            MlsGenerationStatePayload.self,
+            from: Data(String(decoding: data, as: UTF8.self)
+                .replacingOccurrences(of: "\"AQIDBA==\"", with: "null").utf8)
+        )
+        XCTAssertFalse(missingGroupId.isValidIdentity(installedGeneration: 0))
     }
 
     func testTypedFailureAndOldServerRouteMapToDistinctReadiness() throws {

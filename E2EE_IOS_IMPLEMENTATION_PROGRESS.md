@@ -7032,3 +7032,31 @@ Complexity and operational impact:
 - Login, a captured request to `api.xoithit.lol`, Google OAuth, extension
   behavior and authenticated MLS repair/send/restart remain unverified. No
   rollout/environment checkbox is closed; no commit or push occurred.
+# 2026-10-08 — TEST/POC mobile invite and retained-channel recovery
+
+Chat invite/public-join endpoints now match Web. Typed fresh `active_member_recovery`
+authorizes missing-group join and, after known retained native/epoch-gap failure,
+isolated Provider recovery. Protocol-only replay preserves newer durable cursors;
+settling old events requires native persistence proof. Candidate uses the same
+identity, keeps the original Provider and promotes its persisted marker only after
+accepted merge/save; existing receipt/hash recovery covers legacy generation 0.
+Replay scans at most ten pages of 100 events/CID; mutations remain serialized.
+Final linked-artifact suite **59 passed, 0 failed/skipped**, signed host build and
+physical install/restart passed. Real iOS join epoch 7, followed by Android join 8;
+owner confirms two-way send/read in the old channel. No native artifact/schema/
+backend deployment. Calls/APNs, historical secrets and production cost gates remain
+separate. [Evidence](../../bellboy-external-release/docs/release/evidence/2026-10-08/client-rebootstrap/invite-external-join.md).
+
+# 2026-10-08 — TEST/POC KeyPackage and generation contract follow-up
+
+Owner requested parity with Bellboy External's `keypackages_rebootstrap_client_server.md`.
+`E2eRepository.swift` now honors server durable demand above the low watermark,
+recounts the fifth upload before exhausting its five-batch budget, rejects malformed
+or regressing generation identity, and joins an activated generation when the
+current local group is missing, including `delivery_failed_retryable`.
+`E2ePayloads.swift` carries the shared identity/join predicate; linked-artifact tests
+in `MlsGenerationRebootstrapTests.swift` and `E2eeMlsRolloutControlsTests.swift`
+exercise identity and open-demand cases. Existing server capability, repair-first,
+candidate persistence and receipt adoption gates remain. No native artifact/API/
+database schema changes. Cost remains O(B) for batch keys (B <= 100), at most five
+uploads plus six counts; extra validation O(1). See [verification evidence](../../bellboy-external-release/docs/release/evidence/2026-10-08/client-rebootstrap/README.md).

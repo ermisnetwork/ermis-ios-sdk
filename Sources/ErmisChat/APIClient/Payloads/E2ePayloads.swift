@@ -128,6 +128,10 @@ public class ConsumeKeyPackagesPayload: Decodable {
 
 /// Response payload for GET /group_info.
 /// Extends the standard ChannelPayload with GroupInfo-specific fields.
+public struct ExternalJoinPrerequisitePayload: Decodable {
+    public let reason: String
+}
+
 public class GroupInfoPayload: Decodable {
     /// The full channel state (channel details, messages, members, etc.).
     let channel: ChannelPayload
@@ -140,6 +144,17 @@ public class GroupInfoPayload: Decodable {
     public let hash: String
     /// `true` when `groupInfo.epoch < channel.mlsEpoch`, meaning the stored GroupInfo is outdated.
     public let isStale: Bool
+    public let externalJoinPrerequisite: ExternalJoinPrerequisitePayload?
+
+    func isValidExternalJoinIdentity(installedGeneration: Int) -> Bool {
+        groupGeneration >= installedGeneration && groupGeneration >= 0 &&
+            groupGeneration <= 9_007_199_254_740_991 && epoch >= 0 && epoch < 9_007_199_254_740_991 &&
+            (groupId.map { (1...255).contains($0.count) } ?? (groupGeneration == 0))
+    }
+
+    var authorizesActiveMemberRecovery: Bool {
+        !isStale && externalJoinPrerequisite?.reason == "active_member_recovery"
+    }
 
     enum CodingKeys: String, CodingKey {
         case groupInfo = "group_info"
@@ -148,6 +163,7 @@ public class GroupInfoPayload: Decodable {
         case groupId = "group_id"
         case hash
         case isStale = "is_stale"
+        case externalJoinPrerequisite = "external_join_prerequisite"
     }
 
     public required init(from decoder: any Decoder) throws {
@@ -159,6 +175,9 @@ public class GroupInfoPayload: Decodable {
         self.groupId = try container.decodeE2eeBytesIfPresent(forKey: .groupId)
         self.hash = try container.decode(String.self, forKey: .hash)
         self.isStale = try container.decodeIfPresent(Bool.self, forKey: .isStale) ?? false
+        self.externalJoinPrerequisite = try container.decodeIfPresent(
+            ExternalJoinPrerequisitePayload.self, forKey: .externalJoinPrerequisite
+        )
     }
 }
 
@@ -227,6 +246,20 @@ struct MlsGenerationStatePayload: Decodable, Equatable {
     let firstUnresolvedAt: Date?
     let incidentDeadlineAt: Date?
     let capability: MlsRebootstrapCapabilityPayload
+
+    func isValidIdentity(installedGeneration: Int) -> Bool {
+        let maximumSafeInteger = 9_007_199_254_740_991
+        return (0...maximumSafeInteger).contains(groupGeneration)
+            && (0...maximumSafeInteger).contains(currentEpoch)
+            && groupGeneration >= installedGeneration
+            && (groupId.map { (1...255).contains($0.count) } ?? (groupGeneration == 0))
+    }
+
+    func requiresAuthoritativeJoin(installedGeneration: Int, groupLoaded: Bool) -> Bool {
+        isValidIdentity(installedGeneration: installedGeneration)
+            && [.activated, .deliveryFailedRetryable].contains(state)
+            && (groupGeneration > installedGeneration || (groupGeneration > 0 && !groupLoaded))
+    }
 
     enum CodingKeys: String, CodingKey {
         case groupGeneration = "group_generation"

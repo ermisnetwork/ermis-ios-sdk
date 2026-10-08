@@ -140,6 +140,45 @@ final class MlsPersistenceTests: XCTestCase {
         XCTAssertEqual(processed.content, Data("persisted-key".utf8))
     }
 
+    func testIsolatedExternalRecoveryPreservesOriginalGroupAndReopensSelectedProvider() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ermis-isolated-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "io.ermis.tests.isolated.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let secureStore = DeviceIdSecureStore()
+        let deviceStore = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: secureStore)
+        let client = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
+        try client.setup(with: "receiver")
+        let original = try XCTUnwrap(client.provider)
+        let senderProvider = Provider()
+        let sender = try Identity(provider: senderProvider, userId: "sender")
+        let cid = "messaging:project:isolated"
+        let group = try Group.createWithCid(provider: senderProvider, founder: sender, cid: cid)
+        let add = try group.addMembers(provider: senderProvider, sender: sender,
+            newMembers: [KeyPackage.fromBytes(data: XCTUnwrap(client.getKeyPackage()))])
+        try group.mergePendingCommit(provider: senderProvider)
+        _ = try client.joinWithWelcome(cid: cid, welcome: XCTUnwrap(add.welcome), ratchetTree: group.exportRatchetTree())
+        _ = try group.selfUpdate(provider: senderProvider, sender: sender)
+        try group.mergePendingCommit(provider: senderProvider)
+        let info = try group.exportGroupInfo(provider: senderProvider, sender: sender, withRatchetTree: true)
+        let result = try client.externalJoinIsolated(cid: cid, generation: 0, groupInfo: info, expectedGroupId: nil)
+        XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 1)
+        XCTAssertNil(client.loadGenerationMarker(cid: cid)?.providerPath)
+        let pending = try XCTUnwrap(client.loadPendingGenerationJoin(cid: cid))
+        XCTAssertNotNil(pending.providerPath)
+        try client.mergePendingCommit(in: ChannelId(cid: cid))
+        try client.saveGenerationMarker(.init(cid: cid, generation: 0, groupId: result.group.groupId(),
+            epoch: result.group.epoch(), status: "active", operationId: nil, providerPath: pending.providerPath))
+        client.removePendingGenerationJoin(cid: cid)
+        XCTAssertEqual(try client.loadGroup(with: cid).epoch(), 3)
+        XCTAssertFalse(try client.exportGroupInfo(of: result.group).isEmpty)
+        XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 1)
+        let resumed = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
+        try resumed.setup(with: "receiver")
+        XCTAssertEqual(try resumed.loadGroup(with: cid).epoch(), 3)
+    }
+
     func testKeyPackageBatchRejectsUnavailableProviderAndInvalidCount() throws {
         let client = MlsClient()
         XCTAssertThrowsError(try client.getKeyPackage(count: 1))

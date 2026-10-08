@@ -574,6 +574,11 @@ public class MlsClient {
         } else {
             group = try Group.loadFromStorage(provider: context.provider, cid: cid)
         }
+        if let providerPath = marker?.providerPath {
+            providerContextByGroupId[group.groupId()] = providerPath
+        } else {
+            providerContextByGroupId.removeValue(forKey: group.groupId())
+        }
         return group
     }
 
@@ -1105,6 +1110,32 @@ public class MlsClient {
             )
         }
         return externalJoinResult
+    }
+
+    func externalJoinIsolated(cid: String, generation: UInt64, groupInfo: Data, expectedGroupId: Data?) throws -> ExternalJoinResult {
+        assertMutationExecutor()
+        guard provider != nil, let identity, let userId, let providerDatabaseURL else {
+            throw ClientError.MlsNoIdentityError()
+        }
+        let root = providerDatabaseURL.deletingLastPathComponent().appendingPathComponent("recovery", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let path = root.appendingPathComponent(UUID().uuidString + ".db").path
+        let candidate = try Provider.newWithPath(dbPath: path)
+        let identityBytes = try identity.toBytes()
+        let candidateIdentity = try Identity.fromBytes(provider: candidate, data: identityBytes)
+        try candidate.storeIdentity(userId: userId, identityBytes: identityBytes)
+        let result = try joinExternal(provider: candidate, identity: candidateIdentity, groupInfo: groupInfo, ratchetTree: nil)
+        if let expectedGroupId, result.group.groupId() != expectedGroupId {
+            throw ClientError.Unexpected("External recovery group identity mismatch.")
+        }
+        try result.group.saveState(provider: candidate)
+        generationProviders[path] = candidate
+        generationIdentities[path] = candidateIdentity
+        providerContextByGroupId[result.group.groupId()] = path
+        try savePendingGenerationJoin(.init(cid: cid, generation: generation,
+            groupId: result.group.groupId(), epoch: result.group.epoch(), status: "external_join_prepared",
+            operationId: nil, providerPath: path))
+        return result
     }
 
     func generateDeviceIdIfNeeded(for userId: String) {

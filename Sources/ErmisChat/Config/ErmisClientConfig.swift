@@ -29,6 +29,7 @@ public enum E2eeMlsRolloutMetricOutcome: String, Codable, Sendable {
 
 public enum E2eeMlsRolloutMetricReason: String, Codable, Sendable {
     case noMatchingKeyPackage = "no_matching_key_package"
+    case activeMemberRecovery = "active_member_recovery"
     case rolloutDisabled = "rollout_disabled"
     case processError = "process_error"
     case historicalReplayDisabled = "historical_replay_disabled"

@@ -344,7 +344,6 @@ enum E2eeKeyPackageRefillPolicy {
             return requestedDelta == 0 || remaining > lowWatermark ? 0 : nil
         }
         guard requestedDelta > 0,
-              remaining <= lowWatermark,
               requestedDelta <= target
         else {
             return requestedDelta == 0 ? 0 : nil
@@ -584,6 +583,8 @@ class E2eRepository: EventsControllerDelegate {
     private var isSyncing = false
     private var activeSyncCids: Set<String> = []
     private var activeSyncCompletions: [() -> Void] = []
+    private let retainedReplayLock = NSLock()
+    private var retainedReplayBlockedCids: Set<String> = []
     private var pendingInitialSyncCursorBatches: [[String: ScopeSyncCursorPayload]] = []
 
     /// Per-channel sync requests that arrived while another sync was already running. Instead of
@@ -1395,6 +1396,13 @@ class E2eRepository: EventsControllerDelegate {
                 self.completeKeyPackageRefill()
                 return
             }
+            // Recount after the final upload even when its ACK was lost; the
+            // generation budget remains five batches.
+            guard attempt < E2eeKeyPackageRefillPolicy.maximumAttempts else {
+                self.completeKeyPackageRefill()
+                log.warning("[MLS] state=keypackage_refill_pending reason=attempts_exhausted", subsystems: .mls)
+                return
+            }
 
             let keyPackages: [[UInt8]]
             do {
@@ -1415,24 +1423,8 @@ class E2eRepository: EventsControllerDelegate {
                 guard let self else { return }
                 switch uploadResult {
                 case .success:
-                    guard attempt + 1 < E2eeKeyPackageRefillPolicy.maximumAttempts else {
-                        self.completeKeyPackageRefill()
-                        log.warning(
-                            "[MLS] state=keypackage_refill_pending reason=attempts_exhausted",
-                            subsystems: .mls
-                        )
-                        return
-                    }
                     self.reconcileKeyPackageInventory(reason: reason, attempt: attempt + 1)
                 case .failure:
-                    guard attempt + 1 < E2eeKeyPackageRefillPolicy.maximumAttempts else {
-                        self.completeKeyPackageRefill()
-                        log.warning(
-                            "[MLS] state=keypackage_refill_pending reason=attempts_exhausted",
-                            subsystems: .mls
-                        )
-                        return
-                    }
                     let delay = E2eeKeyPackageRefillPolicy.retryBaseDelay
                         * pow(2, Double(attempt))
                     DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
@@ -1705,10 +1697,129 @@ class E2eRepository: EventsControllerDelegate {
         batch.forEach { setReadiness(.syncing, for: $0.rawValue) }
         performE2eChannelSync(cids: Set(batch.map(\.rawValue))) { [weak self] in
             guard let self else { return }
-            for cid in batch {
-                self.setReadiness(self.bootstrapCompletionState(for: cid), for: cid.rawValue)
+            self.recoverRetainedGroups(Array(batch)) { [weak self] in
+                guard let self else { return }
+                for cid in batch {
+                    self.setReadiness(self.bootstrapCompletionState(for: cid), for: cid.rawValue)
+                }
+                self.syncExistingGroupsInBatches(remaining, batchSize: batchSize, completion: completion)
             }
-            self.syncExistingGroupsInBatches(remaining, batchSize: batchSize, completion: completion)
+        }
+    }
+
+    private func hasRetainedReplayBlock(_ cid: String) -> Bool {
+        retainedReplayLock.lock()
+        defer { retainedReplayLock.unlock() }
+        return retainedReplayBlockedCids.contains(cid)
+    }
+
+    private func setRetainedReplayBlock(_ cid: String, blocked: Bool) {
+        retainedReplayLock.lock()
+        defer { retainedReplayLock.unlock() }
+        if blocked { retainedReplayBlockedCids.insert(cid) }
+        else { retainedReplayBlockedCids.remove(cid) }
+    }
+
+    private func recoverRetainedGroups(_ cids: [ChannelId], completion: @escaping () -> Void) {
+        guard let cid = cids.first else { completion(); return }
+        recoverRetainedGroupIfBehind(cid: cid) { [weak self] in
+            self?.recoverRetainedGroups(Array(cids.dropFirst()), completion: completion)
+        }
+    }
+
+    private func recoverRetainedGroupIfBehind(cid: ChannelId, completion: @escaping () -> Void) {
+        guard mlsRolloutControls.historicalReplayEnabled,
+              !hasLocalJoinReceipt(for: cid.rawValue),
+              loadMlsRebootstrapCheckpoint(cid: cid.rawValue) == nil,
+              let group = try? mlsClient.loadGroup(with: cid.rawValue) else {
+            completion(); return
+        }
+        var serverEpoch = 0
+        let readContext = database.backgroundReadOnlyContext
+        readContext.performAndWait {
+            serverEpoch = ChannelDTO.load(cid: cid, context: readContext)?.mlsEpoch ?? 0
+        }
+        guard group.epoch() < UInt64(max(0, serverEpoch)) || isScopeBlocked(cid.rawValue) else {
+            completion(); return
+        }
+        apiClient.request(endpoint: .mlsGeneration(cid: cid)) { [weak self] result in
+            guard let self else { return }
+            guard case .success(let state) = result,
+                  state.isValidIdentity(installedGeneration: self.groupGeneration(for: cid)),
+                  state.groupGeneration == self.groupGeneration(for: cid),
+                  state.capability.protocolVersion == MlsRebootstrapCapabilityPayload.currentProtocolVersion,
+                  state.currentEpoch > Int(group.epoch()) else { completion(); return }
+            self.replayRetainedCommits(cid: cid, generation: state.groupGeneration,
+                targetEpoch: state.currentEpoch,
+                cursor: .init(createdAt: "1970-01-01T00:00:00.000000Z", eventId: Self.zeroEventId),
+                pagesRemaining: 10) { [weak self] in
+                    guard let self else { return }
+                    let localEpoch = (try? self.mlsClient.loadGroup(with: cid.rawValue).epoch()) ?? 0
+                    guard self.hasRetainedReplayBlock(cid.rawValue), localEpoch < UInt64(state.currentEpoch) else {
+                        completion(); return
+                    }
+                    self.externalJoinChannel(cid: cid, requiresActiveMemberRecovery: true, replaceRetainedGroup: true) { error in
+                        if error == nil {
+                            self.setRetainedReplayBlock(cid.rawValue, blocked: false)
+                            self.scheduleDurableDrain(cid: cid, cidString: cid.rawValue, resetProtocolBlock: true)
+                        }
+                        completion()
+                    }
+                }
+        }
+    }
+
+    private func replayRetainedCommits(
+        cid: ChannelId, generation: Int, targetEpoch: Int,
+        cursor: ScopeSyncCursorPayload, pagesRemaining: Int, completion: @escaping () -> Void
+    ) {
+        guard pagesRemaining > 0, let accountId = mlsClient.userId else { completion(); return }
+        apiClient.request(endpoint: .e2eSync(body: .init(cursors: [cid.rawValue: cursor], limit: 100))) { [weak self] result in
+            guard let self else { return }
+            guard case .success(let payload) = result, let page = payload.channels[cid.rawValue] else {
+                completion(); return
+            }
+            let operation = BlockOperation { [weak self] in
+                guard let self else { return }
+                do {
+                    for event in page.events {
+                        guard case .protocol(let data) = event.event,
+                              data.groupGeneration == generation,
+                              [.commit, .externalCommit].contains(data.type) else { continue }
+                        let localEpoch = try self.mlsClient.loadGroup(with: cid.rawValue).epoch()
+                        guard data.epoch > Int(localEpoch), data.epoch <= targetEpoch else { continue }
+                        guard data.epoch == Int(localEpoch) + 1 else {
+                            throw E2eeSyncApplyError.epochMismatch(local: localEpoch, event: data.epoch)
+                        }
+                        _ = try self.durableInboxStore.persistPage(accountId: accountId,
+                            scopeCid: cid.rawValue, events: [event], hasMore: false, nextCursor: nil)
+                        _ = try self.processSingleE2eSyncEvent(event, accountId: accountId,
+                            cid: cid, cidString: cid.rawValue)
+                        try self.durableInboxStore.markRecoveredCommitApplied(accountId: accountId,
+                            scopeCid: cid.rawValue, eventId: event.eventId)
+                    }
+                    let localEpoch = try self.mlsClient.loadGroup(with: cid.rawValue).epoch()
+                    if localEpoch >= UInt64(targetEpoch) {
+                        log.info("[MLS] retained_recovery result=caught_up", subsystems: .mls)
+                        self.scheduleDurableDrain(cid: cid, cidString: cid.rawValue, resetProtocolBlock: true)
+                        let barrier = BlockOperation { completion() }
+                        self.enqueueGroupOperation(barrier, cidString: cid.rawValue)
+                    } else if page.hasMore, let next = page.nextCursor, next != cursor {
+                        self.replayRetainedCommits(cid: cid, generation: generation, targetEpoch: targetEpoch,
+                            cursor: next, pagesRemaining: pagesRemaining - 1, completion: completion)
+                    } else {
+                        log.warning("[MLS] retained_recovery result=history_gap", subsystems: .mls)
+                        completion()
+                    }
+                } catch {
+                    if error is MlsError || error is E2eeSyncApplyError {
+                        self.setRetainedReplayBlock(cid.rawValue, blocked: true)
+                    }
+                    log.error("[MLS] retained_recovery result=blocked " + PrivacySafeLogMetadata.errorFields(error), subsystems: .mls)
+                    completion()
+                }
+            }
+            self.enqueueGroupOperation(operation, cidString: cid.rawValue)
         }
     }
 
@@ -1729,6 +1840,15 @@ class E2eRepository: EventsControllerDelegate {
             groupLoaded: mlsClient.isGroupLoaded(cid: cid.rawValue)
         )
         setReadiness(.syncing, for: cid.rawValue)
+        if mlsClient.isGroupLoaded(cid: cid.rawValue), !hasLocalJoinReceipt(for: cid.rawValue) {
+            recoverRetainedGroupIfBehind(cid: cid) { [weak self] in
+                guard let self else { return }
+                self.performE2eChannelSync(cids: [cid.rawValue]) {
+                    self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
+                }
+            }
+            return
+        }
         apiClient.request(endpoint: .mlsGeneration(cid: cid)) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -1752,8 +1872,14 @@ class E2eRepository: EventsControllerDelegate {
                 let localGeneration = Int(
                     self.mlsClient.loadGenerationMarker(cid: cid.rawValue)?.generation ?? 0
                 )
-                if state.groupGeneration > localGeneration,
-                   (state.state == .activated || state.state == .deliveryFailedRetryable) {
+                guard state.isValidIdentity(installedGeneration: localGeneration) else {
+                    self.finishBootstrap(cid: cid, state: .infrastructureRetryable)
+                    return
+                }
+                if state.requiresAuthoritativeJoin(
+                    installedGeneration: localGeneration,
+                    groupLoaded: self.mlsClient.isGroupLoaded(cid: cid.rawValue)
+                ) {
                     self.externalJoinAuthoritativeGeneration(cid: cid, trace: trace)
                     return
                 }
@@ -1826,26 +1952,12 @@ class E2eRepository: EventsControllerDelegate {
                 self.finishBootstrap(cid: cid, state: .needsRetry)
                 return
             }
-            switch E2eePartialWelcomeFallbackEligibility.resolve(
-                hasTypedPrerequisite: hasTypedPrerequisite,
-                controlEnabled: self.mlsRolloutControls.partialWelcomeFallbackEnabled
-            ) {
-            case .missingTypedPrerequisite:
+            guard self.mlsRolloutControls.partialWelcomeFallbackEnabled else {
+                self.emitMlsRolloutMetric(.init(name: .externalJoinFallback, outcome: .disabled, reason: .rolloutDisabled))
                 self.finishBootstrap(cid: cid, state: .needsRetry)
                 return
-            case .disabled:
-                self.emitMlsRolloutMetric(
-                    .init(
-                        name: .externalJoinFallback,
-                        outcome: .disabled,
-                        reason: .rolloutDisabled
-                    )
-                )
-                self.finishBootstrap(cid: cid, state: .needsRetry)
-                return
-            case .eligible:
-                break
             }
+            let reason: E2eeMlsRolloutMetricReason = hasTypedPrerequisite ? .noMatchingKeyPackage : .activeMemberRecovery
 
             trace.info(
                 stage: "external_join_selected",
@@ -1859,17 +1971,17 @@ class E2eRepository: EventsControllerDelegate {
                 .init(
                     name: .externalJoinFallback,
                     outcome: .attempt,
-                    reason: .noMatchingKeyPackage
+                    reason: reason
                 )
             )
-            self.externalJoinChannel(cid: cid) { [weak self] error in
+            self.externalJoinChannel(cid: cid, requiresActiveMemberRecovery: !hasTypedPrerequisite) { [weak self] error in
                 guard let self else { return }
                 if let error {
                     self.emitMlsRolloutMetric(
                         .init(
                             name: .externalJoinFallback,
                             outcome: .failure,
-                            reason: .noMatchingKeyPackage
+                            reason: reason
                         )
                     )
                     trace.failure(
@@ -1890,7 +2002,7 @@ class E2eRepository: EventsControllerDelegate {
                     .init(
                         name: .externalJoinFallback,
                         outcome: .success,
-                        reason: .noMatchingKeyPackage
+                        reason: reason
                     )
                 )
                 trace.info(
@@ -5017,7 +5129,13 @@ class E2eRepository: EventsControllerDelegate {
     ///   many times — the join succeeds once a member uploads fresh `group_info` (e.g. on
     ///   their next commit). This is the client half; the backend must actually refresh
     ///   `group_info` after epoch changes for the retries to converge.
-    func externalJoinChannel(cid: ChannelId, retriesRemaining: Int = 3, completion: @escaping (Error?) -> Void) {
+    func externalJoinChannel(
+        cid: ChannelId,
+        retriesRemaining: Int = 3,
+        requiresActiveMemberRecovery: Bool = false,
+        replaceRetainedGroup: Bool = false,
+        completion: @escaping (Error?) -> Void
+    ) {
         let trace = E2eeJoinTrace.Context(cid: cid.rawValue)
         trace.info(
             stage: "external_join_started",
@@ -5026,7 +5144,8 @@ class E2eRepository: EventsControllerDelegate {
             groupLoaded: mlsClient.isGroupLoaded(cid: cid.rawValue),
             retriesRemaining: retriesRemaining
         )
-        if recoverExternalJoinIfNeeded(cid: cid, completion: completion) {
+        if (!replaceRetainedGroup || hasLocalJoinReceipt(for: cid.rawValue)),
+           recoverExternalJoinIfNeeded(cid: cid, completion: completion) {
             trace.info(
                 stage: "external_join_recovery_selected",
                 source: "recovery",
@@ -5049,6 +5168,10 @@ class E2eRepository: EventsControllerDelegate {
             }
             switch result {
             case .success(let groupInfo):
+                guard groupInfo.isValidExternalJoinIdentity(installedGeneration: self.groupGeneration(for: cid)) else {
+                    completion(ClientError("Invalid external join generation identity."))
+                    return
+                }
                 trace.info(
                     stage: "group_info_received",
                     source: "external_join",
@@ -5100,14 +5223,29 @@ class E2eRepository: EventsControllerDelegate {
                         subsystems: .mls
                     )
                     DispatchQueue.global().asyncAfter(deadline: .now() + delaySeconds) { [weak self] in
-                        self?.externalJoinChannel(cid: cid, retriesRemaining: retriesRemaining - 1, completion: completion)
+                        self?.externalJoinChannel(cid: cid, retriesRemaining: retriesRemaining - 1, requiresActiveMemberRecovery: requiresActiveMemberRecovery, replaceRetainedGroup: replaceRetainedGroup, completion: completion)
                     }
+                    return
+                }
+                if requiresActiveMemberRecovery,
+                   !groupInfo.authorizesActiveMemberRecovery {
+                    completion(ClientError("External join requires an active member recovery prerequisite."))
                     return
                 }
                 do {
                     // Re-check inside the mutation executor: a queued Welcome may have created
                     // the group while the group_info request was in flight.
                     let externalJoinResult: ExternalJoinResult? = try performMlsMutation(cidString: cid.rawValue) {
+                        if replaceRetainedGroup {
+                            guard requiresActiveMemberRecovery, self.hasRetainedReplayBlock(cid.rawValue),
+                                  let retained = try? self.mlsClient.loadGroup(with: cid.rawValue),
+                                  retained.epoch() < UInt64(groupInfo.epoch) else {
+                                throw ClientError.Unexpected("Retained recovery is not authorized.")
+                            }
+                            return try self.mlsClient.externalJoinIsolated(cid: cid.rawValue,
+                                generation: UInt64(groupInfo.groupGeneration), groupInfo: groupInfo.groupInfo.data,
+                                expectedGroupId: groupInfo.groupId.map { Data($0) })
+                        }
                         guard !self.mlsClient.isGroupLoaded(cid: cid.rawValue) else { return nil }
                         return try self.mlsClient.externalJoin(
                             groupInfo: groupInfo.groupInfo.data,
@@ -5148,7 +5286,7 @@ class E2eRepository: EventsControllerDelegate {
                     )
                 } catch (let error) {
                     try? self.performMlsMutation(cidString: cid.rawValue) {
-                        if self.mlsClient.isGroupLoaded(cid: cid.rawValue) {
+                        if !replaceRetainedGroup, self.mlsClient.isGroupLoaded(cid: cid.rawValue) {
                             try self.mlsClient.deleteGroup(cid: cid.rawValue)
                         }
                     }
@@ -5177,6 +5315,8 @@ class E2eRepository: EventsControllerDelegate {
                             self?.externalJoinChannel(
                                 cid: cid,
                                 retriesRemaining: retriesRemaining - 1,
+                                requiresActiveMemberRecovery: requiresActiveMemberRecovery,
+                                replaceRetainedGroup: replaceRetainedGroup,
                                 completion: completion
                             )
                         }
@@ -5387,7 +5527,7 @@ class E2eRepository: EventsControllerDelegate {
             localEpoch: targetEpoch
         )
         do {
-            if groupGeneration > 0 {
+            if groupGeneration > 0 && mlsClient.loadPendingGenerationJoin(cid: cid.rawValue) == nil {
                 guard let groupId else {
                     throw ClientError.Unexpected(
                         "Generation-aware external join requires authoritative GroupId."
@@ -5467,15 +5607,17 @@ class E2eRepository: EventsControllerDelegate {
                         scopeCid: cid.rawValue,
                         firstDecryptableEpoch: epoch
                     )
-                    if groupGeneration > 0, let groupId {
+                    if groupGeneration > 0 || self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue)?.providerPath != nil {
+                        let pending = self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue)
                         try self.mlsClient.saveGenerationMarker(
                             .init(
                                 cid: cid.rawValue,
                                 generation: UInt64(groupGeneration),
-                                groupId: groupId,
+                                groupId: groupId ?? externalJoinResult.group.groupId(),
                                 epoch: epoch,
                                 status: "active",
-                                operationId: nil
+                                operationId: nil,
+                                providerPath: pending?.providerPath
                             )
                         )
                         self.mlsClient.removePendingGenerationJoin(cid: cid.rawValue)

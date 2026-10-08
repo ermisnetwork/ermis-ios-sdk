@@ -183,14 +183,9 @@ extension Endpoint {
     /// - Returns: The endpoint to accept invitation to a direct channel.
     static func acceptInvite(cid: ChannelId) -> Endpoint<EmptyResponse> {
         .init(
-            path: .joinChannel(channelType: cid.type.rawValue),
+            path: .invite(cid: cid, type: "accept"),
             method: .post,
-            query: [
-                "channel_id": cid.id,
-                "action": "accept"
-            ],
-            needConnectionId: true,
-            urlType: .auth
+            needConnectionId: true
         )
     }
 
@@ -227,14 +222,9 @@ extension Endpoint {
     /// - Returns: The endpoint to join a public channel.
     static func joinPublicChannel(cid: ChannelId) -> Endpoint<EmptyResponse> {
         .init(
-            path: .joinChannel(channelType: cid.type.rawValue),
+            path: .invite(cid: cid, type: "join"),
             method: .post,
-            query: [
-                "channel_id": cid.id,
-                "action": "join"
-            ],
-            needConnectionId: true,
-            urlType: .auth
+            needConnectionId: true
         )
     }
 
