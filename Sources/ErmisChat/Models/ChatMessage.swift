@@ -31,6 +31,8 @@ public struct ChatMessage {
     public let oldTexts: [MessageEditHistory]?
 
     /// A type of the message.
+    public var poll: Poll? = nil
+
     public let type: MessageType
 
     /// If the message was created by a specific `/` command, the command is saved in this variable.
@@ -494,6 +496,7 @@ extension ChatMessage: Hashable {
 public enum MessageType: String, Codable {
     /// A regular message created in the channel.
     case regular
+    case poll
 
     /// A temporary message which is only delivered to one user. It is not stored in the channel history. Ephemeral messages
     /// are normally used by commands to prompt messages or request for actions.
@@ -626,6 +629,8 @@ public enum SystemMessage {
     case messagePinned(userId: String, messageId: String)
     case messageUnpinned(userId: String, messageId: String)
     case inviteMessagingRejected(userId: String)
+    case pollCreated(userId: String, question: String)
+    case pollClosed(userId: String, question: String)
 
     case unknown(systemMessage: String)
 
@@ -709,6 +714,10 @@ public enum SystemMessage {
             self = .messageUnpinned(userId: userId, messageId: String(messageId))
         case 21:
             self = .inviteMessagingRejected(userId: userId)
+        case 22:
+            self = .pollCreated(userId: userId, question: components.dropFirst(2).joined(separator: " "))
+        case 23:
+            self = .pollClosed(userId: userId, question: components.dropFirst(2).joined(separator: " "))
         default:
             self = .unknown(systemMessage: systemMessage)
         }

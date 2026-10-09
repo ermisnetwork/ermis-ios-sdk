@@ -6,6 +6,12 @@ import Foundation
 
 /// Coding keys for message-related JSON payloads
 enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
+    case pollType = "poll_type"
+    case pollChoices = "poll_choices"
+    case pollChoiceCounts = "poll_choice_counts"
+    case latestPollChoices = "latest_poll_choices"
+    case allowChangeChoice = "allow_change_choice"
+    case pollClosed = "poll_closed"
     case id
     case cid
     case type
@@ -73,6 +79,7 @@ class MessagePayload: Decodable {
     /// Only messages from `translate` endpoint contain `cid`
     let cid: ChannelId?
     let type: MessageType
+    let poll: Poll?
     let user: UserPayload
     let createdAt: Date
     let updatedAt: Date
@@ -127,6 +134,16 @@ class MessagePayload: Decodable {
         id = try container.decode(String.self, forKey: .id)
         cid = try container.decodeIfPresent(ChannelId.self, forKey: .cid)
         type = try container.decodeIfPresent(MessageType.self, forKey: .type) ?? .regular
+        if type == .poll || container.contains(.pollType) {
+            let counts = try container.decodeIfPresent([String: Int].self, forKey: .pollChoiceCounts) ?? [:]
+            let choices = try container.decodeIfPresent([String].self, forKey: .pollChoices)
+            poll = Poll(choices: choices?.isEmpty == false ? choices! : counts.keys.sorted(),
+                counts: counts.mapValues { max(0, $0) },
+                votes: try container.decodeIfPresent([PollVote].self, forKey: .latestPollChoices) ?? [],
+                multiple: try container.decodeIfPresent(String.self, forKey: .pollType) == "multiple",
+                allowChange: try container.decodeIfPresent(Bool.self, forKey: .allowChangeChoice) ?? true,
+                closed: try container.decodeIfPresent(Bool.self, forKey: .pollClosed) ?? false)
+        } else { poll = nil }
         user = try container.decode(UserPayload.self, forKey: .user)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
@@ -222,6 +239,7 @@ class MessagePayload: Decodable {
         self.id = id
         self.cid = cid
         self.type = type
+        self.poll = nil
         self.user = user
         self.createdAt = createdAt
         self.updatedAt = updatedAt

@@ -112,6 +112,7 @@ open class MessageActionsViewController: _ViewController, UIProvider {
             let canForwardMessage = true
             let isSentByCurrentUser = isAuthoredByCurrentUser
 
+            if canClosePoll { actions.append(closePollActionItem()) }
             if canQuoteMessage {
                 actions.append(inlineReplyActionItem())
             }
@@ -182,6 +183,35 @@ open class MessageActionsViewController: _ViewController, UIProvider {
                 deleteActionItem()
             ]
         }
+    }
+
+    /// Matches the poll card capability and keeps SDK/server authorization authoritative.
+    public var canClosePoll: Bool {
+        guard let message, message.poll?.closed==false, message.isDeleted==false,
+            let channel, !channel.isE2eeEnabled else { return false }
+        return message.author.userId==messageController.client.currentUserId || channel.membership?.isModerator==true
+    }
+    public func closePollActionItem() -> MessageActionItem {
+        ClosePollActionItem(action: { [weak self] _ in
+            guard let self,self.canClosePoll,let message=self.message,
+                let presenter=self.presentingViewController ?? self.parent?.presentingViewController else { return }
+            let controller=self.messageController.client.channelController(for:self.messageController.cid)
+            presenter.dismiss(animated:true) {
+                let alert=UIAlertController(title:PollStrings.text("Close poll?","Đóng bình chọn?"),message:PollStrings.text("No one can vote after closing. This cannot be undone.","Sau khi đóng, mọi người không thể bình chọn. Không thể hoàn tác."),preferredStyle:.alert)
+                alert.addAction(UIAlertAction(title:PollStrings.text("Cancel","Hủy"),style:.cancel))
+                alert.addAction(UIAlertAction(title:PollStrings.text("Close poll","Đóng bình chọn"),style:.destructive) { _ in
+                    controller.closePoll(messageId:message.id) { result in
+                        DispatchQueue.main.async {
+                            if case .failure(let error)=result {
+                                let failure=UIAlertController(title:PollStrings.text("Could not close poll","Không thể đóng bình chọn"),message:error.localizedDescription,preferredStyle:.alert)
+                                failure.addAction(UIAlertAction(title:"OK",style:.default));presenter.present(failure,animated:true)
+                            }
+                        }
+                    }
+                })
+                presenter.present(alert,animated:true)
+            }
+        })
     }
 
     /// Returns `MessageActionItem` for edit action

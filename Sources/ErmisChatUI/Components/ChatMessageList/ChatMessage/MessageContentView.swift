@@ -195,6 +195,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
     /// Shows message text content.
     /// Exists if `layout(options: MessageLayoutOptions)` was invoked with the options containing `.text`.
+    private var pollCard: PollCardView?
     public private(set) var textView: UITextView?
 
     /// Shows message timestamp.
@@ -646,6 +647,15 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         layout(options: options)
     }
 
+    private func pollMessageOwner() -> MessageListViewController? {
+        var responder: UIResponder? = self
+        while let next = responder?.next {
+            if let owner = next as? MessageListViewController { return owner }
+            responder = next
+        }
+        return nil
+    }
+
     override open func contentDidChanged() {
         super.contentDidChanged()
         defer {
@@ -653,6 +663,49 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             setNeedsLayout()
         }
 
+        if let message = content, message.poll != nil, message.deletedAt == nil {
+            if pollCard == nil {
+                let card = PollCardView()
+                pollCard = card
+            }
+            // ContainerStackView collapses hidden arranged children with zero-height constraints.
+            // Swap the two content views instead of retaining collapsed stack state across cell reuse.
+            if let textView, textView.superview === bubbleContentContainer { bubbleContentContainer.removeArrangedSubview(textView) }
+            if let card = pollCard, card.superview !== bubbleContentContainer { bubbleContentContainer.addArrangedSubview(card, respectsLayoutMargins: false) }
+            pollCard?.isHidden = false
+            pollCard?.alpha = 1
+            pollCard?.configure(message: message, channel: channel, currentUserId: pollMessageOwner()?.client.currentUserId, client: pollMessageOwner()?.client, action: { [weak self] in
+                guard let self, let channel = self.channel, let owner = self.pollMessageOwner(), owner.presentedViewController == nil else { return }
+                let controller = owner.client.channelController(for: channel.cid)
+                owner.present(UINavigationController(rootViewController: PollViewController(channelController: controller, message: message)), animated: true)
+            }, closeAction: { [weak self] button in
+                guard let self, let channel = self.channel, let owner = self.pollMessageOwner(), owner.presentedViewController == nil else { return }
+                let controller = owner.client.channelController(for: channel.cid)
+                guard !controller.isE2eeEnabled, message.poll?.closed == false,
+                    message.author.userId == owner.client.currentUserId || controller.channel?.membership?.isModerator == true else { return }
+                let alert = UIAlertController(title: PollStrings.text("Close poll?", "Đóng bình chọn?"),
+                    message: PollStrings.text("No one can vote after closing. This cannot be undone.", "Sau khi đóng, mọi người không thể bình chọn. Không thể hoàn tác."), preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: PollStrings.text("Cancel", "Hủy"), style: .cancel))
+                alert.addAction(UIAlertAction(title: PollStrings.text("Close poll", "Đóng bình chọn"), style: .destructive) { [weak owner, weak button] _ in
+                    button?.isEnabled = false
+                    controller.closePoll(messageId: message.id) { result in
+                        DispatchQueue.main.async {
+                            button?.isEnabled = true
+                            if case .failure(let error) = result, let owner {
+                                let failure = UIAlertController(title: PollStrings.text("Could not close poll", "Không thể đóng bình chọn"), message: error.localizedDescription, preferredStyle: .alert)
+                                failure.addAction(UIAlertAction(title: "OK", style: .default));owner.present(failure, animated: true)
+                            }
+                        }
+                    }
+                })
+                owner.present(alert, animated: true)
+            })
+        } else {
+            if let card = pollCard, card.superview === bubbleContentContainer { bubbleContentContainer.removeArrangedSubview(card) }
+            if let textView, textView.superview !== bubbleContentContainer { bubbleContentContainer.addArrangedSubview(textView, respectsLayoutMargins: true) }
+            textView?.isHidden = false
+            textView?.alpha = 1
+        }
         var text = content?.textContent ?? ""
         // Replace user id with user name if needed
         if content?.type == .system,
@@ -735,7 +788,11 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             authorAvatarView?.cancelLoading()
         }
 
-        // Bubble view
+        // PollCard owns the complete surface; avoid nesting it inside the text bubble border/insets.
+        let showsPoll = content?.poll != nil && content?.deletedAt == nil
+        bubbleContentContainer.layoutMargins = showsPoll ? .zero : .init(top: 8, left: 16, bottom: 8, right: 16)
+        bubbleContentContainer.backgroundColor = showsPoll ? .clear : bubbleContentContainer.backgroundColor
+        bubbleView?.layer.borderWidth = showsPoll ? 0 : 1
         bubbleView?.content = content.map { message in
             var backgroundColor: UIColor {
                 if message.isSentByCurrentUser {
@@ -750,7 +807,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             }
 
             return .init(
-                backgroundColor: backgroundColor,
+                backgroundColor: showsPoll ? .clear : backgroundColor,
                 roundedCorners: layoutOptions?.roundedCorners ?? .all
             )
         }

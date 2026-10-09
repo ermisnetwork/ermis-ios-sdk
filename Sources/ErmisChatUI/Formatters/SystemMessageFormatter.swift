@@ -162,6 +162,20 @@ class DefaultSystemMessageFormatter: SystemMessageFormatter {
             } else {
                 return L10n.Message.System.otherRejectAddFriendRequest(userName)
             }
+        case .pollCreated(let userId, let question):
+            let name = userName(of: userId, in: channel)
+            let key = "message.system.poll-created"
+            let provided = Theme.default.localizationProvider(key, "Localizable")
+            let format = provided == key ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: "Localizable") : provided
+            return String(format: format, locale: Locale.current, arguments: [name, question])
+        case .pollClosed(let userId, let question):
+            let name = userName(of: userId, in: channel)
+            let key = "message.system.poll-closed"
+            let provided = Theme.default.localizationProvider(key, "Localizable")
+            let format = provided == key ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: "Localizable") : provided
+            return String(format: format, locale: Locale.current, arguments: [name, question])
+        case .unknown(let text):
+            return text
         @unknown default:
             return nil
         }

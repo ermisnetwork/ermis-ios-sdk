@@ -200,7 +200,8 @@ extension EventType {
             return try KeyPackageRefillEventDTO(from: response)
 
         case .messageNew: return try MessageNewEventDTO(from: response)
-        case .messageUpdated: return try MessageUpdatedEventDTO(from: response)
+        case .messageUpdated, "pollchoice.new", "pollchoice.delete", "pollchoices.updated":
+            return try MessageUpdatedEventDTO(from: response)
         case .messagePinned: return try MessagePinnedEventDTO(from: response)
         case .messageUnpinned: return try MessagePinnedEventDTO(from: response)
         case .messageDeleted: return try MessageDeletedEventDTO(from: response)

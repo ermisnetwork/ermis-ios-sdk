@@ -61,6 +61,8 @@ enum EndpointPath: Codable {
 
     case sendMessage(ChannelId)
     case sendE2eMessage(ChannelId)
+    case pollVote(MessageId, ChannelId)
+    case pollClose(MessageId, ChannelId)
     case message(MessageId)
     case editMessage(MessageId, ChannelId)
     case editE2eMessage(MessageId, ChannelId)
@@ -237,6 +239,10 @@ enum EndpointPath: Codable {
             return "channels/\(channelId.apiPath)/message"
         case .sendE2eMessage(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/message"
+        case .pollVote(let messageId, let cid):
+            return "messages/\(cid.apiPath)/\(messageId)/poll"
+        case .pollClose(let messageId, let cid):
+            return "messages/\(cid.apiPath)/\(messageId)/poll/close"
         case .message(let messageId):
             return "messages/\(messageId)"
         case .editMessage(let (messageId, cid)):

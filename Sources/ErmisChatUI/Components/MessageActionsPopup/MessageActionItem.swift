@@ -381,3 +381,16 @@ public struct ForwardActionItem: MessageActionItem {
         icon = theme.icons.messageActionForward
     }
 }
+
+/// Close an open poll after confirmation; availability is decided by its channel controller.
+public struct ClosePollActionItem: MessageActionItem {
+    public let title: String
+    public let icon: UIImage
+    public let isDestructive = true
+    public let action: (MessageActionItem) -> Void
+    public init(action: @escaping (MessageActionItem) -> Void) {
+        title=PollStrings.text("Close poll","Đóng bình chọn")
+        icon=UIImage(systemName:"chart.bar.xaxis") ?? UIImage()
+        self.action=action
+    }
+}

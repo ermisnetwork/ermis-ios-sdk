@@ -1256,7 +1256,12 @@ open class ComposerViewController: _ViewController,
         case .file:
             showFilePicker()
         case .poll:
-            presentAlert(message: "Feature under develop")
+            guard let channelController else { return }
+            if channelController.isE2eeEnabled {
+                presentAlert(message: PollStrings.text("Polls are not supported in secure chats yet.", "Chưa hỗ trợ bình chọn trong cuộc trò chuyện bảo mật."))
+                return
+            }
+            present(UINavigationController(rootViewController: PollViewController(channelController: channelController)), animated: true)
         case .custom(let string):
             // Implement in subclass if want to add custom type button.
             break

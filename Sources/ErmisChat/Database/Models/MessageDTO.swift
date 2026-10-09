@@ -27,6 +27,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var encryptedData: Data?
     @NSManaged var mlsEpoch: Int64
     @NSManaged var mlsGroupGeneration: Int64
+    @NSManaged var pollData: Data?
     @NSManaged var type: String
     @NSManaged var command: String?
     @NSManaged var createdAt: DBDate
@@ -271,6 +272,7 @@ class MessageDTO: NSManagedObject {
 
         let validTypes = [
             MessageType.regular.rawValue,
+            MessageType.poll.rawValue,
             MessageType.reply.rawValue,
             MessageType.signal.rawValue,
             MessageType.sticker.rawValue,
@@ -772,6 +774,7 @@ extension NSManagedObjectContext: MessageDatabaseSession {
         }
         dto.textUpdatedAt = payload.messageTextUpdatedAt?.bridgeDate
         dto.type = payload.type.rawValue
+        dto.pollData = try payload.poll.map { try JSONEncoder().encode($0) }
         dto.command = payload.command
         dto.args = payload.args
         if payload.parentId != nil {
@@ -1255,6 +1258,7 @@ private extension ChatMessage {
         mlsEpoch = Int(dto.mlsEpoch)
         mlsGroupGeneration = Int(dto.mlsGroupGeneration)
         type = MessageType(rawValue: dto.type) ?? .regular
+        poll = dto.pollData.flatMap { try? JSONDecoder().decode(Poll.self, from: $0) }
         oldTexts = dto.oldTexts?.map { $0.asModel() }
         stickerUrl = dto.stickerUrl
         command = dto.command
