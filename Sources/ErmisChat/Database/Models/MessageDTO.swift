@@ -457,7 +457,15 @@ class MessageDTO: NSManagedObject {
         request.fetchOffset = 0
         request.fetchLimit = 10
 
-        return load(by: request, context: context).first
+        // A preview can be fetched again after inserting, editing or deleting a message
+        // in the same transaction. FetchCache holds object IDs from the earlier fetch,
+        // so it can return a deleted preview instead of the next remaining message.
+        do {
+            return try context.fetch(request).first
+        } catch {
+            log.error("[DATABASE] state=preview_load_failed \(PrivacySafeLogMetadata.errorFields(error))")
+            return nil
+        }
     }
 
     /// Checks the same constraints used by `preview(for:)` without relying on an in-transaction
@@ -830,9 +838,9 @@ extension NSManagedObjectContext: MessageDatabaseSession {
         )
 
         if let lastMessageAt = channelDTO.lastMessageAt?.bridgeDate {
-            channelDTO.lastMessageAt = max(lastMessageAt, payload.messageTextUpdatedAt ?? payload.createdAt).bridgeDate
+            channelDTO.lastMessageAt = max(lastMessageAt, payload.createdAt).bridgeDate
         } else {
-            channelDTO.lastMessageAt = (payload.messageTextUpdatedAt ?? payload.createdAt).bridgeDate
+            channelDTO.lastMessageAt = payload.createdAt.bridgeDate
         }
 
         dto.channel = channelDTO

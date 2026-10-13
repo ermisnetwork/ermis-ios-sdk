@@ -246,7 +246,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
             return timestampFormatter.format(searchedMessage.createdAt)
         }
         
-        if let timestamp = content?.channel.previewMessage?.createdAt {
+        if let timestamp = content?.channel.topicsPreviewMessage?.createdAt {
             return timestampFormatter.format(timestamp)
         }
 
@@ -262,7 +262,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
         guard
             let content = content,
-            let deliveryStatus = content.channel.previewMessage?.deliveryStatus
+            let deliveryStatus = content.channel.topicsPreviewMessage?.deliveryStatus
         else { return nil }
 
         switch deliveryStatus {

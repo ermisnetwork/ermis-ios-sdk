@@ -122,19 +122,30 @@ class ChannelDTO: NSManagedObject {
             }
         }
 
-        var lastDate = lastMessageAt ?? createdAt
+        updateDefaultSortingAt()
 
-        if let topics = topics {
-             topics.reduce(into: lastDate) { partialResult, topic in
-                let lastTopicMessageAt = topic.lastMessageAt ?? topic.createdAt
-                if lastTopicMessageAt.compare(partialResult.bridgeDate) == .orderedDescending {
-                    partialResult = lastTopicMessageAt
-                }
+        if let parent, !parent.isDeleted {
+            // A topic preview edit can leave the date unchanged. Invalidate the parent too,
+            // so its topic preview and timestamp are mapped again by the list observer.
+            if !parent.hasChanges {
+                parent.willChangeValue(for: \.cid)
+                parent.didChangeValue(for: \.cid)
             }
         }
+    }
 
-        if lastDate != defaultSortingAt, lastDate.compare(defaultSortingAt.bridgeDate) == .orderedDescending {
-            defaultSortingAt = lastDate
+    func updateDefaultSortingAt() {
+        let ownMessageAt = lastMessageAt ?? previewMessage?.createdAt
+        let topicMessageAt = topics?
+            .filter { !$0.isDeleted && $0.deletedAt == nil }
+            .compactMap { $0.lastMessageAt ?? $0.previewMessage?.createdAt }
+            .max { $0.compare($1.bridgeDate) == .orderedAscending }
+        let latestMessageAt = [ownMessageAt, topicMessageAt]
+            .compactMap { $0 }
+            .max { $0.compare($1.bridgeDate) == .orderedAscending }
+        let sortingAt = latestMessageAt ?? createdAt
+        if defaultSortingAt != sortingAt {
+            defaultSortingAt = sortingAt
         }
     }
 
@@ -510,13 +521,7 @@ extension NSManagedObjectContext {
             }
         }
 
-        let defaultSortingAt = dto.topics?.reduce(dto.defaultSortingAt) { partialResult, topic in
-            return partialResult.laterDate(topic.defaultSortingAt.bridgeDate).bridgeDate
-        }
-
-        if let defaultSortingAt {
-            dto.defaultSortingAt = defaultSortingAt
-        }
+        dto.updateDefaultSortingAt()
 
         dto.watcherCount = Int64(clamping: payload.watcherCount ?? 0)
 

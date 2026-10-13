@@ -574,28 +574,19 @@ extension DatabaseSession {
                 channelDTO.lastMessageAt = incomingCreatedAt.bridgeDate
             }
         case .messageUpdated:
-            let currentPreviewAt = channelDTO.previewMessage?.textUpdatedAt?.bridgeDate ?? channelDTO.previewMessage?.createdAt.bridgeDate ?? .distantPast
-            let updatedMessageCreatedAt = payload.message?.messageTextUpdatedAt ?? payload.createdAt ?? .distantFuture
-
-            if currentPreviewAt <= updatedMessageCreatedAt {
-                let newPreview = preview(for: cid)
-                channelDTO.previewMessage = newPreview
-                channelDTO.lastMessageAt = updatedMessageCreatedAt.bridgeDate
-            }
-        case .messageDeleted where (channelDTO.previewMessage == nil || channelDTO.previewMessage?.id == payload.message?.id):
+            channelDTO.previewMessage = preview(for: cid)
+            // Editing an older message must not move the conversation to the edit time.
+        case .messageDeleted, .messageDeletedForMe:
+            // saveMessage can already have replaced the deleted preview. Recompute the
+            // date too, even when the current preview no longer has the deleted ID.
             let newPreview = preview(for: cid)
             channelDTO.previewMessage = newPreview
-            channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt
-
-        case .messageDeletedForMe where (channelDTO.previewMessage == nil || channelDTO.previewMessage?.id == payload.message?.id):
-            let newPreview = preview(for: cid)
-            channelDTO.previewMessage = newPreview
-            channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt
+            channelDTO.lastMessageAt = newPreview?.createdAt
 
         case .channelHidden where payload.isChannelHistoryCleared == true:
             let newPreview = preview(for: cid)
             channelDTO.previewMessage = newPreview
-            channelDTO.lastMessageAt = newPreview?.textUpdatedAt ?? newPreview?.createdAt
+            channelDTO.lastMessageAt = newPreview?.createdAt
 
         case .directChannelDeleted, .directChannelDeletedForMe, .channelTruncated:
             // We're not using `preview(for: cid)` here because the channel
@@ -605,7 +596,7 @@ extension DatabaseSession {
             // and returning the preview message which has been truncated and therefore can't longer
             // be used as a preview.
             channelDTO.previewMessage = payload.message.flatMap { message(id: $0.id) }
-            channelDTO.lastMessageAt = channelDTO.previewMessage?.textUpdatedAt ?? channelDTO.previewMessage?.createdAt
+            channelDTO.lastMessageAt = channelDTO.previewMessage?.createdAt
         default:
             break
         }
