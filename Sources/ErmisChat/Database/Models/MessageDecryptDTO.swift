@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import CryptoKit
 
 /// A CoreData entity that caches the decrypted content of an encrypted message.
 /// Linked one-to-one with `MessageDTO` via the `decryptedMessage` relationship.
@@ -67,6 +68,15 @@ extension MessageDecryptDTO {
 
 // MARK: - Saving from E2ePayload
 
+extension DatabaseSession {
+    /// Must be called inside the transaction that publishes archive plaintext.
+    func canPublishArchivedCiphertext(messageId: String, ciphertext: Data, cid: String) -> Bool {
+        guard let current = message(id: messageId) else { return true }
+        return current.deletedAt == nil && !current.isHardDeleted && current.type != "deleted"
+            && current.cid == cid && current.encryptedData == ciphertext
+    }
+}
+
 extension NSManagedObjectContext: E2eDatabaseSession {
     /// Creates or updates a `MessageDecryptDTO` from a decrypted `E2ePayload`.
     ///
@@ -80,7 +90,20 @@ extension NSManagedObjectContext: E2eDatabaseSession {
         messageId: String,
         ciphertextHash: Data?
     ) throws -> MessageDecryptDTO {
+        let parent = message(id: messageId)
+        let currentHash = parent?.encryptedData.map { Data(SHA256.hash(data: $0)) }
+        if let ciphertextHash {
+            guard parent?.deletedAt == nil, parent?.isHardDeleted != true, parent?.type != "deleted",
+                  currentHash == nil || currentHash == ciphertextHash else {
+                throw E2eCachedAttachmentsError.staleCiphertext
+            }
+        }
         let dto = MessageDecryptDTO.loadOrCreate(messageId: messageId, context: self)
+        // Draft/intent staging can be unbound; it cannot replace a proof for the
+        // current durable ciphertext. A new ciphertext is still allowed to stage.
+        if ciphertextHash == nil, let savedHash = dto.ciphertextHash, savedHash == currentHash {
+            return dto
+        }
         dto.text = payload.text
         dto.stickerUrl = payload.stickerUrl
         dto.ciphertextHash = ciphertextHash
@@ -136,9 +159,24 @@ extension NSManagedObjectContext: E2eDatabaseSession {
 extension MessageDecryptDTO {
     /// Reconstructs the `E2ePayload` from the cached decrypted data.
     func asPayload() throws -> E2ePayload {
+        if let savedHash = ciphertextHash, let current = message?.encryptedData,
+           savedHash != Data(SHA256.hash(data: current)) {
+            throw E2eCachedAttachmentsError.staleCiphertext
+        }
+        if message?.encryptedData != nil, ciphertextHash == nil, message?.localMessageState == nil {
+            // Received legacy cache without ciphertext proof is content-only. Local
+            // pending intents remain readable so the sender can build canonical AAD.
+            return E2ePayload(text: text, attachments: [], stickerUrl: nil)
+        }
         var cachedAttachments = E2eCachedAttachments()
         if let data = attachmentsData {
             cachedAttachments = try E2eCachedAttachments.decodeCompatible(from: data)
+        }
+        if !cachedAttachments.e2ee.isEmpty {
+            guard let metadata = cachedAttachments.authenticatedMetadata else {
+                return E2ePayload(text: text, attachments: [], stickerUrl: stickerUrl)
+            }
+            try cachedAttachments.e2ee.verifyCanonicalAttachmentIds(metadata.attachmentIds)
         }
         return E2ePayload(
             text: text,
@@ -199,4 +237,5 @@ struct E2eCachedAttachments: Codable, Equatable {
 enum E2eCachedAttachmentsError: Error, Equatable {
     case unsupportedVersion(Int)
     case invalidPayload
+    case staleCiphertext
 }

@@ -91,6 +91,7 @@ struct E2eeMessageAADV1: Equatable {
     /// bounded, rejects invalid UTF-8/flags/trailing bytes, and requires canonical attachment
     /// ordering so alternative byte encodings cannot represent the same authenticated metadata.
     static func decoded(from data: Data) throws -> Self {
+        guard data.count <= 1_376_289 else { throw E2eeMessageAADError.malformedAAD }
         var reader = AADReader(data: data)
         guard try reader.readString() == domain else {
             throw E2eeMessageAADError.malformedAAD
@@ -106,6 +107,7 @@ struct E2eeMessageAADV1: Equatable {
         let forwardMessageId = try reader.readOptionalString()
         let forwardParentCid = try reader.readOptionalString()
         let count = Int(try reader.readUInt16())
+        guard count <= reader.remaining / 16 else { throw E2eeMessageAADError.malformedAAD }
         var attachmentIds: [String] = []
         attachmentIds.reserveCapacity(count)
         for _ in 0..<count {
@@ -206,6 +208,7 @@ private struct AADReader {
     private(set) var offset = 0
 
     var isAtEnd: Bool { offset == data.count }
+    var remaining: Int { data.count - offset }
 
     mutating func readByte() throws -> UInt8 {
         guard offset < data.count else { throw E2eeMessageAADError.malformedAAD }

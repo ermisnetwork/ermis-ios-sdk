@@ -381,6 +381,7 @@ enum E2eeKeyPackageRefillPolicy {
 class E2eRepository: EventsControllerDelegate {
     let database: DatabaseContainer
     let eventNotificationCenter: EventNotificationCenter
+    var archiveRecovery: E2eeArchiveRecovery?
     let mlsClient: MlsClient
     let apiClient: APIClient
     var mlsRolloutControls = E2eeMlsRolloutControls()
@@ -642,6 +643,11 @@ class E2eRepository: EventsControllerDelegate {
         self.mlsClient = mlsClient
         self.eventNotificationCenter = eventNotificationCenter
         self.eventController = EventsController(notificationCenter: eventNotificationCenter)
+        mlsClient.archiveCaptureHandler = { [weak self] cid, generation, group, role in
+            guard let recovery = self?.archiveRecovery else { return }
+            do { try recovery.capture(cid: cid, generation: generation, group: group, role: role) }
+            catch { log.error("archive_upload stage=capture_failed reason=storage_or_key", subsystems: .mls) }
+        }
         mlsClient.installMutationExecutorAssertion { [weak mutationExecutor] in
             mutationExecutor?.assertIsExecuting()
         }
@@ -1090,6 +1096,54 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
+    func archiveGeneration(for cid: String) throws -> UInt64 {
+        try performMlsMutation(cidString: cid) { self.mlsClient.loadGenerationMarker(cid: cid)?.generation ?? 0 }
+    }
+
+    func applyArchivedApplication(scopeCid: String, generation: UInt64, archive: Data, snapshot: Data, envelope: E2eeArchiveWire) throws {
+        guard let messageId = envelope["message_id"].string, let routeCid = envelope["cid"].string ?? Optional(scopeCid),
+              let ciphertext = envelope["mls_ciphertext"].bytes, envelope["group_generation"].number ?? 0 == generation,
+              routeCid == scopeCid || envelope["parent_cid"].string == scopeCid || envelope["e2ee_group_id"].string == scopeCid else { throw E2eeArchiveError.invalidData }
+        let lockStarted=DispatchTime.now().uptimeNanoseconds
+        try performMlsMutation(cidString: scopeCid) {
+            E2eeArchiveCost.record("lock_wait","success",lockStarted)
+            guard UInt64(self.groupGeneration(for: try ChannelId(cid: scopeCid))) == generation else { throw E2eeArchiveError.generationChanged }
+            let recovered = try self.mlsClient.decryptArchivedApplication(cid: scopeCid, generation: generation,
+                archive: archive, snapshot: snapshot, ciphertext: ciphertext, allowOwnMessages: true)
+            guard recovered.epoch == envelope["mls_epoch"].number else { throw E2eeArchiveError.invalidData }
+            let members = try JSONDecoder().decode(E2eeArchiveWire.self, from: snapshot)["members"].array
+            guard members.contains(where: { $0["leaf_index"].number == UInt64(recovered.senderIndex) && $0["user_id"].string == (envelope["user_id"].string ?? envelope["user"]["id"].string) }) else { throw E2eeArchiveError.invalidData }
+            let cid = try ChannelId(cid: routeCid)
+            let payload = try self.validatedPayload(recovered.payload, processedAAD: recovered.aad, messageId: messageId, cid: cid, expectedEnvelope: nil)
+            var raw = envelope.dictionary
+            raw["id"] = .string(messageId)
+            raw["cid"] = .string(routeCid)
+            if envelope["user"].dictionary.isEmpty, let sender = envelope["user_id"].string { raw["user"] = .object(["id": .string(sender)]) }
+            raw["updated_at"] = envelope["updated_at"].string == nil ? envelope["created_at"] : envelope["updated_at"]
+            raw["text"] = .string("")
+            let message = try JSONDecoder.ermis.decode(MessagePayload.self, from: JSONEncoder().encode(E2eeArchiveWire.object(raw)))
+            var published = false
+            do {
+                try self.database.writeAndWait { session in
+                    guard session.canPublishArchivedCiphertext(messageId: messageId, ciphertext: ciphertext, cid: cid.rawValue) else { return }
+                    if let current = session.message(id: messageId) {
+                        if current.deletedAt != nil || current.isHardDeleted || current.type == "deleted" { return }
+                        if current.encryptedData != ciphertext { return }
+                    } else {
+                        _ = try session.saveMessage(payload: message, for: cid, syncOwnReactions: false, cache: nil)
+                    }
+                    try session.saveMessageDecrypt(payload: payload, messageId: messageId, ciphertextHash: Data(SHA256.hash(data: ciphertext)))
+                    let current = session.message(id: messageId)
+                    current?.text = payload.text
+                    current?.forwardCid = payload.authenticatedMetadata?.forwardCid
+                    published = true
+                }
+            } catch { throw E2eeArchiveError.storageFailure }
+            guard published else { throw E2eeArchiveError.safeSkipped }
+            self.e2eeAttachmentReceiveCoordinator.hydratePreviews(payload: payload, messageId: messageId, cid: cid, source: .scopeSync)
+        }
+    }
+
     private func performMlsMutation<T>(
         cidString: String,
         priority: Operation.QueuePriority = .normal,
@@ -1308,45 +1362,11 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func validatedPayload(
-        _ payload: E2ePayload,
-        processedAAD: Data,
-        messageId: MessageId,
-        cid: ChannelId,
+        _ payload: E2ePayload, processedAAD: Data, messageId: MessageId, cid: ChannelId,
         expectedEnvelope: E2eeReceivedMessageEnvelope?
     ) throws -> E2ePayload {
-        guard !processedAAD.isEmpty else {
-            guard payload.e2eeAttachments.isEmpty,
-                  expectedEnvelope?.requiresAAD != true else {
-                throw E2eeMessageAADError.authenticatedMetadataMismatch
-            }
-            return payload.withAuthenticatedMetadata(nil)
-        }
-
-        let aad = try E2eeMessageAADV1.decoded(from: processedAAD)
-        guard aad.isRequired,
-              aad.cid == cid.rawValue,
-              aad.e2eeGroupId == mlsGroupCid(for: cid).rawValue,
-              aad.messageId.caseInsensitiveCompare(messageId) == .orderedSame else {
-            throw E2eeMessageAADError.authenticatedMetadataMismatch
-        }
-        try payload.e2eeAttachments.verifyCanonicalAttachmentIds(aad.attachmentIds)
-        if let expectedEnvelope {
-            let canonicalEnvelopeIds = try E2eeMessageAADV1.canonicalAttachmentIds(
-                expectedEnvelope.attachmentIds
-            )
-            guard expectedEnvelope.forwardCid == aad.forwardCid,
-                  expectedEnvelope.forwardMessageId == aad.forwardMessageId,
-                  expectedEnvelope.forwardParentCid == aad.forwardParentCid,
-                  canonicalEnvelopeIds == aad.attachmentIds else {
-                throw E2eeMessageAADError.authenticatedMetadataMismatch
-            }
-        }
-        return payload.withAuthenticatedMetadata(.init(
-            forwardCid: aad.forwardCid,
-            forwardMessageId: aad.forwardMessageId,
-            forwardParentCid: aad.forwardParentCid,
-            attachmentIds: aad.attachmentIds
-        ))
+        try E2eeArchiveMessageValidator.validate(payload, processedAAD: processedAAD, messageId: messageId,
+            cid: cid.rawValue, groupCid: mlsGroupCid(for: cid).rawValue, expectedEnvelope: expectedEnvelope)
     }
 
     private func handleHealthCheckEvent(_ event: HealthCheckEvent) {
@@ -2457,6 +2477,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func finishBootstrap(cid: ChannelId, state: E2eeChannelReadiness) {
+        if state == .historyIncomplete, let recovery = archiveRecovery { Task { await recovery.enqueueRestore(cid: cid.rawValue) } }
         let trace = E2eeJoinTrace.Context(cid: cid.rawValue)
         setReadiness(state, for: cid.rawValue)
         let needsCatchUp = bootstrapQueue.finish(cid)
@@ -2591,6 +2612,13 @@ class E2eRepository: EventsControllerDelegate {
     /// Automatically paginates if `has_more` is `true` in the response.
     ///
     /// - Parameter cid: The channel to sync.
+    func repairLiveScope(_ cid: ChannelId, completion: @escaping (E2eeChannelReadiness) -> Void) {
+        let groupCid = mlsGroupCid(for: cid)
+        runSync(forCidStrings: [groupCid.rawValue]) { [weak self] in
+            self?.ensureE2eeReady(for: groupCid, completion: completion)
+        }
+    }
+
     func performE2eChannelSync(cid: ChannelId) {
         runSync(forCidStrings: [cid.rawValue], completion: nil)
     }
@@ -3337,6 +3365,12 @@ class E2eRepository: EventsControllerDelegate {
                         )
                     }
                     if case .application(let applicationDisposition) = disposition {
+                        if applicationDisposition == .preJoinHistorical,
+                           case .application(let application) = event.event,
+                           let epoch = application.mlsEpoch, epoch >= 0,
+                           let recovery = self.archiveRecovery {
+                            Task { await recovery.enqueueRestore(cid: cidString, fromEpoch: UInt64(epoch), toEpoch: UInt64(epoch)) }
+                        }
                         try self.durableInboxStore.markApplicationDispositionAndApplied(
                             accountId: accountId,
                             scopeCid: cidString,
@@ -3407,6 +3441,10 @@ class E2eRepository: EventsControllerDelegate {
                                 envelope: event,
                                 preservingFailure: true
                             )
+                            if let epoch = application.mlsEpoch, epoch >= 0,
+                               let recovery = self.archiveRecovery {
+                                Task { await recovery.enqueueRestore(cid: cidString, fromEpoch: UInt64(epoch), toEpoch: UInt64(epoch)) }
+                            }
                             log.error(
                                 "[E2eSync] state=application_repair_persisted action=continue "
                                     + PrivacySafeLogMetadata.errorFields(error),
@@ -5758,6 +5796,13 @@ class E2eRepository: EventsControllerDelegate {
         // no Core Data work, so blocking the caller via `waitUntilFinished` is deadlock-safe.
         let groupCid = mlsGroupCid(for: cid).rawValue
         let scopedTrace = trace?.scoped(to: groupCid)
+        guard message.attachments.isEmpty else { throw E2eeMessageAADError.authenticatedMetadataMismatch }
+        if !message.e2eeAttachments.isEmpty {
+            guard let authenticatedAAD else { throw E2eeMessageAADError.authenticatedMetadataMismatch }
+            let metadata = try E2eeMessageAADV1.decoded(from: authenticatedAAD)
+            guard metadata.cid == cid.rawValue, metadata.e2eeGroupId == groupCid else { throw E2eeMessageAADError.authenticatedMetadataMismatch }
+            try message.e2eeAttachments.verifyCanonicalAttachmentIds(metadata.attachmentIds)
+        }
         let data: Data
         do {
             data = try JSONEncoder().encode(message)
@@ -5990,6 +6035,8 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func stopRuntimeOperations() {
+        do { try archiveRecovery?.stop() } catch { log.error("archive_recovery stage=logout_clear_failed", subsystems: .mls) }
+        archiveRecovery = nil
         abortSync()
         bootstrapQueue.reset()
         readinessLock.lock()

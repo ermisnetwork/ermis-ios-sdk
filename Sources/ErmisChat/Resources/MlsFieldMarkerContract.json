@@ -3,6 +3,7 @@
   "maximum_input_bytes": 4096,
   "maximum_marker_bytes": 512,
   "plain_patterns": [
+    "archive_login stage=(authenticated|prompt|unlock|queued) result=(accepted|failed|shown)(?![a-z_])(?: channels=[0-9]{1,8}(?![0-9]))?",
     "(?:mls_application_checkpoint|application_checkpoint) stage=(plaintext_prepared|provider_saved|proof_finalized|decoded_committed|cursor_replay|consumed_replay|cache_replay|scope_cursor_saved|legacy_cache|retire|cursor_identity) result=(stored|proof_reused|recovered|retryable|committed|legacy_committed|proof_unavailable|proof_missing|provider_state_reconciled|consumed_proof_reused|missing)(?![a-z_])",
     "mls_scope_cursor_checkpoint result=committed scopes=1(?![0-9])",
     "mls_decrypt_failed category=(group_missing|provider_save|epoch_mismatch|consumed|process|unexpected)(?![a-z_])",
@@ -23,7 +24,9 @@
     "mls_membership_signal type=(member_added|member_updated|member_joined|invite_accepted) result=refresh(?![a-z_])",
     "mls_auth_checkpoint stage=(initial_token|refresh_token|connect|persisted_token) result=(accepted|missing|started|invalid|rejected|stored|discarded)(?![a-z_])",
     "mls_membership_validation role=(owner|admin|moder|member|pending|rejected|skipped|unknown) banned=(true|false|unknown) blocked=(true|false|unknown)(?![a-z_])",
-    "mls_auth_failure category=(api|offline|transport|other) http_status=(0|[1-5][0-9]{2}) code=(-?[0-9]{1,6})(?![0-9a-z_])"
+    "mls_auth_failure category=(api|offline|transport|other) http_status=(0|[1-5][0-9]{2}) code=(-?[0-9]{1,6})(?![0-9a-z_])",
+    "(?:archive_recovery stage=(ready|locked|requires_pin|restoring|done_with_gaps|done|coverage_unknown|permission_denied|terminal|queued|retryable_error) reason=(none|unlock_recovery_vault|no_usable_archive|network_storage_or_device_key_unavailable|journal_or_device_key_unavailable|vault_metadata_unavailable|coverage_unknown|cursor_rejected|discovery_rejected|discovery_range|discovery_budget|discovery_budget_or_scope|storage_or_discovery|network_or_storage_error|permission_denied|material_unavailable|wrap_unavailable|snapshot_unavailable|snapshot|wrap|crypto|payload_schema|aad|storage|discovery|authorization|network|discovery_gap|server_[0-9]{1,6}) restored=[0-9]{1,8}(?![0-9])|archive_cost phase=(http|lock_wait) reason=(success|error) latency_us=[0-9]{1,12} encoded_bytes=[0-9]{1,10} peak_rss_bytes=[0-9]{1,12}(?![0-9]))",
+    "archive_upload stage=(captured|queued|acknowledged|permission_denied|unsupported|terminal|retryable)(?![a-z_])"
   ],
   "join_stages": [
     "application_epoch_classified",

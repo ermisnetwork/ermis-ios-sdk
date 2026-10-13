@@ -127,6 +127,8 @@ enum EndpointPath: Codable {
     case e2eSync
     case e2eChannelSync(ChannelId)
     case commitEviction(ChannelId)
+    case recoveryVault
+    case epochArchive(ChannelId, E2eeArchiveOperation)
     case mlsRolloutTelemetry
     case initE2eeAttachment(ChannelId)
     case queryE2eeAttachments(ChannelId)
@@ -350,6 +352,11 @@ enum EndpointPath: Codable {
             return "v1/e2ee/channels/\(channelId.apiPath)/sync"
         case .commitEviction(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/commit_eviction"
+        case .recoveryVault:
+            return "v1/e2ee/recovery/vault"
+        case .epochArchive(let cid, let operation):
+            let suffix = operation.rawValue.isEmpty ? "" : "/" + operation.rawValue
+            return "v1/e2ee/channels/\(cid.apiPath)/epoch_archives\(suffix)"
         case .mlsRolloutTelemetry:
             return "v1/e2ee/rollout/telemetry"
         case .initE2eeAttachment(let channelId):

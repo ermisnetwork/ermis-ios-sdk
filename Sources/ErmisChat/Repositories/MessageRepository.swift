@@ -3,6 +3,7 @@
 //
 
 import Foundation
+import CryptoKit
 import ErmisShared
 
 enum MessageRepositoryError: LocalizedError {
@@ -197,6 +198,11 @@ class MessageRepository {
                             )
                         }
                         let (encryptedData, epoch) = encryptedResult
+                        let boundPayload = try E2eeArchiveMessageValidator.validate(
+                            e2ePayload, processedAAD: try authenticatedAAD?.encoded() ?? Data(),
+                            messageId: messageId, cid: cid.rawValue,
+                            groupCid: e2eRepository.mlsGroupCid(for: cid).rawValue
+                        )
 
                         // `encryptedMessage` has already saved the OpenMLS provider state. The
                         // exact retry intent must now be durable before local state becomes
@@ -219,9 +225,9 @@ class MessageRepository {
                             messageDTO.mlsEpoch = Int64(epoch)
                             messageDTO.mlsGroupGeneration = Int64(currentGroupGeneration)
                             try session.saveMessageDecrypt(
-                                payload: e2ePayload,
+                                payload: boundPayload,
                                 messageId: messageId,
-                                ciphertextHash: nil
+                                ciphertextHash: Data(SHA256.hash(data: Data(encryptedData)))
                             )
                         }
                         e2eeTrace?.info(

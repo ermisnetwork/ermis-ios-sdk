@@ -252,7 +252,7 @@ final class MlsGenerationRebootstrapTests: XCTestCase {
         }
         let recipientProvider = Provider()
         let recipient = try Identity(provider: recipientProvider, userId: "bob")
-        let keyPackage = recipient.keyPackage(provider: recipientProvider).toBytes()
+        let keyPackage = try recipient.keyPackage(provider: recipientProvider).toBytes()
         let client = MlsClient(storageFolderURL: root, userDefaults: defaults)
         try client.setup(with: "alice")
 

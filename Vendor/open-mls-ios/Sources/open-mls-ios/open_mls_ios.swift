@@ -399,6 +399,22 @@ fileprivate class UniffiHandleMap<T> {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
     typealias FfiType = UInt32
     typealias SwiftType = UInt32
@@ -424,6 +440,22 @@ fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
     }
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -580,6 +612,8 @@ public protocol GroupProtocol : AnyObject {
 
     func processMessageRaw(provider: Provider, msg: Data) throws  -> Data
 
+    func processMessageWithContext(provider: Provider, msg: Data, contextJson: String, eventId: String, cid: String, groupGeneration: UInt64, eventEpoch: UInt64, deferSecretPersistence: Bool) throws  -> ProcessedMessage
+
     func proposeAddMember(provider: Provider, sender: Identity, newMember: KeyPackage) throws  -> ProposalMessage
 
     func proposeAddUser(provider: Provider, sender: Identity, deviceKeyPackages: [KeyPackage]) throws  -> [ProposalMessage]
@@ -680,6 +714,17 @@ public static func joinWithWelcome(provider: Provider, welcome: Data, ratchetTre
         FfiConverterTypeProvider.lower(provider),
         FfiConverterData.lower(welcome),
         FfiConverterOptionTypeRatchetTree.lower(ratchetTree),$0
+    )
+})
+}
+
+public static func joinWithWelcomeWithPolicy(provider: Provider, welcome: Data, ratchetTree: RatchetTree?, allowExpiredTreeLeaves: Bool)throws  -> Group {
+    return try  FfiConverterTypeGroup.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_constructor_group_join_with_welcome_with_policy(
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterData.lower(welcome),
+        FfiConverterOptionTypeRatchetTree.lower(ratchetTree),
+        FfiConverterBool.lower(allowExpiredTreeLeaves),$0
     )
 })
 }
@@ -978,6 +1023,21 @@ open func processMessageRaw(provider: Provider, msg: Data)throws  -> Data {
 })
 }
 
+open func processMessageWithContext(provider: Provider, msg: Data, contextJson: String, eventId: String, cid: String, groupGeneration: UInt64, eventEpoch: UInt64, deferSecretPersistence: Bool)throws  -> ProcessedMessage {
+    return try  FfiConverterTypeProcessedMessage.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_group_process_message_with_context(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterData.lower(msg),
+        FfiConverterString.lower(contextJson),
+        FfiConverterString.lower(eventId),
+        FfiConverterString.lower(cid),
+        FfiConverterUInt64.lower(groupGeneration),
+        FfiConverterUInt64.lower(eventEpoch),
+        FfiConverterBool.lower(deferSecretPersistence),$0
+    )
+})
+}
+
 open func proposeAddMember(provider: Provider, sender: Identity, newMember: KeyPackage)throws  -> ProposalMessage {
     return try  FfiConverterTypeProposalMessage.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_group_propose_add_member(self.uniffiClonePointer(),
@@ -1149,9 +1209,15 @@ public func FfiConverterTypeGroup_lower(_ value: Group) -> UnsafeMutableRawPoint
 
 public protocol IdentityProtocol : AnyObject {
 
-    func keyPackage(provider: Provider)  -> KeyPackage
+    func deviceRegistrationSignature(deviceId: String, projectId: String, issuedAt: Int64) throws  -> Data
 
-    func keyPackages(provider: Provider, count: UInt32)  -> [KeyPackage]
+    func keyPackage(provider: Provider) throws  -> KeyPackage
+
+    func keyPackages(provider: Provider, count: UInt32) throws  -> [KeyPackage]
+
+    func ownsKeyPackageRef(provider: Provider, reference: Data) throws  -> Bool
+
+    func signaturePublicKey()  -> Data
 
     func toBytes() throws  -> Data
 
@@ -1227,19 +1293,45 @@ public static func fromBytes(provider: Provider, data: Data)throws  -> Identity 
 
 
 
-open func keyPackage(provider: Provider) -> KeyPackage {
-    return try!  FfiConverterTypeKeyPackage.lift(try! rustCall() {
+open func deviceRegistrationSignature(deviceId: String, projectId: String, issuedAt: Int64)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_device_registration_signature(self.uniffiClonePointer(),
+        FfiConverterString.lower(deviceId),
+        FfiConverterString.lower(projectId),
+        FfiConverterInt64.lower(issuedAt),$0
+    )
+})
+}
+
+open func keyPackage(provider: Provider)throws  -> KeyPackage {
+    return try  FfiConverterTypeKeyPackage.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_identity_key_package(self.uniffiClonePointer(),
         FfiConverterTypeProvider.lower(provider),$0
     )
 })
 }
 
-open func keyPackages(provider: Provider, count: UInt32) -> [KeyPackage] {
-    return try!  FfiConverterSequenceTypeKeyPackage.lift(try! rustCall() {
+open func keyPackages(provider: Provider, count: UInt32)throws  -> [KeyPackage] {
+    return try  FfiConverterSequenceTypeKeyPackage.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_identity_key_packages(self.uniffiClonePointer(),
         FfiConverterTypeProvider.lower(provider),
         FfiConverterUInt32.lower(count),$0
+    )
+})
+}
+
+open func ownsKeyPackageRef(provider: Provider, reference: Data)throws  -> Bool {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_owns_key_package_ref(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterData.lower(reference),$0
+    )
+})
+}
+
+open func signaturePublicKey() -> Data {
+    return try!  FfiConverterData.lift(try! rustCall() {
+    uniffi_openmls_uniffi_fn_method_identity_signature_public_key(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -1319,7 +1411,7 @@ public protocol KeyPackageProtocol : AnyObject {
 
     func hashRef(provider: Provider) throws  -> Data
 
-    func toBytes()  -> Data
+    func toBytes() throws  -> Data
 
 }
 
@@ -1389,8 +1481,8 @@ open func hashRef(provider: Provider)throws  -> Data {
 })
 }
 
-open func toBytes() -> Data {
-    return try!  FfiConverterData.lift(try! rustCall() {
+open func toBytes()throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_keypackage_to_bytes(self.uniffiClonePointer(),$0
     )
 })
@@ -1764,6 +1856,189 @@ public func FfiConverterTypeRatchetTree_lift(_ pointer: UnsafeMutableRawPointer)
 #endif
 public func FfiConverterTypeRatchetTree_lower(_ value: RatchetTree) -> UnsafeMutableRawPointer {
     return FfiConverterTypeRatchetTree.lower(value)
+}
+
+
+
+
+public protocol RecoveryJournalProtocol : AnyObject {
+
+    func commitUpload(pendingKey: String, ack: RecoveryJournalEntry, checkpoint: RecoveryJournalEntry?) throws
+
+    func get(key: String) throws  -> RecoveryJournalEntry?
+
+    func insertIfAbsent(entry: RecoveryJournalEntry) throws  -> Bool
+
+    func page(kind: String, status: String, now: Int64, cid: String?, afterKey: String?, limit: UInt32) throws  -> [RecoveryJournalEntry]
+
+    func put(entry: RecoveryJournalEntry) throws
+
+    func remove(key: String) throws
+
+}
+
+open class RecoveryJournal:
+    RecoveryJournalProtocol {
+    fileprivate let pointer: UnsafeMutableRawPointer!
+
+    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoPointer {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
+        self.pointer = pointer
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noPointer: NoPointer) {
+        self.pointer = nil
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
+        return try! rustCall { uniffi_openmls_uniffi_fn_clone_recoveryjournal(self.pointer, $0) }
+    }
+public convenience init(path: String)throws  {
+    let pointer =
+        try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_constructor_recoveryjournal_new(
+        FfiConverterString.lower(path),$0
+    )
+}
+    self.init(unsafeFromRawPointer: pointer)
+}
+
+    deinit {
+        guard let pointer = pointer else {
+            return
+        }
+
+        try! rustCall { uniffi_openmls_uniffi_fn_free_recoveryjournal(pointer, $0) }
+    }
+
+
+
+
+open func commitUpload(pendingKey: String, ack: RecoveryJournalEntry, checkpoint: RecoveryJournalEntry?)throws  {try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_recoveryjournal_commit_upload(self.uniffiClonePointer(),
+        FfiConverterString.lower(pendingKey),
+        FfiConverterTypeRecoveryJournalEntry.lower(ack),
+        FfiConverterOptionTypeRecoveryJournalEntry.lower(checkpoint),$0
+    )
+}
+}
+
+open func get(key: String)throws  -> RecoveryJournalEntry? {
+    return try  FfiConverterOptionTypeRecoveryJournalEntry.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_recoveryjournal_get(self.uniffiClonePointer(),
+        FfiConverterString.lower(key),$0
+    )
+})
+}
+
+open func insertIfAbsent(entry: RecoveryJournalEntry)throws  -> Bool {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_recoveryjournal_insert_if_absent(self.uniffiClonePointer(),
+        FfiConverterTypeRecoveryJournalEntry.lower(entry),$0
+    )
+})
+}
+
+open func page(kind: String, status: String, now: Int64, cid: String?, afterKey: String?, limit: UInt32)throws  -> [RecoveryJournalEntry] {
+    return try  FfiConverterSequenceTypeRecoveryJournalEntry.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_recoveryjournal_page(self.uniffiClonePointer(),
+        FfiConverterString.lower(kind),
+        FfiConverterString.lower(status),
+        FfiConverterInt64.lower(now),
+        FfiConverterOptionString.lower(cid),
+        FfiConverterOptionString.lower(afterKey),
+        FfiConverterUInt32.lower(limit),$0
+    )
+})
+}
+
+open func put(entry: RecoveryJournalEntry)throws  {try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_recoveryjournal_put(self.uniffiClonePointer(),
+        FfiConverterTypeRecoveryJournalEntry.lower(entry),$0
+    )
+}
+}
+
+open func remove(key: String)throws  {try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_recoveryjournal_remove(self.uniffiClonePointer(),
+        FfiConverterString.lower(key),$0
+    )
+}
+}
+
+
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryJournal: FfiConverter {
+
+    typealias FfiType = UnsafeMutableRawPointer
+    typealias SwiftType = RecoveryJournal
+
+    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> RecoveryJournal {
+        return RecoveryJournal(unsafeFromRawPointer: pointer)
+    }
+
+    public static func lower(_ value: RecoveryJournal) -> UnsafeMutableRawPointer {
+        return value.uniffiClonePointer()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryJournal {
+        let v: UInt64 = try readInt(&buf)
+        // The Rust code won't compile if a pointer won't fit in a UInt64.
+        // We have to go via `UInt` because that's the thing that's the size of a pointer.
+        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
+        if (ptr == nil) {
+            throw UniffiInternalError.unexpectedNullPointer
+        }
+        return try lift(ptr!)
+    }
+
+    public static func write(_ value: RecoveryJournal, into buf: inout [UInt8]) {
+        // This fiddling is because `Int` is the thing that's the same size as a pointer.
+        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
+        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+    }
+}
+
+
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryJournal_lift(_ pointer: UnsafeMutableRawPointer) throws -> RecoveryJournal {
+    return try FfiConverterTypeRecoveryJournal.lift(pointer)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryJournal_lower(_ value: RecoveryJournal) -> UnsafeMutableRawPointer {
+    return FfiConverterTypeRecoveryJournal.lower(value)
 }
 
 
@@ -2298,6 +2573,472 @@ public func FfiConverterTypeProposalMessage_lower(_ value: ProposalMessage) -> R
     return FfiConverterTypeProposalMessage.lower(value)
 }
 
+
+public struct RecoveryArchiveBlob {
+    public var ciphertext: Data
+    public var nonce: Data
+    public var aeadAad: Data
+    public var adk: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ciphertext: Data, nonce: Data, aeadAad: Data, adk: Data) {
+        self.ciphertext = ciphertext
+        self.nonce = nonce
+        self.aeadAad = aeadAad
+        self.adk = adk
+    }
+}
+
+
+
+extension RecoveryArchiveBlob: Equatable, Hashable {
+    public static func ==(lhs: RecoveryArchiveBlob, rhs: RecoveryArchiveBlob) -> Bool {
+        if lhs.ciphertext != rhs.ciphertext {
+            return false
+        }
+        if lhs.nonce != rhs.nonce {
+            return false
+        }
+        if lhs.aeadAad != rhs.aeadAad {
+            return false
+        }
+        if lhs.adk != rhs.adk {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(ciphertext)
+        hasher.combine(nonce)
+        hasher.combine(aeadAad)
+        hasher.combine(adk)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryArchiveBlob: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryArchiveBlob {
+        return
+            try RecoveryArchiveBlob(
+                ciphertext: FfiConverterData.read(from: &buf),
+                nonce: FfiConverterData.read(from: &buf),
+                aeadAad: FfiConverterData.read(from: &buf),
+                adk: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RecoveryArchiveBlob, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.ciphertext, into: &buf)
+        FfiConverterData.write(value.nonce, into: &buf)
+        FfiConverterData.write(value.aeadAad, into: &buf)
+        FfiConverterData.write(value.adk, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryArchiveBlob_lift(_ buf: RustBuffer) throws -> RecoveryArchiveBlob {
+    return try FfiConverterTypeRecoveryArchiveBlob.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryArchiveBlob_lower(_ value: RecoveryArchiveBlob) -> RustBuffer {
+    return FfiConverterTypeRecoveryArchiveBlob.lower(value)
+}
+
+
+public struct RecoveryArchiveWrap {
+    public var kemOutput: Data
+    public var ciphertext: Data
+    public var ciphersuite: UInt16
+    public var hpkeInfo: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(kemOutput: Data, ciphertext: Data, ciphersuite: UInt16, hpkeInfo: Data) {
+        self.kemOutput = kemOutput
+        self.ciphertext = ciphertext
+        self.ciphersuite = ciphersuite
+        self.hpkeInfo = hpkeInfo
+    }
+}
+
+
+
+extension RecoveryArchiveWrap: Equatable, Hashable {
+    public static func ==(lhs: RecoveryArchiveWrap, rhs: RecoveryArchiveWrap) -> Bool {
+        if lhs.kemOutput != rhs.kemOutput {
+            return false
+        }
+        if lhs.ciphertext != rhs.ciphertext {
+            return false
+        }
+        if lhs.ciphersuite != rhs.ciphersuite {
+            return false
+        }
+        if lhs.hpkeInfo != rhs.hpkeInfo {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(kemOutput)
+        hasher.combine(ciphertext)
+        hasher.combine(ciphersuite)
+        hasher.combine(hpkeInfo)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryArchiveWrap: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryArchiveWrap {
+        return
+            try RecoveryArchiveWrap(
+                kemOutput: FfiConverterData.read(from: &buf),
+                ciphertext: FfiConverterData.read(from: &buf),
+                ciphersuite: FfiConverterUInt16.read(from: &buf),
+                hpkeInfo: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RecoveryArchiveWrap, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.kemOutput, into: &buf)
+        FfiConverterData.write(value.ciphertext, into: &buf)
+        FfiConverterUInt16.write(value.ciphersuite, into: &buf)
+        FfiConverterData.write(value.hpkeInfo, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryArchiveWrap_lift(_ buf: RustBuffer) throws -> RecoveryArchiveWrap {
+    return try FfiConverterTypeRecoveryArchiveWrap.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryArchiveWrap_lower(_ value: RecoveryArchiveWrap) -> RustBuffer {
+    return FfiConverterTypeRecoveryArchiveWrap.lower(value)
+}
+
+
+public struct RecoveryJournalEntry {
+    public var key: String
+    public var kind: String
+    public var cid: String
+    public var groupGeneration: UInt64
+    public var epoch: UInt64
+    public var scope: String
+    public var payload: Data
+    public var status: String
+    public var retryCount: UInt32
+    public var createdAt: Int64
+    public var nextRetryAt: Int64
+    public var lastError: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(key: String, kind: String, cid: String, groupGeneration: UInt64, epoch: UInt64, scope: String, payload: Data, status: String, retryCount: UInt32, createdAt: Int64, nextRetryAt: Int64, lastError: String?) {
+        self.key = key
+        self.kind = kind
+        self.cid = cid
+        self.groupGeneration = groupGeneration
+        self.epoch = epoch
+        self.scope = scope
+        self.payload = payload
+        self.status = status
+        self.retryCount = retryCount
+        self.createdAt = createdAt
+        self.nextRetryAt = nextRetryAt
+        self.lastError = lastError
+    }
+}
+
+
+
+extension RecoveryJournalEntry: Equatable, Hashable {
+    public static func ==(lhs: RecoveryJournalEntry, rhs: RecoveryJournalEntry) -> Bool {
+        if lhs.key != rhs.key {
+            return false
+        }
+        if lhs.kind != rhs.kind {
+            return false
+        }
+        if lhs.cid != rhs.cid {
+            return false
+        }
+        if lhs.groupGeneration != rhs.groupGeneration {
+            return false
+        }
+        if lhs.epoch != rhs.epoch {
+            return false
+        }
+        if lhs.scope != rhs.scope {
+            return false
+        }
+        if lhs.payload != rhs.payload {
+            return false
+        }
+        if lhs.status != rhs.status {
+            return false
+        }
+        if lhs.retryCount != rhs.retryCount {
+            return false
+        }
+        if lhs.createdAt != rhs.createdAt {
+            return false
+        }
+        if lhs.nextRetryAt != rhs.nextRetryAt {
+            return false
+        }
+        if lhs.lastError != rhs.lastError {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(key)
+        hasher.combine(kind)
+        hasher.combine(cid)
+        hasher.combine(groupGeneration)
+        hasher.combine(epoch)
+        hasher.combine(scope)
+        hasher.combine(payload)
+        hasher.combine(status)
+        hasher.combine(retryCount)
+        hasher.combine(createdAt)
+        hasher.combine(nextRetryAt)
+        hasher.combine(lastError)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryJournalEntry: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryJournalEntry {
+        return
+            try RecoveryJournalEntry(
+                key: FfiConverterString.read(from: &buf),
+                kind: FfiConverterString.read(from: &buf),
+                cid: FfiConverterString.read(from: &buf),
+                groupGeneration: FfiConverterUInt64.read(from: &buf),
+                epoch: FfiConverterUInt64.read(from: &buf),
+                scope: FfiConverterString.read(from: &buf),
+                payload: FfiConverterData.read(from: &buf),
+                status: FfiConverterString.read(from: &buf),
+                retryCount: FfiConverterUInt32.read(from: &buf),
+                createdAt: FfiConverterInt64.read(from: &buf),
+                nextRetryAt: FfiConverterInt64.read(from: &buf),
+                lastError: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RecoveryJournalEntry, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.key, into: &buf)
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterString.write(value.cid, into: &buf)
+        FfiConverterUInt64.write(value.groupGeneration, into: &buf)
+        FfiConverterUInt64.write(value.epoch, into: &buf)
+        FfiConverterString.write(value.scope, into: &buf)
+        FfiConverterData.write(value.payload, into: &buf)
+        FfiConverterString.write(value.status, into: &buf)
+        FfiConverterUInt32.write(value.retryCount, into: &buf)
+        FfiConverterInt64.write(value.createdAt, into: &buf)
+        FfiConverterInt64.write(value.nextRetryAt, into: &buf)
+        FfiConverterOptionString.write(value.lastError, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryJournalEntry_lift(_ buf: RustBuffer) throws -> RecoveryJournalEntry {
+    return try FfiConverterTypeRecoveryJournalEntry.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryJournalEntry_lower(_ value: RecoveryJournalEntry) -> RustBuffer {
+    return FfiConverterTypeRecoveryJournalEntry.lower(value)
+}
+
+
+public struct RecoveryKeys {
+    public var privateKey: Data
+    public var publicKey: Data
+    public var keyId: String
+    public var ciphersuite: UInt16
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(privateKey: Data, publicKey: Data, keyId: String, ciphersuite: UInt16) {
+        self.privateKey = privateKey
+        self.publicKey = publicKey
+        self.keyId = keyId
+        self.ciphersuite = ciphersuite
+    }
+}
+
+
+
+extension RecoveryKeys: Equatable, Hashable {
+    public static func ==(lhs: RecoveryKeys, rhs: RecoveryKeys) -> Bool {
+        if lhs.privateKey != rhs.privateKey {
+            return false
+        }
+        if lhs.publicKey != rhs.publicKey {
+            return false
+        }
+        if lhs.keyId != rhs.keyId {
+            return false
+        }
+        if lhs.ciphersuite != rhs.ciphersuite {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(privateKey)
+        hasher.combine(publicKey)
+        hasher.combine(keyId)
+        hasher.combine(ciphersuite)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryKeys: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryKeys {
+        return
+            try RecoveryKeys(
+                privateKey: FfiConverterData.read(from: &buf),
+                publicKey: FfiConverterData.read(from: &buf),
+                keyId: FfiConverterString.read(from: &buf),
+                ciphersuite: FfiConverterUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RecoveryKeys, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.privateKey, into: &buf)
+        FfiConverterData.write(value.publicKey, into: &buf)
+        FfiConverterString.write(value.keyId, into: &buf)
+        FfiConverterUInt16.write(value.ciphersuite, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryKeys_lift(_ buf: RustBuffer) throws -> RecoveryKeys {
+    return try FfiConverterTypeRecoveryKeys.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryKeys_lower(_ value: RecoveryKeys) -> RustBuffer {
+    return FfiConverterTypeRecoveryKeys.lower(value)
+}
+
+
+public struct RecoveryVaultMetadata {
+    public var publicKey: Data
+    public var keyId: String
+    public var ciphersuite: UInt16
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(publicKey: Data, keyId: String, ciphersuite: UInt16) {
+        self.publicKey = publicKey
+        self.keyId = keyId
+        self.ciphersuite = ciphersuite
+    }
+}
+
+
+
+extension RecoveryVaultMetadata: Equatable, Hashable {
+    public static func ==(lhs: RecoveryVaultMetadata, rhs: RecoveryVaultMetadata) -> Bool {
+        if lhs.publicKey != rhs.publicKey {
+            return false
+        }
+        if lhs.keyId != rhs.keyId {
+            return false
+        }
+        if lhs.ciphersuite != rhs.ciphersuite {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(publicKey)
+        hasher.combine(keyId)
+        hasher.combine(ciphersuite)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRecoveryVaultMetadata: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RecoveryVaultMetadata {
+        return
+            try RecoveryVaultMetadata(
+                publicKey: FfiConverterData.read(from: &buf),
+                keyId: FfiConverterString.read(from: &buf),
+                ciphersuite: FfiConverterUInt16.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RecoveryVaultMetadata, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.publicKey, into: &buf)
+        FfiConverterString.write(value.keyId, into: &buf)
+        FfiConverterUInt16.write(value.ciphersuite, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryVaultMetadata_lift(_ buf: RustBuffer) throws -> RecoveryVaultMetadata {
+    return try FfiConverterTypeRecoveryVaultMetadata.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRecoveryVaultMetadata_lower(_ value: RecoveryVaultMetadata) -> RustBuffer {
+    return FfiConverterTypeRecoveryVaultMetadata.lower(value)
+}
+
 // Note that we don't yet support `indirect` for enums.
 // See https://github.com/mozilla/uniffi-rs/issues/396 for further discussion.
 
@@ -2406,6 +3147,24 @@ public enum MlsError {
 
     case NoMatchingKeyPackage(message: String)
 
+    case LifetimeRangeInvalid(message: String)
+
+    case LeafNotYetValid(message: String)
+
+    case KeyPackageExpired(message: String)
+
+    case InvalidClock(message: String)
+
+    case StorageCorruption(message: String)
+
+    case GroupInfoInvalid(message: String)
+
+    case EpochConflict(message: String)
+
+    case TransportUnknown(message: String)
+
+    case AcceptanceMetadataInvalid(message: String)
+
 }
 
 
@@ -2486,6 +3245,42 @@ public struct FfiConverterTypeMlsError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
         )
 
+        case 17: return .LifetimeRangeInvalid(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 18: return .LeafNotYetValid(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 19: return .KeyPackageExpired(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 20: return .InvalidClock(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 21: return .StorageCorruption(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 22: return .GroupInfoInvalid(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 23: return .EpochConflict(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 24: return .TransportUnknown(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
+        case 25: return .AcceptanceMetadataInvalid(
+            message: try FfiConverterString.read(from: &buf)
+        )
+
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -2529,6 +3324,24 @@ public struct FfiConverterTypeMlsError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(15))
         case .NoMatchingKeyPackage(_ /* message is ignored*/):
             writeInt(&buf, Int32(16))
+        case .LifetimeRangeInvalid(_ /* message is ignored*/):
+            writeInt(&buf, Int32(17))
+        case .LeafNotYetValid(_ /* message is ignored*/):
+            writeInt(&buf, Int32(18))
+        case .KeyPackageExpired(_ /* message is ignored*/):
+            writeInt(&buf, Int32(19))
+        case .InvalidClock(_ /* message is ignored*/):
+            writeInt(&buf, Int32(20))
+        case .StorageCorruption(_ /* message is ignored*/):
+            writeInt(&buf, Int32(21))
+        case .GroupInfoInvalid(_ /* message is ignored*/):
+            writeInt(&buf, Int32(22))
+        case .EpochConflict(_ /* message is ignored*/):
+            writeInt(&buf, Int32(23))
+        case .TransportUnknown(_ /* message is ignored*/):
+            writeInt(&buf, Int32(24))
+        case .AcceptanceMetadataInvalid(_ /* message is ignored*/):
+            writeInt(&buf, Int32(25))
 
 
         }
@@ -2541,6 +3354,30 @@ extension MlsError: Equatable, Hashable {}
 extension MlsError: Foundation.LocalizedError {
     public var errorDescription: String? {
         String(reflecting: self)
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
     }
 }
 
@@ -2611,6 +3448,30 @@ fileprivate struct FfiConverterOptionTypeMemberInfo: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeMemberInfo.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeRecoveryJournalEntry: FfiConverterRustBuffer {
+    typealias SwiftType = RecoveryJournalEntry?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeRecoveryJournalEntry.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeRecoveryJournalEntry.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -2740,6 +3601,39 @@ fileprivate struct FfiConverterSequenceTypeProposalMessage: FfiConverterRustBuff
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRecoveryJournalEntry: FfiConverterRustBuffer {
+    typealias SwiftType = [RecoveryJournalEntry]
+
+    public static func write(_ value: [RecoveryJournalEntry], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRecoveryJournalEntry.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RecoveryJournalEntry] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RecoveryJournalEntry]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRecoveryJournalEntry.read(from: &buf))
+        }
+        return seq
+    }
+}
+public func createRecoveryVault(pin: String, keys: RecoveryKeys)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_create_recovery_vault(
+        FfiConverterString.lower(pin),
+        FfiConverterTypeRecoveryKeys.lower(keys),$0
+    )
+})
+}
 public func decryptEpochArchiveV2(provider: Provider, archive: Data, snapshot: Data, ciphertext: Data, allowOwnMessages: Bool, maxForwardDistance: UInt32)throws  -> ArchivedMessage {
     return try  FfiConverterTypeArchivedMessage.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_func_decrypt_epoch_archive_v2(
@@ -2749,6 +3643,12 @@ public func decryptEpochArchiveV2(provider: Provider, archive: Data, snapshot: D
         FfiConverterData.lower(ciphertext),
         FfiConverterBool.lower(allowOwnMessages),
         FfiConverterUInt32.lower(maxForwardDistance),$0
+    )
+})
+}
+public func generateRecoveryKeys()throws  -> RecoveryKeys {
+    return try  FfiConverterTypeRecoveryKeys.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_generate_recovery_keys($0
     )
 })
 }
@@ -2767,10 +3667,73 @@ public func joinExternal(provider: Provider, identity: Identity, groupInfo: Data
     )
 })
 }
+public func joinExternalWithPolicy(provider: Provider, identity: Identity, groupInfo: Data, ratchetTree: RatchetTree?, allowExpiredTreeLeaves: Bool)throws  -> ExternalJoinResult {
+    return try  FfiConverterTypeExternalJoinResult.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_join_external_with_policy(
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterTypeIdentity.lower(identity),
+        FfiConverterData.lower(groupInfo),
+        FfiConverterOptionTypeRatchetTree.lower(ratchetTree),
+        FfiConverterBool.lower(allowExpiredTreeLeaves),$0
+    )
+})
+}
+public func openRecoveryArchive(privateKey: Data, blob: RecoveryArchiveBlob, wrap: RecoveryArchiveWrap)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_open_recovery_archive(
+        FfiConverterData.lower(privateKey),
+        FfiConverterTypeRecoveryArchiveBlob.lower(blob),
+        FfiConverterTypeRecoveryArchiveWrap.lower(wrap),$0
+    )
+})
+}
+public func recoveryVaultMetadata(vault: Data)throws  -> RecoveryVaultMetadata {
+    return try  FfiConverterTypeRecoveryVaultMetadata.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_recovery_vault_metadata(
+        FfiConverterData.lower(vault),$0
+    )
+})
+}
+public func sealRecoveryArchive(archive: Data, cid: String, groupGeneration: UInt64, epoch: UInt64, scope: String, blobId: String, snapshotHash: String)throws  -> RecoveryArchiveBlob {
+    return try  FfiConverterTypeRecoveryArchiveBlob.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_seal_recovery_archive(
+        FfiConverterData.lower(archive),
+        FfiConverterString.lower(cid),
+        FfiConverterUInt64.lower(groupGeneration),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterString.lower(scope),
+        FfiConverterString.lower(blobId),
+        FfiConverterString.lower(snapshotHash),$0
+    )
+})
+}
+public func unlockRecoveryVault(pin: String, vault: Data)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_unlock_recovery_vault(
+        FfiConverterString.lower(pin),
+        FfiConverterData.lower(vault),$0
+    )
+})
+}
 public func validateKeyPackageBytes(data: Data) -> Bool {
     return try!  FfiConverterBool.lift(try! rustCall() {
     uniffi_openmls_uniffi_fn_func_validate_key_package_bytes(
         FfiConverterData.lower(data),$0
+    )
+})
+}
+public func wrapRecoveryArchiveKey(adk: Data, publicKey: Data, cid: String, groupGeneration: UInt64, epoch: UInt64, scope: String, blobId: String, snapshotHash: String, keyId: String)throws  -> RecoveryArchiveWrap {
+    return try  FfiConverterTypeRecoveryArchiveWrap.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_func_wrap_recovery_archive_key(
+        FfiConverterData.lower(adk),
+        FfiConverterData.lower(publicKey),
+        FfiConverterString.lower(cid),
+        FfiConverterUInt64.lower(groupGeneration),
+        FfiConverterUInt64.lower(epoch),
+        FfiConverterString.lower(scope),
+        FfiConverterString.lower(blobId),
+        FfiConverterString.lower(snapshotHash),
+        FfiConverterString.lower(keyId),$0
     )
 })
 }
@@ -2805,7 +3768,13 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_func_create_recovery_vault() != 7923) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_func_decrypt_epoch_archive_v2() != 49663) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_func_generate_recovery_keys() != 57836) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_func_init_logger() != 28425) {
@@ -2814,7 +3783,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_func_join_external() != 34770) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_func_join_external_with_policy() != 61183) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_func_open_recovery_archive() != 28755) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_func_recovery_vault_metadata() != 22228) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_func_seal_recovery_archive() != 46276) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_func_unlock_recovery_vault() != 10055) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_func_validate_key_package_bytes() != 17956) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_func_wrap_recovery_archive_key() != 10721) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_func_hash_channel_id() != 9187) {
@@ -2916,6 +3903,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_group_process_message_raw() != 42004) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_group_process_message_with_context() != 8640) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_group_propose_add_member() != 38230) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2952,10 +3942,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_group_set_aad() != 37656) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_openmls_uniffi_checksum_method_identity_key_package() != 23478) {
+    if (uniffi_openmls_uniffi_checksum_method_identity_device_registration_signature() != 11689) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_openmls_uniffi_checksum_method_identity_key_packages() != 51213) {
+    if (uniffi_openmls_uniffi_checksum_method_identity_key_package() != 32486) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_identity_key_packages() != 40854) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_identity_owns_key_package_ref() != 3053) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_identity_signature_public_key() != 8711) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_method_identity_to_bytes() != 47545) {
@@ -2967,7 +3966,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_keypackage_hash_ref() != 59021) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_openmls_uniffi_checksum_method_keypackage_to_bytes() != 40967) {
+    if (uniffi_openmls_uniffi_checksum_method_keypackage_to_bytes() != 38341) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_method_provider_delete_all_groups() != 36776) {
@@ -2994,6 +3993,24 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_ratchettree_to_bytes() != 6976) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_recoveryjournal_commit_upload() != 10153) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_recoveryjournal_get() != 29425) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_recoveryjournal_insert_if_absent() != 1444) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_recoveryjournal_page() != 60045) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_recoveryjournal_put() != 52552) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_recoveryjournal_remove() != 7341) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_constructor_group_create_with_cid() != 48623) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3001,6 +4018,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_constructor_group_join_with_welcome() != 40960) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_constructor_group_join_with_welcome_with_policy() != 23733) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_constructor_group_load_from_storage() != 18841) {
@@ -3025,6 +4045,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_constructor_ratchettree_from_bytes() != 1206) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_constructor_recoveryjournal_new() != 37581) {
         return InitializationResult.apiChecksumMismatch
     }
 

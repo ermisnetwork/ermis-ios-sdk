@@ -4,6 +4,7 @@
 
 import AVFoundation
 import CoreData
+import CryptoKit
 import Foundation
 import ErmisShared
 
@@ -20,6 +21,40 @@ public enum LogoutLocalDataPolicy: Equatable {
 /// Typically, an app contains just one instance of `ErmisClient`. However, it's possible to have multiple instances if your use
 /// case requires it.
 public class ErmisClient {
+    private let archiveOwnerLock = NSLock()
+    public var archiveRecovery: E2eeArchiveRecovery? {
+        archiveOwnerLock.lock(); defer { archiveOwnerLock.unlock() }
+        guard config.e2eeMlsRolloutControls.epochArchiveEnabled, let userId = currentUserId, let root = config.localStorageFolderURL else { return nil }
+        if let existing = e2eRepository.archiveRecovery { return existing }
+        let namespaceInput = "\(config.endpointEnviroment.baseURL.absoluteString)|\(config.apiKey.apiKeyString)|\(projectId)|\(userId)|\(mlsClient.currentDeviceId ?? "")"
+        let namespace = Data(CryptoKit.SHA256.hash(data: Data(namespaceInput.utf8))).map { String(format: "%02x", $0) }.joined()
+        do {
+            let owner = try E2eeArchiveRecovery(namespace: namespace, root: root, userId: userId, api: apiClient,
+                isCurrentAccount: { [weak self] in self?.currentUserId == userId },
+                generation: { [weak e2eRepository] cid in guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }; return try repository.archiveGeneration(for: cid) },
+                apply: { [weak e2eRepository] cid, generation, archive, snapshot, message in
+                    guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }
+                    try repository.applyArchivedApplication(scopeCid: cid, generation: generation, archive: archive, snapshot: snapshot, envelope: message)
+                })
+            e2eRepository.archiveRecovery = owner
+            Task { await owner.resume() }
+            return owner
+        } catch { log.error("archive_recovery stage=initialize_failed reason=storage_or_key", subsystems: .mls); return nil }
+    }
+
+    /// Replay/repair live MLS first, then restore historical application messages.
+    public func repairEncryptedChannel(_ cid: ChannelId) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            e2eRepository.repairLiveScope(cid) { state in
+                if [.ready, .recovered, .historyIncomplete].contains(state) { continuation.resume() }
+                else { continuation.resume(throwing: E2eeArchiveError.invalidData) }
+            }
+        }
+        guard let archiveRecovery else { throw E2eeArchiveError.invalidData }
+        _ = try await archiveRecovery.retryBlockedArchiveUploads(cid: cid.rawValue)
+        try await archiveRecovery.repairRecoveryChannel(cid: cid.rawValue)
+    }
+
     /// The `UserId` of the currently logged in user.
     public var currentUserId: UserId? {
         authenticationRepository.currentUserId
@@ -597,6 +632,7 @@ public class ErmisClient {
         Task { [weak self] in
             await self?.e2eeAttachmentOriginalDownloadCoordinator.shutdown()
         }
+        do { try e2eRepository.archiveRecovery?.stop() } catch { log.error("archive_recovery stage=logout_clear_failed", subsystems: .mls) }
         authenticationRepository.logOutUser()
         // Stop tracking active components
         activeChannelControllers.removeAllObjects()
@@ -1304,6 +1340,7 @@ extension ErmisClient: AuthenticationRepositoryDelegate {
     }
 
     func didFinishSettingUpAuthenticationEnvironment(for state: EnvironmentState) {
+        _ = archiveRecovery
         switch state {
         case .firstConnection, .newUser:
             e2eRepository.loginTime = Date()

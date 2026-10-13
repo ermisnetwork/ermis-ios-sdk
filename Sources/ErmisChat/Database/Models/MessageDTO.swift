@@ -1219,7 +1219,7 @@ extension MessageDTO {
             // `forwardCid` historically defaults to `""` in the Core Data model. The request
             // model canonicalizes that legacy sentinel to nil so non-forward attachment sends do
             // not emit `forward_cid` and trigger Bellboy's forward validation.
-            forwardCid: authenticatedMetadata?.forwardCid ?? forwardCid,
+            forwardCid: encryptedData == nil ? forwardCid : authenticatedMetadata?.forwardCid,
             forwardMessageId: authenticatedMetadata?.forwardMessageId,
             forwardParentCid: authenticatedMetadata?.forwardParentCid,
             e2eeAttachmentIds: authenticatedMetadata?.attachmentIds ?? []
@@ -1270,7 +1270,7 @@ private extension ChatMessage {
         parentMessageId = dto.parentMessageId
         replyCount = Int(dto.replyCount)
         quotedMessageId = dto.quotedMessageId
-        if let forwardCid = dto.forwardCid {
+        if let forwardCid = dto.encryptedData == nil ? dto.forwardCid : (try? dto.decryptedMessage?.asPayload())?.authenticatedMetadata?.forwardCid {
             forwardChannelId = try? ChannelId(cid: forwardCid)
         }
         isBounced = dto.isBounced
@@ -1383,6 +1383,10 @@ private extension ChatMessage {
             // before the standard MessageDTO exists, or while its AttachmentDTO is still being
             // materialized asynchronously.
             $_attachments = ({ e2eeAttachments }, nil)
+        } else if dto.encryptedData != nil && dto.localMessageState == nil {
+            // Encrypted received rows must project attachments from proven decoded
+            // payload, never from an old/envelope AttachmentDTO fallback.
+            $_attachments = ({ [] }, nil)
         } else {
             $_attachments = ({
                 dto.attachments

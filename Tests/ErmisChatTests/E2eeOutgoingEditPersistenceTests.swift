@@ -1,4 +1,5 @@
 import CoreData
+import CryptoKit
 import XCTest
 @testable import ErmisChat
 
@@ -73,7 +74,7 @@ final class E2eeOutgoingEditPersistenceTests: XCTestCase {
             let decrypted = try session.saveMessageDecrypt(
                 payload: E2ePayload(text: "old", attachments: [], stickerUrl: nil),
                 messageId: message.id,
-                ciphertextHash: Data([9, 9, 9])
+                ciphertextHash: Data(SHA256.hash(data: try XCTUnwrap(message.encryptedData)))
             )
             message.decryptedMessage = decrypted
 

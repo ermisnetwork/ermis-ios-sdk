@@ -4,6 +4,7 @@
 
 import CoreData
 import Foundation
+import CryptoKit
 import ErmisShared
 
 /// Observers the storage for messages in a `pendingSync` state and updates them on the backend.
@@ -188,7 +189,7 @@ class MessageEditor: Worker {
                             try session.saveMessageDecrypt(
                                 payload: e2ePayload,
                                 messageId: messageId,
-                                ciphertextHash: nil
+                                ciphertextHash: Data(SHA256.hash(data: Data(encryptedData)))
                             )
                         }
                         current.localMessageState = isEpochStaleRetry

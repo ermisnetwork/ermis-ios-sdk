@@ -59,6 +59,13 @@ public class MlsClient {
     public static let deviceIdKey = MlsDeviceIdStore.deviceIdKey
     public static let cursorKey = "ermis_e2e_sync_cursor"
 
+    var archiveCaptureHandler: ((String, UInt64, Group, String) -> Void)?
+    private var archiveScopesByGroupId: [Data: (String, UInt64)] = [:]
+    private func captureArchive(_ group: Group, role: String = "primary") {
+        guard let scope = archiveScopesByGroupId[group.groupId()] else { return }
+        archiveCaptureHandler?(scope.0, scope.1, group, role)
+    }
+
     var provider: Provider?
     var identity: Identity?
     var userId: UserId?
@@ -366,6 +373,7 @@ public class MlsClient {
         }
 
         let group = try Group.createWithCid(provider: provider, founder: identity, cid: cid)
+        archiveScopesByGroupId[group.groupId()] = (cid, 0)
         return group
     }
 
@@ -446,6 +454,7 @@ public class MlsClient {
         guard let provider else { throw ClientError.MlsNoProviderError() }
         guard let identity else { throw ClientError.MlsNoIdentityError() }
         let group = try Group.createWithGroupId(provider: provider, founder: identity, groupId: groupId)
+        archiveScopesByGroupId[group.groupId()] = (cid, generation)
         return group
     }
 
@@ -579,6 +588,7 @@ public class MlsClient {
         } else {
             providerContextByGroupId.removeValue(forKey: group.groupId())
         }
+        archiveScopesByGroupId[group.groupId()] = (cid, marker?.generation ?? 0)
         return group
     }
 
@@ -622,6 +632,7 @@ public class MlsClient {
         let encoded = try JSONEncoder().encode(marker)
         userDefaults.set(encoded, forKey: key)
         userDefaults.set(encoded, forKey: historicalKey)
+        if let groupId = marker.groupId { archiveScopesByGroupId[groupId] = (marker.cid, marker.generation) }
     }
 
     func loadPendingGenerationJoin(cid: String) -> GroupGenerationMarker? {
@@ -734,8 +745,8 @@ public class MlsClient {
         guard let identity else {
             return nil
         }
-        let keyPackage = identity.keyPackage(provider: provider)
-        return keyPackage.toBytes()
+        guard let keyPackage = try? identity.keyPackage(provider: provider) else { return nil }
+        return try? keyPackage.toBytes()
     }
 
     func getKeyPackage(count: Int) throws -> [Data] {
@@ -745,8 +756,8 @@ public class MlsClient {
         }
         guard let provider else { throw ClientError.MlsNoProviderError() }
         guard let identity else { throw ClientError.MlsNoIdentityError() }
-        let keyPackages = identity.keyPackages(provider: provider, count: UInt32(count))
-        return keyPackages.map { $0.toBytes() }
+        let keyPackages = try identity.keyPackages(provider: provider, count: UInt32(count))
+        return try keyPackages.map { try $0.toBytes() }
     }
 
     func encrypt(
@@ -774,6 +785,7 @@ public class MlsClient {
         )
         let encryptedData: Data
         do {
+            captureArchive(group)
             encryptedData = try group.createMessage(
                 provider: provider,
                 sender: identity,
@@ -800,6 +812,7 @@ public class MlsClient {
         trace?.info(stage: "mls_state_save_started", epoch: epoch)
         do {
             try group.saveState(provider: provider)
+        captureArchive(group)
         } catch {
             trace?.failure(
                 stage: "mls_state_save_failed",
@@ -843,6 +856,7 @@ public class MlsClient {
         )
         let encryptedData: Data
         do {
+            captureArchive(group)
             encryptedData = try group.createMessageWithAad(
                 provider: provider,
                 sender: identity,
@@ -870,6 +884,7 @@ public class MlsClient {
         trace?.info(stage: "mls_state_save_started", epoch: epoch)
         do {
             try group.saveState(provider: provider)
+        captureArchive(group)
         } catch {
             trace?.failure(
                 stage: "mls_state_save_failed",
@@ -891,8 +906,10 @@ public class MlsClient {
         assertMutationExecutor()
         let group = try loadGroup(with: cid.rawValue)
         let provider = try generationProvider(for: group)
+        captureArchive(group)
         try group.mergePendingCommit(provider: provider)
         try group.saveState(provider: provider)
+        captureArchive(group)
     }
 
     func clearPendingCommit(in cid: ChannelId) throws {
@@ -947,6 +964,7 @@ public class MlsClient {
             allowOwnMessages: allowOwnMessages,
             maxForwardDistance: maxForwardDistance
         )
+        guard archived.content.count <= 16 * 1024 * 1024 else { throw E2eeArchiveError.invalidData }
         let payload = try JSONDecoder().decode(E2ePayload.self, from: archived.content)
         return MlsArchivedApplicationMessage(
             plaintext: archived.content,
@@ -962,14 +980,17 @@ public class MlsClient {
     func encrypt(data: Data, in group: Group) throws -> Data {
         assertMutationExecutor()
         let (provider, identity) = try generationContext(for: group)
+        captureArchive(group)
         let encryptedData = try group.createMessage(provider: provider, sender: identity, plaintext: data)
         try group.saveState(provider: provider)
+        captureArchive(group)
         return encryptedData
     }
 
     func processApplicationMessage(data: Data, in group: Group) throws -> MlsProcessedApplicationMessage {
         assertMutationExecutor()
         let provider = try generationProvider(for: group)
+        captureArchive(group)
         let processedMessage = try group.processMessageDeferred(provider: provider, msg: data)
         guard processedMessage.messageType == .applicationMessage else {
             throw ClientError.Unexpected("Expected an MLS application message.")
@@ -992,6 +1013,7 @@ public class MlsClient {
         assertMutationExecutor()
         let provider = try generationProvider(for: group)
         try group.saveState(provider: provider)
+        captureArchive(group)
     }
 
     /// Processes an MLS protocol message and preserves its type plus before/after epoch metadata.
@@ -1001,6 +1023,7 @@ public class MlsClient {
         assertMutationExecutor()
         let provider = try generationProvider(for: group)
         let epochBefore = group.epoch()
+        captureArchive(group, role: "backup")
         let processedMessage = try group.processMessage(provider: provider, msg: data)
         return try protocolMessageResult(
             processedMessage,
@@ -1025,6 +1048,7 @@ public class MlsClient {
             throw ClientError.Unexpected("Invalid historical MLS acceptance timestamp.")
         }
         let epochBefore = group.epoch()
+        captureArchive(group, role: "backup")
         let processedMessage = try group.processMessageAt(
             provider: provider,
             msg: data,
@@ -1088,6 +1112,8 @@ public class MlsClient {
                 )
             )
         }
+        archiveScopesByGroupId[group.groupId()] = (cid, generation)
+        captureArchive(group)
         return group
     }
 

@@ -41,6 +41,9 @@ jq -e '
 ' "$METADATA" >/dev/null
 
 required_capabilities=(
+    recovery_vault
+    recovery_archive_crypto
+    recovery_journal
     process_message_at
     no_matching_key_package_error
     create_with_group_id
@@ -71,6 +74,11 @@ if [[ "$(lipo -archs "$DEVICE_LIBRARY")" != "arm64" ]] ||
 fi
 
 required_symbols=(
+    uniffi_openmls_uniffi_fn_func_generate_recovery_keys
+    uniffi_openmls_uniffi_fn_func_unlock_recovery_vault
+    uniffi_openmls_uniffi_fn_func_open_recovery_archive
+    uniffi_openmls_uniffi_fn_constructor_recoveryjournal_new
+    uniffi_openmls_uniffi_fn_method_recoveryjournal_commit_upload
     uniffi_openmls_uniffi_fn_constructor_group_create_with_group_id
     uniffi_openmls_uniffi_fn_constructor_group_load_from_storage_with_group_id
     uniffi_openmls_uniffi_fn_method_group_process_message_at

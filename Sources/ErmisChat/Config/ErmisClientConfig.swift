@@ -56,6 +56,7 @@ public struct E2eeMlsRolloutControls {
     public var partialWelcomeFallbackEnabled: Bool
     public var groupInfoRepairEnabled: Bool
     public var clientTelemetryEnabled: Bool
+    public var epochArchiveEnabled: Bool
     public var metricObserver: ((E2eeMlsRolloutMetricObservation) -> Void)?
 
     public init(
@@ -63,12 +64,14 @@ public struct E2eeMlsRolloutControls {
         partialWelcomeFallbackEnabled: Bool = true,
         groupInfoRepairEnabled: Bool = true,
         clientTelemetryEnabled: Bool = true,
+        epochArchiveEnabled: Bool = false,
         metricObserver: ((E2eeMlsRolloutMetricObservation) -> Void)? = nil
     ) {
         self.historicalReplayEnabled = historicalReplayEnabled
         self.partialWelcomeFallbackEnabled = partialWelcomeFallbackEnabled
         self.groupInfoRepairEnabled = groupInfoRepairEnabled
         self.clientTelemetryEnabled = clientTelemetryEnabled
+        self.epochArchiveEnabled = epochArchiveEnabled
         self.metricObserver = metricObserver
     }
 }
