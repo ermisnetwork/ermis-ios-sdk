@@ -162,6 +162,31 @@ final class E2eeAttachmentReceiveCoordinatorTests: XCTestCase {
         XCTAssertEqual(payload.duration, 3.25)
     }
 
+    func testAndroidAACManifestKeepsVoiceTypeAcrossWireDecode() throws {
+        // Android V1 carries voice intent inside original.display, without a top-level type.
+        let manifest = makeManifest(
+            mimeType: "audio/aac", name: "recording.aac", width: nil, height: nil,
+            duration: 3.25, attachmentType: "voiceRecording"
+        )
+        let received = try JSONDecoder.ermis.decode(E2eeAttachmentManifestV1.self,
+            from: JSONEncoder.ermis.encode(manifest))
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: received)
+        let payload = try JSONDecoder.ermis.decode(VoiceRecordingAttachmentPayload.self, from: renderable.data)
+        XCTAssertEqual(renderable.type, .voiceRecording)
+        XCTAssertEqual(payload.file.mimeType, "audio/aac")
+        XCTAssertEqual(payload.duration, 3.25)
+    }
+
+    func testAndroidExplicitAACFileDoesNotUseVoiceCompatibilityLane() throws {
+        let manifest = makeManifest(
+            mimeType: "audio/aac", name: "recording.aac", width: nil, height: nil,
+            duration: 3.25, attachmentType: "file"
+        )
+        let renderable = try E2eeAttachmentReceiveCoordinator.renderablePayload(for: manifest)
+        XCTAssertEqual(renderable.type, .file)
+        _ = try JSONDecoder.ermis.decode(FileAttachmentPayload.self, from: renderable.data)
+    }
+
     func testGenericAudioWithoutVoiceMarkerOrDurationRemainsFile() throws {
         let manifest = makeManifest(
             mimeType: "audio/mpeg",

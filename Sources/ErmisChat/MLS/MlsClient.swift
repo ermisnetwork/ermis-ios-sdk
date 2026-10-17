@@ -75,6 +75,11 @@ public class MlsClient {
     private let storageFolderURL: URL?
     private let legacyStorageFolderURLs: [URL]
     private var providerDatabaseURL: URL?
+
+    func membershipMutationStore() throws -> MlsMembershipMutationStore {
+        guard userId != nil, let providerDatabaseURL else { throw ClientError.MlsNoProviderError() }
+        return MlsMembershipMutationStore(root: providerDatabaseURL.appendingPathExtension("member-mutations"))
+    }
     private var providerDatabaseCleanupURLs: [URL] = []
     private var currentProviderMigrationMarkerKey: String?
     private var mutationExecutorAssertion: (() -> Void)?
@@ -680,6 +685,14 @@ public class MlsClient {
         (try? loadGroup(with: cid)) != nil
     }
 
+    /// A retained group can still load after a commit evicts this device. It cannot
+    /// encrypt or decrypt current application messages, even when its epoch is current.
+    /// A local pending commit is transient and must finish through its normal receipt.
+    func hasNonOperationalGroup(cid: String) -> Bool {
+        guard let group = try? loadGroup(with: cid) else { return false }
+        return !group.isOperational() && !group.hasPendingCommit()
+    }
+
     func loadOrCreateGroup(with cid: String) throws -> Group {
         do {
             let group = try loadGroup(with: cid)
@@ -713,10 +726,11 @@ public class MlsClient {
         let (provider, identity) = try generationContext(for: group)
         
         if group.hasPendingCommit() {
-            try group.clearPendingCommit(provider: provider)
+            throw ClientError.Unexpected("MLS mutation pending; reconcile server ACK before retry")
         }
         log.debug("TTTTT AAAA BEFORE ADD MEMBER, EPOCH: \(group.epoch())")
         let commitBunddle = try group.addMembers(provider: provider, sender: identity, newMembers: memberKeyPackages)
+        try group.saveState(provider: provider)
         log.debug("TTTTT AAAA AFTER ADD MEMBER, EPOCH: \(group.epoch())")
         return commitBunddle
     }
@@ -731,8 +745,10 @@ public class MlsClient {
     func removeMembers(_ userIds: [String], in group: Group) throws -> CommitBundle {
         assertMutationExecutor()
         let (provider, identity) = try generationContext(for: group)
+        traceRemovalLeaves(userIds, group: group)
         log.debug("TTTTT AAAA BEFORE REMOVE USER, EPOCH: \(group.epoch())")
         let commitBundle = try group.removeUsers(provider: provider, sender: identity, userIds: userIds)
+        try group.saveState(provider: provider)
         log.debug("TTTTT AAAA AFTER REMOVE USER, EPOCH: \(group.epoch())")
         return commitBundle
     }
@@ -776,6 +792,12 @@ public class MlsClient {
         }
 
         let epoch = UInt64(group.epoch())
+        log.info(
+            "mls_group_health stage=before_create epoch=\(epoch) operational=\(group.isOperational()) "
+                + "pending_commit=\(group.hasPendingCommit()) member_count=\(group.members().count) "
+                + "self_member_count=\(userId.map { group.membersByUserId(userId: $0).count } ?? -1)",
+            subsystems: .mls
+        )
         let createStartedAt = E2eeSendTrace.nowNanoseconds()
         trace?.info(
             stage: "mls_create_started",
@@ -917,6 +939,7 @@ public class MlsClient {
         let group = try loadGroup(with: cid.rawValue)
         let provider = try generationProvider(for: group)
         try group.clearPendingCommit(provider: provider)
+        try group.saveState(provider: provider)
     }
 
     func commitPendingProposal(in cid: ChannelId) throws {
@@ -1194,14 +1217,31 @@ public class MlsClient {
         let group = try loadGroup(with: cid)
         let (provider, identity) = try generationContext(for: group)
         if group.hasPendingCommit() {
-            try group.clearPendingCommit(provider: provider)
+            throw ClientError.Unexpected("MLS mutation pending; reconcile server ACK before retry")
         }
+        traceRemovalLeaves(removeUserIds, group: group)
         log.debug("TTTTT AAAA BEFORE ADD MEMBER WITH REMOVALS, EPOCH: \(group.epoch())")
         let commitBundle = try group.commitMemberAddWithRemovals(provider: provider, sender: identity, removeUserIds: removeUserIds, addMembers: addMembers)
+        try group.saveState(provider: provider)
         log.debug("TTTTT AAAA AFTER ADD MEMBER WITH REMOVALS, EPOCH: \(group.epoch())")
         let ratchetTree = group.exportRatchetTree()
         let epoch = Int(group.epoch())
         return (commitBundle, ratchetTree, epoch)
+    }
+
+    private func traceRemovalLeaves(_ userIds: [String], group: Group) {
+        for target in Set(userIds).sorted() {
+            let leaves = group.membersByUserId(userId: target)
+            log.info(
+                "mls_membership_trace stage=remove_target epoch=\(group.epoch()) target_user=\(target) "
+                    + "leaf_count=\(leaves.count) self_leaf_count=\(userId.map { group.membersByUserId(userId: $0).count } ?? 0) "
+                    + "operational=\(group.isOperational())",
+                subsystems: .mls
+            )
+            for leaf in leaves {
+                log.info("mls_membership_trace stage=remove_leaf epoch=\(group.epoch()) target_user=\(target) leaf=\(leaf.index)", subsystems: .mls)
+            }
+        }
     }
     
     func removeMembersWithRemovals(in cid: String, removeUserIds: [String]) throws {

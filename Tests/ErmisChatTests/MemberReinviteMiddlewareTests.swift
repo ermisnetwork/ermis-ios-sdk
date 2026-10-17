@@ -5,6 +5,31 @@ import XCTest
 final class MemberReinviteMiddlewareTests: XCTestCase {
     private let cid = ChannelId(type: .team, projectId: "project", id: "reinvite")
 
+    func testDelayedRemovalAfterReinviteIsDroppedBeforeSavingOldPayload() throws {
+        for role in [MemberRole.member, .pending] {
+            let db = try database()
+            let oldRemoval = try payload(type: "member.removed", user: "target").event()
+            let newer = try payload(type: "notification.invite_accepted", user: "target")
+            let readdedAt = Date(timeIntervalSince1970: 1_800_000_000)
+            try db.writeAndWait { session in
+                let member = try session.saveMember(payload: newer.memberContainer!.member!, channelId: self.cid)
+                member.memberCreatedAt = readdedAt.bridgeDate
+                member.channelRoleRaw = role.rawValue
+                let channel = try XCTUnwrap(session.channel(cid: self.cid))
+                channel.members.insert(member)
+                channel.membership = member
+            }
+            try db.writeAndWait { session in
+                let admitted = EventDataProcessorMiddleware().handle(event: oldRemoval, session: session)
+                XCTAssertNil(admitted, "An obsolete removal must never reach membership or MLS handlers")
+                let channel = try XCTUnwrap(session.channel(cid: self.cid))
+                XCTAssertEqual(channel.membership?.memberCreatedAt?.bridgeDate, readdedAt)
+                XCTAssertEqual(channel.membership?.channelRoleRaw, role.rawValue)
+                XCTAssertTrue(channel.members.contains { $0.user.userId == "target" })
+            }
+        }
+    }
+
     func testMlsAcceptanceWithoutCachedChannelSurvivesTheRealMiddlewarePipeline() throws {
         let db = try database()
         let event = try payload(type: "notification.invite_accepted", user: "target").event()

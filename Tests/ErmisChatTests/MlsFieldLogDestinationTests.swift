@@ -16,8 +16,21 @@ final class MlsFieldLogDestinationTests: XCTestCase {
     func testBundledContractAndKnownMarker() throws {
         let contract = try XCTUnwrap(MlsFieldMarkerProjector.contract)
         XCTAssertEqual(contract.version, 1)
-        XCTAssertEqual(contract.plain_patterns.count, 21)
+        XCTAssertEqual(Set(contract.plain_patterns).count, contract.plain_patterns.count)
         XCTAssertEqual(MlsFieldMarkerProjector.project(marker), marker)
+    }
+
+    func testMembershipBoundariesKeepOnlyBoundedMetadata() {
+        let ack = "mls_membership_trace stage=ack action=add epoch=9 commit_hash=5715069c36b1"
+        let leave = "mls_self_leave stage=group_deleted cid=team:project:qa-channel"
+        let roster = "[MLS] state=ghost_roster_verified member_count=3 queued_count=2 inactive_count=1"
+        for value in [ack, leave, roster] {
+            XCTAssertEqual(MlsFieldMarkerProjector.project(value + " token=private-fixture plaintext=private-fixture"), value)
+            XCTAssertFalse(MlsFieldMarkerProjector.isCanonical(value + " token=private-fixture"))
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project("mls_self_leave stage=unknown cid=team:project:qa-channel"))
+        XCTAssertNil(MlsFieldMarkerProjector.project("mls_self_leave stage=ack cid=" + String(repeating: "a", count: 193)))
+        XCTAssertNil(MlsFieldMarkerProjector.project(ack + "abcdef"))
     }
 
     func testSentinelAndIdentityFieldsNeverReachProjection() {
@@ -25,6 +38,19 @@ final class MlsFieldLogDestinationTests: XCTestCase {
         XCTAssertEqual(MlsFieldMarkerProjector.project(input), "join_checkpoint stage=welcome_fallback_requested source=scope_sync reason=no_matching_keypackage group_loaded=false")
         XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture plaintext=private-fixture"), marker)
         XCTAssertNil(MlsFieldMarkerProjector.project("raw plaintext private-fixture"))
+    }
+
+    func testScopeCursorAndLongAndroidDeviceMarkersRemainBounded() {
+        let device = "Android-device_0x166a7a6a11c0cd147a4e39ee81831b8b9253c412_1b2643e5-46c4-4db2-baef-2489ca56872b"
+        let protocolMarker = "mls_membership_trace stage=protocol event_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb epoch=4 sender_user=0x166a7a6a11c0cd147a4e39ee81831b8b9253c412 sender_device=\(device) commit_hash=7c6ed5eb9fbd"
+        let cursor = "mls_scope_trace stage=removed_ignored cid=team:project:qa event_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb created_at=2026-08-06T10:01:00.123456789Z"
+        for marker in [protocolMarker, cursor] {
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture"), marker)
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+            XCTAssertFalse(MlsFieldMarkerProjector.isCanonical(marker + " token=private-fixture"))
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project(cursor.replacingOccurrences(of: "removed_ignored", with: "unknown")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(protocolMarker.replacingOccurrences(of: device, with: String(repeating: "a", count: 193))))
     }
 
     func testUnknownEnumsAndDuplicateJoinFieldsRejected() {

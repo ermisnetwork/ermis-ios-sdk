@@ -113,17 +113,12 @@ class MessageRepository {
                 let e2ePayload: E2ePayload
                 let authenticatedAAD: E2eeMessageAADV1?
                 do {
-                    if let cachedPayload = try dto.decryptedMessage?.asPayload(),
-                       !cachedPayload.e2eeAttachments.isEmpty {
-                        let attachmentIds = cachedPayload.e2eeAttachments.map(\.attachmentId)
-                        try requestBody.bindE2eeAuthenticatedEnvelope(
-                            destinationCid: cid,
-                            groupId: self.e2eRepository.mlsGroupCid(for: cid).rawValue,
-                            attachmentIds: attachmentIds,
-                            forwardParentCid: requestBody.forwardParentCid
-                        )
-                        try cachedPayload.e2eeAttachments.verifyCanonicalAttachmentIds(
-                            requestBody.e2eeAttachmentIds
+                    let cachedPayload = try dto.decryptedMessage?.asPayload()
+                    try Self.validateE2eeAttachmentSendBinding(message: dto, cachedPayload: cachedPayload)
+                    if let cachedPayload, !cachedPayload.e2eeAttachments.isEmpty {
+                        try Self.bindCompletedE2eeAttachmentEnvelope(
+                            request: &requestBody, manifests: cachedPayload.e2eeAttachments,
+                            destinationCid: cid, groupCid: self.e2eRepository.mlsGroupCid(for: cid).rawValue
                         )
                         e2ePayload = cachedPayload
                     } else {
@@ -649,14 +644,7 @@ extension MessageRepository: E2eeAttachmentMessageBinding {
                 message.localMessageState = Self.preparedE2eeAttachmentSendState(
                     from: message.localMessageState
                 )
-                let existingPayload = try message.decryptedMessage?.asPayload()
-                let payload = E2ePayload(
-                    text: existingPayload?.text ?? message.text,
-                    attachments: [],
-                    e2eeAttachments: manifests,
-                    stickerUrl: existingPayload?.stickerUrl ?? message.stickerUrl,
-                    authenticatedMetadata: existingPayload?.authenticatedMetadata
-                )
+                let payload = try Self.completedE2eeAttachmentPayload(message: message, manifests: manifests)
                 try session.saveMessageDecrypt(
                     payload: payload,
                     messageId: messageId,
@@ -670,6 +658,71 @@ extension MessageRepository: E2eeAttachmentMessageBinding {
                 }
             })
         }
+    }
+
+    static func completedE2eeAttachmentPayload(
+        message: MessageDTO,
+        manifests: [E2eeAttachmentManifestV1]
+    ) throws -> E2ePayload {
+        let existingPayload = try message.decryptedMessage?.asPayload()
+        guard let channel = message.channel,
+              message.cid == nil || message.cid == channel.cid else {
+            throw MessageRepositoryError.messageDoesNotHaveValidChannel
+        }
+        let cid = try ChannelId(cid: channel.cid)
+        var envelope = message.asRequestBody()
+        try bindCompletedE2eeAttachmentEnvelope(
+            request: &envelope, manifests: manifests, destinationCid: cid, groupCid: channel.mlsGroupCid
+        )
+        guard let aad = try envelope.authenticatedAAD() else {
+            throw E2eeMessageAADError.authenticatedSendLaneUnavailable
+        }
+        _ = try aad.encoded()
+        let metadata = E2eeAuthenticatedMessageMetadata(
+            forwardCid: aad.forwardCid,
+            forwardMessageId: aad.forwardMessageId,
+            forwardParentCid: aad.forwardParentCid,
+            attachmentIds: aad.attachmentIds
+        )
+        // Staging is local pending intent, not received ciphertext proof. Save metadata with
+        // the manifest atomically so asPayload does not discard an unbound manifest.
+        return E2ePayload(
+            text: existingPayload?.text ?? message.text,
+            attachments: [],
+            e2eeAttachments: manifests,
+            stickerUrl: existingPayload?.stickerUrl ?? message.stickerUrl,
+            authenticatedMetadata: metadata
+        )
+    }
+
+    static func bindCompletedE2eeAttachmentEnvelope(
+        request: inout MessageRequestBody,
+        manifests: [E2eeAttachmentManifestV1],
+        destinationCid: ChannelId,
+        groupCid: String
+    ) throws {
+        // Completed V1 manifests are the authoritative attachment lane. Local rendering rows
+        // can already be uploaded on durable retry; never bind their standard payloads as AAD.
+        request.attachments = []
+        try request.bindE2eeAuthenticatedEnvelope(
+            destinationCid: destinationCid,
+            groupId: groupCid,
+            attachmentIds: manifests.map(\.attachmentId),
+            forwardParentCid: request.forwardParentCid
+        )
+        try manifests.verifyCanonicalAttachmentIds(request.e2eeAttachmentIds)
+    }
+
+    static func validateE2eeAttachmentSendBinding(
+        message: MessageDTO,
+        cachedPayload: E2ePayload?
+    ) throws {
+        guard message.attachments.contains(where: { $0.localURL != nil }) else { return }
+        guard let cachedPayload, !cachedPayload.e2eeAttachments.isEmpty,
+              let metadata = cachedPayload.authenticatedMetadata else {
+            throw E2eeMessageAADError.authenticatedSendLaneUnavailable
+        }
+        try cachedPayload.e2eeAttachments.verifyCanonicalAttachmentIds(metadata.attachmentIds)
     }
 
     func sendPreparedE2eeAttachmentMessage(messageId: String) async throws {

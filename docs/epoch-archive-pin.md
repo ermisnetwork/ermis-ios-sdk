@@ -133,11 +133,9 @@ Native artifacts được build từ checkout OpenMLS đang dirty và ghi lại 
 
 Sample tạo request UUID mới khi login thật. Sau PIN đúng, app đọc channel theo page 100, enqueue bền vững từng channel E2EE, kiểm tra lại account/project/request rồi mới ACK request. Thất bại giữ pending và retry cách ít nhất 5 giây; request đang chờ giữ restore cycle/cursor đã ghi. ACK là xác nhận queue đã ghi, không phải xác nhận mọi lịch sử đã giải mã xong.
 
-Trong Debug, mục **Khác/More → Quyền riêng tư và an toàn → Mã hóa đầu cuối → Lưu trữ tin nhắn → Kiểm thử login → PIN** dùng token provider/refresh token của phiên hiện có để refresh xác thực, xóa unlock cục bộ và tạo request login mới. Không logout, không đổi PIN, không xóa journal hay message cache. Nếu refresh thất bại hoặc chưa có vault thì dừng mô phỏng. Release không có lối vào này.
+Từ 13/10/2026, nút kiểm thử login/PIN và các entrypoint mô phỏng trong sample đã được gỡ trên cả Android/iOS (Intent extra, launch argument và debug notification). App chỉ còn luồng login thật, PIN trong cài đặt và Repair; các evidence kiểm thử saved-session trước đó là lịch sử, không phải hướng dẫn dùng entrypoint hiện tại. Login thật vẫn tạo request UUID và enqueue/ACK theo account/project/request như mô tả trên.
 
-Android cũng nhận Intent extra `archive_pin_login_bypass=true` trên `HostActivity`; iOS nhận launch argument `--archive-pin-login-bypass`. Không truyền token/PIN qua launch argument. Người test nhập PIN trong prompt thông thường; automation đọc PIN từ file riêng ngoài repository.
-
-Marker cố định: `archive_login stage=authenticated|prompt|unlock|queued result=accepted|failed|shown`, queue thành công thêm `channels=N`. Android Debug ghi marker trực tiếp bằng tag `ArchiveLogin`/`MlsArchive`; nên thu log liên tục vì Debug toàn mức có thể làm logcat xoay nhanh.
+Marker của luồng thật: `archive_login stage=prompt|unlock|queued result=accepted|failed|shown`, queue thành công thêm `channels=N`. Không truyền PIN/token qua launch arguments hoặc logs.
 
 ## Tiến độ 11/10/2026 — production integration, bản Debug trên máy thật
 

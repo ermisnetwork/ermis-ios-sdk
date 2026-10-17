@@ -419,6 +419,104 @@ final class AttachmentSourcePersistenceTests: XCTestCase {
         XCTAssertTrue(attachment.isE2eeOpaqueAsset)
     }
 
+    func testCompletedVoiceManifestSurvivesSenderCacheReadbackAndBindsAAD() throws {
+        let database = try makeDatabase()
+        defer { try? close(database) }
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aac")
+        try Data([1, 2, 3]).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let attachmentID = "00000000-0000-4000-8000-000000000001"
+        let manifest = E2eeAttachmentManifestV1(attachmentId: attachmentID, assets: [
+            E2eeAttachmentManifestAssetV1(
+                assetId: "00000000-0000-4000-8000-000000000002", kind: .original,
+                cipherSize: UInt64(E2eeAttachmentFrameCryptoV1.emptyCiphertextSize),
+                cipherSha256: String(repeating: "a", count: 64),
+                frameSize: UInt32(E2eeAttachmentFrameCryptoV1.defaultFrameSize),
+                contentKey: Data(repeating: 1, count: 32).base64EncodedString(),
+                noncePrefix: Data(repeating: 2, count: 8).base64EncodedString(),
+                plaintextSize: 0, display: ["attachment_type": .string("voiceRecording")]
+            )
+        ])
+        let messageID = "00000000-0000-4000-8000-000000000003"
+        try database.writeAndWait { session in
+            _ = try session.saveChannel(payload: channelPayload(messageId: messageID))
+        }
+        try database.writeAndWait { session in
+            let message = try XCTUnwrap(session.message(id: messageID))
+            XCTAssertEqual(message.cid, cid)
+            XCTAssertEqual(message.channel?.cid, cid)
+            message.localMessageState = .pendingSend
+            _ = try session.createNewAttachment(
+                attachment: AnyAttachmentPayload(localFileURL: source, attachmentType: .voiceRecording),
+                id: AttachmentId(cid: try ChannelId(cid: cid), messageId: message.id, index: 0)
+            )
+            // A local DTO can rely on its channel relation before willSave fills its cid.
+            message.cid = nil
+            let staged = try MessageRepository.completedE2eeAttachmentPayload(
+                message: message, manifests: [manifest]
+            )
+            try session.saveMessageDecrypt(payload: staged, messageId: message.id, ciphertextHash: nil)
+            let cached = try XCTUnwrap(message.decryptedMessage).asPayload()
+            XCTAssertEqual(cached.e2eeAttachments.map(\.attachmentId), [attachmentID])
+            XCTAssertEqual(cached.authenticatedMetadata?.attachmentIds, [attachmentID])
+            message.cid = "team:project:wrong-destination"
+            XCTAssertThrowsError(try MessageRepository.completedE2eeAttachmentPayload(message: message, manifests: [manifest]))
+            message.cid = cid
+            // Completed local rows may still be present on retry. They must not escape into
+            // the standard attachment lane or invalidate the bound V1 manifest.
+            for attachment in message.attachments { attachment.localState = .uploaded }
+            message.encryptedData = Data([1, 2, 3])
+            message.mlsEpoch = 7
+            message.mlsGroupGeneration = 2
+            var request = message.asRequestBody()
+            XCTAssertFalse(request.attachments.isEmpty)
+            let ciphertext = request.encryptedData
+            try MessageRepository.bindCompletedE2eeAttachmentEnvelope(
+                request: &request, manifests: cached.e2eeAttachments,
+                destinationCid: try ChannelId(cid: cid), groupCid: cid
+            )
+            XCTAssertTrue(request.attachments.isEmpty)
+            XCTAssertEqual(request.encryptedData, ciphertext)
+            XCTAssertEqual(request.mlsEpoch, 7)
+            XCTAssertEqual(request.groupGeneration, 2)
+            XCTAssertEqual(try request.authenticatedAAD()?.attachmentIds, [attachmentID])
+            XCTAssertNil(message.decryptedMessage?.ciphertextHash)
+            XCTAssertNoThrow(try MessageRepository.validateE2eeAttachmentSendBinding(message: message, cachedPayload: cached))
+            XCTAssertThrowsError(try MessageRepository.validateE2eeAttachmentSendBinding(
+                message: message, cachedPayload: staged.withAuthenticatedMetadata(nil)
+            ))
+            let corrupt = E2eeAuthenticatedMessageMetadata(
+                forwardCid: nil, forwardMessageId: nil, forwardParentCid: nil,
+                attachmentIds: ["00000000-0000-4000-8000-000000000099"]
+            )
+            XCTAssertThrowsError(try MessageRepository.validateE2eeAttachmentSendBinding(
+                message: message, cachedPayload: staged.withAuthenticatedMetadata(corrupt)
+            ))
+        }
+    }
+
+    func testLocalVoiceCannotFallbackToEmptySendBeforeManifestBinding() throws {
+        let database = try makeDatabase()
+        defer { try? close(database) }
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".aac")
+        try Data([1, 2, 3]).write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+        try database.writeAndWait { session in
+            _ = try session.saveChannel(payload: channelPayload())
+            let message = try XCTUnwrap(session.message(id: "message-1"))
+            let attachment = try AnyAttachmentPayload(localFileURL: source, attachmentType: .voiceRecording)
+            _ = try session.createNewAttachment(
+                attachment: attachment,
+                id: AttachmentId(cid: try ChannelId(cid: cid), messageId: message.id, index: 0)
+            )
+            XCTAssertThrowsError(try MessageRepository.validateE2eeAttachmentSendBinding(
+                message: message, cachedPayload: E2ePayload(text: "", attachments: [], stickerUrl: nil)
+            )) { error in
+                XCTAssertEqual(error as? E2eeMessageAADError, .authenticatedSendLaneUnavailable)
+            }
+        }
+    }
+
     private func makeDatabase() throws -> DatabaseContainer {
         let database = DatabaseContainer(
             kind: .inMemory,
@@ -443,7 +541,7 @@ final class AttachmentSourcePersistenceTests: XCTestCase {
         }
     }
 
-    private func channelPayload() throws -> ChannelPayload {
+    private func channelPayload(messageId: String = "message-1") throws -> ChannelPayload {
         let json = """
         {
           "channel": {
@@ -457,7 +555,7 @@ final class AttachmentSourcePersistenceTests: XCTestCase {
             "mls_enabled": false
           },
           "messages": [{
-            "id": "message-1",
+            "id": "\(messageId)",
             "type": "regular",
             "user": {"id": "sender", "project_id": "project"},
             "text": "",

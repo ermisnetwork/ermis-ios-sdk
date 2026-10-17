@@ -110,6 +110,12 @@ enum MlsFieldMarkerProjector {
                 result += " \(field.name)=\(value)"
             }
         }
+        for name in ["event_epoch", "local_epoch", "first_decryptable_epoch"] {
+            if let value = fields[name], value.count <= 12,
+               !value.isEmpty, value.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }) {
+                result += " \(name)=\(value)"
+            }
+        }
         return result.utf8.count <= contract.maximum_marker_bytes ? result : nil
     }
 

@@ -78,6 +78,13 @@ final class E2eeDurableInboxStore {
         guard !hasMore || nextCursor != nil else {
             throw E2eeDurableInboxError.invalidPagination(scopeCid: scopeCid)
         }
+        // An index pointer can become visible before its event payload. Advancing through
+        // an empty/incomplete page would permanently skip that application ciphertext.
+        if let nextCursor, !events.contains(where: {
+            $0.eventId.lowercased() == nextCursor.eventId.lowercased() && $0.createdAtRaw == nextCursor.createdAt
+        }) {
+            throw E2eeDurableInboxError.invalidPagination(scopeCid: scopeCid)
+        }
 
         var pageRawBytes = 0
         for event in events {
@@ -1019,8 +1026,12 @@ final class E2eeDurableInboxStore {
         accountId: String,
         channelCids: Set<ChannelId>,
         scopeCids: Set<String>,
+        removalBoundaries: [String: ScopeSyncCursorPayload],
         nextCursor: RemovedSyncCursorPayload
     ) throws {
+        guard Set(removalBoundaries.keys) == scopeCids else {
+            throw E2eeDurableInboxError.invalidRemovedPagination
+        }
         try database.writeAndWait { session in
             guard let context = session as? NSManagedObjectContext else {
                 throw ClientError.Unexpected("Core Data writer context is unavailable.")
@@ -1037,13 +1048,13 @@ final class E2eeDurableInboxStore {
                 )
                 try context.fetch(inboxRequest).forEach(context.delete)
 
-                let checkpointRequest = NSFetchRequest<E2eeSyncCheckpointDTO>(entityName: E2eeSyncCheckpointDTO.entityName)
-                checkpointRequest.predicate = NSPredicate(
-                    format: "accountId == %@ AND scopeCid IN %@",
-                    accountId,
-                    Array(scopeCids)
-                )
-                try context.fetch(checkpointRequest).forEach(context.delete)
+                // Local wall-clock time or another scope's page tail can skip a concurrent
+                // re-add Welcome. Preserve each authoritative removal boundary atomically.
+                for (cid, boundary) in removalBoundaries {
+                    let checkpoint = try E2eeSyncCheckpointDTO.loadOrCreate(accountId: accountId, scopeCid: cid, context: context)
+                    checkpoint.setFetchCursor(boundary)
+                    checkpoint.setApplyCursor(boundary)
+                }
 
                 let repairRequest = NSFetchRequest<E2eeRepairIssueDTO>(entityName: E2eeRepairIssueDTO.entityName)
                 repairRequest.predicate = NSPredicate(

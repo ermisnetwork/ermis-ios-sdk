@@ -32,6 +32,44 @@ class ChannelUpdater: Worker {
         paginationStateHandler.state
     }
 
+    /// Check a complete current roster before queued MLS leaves enter a commit.
+    private func verifiedPendingGhosts(
+        cid: ChannelId,
+        adding userIds: Set<UserId> = [],
+        completion: @escaping (Result<[String], Error>) -> Void
+    ) {
+        let query = ChannelQuery(cid: cid, pageSize: 0, membersLimit: 100)
+        apiClient.request(endpoint: .updateChannel(query: query)) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let payload):
+                guard let members = payload.channel.members,
+                      payload.channel.memberCount <= 100,
+                      members.count >= payload.channel.memberCount else {
+                    completion(.failure(ClientError.Unexpected("Incomplete channel membership roster")))
+                    return
+                }
+                let active = Set(members.filter { member in
+                    guard let role = member.role else { return true }
+                    return role != .rejected && role != .skipped
+                }.map(\.userId))
+                guard active.isDisjoint(with: Set(userIds)) else {
+                    completion(.failure(ClientError.Unexpected("Add target is already an active member")))
+                    return
+                }
+                let queued = self.e2eRepository.getPendingRemoveMemberUserIds(channelCid: cid.rawValue)
+                let ghosts = queued.filter { !active.contains($0) }
+                log.info(
+                    "[MLS] state=ghost_roster_verified member_count=\(members.count) queued_count=\(queued.count) inactive_count=\(ghosts.count)",
+                    subsystems: .mls
+                )
+                completion(.success(ghosts))
+            }
+        }
+    }
+
     /// Makes a channel query call to the backend and updates the local storage with the results.
     ///
     /// - Parameters:
@@ -321,64 +359,26 @@ class ChannelUpdater: Worker {
         completion: ((Error?) -> Void)? = nil
     ) {
         if isMlsEnabled {
-            e2eRepository.consumeKeyPackagesBatch(targetUserIds: Array(userIds), completion: { [weak self] result in
-                guard let self else {
-                    return
-                }
-                switch result {
-                case .success(let keyPackages):
-                    do {
-                        // A member who self-left still occupies an MLS leaf until the
-                        // designated evictor commits their eviction. If any such "ghost" is
-                        // still pending, bundle its removal into THIS add commit — a plain
-                        // add would otherwise fail (e.g. re-adding the left user hits a
-                        // duplicate leaf). See the self-leave composite-cleanup flow.
-                        let pendingGhosts = e2eRepository.getPendingRemoveMemberUserIds(channelCid: cid.rawValue)
-                        let bundle = pendingGhosts.isEmpty
-                            ? try e2eRepository.addMember(to: cid, memberKeypackages: keyPackages)
-                            : try e2eRepository.addMembersWithRemovals(to: cid, removeUserIds: pendingGhosts, memberKeypackages: keyPackages)
-                        let (commitBundle, ratchetTree, groupInfo, epoch) = bundle
-                        // Enable e2e
-                        let body = AddMembersRequestBody(addMembers: Array(userIds),
-                                                         commit: commitBundle.commit,
-                                                         welcome: commitBundle.welcome ?? Data(),
-                                                         ratchetTree: ratchetTree.toBytes(),
-                                                         epoch: epoch,
-                                                         groupInfo: groupInfo)
-                        apiClient.request(endpoint: .addMembers(cid: cid, userIds: userIds, mlsBody: body)) { [weak self] result in
-                            guard let self else {
-                                return
-                            }
-                            switch result {
-                            case .success:
-                                do {
-                                    try e2eRepository.mergePendingCommit(in: cid)
-                                    // The bundled ghosts were evicted by this commit; clear them.
-                                    if !pendingGhosts.isEmpty {
-                                        e2eRepository.deletePendingRemoveMembers(userIds: pendingGhosts, channelCid: cid.rawValue)
-                                    }
-                                    completion?(nil)
-                                } catch {
-                                    completion?(error)
-                                }
-                            case .failure(let error):
-                                do {
-                                    try e2eRepository.clearPendingCommit(in: cid)
-                                    completion?(error)
-                                } catch {
-                                    completion?(error)
-                                }
-                            }
-                        }
-                    } catch let error {
-                        log.error("Failed to add member to group: \(error)", subsystems: .mls)
-                        completion?(error)
+            do {
+                if try e2eRepository.resumeMembershipMutation(cid: cid, action: "add", targets: userIds,
+                    completion: { completion?($0) }) { return }
+            } catch { completion?(error); return }
+            verifiedPendingGhosts(cid: cid, adding: userIds) { [weak self] roster in
+                guard let self else { return }
+                switch roster {
+                case .failure(let error): completion?(error)
+                case .success(let ghosts):
+                    self.e2eRepository.consumeKeyPackagesBatch(targetUserIds: Array(userIds)) { [weak self] packages in
+                        guard let self else { return }
+                        do {
+                            try self.e2eRepository.prepareMembershipAdd(cid: cid, targets: userIds,
+                                ghosts: ghosts, keyPackages: packages.get())
+                            try self.e2eRepository.resumeMembershipMutation(cid: cid, action: "add", targets: userIds,
+                                completion: { completion?($0) })
+                        } catch { completion?(error) }
                     }
-                case .failure(let error):
-                    log.error("Consume channel's keypackage failed: \(error)", subsystems: .mls)
-                    completion?(error)
                 }
-            })
+            }
             return
         }
 
@@ -408,48 +408,35 @@ class ChannelUpdater: Worker {
         completion: ((Error?) -> Void)? = nil
     ) {
         if isMlsEnabled {
-            do {
-                var body: Encodable
-                if isSelfLeave {
-                    body = LeaveChannelRequestBody(removeMembers: Array(userIds), selfRemove: true)
-                } else {
-                    let (commitBunddle, groupInfo, epoch) = try e2eRepository.removeMembers(Array(userIds), in: cid)
-                    body = RemoveMembersRequestBody(removeMembers: Array(userIds),
-                                                        selfRemove: false,
-                                                        commit: commitBunddle.commit,
-                                                        epoch: epoch,
-                                                        groupInfo: groupInfo)
-                }
+            if isSelfLeave {
+                let body = LeaveChannelRequestBody(removeMembers: Array(userIds), selfRemove: true)
+                log.info("mls_self_leave stage=request cid=\(cid.rawValue)", subsystems: .mls)
                 apiClient.request(endpoint: .removeMembers(cid: cid, userIds: userIds, mlsBody: body)) { [weak self] result in
-                    guard let self else {
-                        return
-                    }
-                    switch result {
-                    case .success:
-                        do {
-                            if !isSelfLeave {
-                                try e2eRepository.mergePendingCommit(in: cid)
-                            } else {
-                                try e2eRepository.deleteGroup(cid: cid.rawValue)
-                            }
-                            completion?(nil)
-                        } catch {
-                            completion?(error)
-                        }
-                    case .failure(let error):
-                        do {
-                            if !isSelfLeave {
-                                try e2eRepository.clearPendingCommit(in: cid)
-                            }
-                            completion?(error)
-                        } catch {
-                            completion?(error)
-                        }
+                    guard let self else { return }
+                    do {
+                        _ = try result.get()
+                        log.info("mls_self_leave stage=ack cid=\(cid.rawValue)", subsystems: .mls)
+                        try self.e2eRepository.deleteGroup(cid: cid.rawValue)
+                        log.info("mls_self_leave stage=group_deleted cid=\(cid.rawValue)", subsystems: .mls)
+                        completion?(nil)
+                    } catch {
+                        log.info("mls_self_leave stage=failed cid=\(cid.rawValue)", subsystems: .mls)
+                        completion?(error)
                     }
                 }
-            } catch (let error) {
-                log.error("Failed to remove member of group: error: \(error)", subsystems: .mls)
-                completion?(error)
+                return
+            }
+            do {
+                if try e2eRepository.resumeMembershipMutation(cid: cid, action: "remove", targets: userIds,
+                    completion: { completion?($0) }) { return }
+            } catch { completion?(error); return }
+            verifiedPendingGhosts(cid: cid) { [weak self] roster in
+                guard let self else { return }
+                do {
+                    try self.e2eRepository.prepareMembershipRemove(cid: cid, targets: userIds, ghosts: roster.get())
+                    try self.e2eRepository.resumeMembershipMutation(cid: cid, action: "remove", targets: userIds,
+                        completion: { completion?($0) })
+                } catch { completion?(error) }
             }
             return
         }

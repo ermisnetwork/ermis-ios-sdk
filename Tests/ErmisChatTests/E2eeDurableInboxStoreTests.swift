@@ -7,6 +7,30 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
     private let accountId = "account-1"
     private let scopeCid = "team:project:durable-inbox"
 
+    func testEmptyPageCannotAdvanceCursorPastUnmaterializedEvent() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let previous = try envelope()
+        let cursor = ScopeSyncCursorPayload(createdAt: previous.createdAtRaw, eventId: previous.eventId)
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [previous], hasMore: false, nextCursor: cursor)
+        let unseen = ScopeSyncCursorPayload(createdAt: "2026-08-06T10:00:01.123456Z", eventId: "unseen")
+        XCTAssertThrowsError(try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [], hasMore: false, nextCursor: unseen))
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), cursor)
+    }
+
+    func testIncompletePageDoesNotAcknowledgeUnreturnedTailAndRetryRetainsBothEvents() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let first = try envelope()
+        let tail = try envelope(eventId: "22222222-2222-4222-8222-222222222222", createdAt: "2026-08-06T10:00:01.123456Z")
+        let cursor = ScopeSyncCursorPayload(createdAt: tail.createdAtRaw, eventId: tail.eventId)
+        XCTAssertThrowsError(try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [first], hasMore: false, nextCursor: cursor))
+        XCTAssertNil(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid))
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [first, tail], hasMore: false, nextCursor: cursor)
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), cursor)
+        XCTAssertEqual(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).count, 2)
+    }
+
     private func makeDatabase() throws -> DatabaseContainer {
         try makeDatabase(kind: .inMemory)
     }
@@ -907,10 +931,11 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
             createdAt: "2026-08-06T10:00:01.000000Z",
             eventId: "22222222-2222-4222-8222-222222222222"
         )
+        let fetchedTail = try envelope(eventId: fetchCursor.eventId, createdAt: fetchCursor.createdAt)
         _ = try store.persistPage(
             accountId: accountId,
             scopeCid: scopeCid,
-            events: [event],
+            events: [event, fetchedTail],
             hasMore: false,
             nextCursor: fetchCursor
         )
@@ -922,7 +947,7 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
             try store.applyCursor(accountId: accountId, scopeCid: scopeCid),
             ScopeSyncCursorPayload(createdAt: event.createdAtRaw, eventId: event.eventId)
         )
-        XCTAssertTrue(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).isEmpty)
+        XCTAssertEqual(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).map(\.eventId), [fetchedTail.eventId])
     }
 
     func testRemovedPageAtomicallyClearsScopeDurabilityAndAdvancesRemovedCursor() throws {
@@ -956,12 +981,14 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
             accountId: accountId,
             channelCids: [try ChannelId(cid: scopeCid)],
             scopeCids: [scopeCid],
+            removalBoundaries: [scopeCid: .init(createdAt: removedCursor.removedAt, eventId: "00000000-0000-0000-0000-000000000000")],
             nextCursor: removedCursor
         )
 
         XCTAssertTrue(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).isEmpty)
-        XCTAssertNil(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid))
-        XCTAssertNil(try store.applyCursor(accountId: accountId, scopeCid: scopeCid))
+        let boundary = ScopeSyncCursorPayload(createdAt: removedCursor.removedAt, eventId: "00000000-0000-0000-0000-000000000000")
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), boundary)
+        XCTAssertEqual(try store.applyCursor(accountId: accountId, scopeCid: scopeCid), boundary)
         XCTAssertEqual(try store.removedCursor(accountId: accountId), removedCursor)
 
         var repairCount = -1
@@ -975,6 +1002,37 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
             repairCount = (try? database.writableContext.count(for: request)) ?? -1
         }
         XCTAssertEqual(repairCount, 0)
+    }
+
+    func testRemovalBoundaryKeepsSameTimestampWelcomeFetchableDespiteLaterGlobalTail() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let removedAt = "2026-08-06T10:01:00.123456789Z"
+        let boundary = ScopeSyncCursorPayload(createdAt: removedAt, eventId: "00000000-0000-0000-0000-000000000000")
+        let globalTail = RemovedSyncCursorPayload(removedAt: "2026-08-06T11:00:00.987654321Z", eventId: "ffffffff-ffff-4fff-8fff-ffffffffffff")
+        try store.commitRemovedPage(accountId: accountId, channelCids: [], scopeCids: [scopeCid],
+                                    removalBoundaries: [scopeCid: boundary], nextCursor: globalTail)
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), boundary)
+        XCTAssertEqual(try store.applyCursor(accountId: accountId, scopeCid: scopeCid), boundary)
+        let welcome = try protocolEnvelope(eventId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", createdAt: removedAt, epoch: 2, type: "welcome")
+        let welcomeCursor = ScopeSyncCursorPayload(createdAt: welcome.createdAtRaw, eventId: welcome.eventId)
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [welcome], hasMore: false, nextCursor: welcomeCursor)
+        XCTAssertEqual(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).map(\.eventId), [welcome.eventId])
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), welcomeCursor)
+        XCTAssertEqual(try store.removedCursor(accountId: accountId), globalTail)
+    }
+
+    func testMissingRemovalBoundaryCannotDeletePendingInbox() throws {
+        let database = try makeDatabase()
+        let store = E2eeDurableInboxStore(database: database)
+        let event = try envelope()
+        let cursor = ScopeSyncCursorPayload(createdAt: event.createdAtRaw, eventId: event.eventId)
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [event], hasMore: false, nextCursor: cursor)
+        XCTAssertThrowsError(try store.commitRemovedPage(accountId: accountId, channelCids: [], scopeCids: [scopeCid], removalBoundaries: [:],
+            nextCursor: .init(removedAt: "2026-08-06T11:00:00.000Z", eventId: "ffffffff-ffff-4fff-8fff-ffffffffffff")))
+        XCTAssertEqual(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).map(\.eventId), [event.eventId])
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), cursor)
+        XCTAssertNil(try store.removedCursor(accountId: accountId))
     }
 
     func testApplyRejectsSkippingEarlierPendingEvent() throws {

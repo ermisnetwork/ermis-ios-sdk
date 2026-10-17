@@ -330,6 +330,121 @@ final class MlsPersistenceTests: XCTestCase {
         }
     }
 
+    func testRetainedMemberReadsAcrossTenAddRemoveCyclesWithoutPin() throws {
+        let pair = try makeGroupPair(cid: "team:project:membership-churn-no-pin")
+        let client = MlsClient()
+        client.provider = pair.bobProvider
+        func receive(_ text: String) throws {
+            let ciphertext = try pair.aliceGroup.createMessage(
+                provider: pair.aliceProvider, sender: pair.alice, plaintext: Data(text.utf8))
+            let message = try pair.bobGroup.processMessage(provider: pair.bobProvider, msg: ciphertext)
+            XCTAssertEqual(message.content, Data(text.utf8))
+            try client.saveState(of: pair.bobGroup)
+        }
+        for cycle in 0..<10 {
+            try receive("before-\(cycle)")
+            let guestProvider = Provider()
+            let guest = try Identity(provider: guestProvider, userId: "guest-\(cycle)")
+            let add = try pair.aliceGroup.addMembers(provider: pair.aliceProvider,
+                sender: pair.alice, newMembers: [guest.keyPackage(provider: guestProvider)])
+            try pair.aliceGroup.mergePendingCommit(provider: pair.aliceProvider)
+            _ = try client.processProtocolMessage(data: add.commit, in: pair.bobGroup)
+            try client.saveState(of: pair.bobGroup)
+            try receive("after-add-\(cycle)")
+            let index = try XCTUnwrap(pair.aliceGroup.members().first { $0.userId == "guest-\(cycle)" }?.index)
+            let remove = try pair.aliceGroup.removeMembers(provider: pair.aliceProvider,
+                sender: pair.alice, memberIndices: [index])
+            try pair.aliceGroup.mergePendingCommit(provider: pair.aliceProvider)
+            _ = try client.processProtocolMessage(data: remove.commit, in: pair.bobGroup)
+            try client.saveState(of: pair.bobGroup)
+            try receive("after-remove-\(cycle)")
+            XCTAssertEqual(pair.aliceGroup.epoch(), pair.bobGroup.epoch())
+        }
+    }
+
+    func testEvictedRetainedGroupIsNotSendReady() throws {
+        let cid = "team:project:evicted-retained-group"
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ermis-evicted-group-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "io.ermis.tests.evicted-group.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = MlsDeviceIdStore(
+            defaults: defaults, legacyDefaults: defaults, secureStore: DeviceIdSecureStore()
+        )
+        let client = MlsClient(storageFolderURL: root, deviceIdStore: store, userDefaults: defaults)
+        try client.setup(with: "bob")
+        let aliceProvider = Provider()
+        let alice = try Identity(provider: aliceProvider, userId: "alice")
+        let aliceGroup = try Group.createWithCid(provider: aliceProvider, founder: alice, cid: cid)
+        let added = try aliceGroup.addMembers(
+            provider: aliceProvider, sender: alice,
+            newMembers: [KeyPackage.fromBytes(data: XCTUnwrap(client.getKeyPackage()))]
+        )
+        try aliceGroup.mergePendingCommit(provider: aliceProvider)
+        let bobGroup = try client.joinWithWelcome(
+            cid: cid, welcome: XCTUnwrap(added.welcome), ratchetTree: aliceGroup.exportRatchetTree()
+        )
+        XCTAssertTrue(client.isGroupLoaded(cid: cid))
+        XCTAssertFalse(client.hasNonOperationalGroup(cid: cid))
+
+        let bobIndex = try XCTUnwrap(aliceGroup.members().first { $0.userId == "bob" }?.index)
+        let removal = try aliceGroup.removeMembers(
+            provider: aliceProvider,
+            sender: alice,
+            memberIndices: [bobIndex]
+        )
+        try aliceGroup.mergePendingCommit(provider: aliceProvider)
+        _ = try client.processProtocolMessage(data: removal.commit, in: bobGroup)
+        try client.saveState(of: bobGroup)
+
+        XCTAssertTrue(client.isGroupLoaded(cid: cid))
+        XCTAssertTrue(client.hasNonOperationalGroup(cid: cid))
+        XCTAssertFalse(try client.loadGroup(with: cid).isOperational())
+    }
+
+    func testDisplayPreviewWithoutScopeCannotConsumeOlderRatchetKeys() throws {
+        let cid = "team:project:preview-before-backlog"
+        let pair = try makeGroupPair(cid: cid)
+        let ciphertexts = try (0..<60).map { index in
+            try pair.aliceGroup.createMessage(provider: pair.aliceProvider, sender: pair.alice,
+                plaintext: Data("{\"text\":\"preview-\(index)\"}".utf8))
+        }
+        let database = DatabaseContainer(kind: .inMemory, shouldResetEphemeralValuesOnStart: false)
+        let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !database.persistentStoreCoordinator.persistentStores.isEmpty
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 5), .completed)
+        let base = try XCTUnwrap(URL(string: "https://example.invalid"))
+        let encoder = DefaultRequestEncoder(baseURL: base, authURL: base, stickerURL: base, apiKey: APIKey("fixture"))
+        let decoder = DefaultRequestDecoder()
+        let configuration = URLSessionConfiguration.ephemeral
+        let api = APIClient(sessionConfiguration: configuration, requestEncoder: encoder, requestDecoder: decoder,
+            uploader: ErmisUploader(uploadClient: ErmisUploadClient(encoder: encoder, decoder: decoder,
+                sessionConfiguration: configuration)),
+            downloader: ErmisDownloader(client: ErmisDownloadClient(sessionConfiguration: configuration)))
+        let client = MlsClient()
+        client.provider = pair.bobProvider
+        client.userId = "bob"
+        let repository = E2eRepository(database: database,
+            eventNotificationCenter: EventNotificationCenter(database: database), mlsClient: client, apiClient: api)
+        let completion = expectation(description: "Unknown scope leaves display ciphertext pending")
+        repository.decryptMessagePayload(messageId: "preview-59", encryptedData: ciphertexts[59],
+            cid: try ChannelId(cid: cid)) { result in
+                if case .success = result { XCTFail("A display preview cannot bypass ordered scope replay") }
+                completion.fulfill()
+            }
+        wait(for: [completion], timeout: 5)
+        for (index, ciphertext) in ciphertexts.enumerated() {
+            let receiver = try Group.loadFromStorage(provider: pair.bobProvider, cid: cid)
+            let result = try receiver.processMessage(provider: pair.bobProvider, msg: ciphertext)
+            XCTAssertEqual(result.content, Data("{\"text\":\"preview-\(index)\"}".utf8))
+            try receiver.saveState(provider: pair.bobProvider)
+        }
+        withExtendedLifetime(repository) {}
+    }
+
     func testAadRoundTripAndPersistedReplayClassification() throws {
         let cid = "team:project:aad-test"
         let pair = try makeGroupPair(cid: cid)
