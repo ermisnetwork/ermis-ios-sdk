@@ -21,6 +21,31 @@ public enum LogoutLocalDataPolicy: Equatable {
 /// Typically, an app contains just one instance of `ErmisClient`. However, it's possible to have multiple instances if your use
 /// case requires it.
 public class ErmisClient {
+    #if DEBUG
+    /// Owner-operated read-only diagnostics. Emits hashes and public scope only,
+    /// never plaintext, ciphertext, tokens, native providers or database paths.
+    public func captureMlsQueuedMessageEvidence(messageId: String, cid: String) {
+        guard UUID(uuidString: messageId) != nil, cid.contains(":uhm-test-") else { return }
+        databaseContainer.viewContext.perform { [weak self] in
+            guard let self else { return }
+            var result: [String: Any] = ["message_id": messageId, "cid": cid, "found": false]
+            if let row = self.databaseContainer.viewContext.message(id: messageId), row.cid == cid {
+                func hash(_ data: Data) -> String { Data(SHA256.hash(data: data)).map { String(format: "%02x", $0) }.joined() }
+                result["found"] = true
+                result["intent_sha256"] = hash(Data(row.text.utf8))
+                result["ciphertext_sha256"] = row.encryptedData.map(hash) ?? "absent"
+                result["ciphertext_bytes"] = row.encryptedData?.count ?? 0
+                result["epoch"] = row.mlsEpoch
+                result["generation"] = row.mlsGroupGeneration
+                result["local_state"] = row.localMessageState?.rawValue ?? "sent"
+            }
+            guard let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+                  let bytes = try? JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]) else { return }
+            try? bytes.write(to: root.appendingPathComponent("mls-queued-message-evidence.json"), options: .atomic)
+        }
+    }
+    #endif
+
     private let archiveOwnerLock = NSLock()
     public var archiveRecovery: E2eeArchiveRecovery? {
         archiveOwnerLock.lock(); defer { archiveOwnerLock.unlock() }

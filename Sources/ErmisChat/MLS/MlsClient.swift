@@ -86,8 +86,10 @@ public class MlsClient {
     private var generationProviders: [String: Provider] = [:]
     private var generationIdentities: [String: Identity] = [:]
     private var providerContextByGroupId: [Data: String] = [:]
+    private var externalJoinCandidateContexts: [String: (group: Group, provider: Provider, identity: Identity)] = [:]
     private let generationMarkerPrefix = "ermis_mls_generation_v1:"
     private let historicalGenerationMarkerPrefix = "ermis_mls_generation_history_v1:"
+    private let recoveryCheckpointLock = NSRecursiveLock()
     private let pendingGenerationJoinPrefix = "ermis_mls_generation_join_v1:"
 
     struct GroupGenerationMarker: Codable, Equatable {
@@ -98,6 +100,10 @@ public class MlsClient {
         let status: String
         let operationId: String?
         let providerPath: String?
+        var externalJoinBody: Data? = nil
+        var candidateBaseMarker: Data? = nil
+        var candidateBaseEpoch: UInt64? = nil
+        var candidateFenceVersion: Int? = nil
 
         init(
             cid: String,
@@ -154,6 +160,7 @@ public class MlsClient {
         generationProviders = [:]
         generationIdentities = [:]
         providerContextByGroupId = [:]
+        externalJoinCandidateContexts = [:]
     }
 
     public func setup(with userId: String) throws {
@@ -173,6 +180,7 @@ public class MlsClient {
         generationProviders = [:]
         generationIdentities = [:]
         providerContextByGroupId = [:]
+        externalJoinCandidateContexts = [:]
 
         self.userId = userId
         generateDeviceIdIfNeeded(for: userId)
@@ -251,8 +259,13 @@ public class MlsClient {
         let markerKeys = userDefaults.dictionaryRepresentation().keys.filter { key in
             markerPrefixes.contains { key.hasPrefix($0) }
         }
-        let generationDatabaseURLs = markerKeys.compactMap { key -> URL? in
-            guard let data = userDefaults.data(forKey: key) else { return nil }
+        // Explicit purge also covers durable records after the preferences cache was lost.
+        let recoveryDirectory = try recoveryCheckpointURL(key: "purge").deletingLastPathComponent()
+        let recoveryFiles = FileManager.default.fileExists(atPath: recoveryDirectory.path)
+            ? try FileManager.default.contentsOfDirectory(at: recoveryDirectory, includingPropertiesForKeys: nil) : []
+        let recoveryData = try recoveryFiles.map { try Data(contentsOf: $0) }
+        let markerData = markerKeys.compactMap { userDefaults.data(forKey: $0) } + recoveryData
+        let generationDatabaseURLs = markerData.compactMap { data -> URL? in
             let markerPath = (try? JSONDecoder().decode(
                 GroupGenerationMarker.self,
                 from: data
@@ -281,6 +294,7 @@ public class MlsClient {
         generationProviders = [:]
         generationIdentities = [:]
         providerContextByGroupId = [:]
+        externalJoinCandidateContexts = [:]
 
         for databaseURL in databaseURLs {
             for suffix in ["", "-wal", "-shm"] {
@@ -289,6 +303,9 @@ public class MlsClient {
                     try FileManager.default.removeItem(at: url)
                 }
             }
+        }
+        if FileManager.default.fileExists(atPath: recoveryDirectory.path) {
+            try FileManager.default.removeItem(at: recoveryDirectory)
         }
         deviceIdStore.removeUser(currentUserId)
         removeUserScopedDefault(forKey: Self.cursorKey, userId: currentUserId)
@@ -418,6 +435,7 @@ public class MlsClient {
     }
 
     private func generationContext(for group: Group) throws -> (provider: Provider, identity: Identity) {
+        if let context = externalJoinCandidateContexts.values.first(where: { $0.group === group }) { return (context.provider, context.identity) }
         if let providerPath = providerContextByGroupId[group.groupId()] {
             return try generationContext(
                 for: GroupGenerationMarker(
@@ -435,6 +453,7 @@ public class MlsClient {
     }
 
     private func generationProvider(for group: Group) throws -> Provider {
+        if let context = externalJoinCandidateContexts.values.first(where: { $0.group === group }) { return context.provider }
         if let providerPath = providerContextByGroupId[group.groupId()] {
             return try generationProvider(
                 for: GroupGenerationMarker(
@@ -577,7 +596,10 @@ public class MlsClient {
     }
 
     func loadGroup(with cid: String) throws -> Group {
-        let marker = loadPendingGenerationJoin(cid: cid) ?? loadGenerationMarker(cid: cid)
+        let pending = loadPendingGenerationJoin(cid: cid)
+        // DEC084 candidates are private staging state until canonical receipt activation.
+        let marker = pending?.candidateFenceVersion == 1 ? loadGenerationMarker(cid: cid) : (pending ?? loadGenerationMarker(cid: cid))
+        if marker?.status == "checkpoint_corrupt" { throw ClientError("MLS recovery checkpoint is corrupt") }
         let context = try generationContext(for: marker)
         let group: Group
         if let marker, marker.generation > 0, let groupId = marker.groupId {
@@ -611,59 +633,96 @@ public class MlsClient {
         return group
     }
 
+    private func recoveryCheckpointURL(key: String) throws -> URL {
+        guard let userId, let database = providerDatabaseURL else { throw ClientError.MlsNoProviderError() }
+        let name = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return database.deletingLastPathComponent().appendingPathComponent("recovery-checkpoints", isDirectory: true)
+            .appendingPathComponent(Self.storageNamespace(for: userId), isDirectory: true).appendingPathComponent(name + ".json")
+    }
+
+    func readRecoveryCheckpoint(key: String) throws -> Data? {
+        recoveryCheckpointLock.lock(); defer { recoveryCheckpointLock.unlock() }
+        let url = try recoveryCheckpointURL(key: key)
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return try Data(contentsOf: url)
+    }
+
+    func writeRecoveryCheckpoint(_ data: Data, key: String) throws {
+        recoveryCheckpointLock.lock(); defer { recoveryCheckpointLock.unlock() }
+        let url = try recoveryCheckpointURL(key: key)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        let handle = try FileHandle(forWritingTo: url); defer { try? handle.close() }
+        try handle.synchronize()
+        guard try Data(contentsOf: url) == data else { throw ClientError("Recovery checkpoint readback failed") }
+    }
+
+    private func corruptGenerationCheckpoint(cid: String) -> GroupGenerationMarker {
+        var marker = GroupGenerationMarker(cid: cid, generation: 0, groupId: nil, epoch: 0,
+            status: "checkpoint_corrupt", operationId: nil)
+        marker.candidateFenceVersion = 1
+        return marker // Retain corrupt bytes and fail closed; never infer absence/new intent.
+    }
+
+    private func readGenerationCheckpoint(cid: String, key: String) -> GroupGenerationMarker? {
+        do {
+            let data = try readRecoveryCheckpoint(key: key) ?? userDefaults.data(forKey: key)
+            guard let data else { return nil }
+            return try JSONDecoder().decode(GroupGenerationMarker.self, from: data)
+        } catch { return corruptGenerationCheckpoint(cid: cid) }
+    }
+
     func loadGenerationMarker(cid: String) -> GroupGenerationMarker? {
-        guard let key = generationMarkerKey(prefix: generationMarkerPrefix, cid: cid),
-              let data = userDefaults.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(GroupGenerationMarker.self, from: data)
+        guard let key = generationMarkerKey(prefix: generationMarkerPrefix, cid: cid) else { return nil }
+        return readGenerationCheckpoint(cid: cid, key: key)
     }
 
     func loadGenerationMarker(cid: String, generation: UInt64) -> GroupGenerationMarker? {
-        guard let key = historicalGenerationMarkerKey(cid: cid, generation: generation),
-              let data = userDefaults.data(forKey: key) else {
-            let current = loadGenerationMarker(cid: cid)
-            return current?.generation == generation ? current : nil
-        }
-        return try? JSONDecoder().decode(GroupGenerationMarker.self, from: data)
+        guard let key = historicalGenerationMarkerKey(cid: cid, generation: generation) else { return nil }
+        if let marker = readGenerationCheckpoint(cid: cid, key: key) { return marker }
+        let current = loadGenerationMarker(cid: cid)
+        return current?.generation == generation ? current : nil
     }
 
     func saveGenerationMarker(_ marker: GroupGenerationMarker) throws {
+        recoveryCheckpointLock.lock(); defer { recoveryCheckpointLock.unlock() }
         guard let key = generationMarkerKey(prefix: generationMarkerPrefix, cid: marker.cid),
-              let historicalKey = historicalGenerationMarkerKey(
-                cid: marker.cid,
-                generation: marker.generation
-              ) else {
+              let historicalKey = historicalGenerationMarkerKey(cid: marker.cid, generation: marker.generation) else {
             throw ClientError.MlsNoIdentityError()
         }
         let encoded = try JSONEncoder().encode(marker)
-        userDefaults.set(encoded, forKey: key)
-        userDefaults.set(encoded, forKey: historicalKey)
+        try writeRecoveryCheckpoint(encoded, key: historicalKey)
+        try writeRecoveryCheckpoint(encoded, key: key)
+        userDefaults.set(encoded, forKey: key); userDefaults.set(encoded, forKey: historicalKey)
         if let groupId = marker.groupId { archiveScopesByGroupId[groupId] = (marker.cid, marker.generation) }
     }
 
     func loadPendingGenerationJoin(cid: String) -> GroupGenerationMarker? {
-        guard let key = generationMarkerKey(prefix: pendingGenerationJoinPrefix, cid: cid),
-              let data = userDefaults.data(forKey: key) else {
-            return nil
-        }
-        return try? JSONDecoder().decode(GroupGenerationMarker.self, from: data)
+        guard let key = generationMarkerKey(prefix: pendingGenerationJoinPrefix, cid: cid) else { return nil }
+        return readGenerationCheckpoint(cid: cid, key: key)
     }
 
     func savePendingGenerationJoin(_ marker: GroupGenerationMarker) throws {
-        guard let key = generationMarkerKey(
-            prefix: pendingGenerationJoinPrefix,
-            cid: marker.cid
-        ) else {
+        recoveryCheckpointLock.lock(); defer { recoveryCheckpointLock.unlock() }
+        guard let key = generationMarkerKey(prefix: pendingGenerationJoinPrefix, cid: marker.cid) else {
             throw ClientError.MlsNoIdentityError()
         }
         let encoded = try JSONEncoder().encode(marker)
+        try writeRecoveryCheckpoint(encoded, key: key)
         userDefaults.set(encoded, forKey: key)
     }
 
-    func removePendingGenerationJoin(cid: String) {
-        guard let key = generationMarkerKey(prefix: pendingGenerationJoinPrefix, cid: cid) else {
-            return
-        }
+    @discardableResult func removePendingGenerationJoin(cid: String, expected: GroupGenerationMarker? = nil) -> Bool {
+        recoveryCheckpointLock.lock(); defer { recoveryCheckpointLock.unlock() }
+        if let expected, loadPendingGenerationJoin(cid: cid) != expected { return false }
+        guard let key = generationMarkerKey(prefix: pendingGenerationJoinPrefix, cid: cid) else { return false }
+        do {
+            let url = try recoveryCheckpointURL(key: key)
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        } catch { return false }
+        externalJoinCandidateContexts.removeValue(forKey: cid)
         userDefaults.removeObject(forKey: key)
+        return true
     }
 
     private func generationMarkerKey(prefix: String, cid: String) -> String? {
@@ -751,6 +810,51 @@ public class MlsClient {
         try group.saveState(provider: provider)
         log.debug("TTTTT AAAA AFTER REMOVE USER, EPOCH: \(group.epoch())")
         return commitBundle
+    }
+
+    func keyPackageWorkStore(origin: String) throws -> MlsKeyPackageWorkStore {
+        assertMutationExecutor()
+        guard let userId, let currentDeviceId, let identity, let provider, let providerDatabaseURL,
+              try provider.loadIdentity() == identity.toBytes() else { throw ClientError.MlsNoIdentityError() }
+        let signer = identity.signaturePublicKey().base64EncodedString()
+        return MlsKeyPackageWorkStore(root: providerDatabaseURL.appendingPathExtension("key-package-work"), scope: [origin, userId, currentDeviceId, signer].joined(separator: "|"))
+    }
+    func probeKeyPackageOwnership(_ refs: [Data]) throws -> [Bool] {
+        assertMutationExecutor()
+        guard let identity, let provider, try provider.loadIdentity() == identity.toBytes() else { throw ClientError.MlsNoIdentityError() }
+        return try refs.map { ref in
+            guard ref.count == 32 else { throw ClientError.Unexpected("key_package_reference_invalid") }
+            return try identity.ownsKeyPackageRef(provider: provider, reference: ref)
+        }
+    }
+    func generateKeyPackageBatch(count: Int) throws -> [(Data, Data)] {
+        assertMutationExecutor()
+        guard (1...100).contains(count), let identity, let provider else { throw ClientError.MlsNoIdentityError() }
+        return try identity.keyPackages(provider: provider, count: UInt32(count)).map { (try $0.toBytes(), try $0.hashRef(provider: provider)) }
+    }
+
+    func keyPackageUploadProviderId() throws -> String {
+        assertMutationExecutor()
+        guard let identity, let provider, try provider.loadIdentity() == identity.toBytes() else { throw ClientError.MlsNoIdentityError() }
+        return try provider.keyPackageUploadProviderId()
+    }
+
+    func prepareKeyPackageUpload(id: String, scope: String, nativeProviderId: String, count: Int) throws -> [(Data, Data)] {
+        assertMutationExecutor()
+        guard (1...100).contains(count), let identity, let provider, try provider.loadIdentity() == identity.toBytes() else { throw ClientError.MlsNoIdentityError() }
+        let scopeHash = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
+        let bytes = try identity.prepareKeyPackageUpload(provider: provider, operationId: id, scope: scopeHash, expectedProviderId: nativeProviderId, count: UInt32(count))
+        guard bytes.count == count, bytes.allSatisfy({ validateKeyPackageBytes(data: $0) }) else { throw MlsKeyPackageBatchInvalid() }
+        return try bytes.map { ($0, try KeyPackage.fromBytes(data: $0).hashRef(provider: provider)) }
+    }
+
+    func recoverKeyPackageUpload(id: String, scope: String) throws -> [(Data, Data)]? {
+        assertMutationExecutor()
+        guard let identity, let provider, try provider.loadIdentity() == identity.toBytes() else { throw ClientError.MlsNoIdentityError() }
+        let scopeHash = SHA256.hash(data: Data(scope.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard let bytes = try identity.recoverKeyPackageUpload(provider: provider, operationId: id, scope: scopeHash) else { return nil }
+        guard (1...100).contains(bytes.count), bytes.allSatisfy({ validateKeyPackageBytes(data: $0) }) else { throw MlsKeyPackageBatchInvalid() }
+        return try bytes.map { ($0, try KeyPackage.fromBytes(data: $0).hashRef(provider: provider)) }
     }
 
     func getKeyPackage() -> Data? {
@@ -1010,6 +1114,38 @@ public class MlsClient {
         return encryptedData
     }
 
+    /// Read retained history without advancing either the historical ratchet or
+    /// current provider. A disposable loaded Group owns deferred in-memory secrets.
+    func processRetainedHistoricalApplication(data: Data, cid: String, generation: UInt64) throws -> MlsProcessedApplicationMessage {
+        assertMutationExecutor()
+        guard let current = loadGenerationMarker(cid: cid), current.status == "active",
+              generation < current.generation else { throw ClientError.Unexpected("Historical MLS scope is not retained.") }
+        let historical = loadGenerationMarker(cid: cid, generation: generation)
+        let context: Provider
+        let group: Group
+        if let historical {
+            guard historical.cid == cid, historical.generation == generation, historical.status == "active",
+                  let groupId = historical.groupId, groupId != current.groupId else {
+                throw ClientError.Unexpected("Historical MLS checkpoint is uncertain.")
+            }
+            context = try generationProvider(for: historical)
+            group = try Group.loadFromStorageWithGroupId(provider: context, groupId: groupId)
+        } else {
+            // Legacy generation zero predates generation markers. Its CID-bound
+            // group remains in the original native database after new GroupId install.
+            guard generation == 0, let provider else { throw ClientError.MlsNoProviderError() }
+            context = provider
+            group = try Group.loadFromStorage(provider: context, cid: cid)
+            guard group.groupId() != current.groupId else { throw ClientError.Unexpected("Historical MLS group aliases current generation.") }
+        }
+        let processed = try group.processMessageDeferred(provider: context, msg: data)
+        guard processed.messageType == .applicationMessage, let content = processed.content else {
+            throw ClientError.Unexpected("Expected retained MLS application message.")
+        }
+        return MlsProcessedApplicationMessage(plaintext: content, payload: try JSONDecoder().decode(E2ePayload.self, from: content),
+            aad: processed.aad, epoch: processed.epoch, senderIndex: processed.senderIndex, resultingGroupEpoch: group.epoch())
+    }
+
     func processApplicationMessage(data: Data, in group: Group) throws -> MlsProcessedApplicationMessage {
         assertMutationExecutor()
         let provider = try generationProvider(for: group)
@@ -1166,6 +1302,9 @@ public class MlsClient {
         guard provider != nil, let identity, let userId, let providerDatabaseURL else {
             throw ClientError.MlsNoIdentityError()
         }
+        guard loadPendingGenerationJoin(cid: cid) == nil else { throw ClientError("External join outcome pending") }
+        let baseMarker = try JSONEncoder().encode(loadGenerationMarker(cid: cid))
+        let baseEpoch = activeGroupEpoch(cid: cid)
         let root = providerDatabaseURL.deletingLastPathComponent().appendingPathComponent("recovery", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let path = root.appendingPathComponent(UUID().uuidString + ".db").path
@@ -1177,14 +1316,72 @@ public class MlsClient {
         if let expectedGroupId, result.group.groupId() != expectedGroupId {
             throw ClientError.Unexpected("External recovery group identity mismatch.")
         }
+        if result.group.hasPendingCommit() { try result.group.mergePendingCommit(provider: candidate) }
         try result.group.saveState(provider: candidate)
         generationProviders[path] = candidate
         generationIdentities[path] = candidateIdentity
-        providerContextByGroupId[result.group.groupId()] = path
-        try savePendingGenerationJoin(.init(cid: cid, generation: generation,
+        externalJoinCandidateContexts[cid] = (result.group, candidate, candidateIdentity)
+        var checkpoint = GroupGenerationMarker(cid: cid, generation: generation,
             groupId: result.group.groupId(), epoch: result.group.epoch(), status: "external_join_prepared",
-            operationId: nil, providerPath: path))
+            operationId: nil, providerPath: path)
+        checkpoint.candidateBaseMarker = baseMarker
+        checkpoint.candidateBaseEpoch = baseEpoch
+        checkpoint.candidateFenceVersion = 1
+        try savePendingGenerationJoin(checkpoint)
         return result
+    }
+
+    private func activeGroupEpoch(cid: String) -> UInt64? {
+        guard let context = try? generationContext(for: loadGenerationMarker(cid: cid)) else { return nil }
+        let group: Group?
+        if let marker = loadGenerationMarker(cid: cid), let id = marker.groupId {
+            group = try? Group.loadFromStorageWithGroupId(provider: context.provider, groupId: id)
+        } else { group = try? Group.loadFromStorage(provider: context.provider, cid: cid) }
+        return group?.epoch()
+    }
+
+    func assertExternalJoinCandidateCurrent(cid: String) throws {
+        assertMutationExecutor()
+        guard let pending = loadPendingGenerationJoin(cid: cid), pending.candidateFenceVersion == 1,
+            let bytes = pending.candidateBaseMarker else { throw ClientError.Unexpected("External join candidate fence missing") }
+        if let active = loadGenerationMarker(cid: cid), active.providerPath == pending.providerPath,
+            active.providerPath != nil, active.groupId == pending.groupId, active.generation == pending.generation,
+            active.epoch == pending.epoch { return } // Restart after our accepted activation, before receipt retirement.
+        let base = try JSONDecoder().decode(GroupGenerationMarker?.self, from: bytes)
+        guard base == loadGenerationMarker(cid: cid), pending.candidateBaseEpoch == activeGroupEpoch(cid: cid) else {
+            throw ClientError.Unexpected("External join candidate was superseded by Welcome or active state")
+        }
+    }
+
+    func activateExternalJoinCandidate(cid: String, expected: GroupGenerationMarker, group: Group) throws {
+        assertMutationExecutor()
+        guard loadPendingGenerationJoin(cid: cid) == expected else { throw ClientError.Unexpected("External join candidate changed") }
+        try assertExternalJoinCandidateCurrent(cid: cid)
+        guard group.groupId() == expected.groupId, group.epoch() == expected.epoch, group.isOperational() else {
+            throw ClientError.Unexpected("External join candidate is not operational")
+        }
+        try saveGenerationMarker(.init(cid: cid, generation: expected.generation, groupId: expected.groupId,
+            epoch: expected.epoch, status: "active", operationId: nil, providerPath: expected.providerPath))
+        if let path = expected.providerPath { providerContextByGroupId[group.groupId()] = path }
+    }
+
+    func finishExternalJoinCandidate(cid: String, expected: GroupGenerationMarker) throws {
+        assertMutationExecutor()
+        guard loadPendingGenerationJoin(cid: cid) == expected else { throw ClientError.Unexpected("External join candidate changed") }
+        try assertExternalJoinCandidateCurrent(cid: cid)
+        guard removePendingGenerationJoin(cid: cid, expected: expected) else { throw ClientError("External join checkpoint retirement failed") }
+    }
+
+    func resumeExternalJoinCandidate(cid: String) throws -> ExternalJoinResult? {
+        assertMutationExecutor()
+        guard let marker = loadPendingGenerationJoin(cid: cid), let body = marker.externalJoinBody,
+            let json = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+            let encoded = json["commit"] as? String, let commit = Data(base64Encoded: encoded),
+            let groupId = marker.groupId else { return nil }
+        let context = try generationContext(for: marker)
+        let group = try Group.loadFromStorageWithGroupId(provider: context.provider, groupId: groupId)
+        externalJoinCandidateContexts[cid] = (group, context.provider, context.identity)
+        return ExternalJoinResult(group: group, commit: commit)
     }
 
     func generateDeviceIdIfNeeded(for userId: String) {

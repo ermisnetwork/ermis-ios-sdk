@@ -148,6 +148,60 @@ final class MlsPersistenceTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let secureStore = DeviceIdSecureStore()
         let deviceStore = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: secureStore)
+        var client = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
+        try client.setup(with: "receiver")
+        let original = try XCTUnwrap(client.provider)
+        let senderProvider = Provider()
+        let sender = try Identity(provider: senderProvider, userId: "sender")
+        let cid = "messaging:project:isolated"
+        let group = try Group.createWithCid(provider: senderProvider, founder: sender, cid: cid)
+        let add = try group.addMembers(provider: senderProvider, sender: sender,
+            newMembers: [KeyPackage.fromBytes(data: XCTUnwrap(client.getKeyPackage()))])
+        try group.mergePendingCommit(provider: senderProvider)
+        _ = try client.joinWithWelcome(cid: cid, welcome: XCTUnwrap(add.welcome), ratchetTree: group.exportRatchetTree())
+        _ = try group.selfUpdate(provider: senderProvider, sender: sender)
+        try group.mergePendingCommit(provider: senderProvider)
+        let info = try group.exportGroupInfo(provider: senderProvider, sender: sender, withRatchetTree: true)
+        let result = try client.externalJoinIsolated(cid: cid, generation: 0, groupInfo: info, expectedGroupId: nil)
+        XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 1)
+        XCTAssertNil(client.loadGenerationMarker(cid: cid)?.providerPath)
+        var pending = try XCTUnwrap(client.loadPendingGenerationJoin(cid: cid))
+        XCTAssertNotNil(pending.providerPath)
+        try client.assertExternalJoinCandidateCurrent(cid: cid)
+        let inlineGI = try client.exportGroupInfo(of: result.group)
+        let nextProvider = Provider(), nextIdentity = try Identity(provider: nextProvider, userId: "next-device")
+        let next = try joinExternal(provider: nextProvider, identity: nextIdentity, groupInfo: inlineGI, ratchetTree: nil)
+        XCTAssertEqual(next.group.epoch(), result.group.epoch() + 1)
+        XCTAssertEqual(try client.loadGroup(with: cid).epoch(), 1, "candidate is not live before its receipt")
+        XCTAssertFalse(try client.exportGroupInfo(of: result.group).isEmpty, "same GroupId uses its isolated provider")
+        pending.externalJoinBody = try JSONSerialization.data(withJSONObject: ["commit": result.commit.base64EncodedString(), "group_info": inlineGI.base64EncodedString(), "operation_id": UUID().uuidString.lowercased()])
+        try client.savePendingGenerationJoin(pending)
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("ermis_mls_generation") { defaults.removeObject(forKey: key) }
+        try client.reset()
+        client = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
+        try client.setup(with: "receiver")
+        XCTAssertEqual(client.loadPendingGenerationJoin(cid: cid), pending, "exact candidate survives without UserDefaults cache")
+        let restoredCandidate = try XCTUnwrap(client.resumeExternalJoinCandidate(cid: cid))
+        try client.activateExternalJoinCandidate(cid: cid, expected: pending, group: restoredCandidate.group)
+        try client.activateExternalJoinCandidate(cid: cid, expected: pending, group: restoredCandidate.group)
+        try client.finishExternalJoinCandidate(cid: cid, expected: pending)
+        XCTAssertEqual(try client.loadGroup(with: cid).epoch(), 3)
+        XCTAssertFalse(try client.exportGroupInfo(of: result.group).isEmpty)
+        XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 1)
+        for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("ermis_mls_generation") { defaults.removeObject(forKey: key) }
+        let resumed = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
+        try resumed.setup(with: "receiver")
+        XCTAssertEqual(try resumed.loadGroup(with: cid).epoch(), 3)
+    }
+
+    func testIsolatedCandidateCannotOverwriteInterveningActiveEpoch() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ermis-isolated-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "io.ermis.tests.isolated.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let secureStore = DeviceIdSecureStore()
+        let deviceStore = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: secureStore)
         let client = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
         try client.setup(with: "receiver")
         let original = try XCTUnwrap(client.provider)
@@ -165,18 +219,29 @@ final class MlsPersistenceTests: XCTestCase {
         let result = try client.externalJoinIsolated(cid: cid, generation: 0, groupInfo: info, expectedGroupId: nil)
         XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 1)
         XCTAssertNil(client.loadGenerationMarker(cid: cid)?.providerPath)
-        let pending = try XCTUnwrap(client.loadPendingGenerationJoin(cid: cid))
-        XCTAssertNotNil(pending.providerPath)
-        try client.mergePendingCommit(in: ChannelId(cid: cid))
-        try client.saveGenerationMarker(.init(cid: cid, generation: 0, groupId: result.group.groupId(),
-            epoch: result.group.epoch(), status: "active", operationId: nil, providerPath: pending.providerPath))
-        client.removePendingGenerationJoin(cid: cid)
-        XCTAssertEqual(try client.loadGroup(with: cid).epoch(), 3)
+        let active = try Group.loadFromStorage(provider: original, cid: cid)
+        _ = try active.selfUpdate(provider: original, sender: XCTUnwrap(client.identity))
+        try active.mergePendingCommit(provider: original)
+        XCTAssertThrowsError(try client.assertExternalJoinCandidateCurrent(cid: cid))
+        XCTAssertNotNil(client.loadPendingGenerationJoin(cid: cid))
+        XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 2)
         XCTAssertFalse(try client.exportGroupInfo(of: result.group).isEmpty)
-        XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 1)
-        let resumed = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
-        try resumed.setup(with: "receiver")
-        XCTAssertEqual(try resumed.loadGroup(with: cid).epoch(), 3)
+    }
+
+    func testRecoveryCheckpointReadbackAndCorruptMarkerFailClosed() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ermis-recovery-record-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let suite = "io.ermis.tests.recovery-record.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite)); defer { defaults.removePersistentDomain(forName: suite) }
+        let client = MlsClient(storageFolderURL: root, userDefaults: defaults)
+        try client.setup(with: "checkpoint-user")
+        let body = Data("exact durable request body".utf8)
+        try client.writeRecoveryCheckpoint(body, key: "publication-fixture")
+        XCTAssertEqual(try client.readRecoveryCheckpoint(key: "publication-fixture"), body)
+        let key = "ermis_mls_generation_join_v1:" + SHA256.hash(data: Data("checkpoint-user".utf8)).map { String(format: "%02x", $0) }.joined() + ":team:corrupt"
+        try client.writeRecoveryCheckpoint(Data("broken JSON".utf8), key: key)
+        XCTAssertEqual(client.loadPendingGenerationJoin(cid: "team:corrupt")?.status, "checkpoint_corrupt")
+        XCTAssertEqual(try client.readRecoveryCheckpoint(key: key), Data("broken JSON".utf8))
     }
 
     func testKeyPackageBatchRejectsUnavailableProviderAndInvalidCount() throws {
@@ -207,7 +272,11 @@ final class MlsPersistenceTests: XCTestCase {
         let client = MlsClient(storageFolderURL: root, deviceIdStore: deviceIdStore)
         try client.setup(with: "alice")
         XCTAssertNotNil(client.currentDeviceId)
+        try client.writeRecoveryCheckpoint(Data("purge-only".utf8), key: "purge-fixture")
 
+        try client.purgeCurrentUserData()
+        try client.setup(with: "alice")
+        XCTAssertNil(try client.readRecoveryCheckpoint(key: "purge-fixture"))
         try client.purgeCurrentUserData()
 
         let deviceIds = defaults.dictionary(forKey: MlsClient.deviceIdKey) as? [String: String]
@@ -808,9 +877,24 @@ final class MlsPersistenceTests: XCTestCase {
         XCTAssertEqual(processed.content, replacementPlaintext)
     }
 
+    private func makeCheckpointBackedClient(userId: String) throws -> MlsClient {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ermis-checkpoint-fixture-\(UUID().uuidString)")
+        let suite = "io.ermis.tests.checkpoint-fixture.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        addTeardownBlock {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let store = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: DeviceIdSecureStore())
+        let client = MlsClient(storageFolderURL: root, deviceIdStore: store, userDefaults: defaults)
+        try client.setup(with: userId)
+        return client
+    }
+
     func testClearPendingProposalCallsProposalApi() throws {
-        let provider = Provider()
-        let identity = try Identity(provider: provider, userId: "alice")
+        let client = try makeCheckpointBackedClient(userId: "alice")
+        let provider = try XCTUnwrap(client.provider)
+        let identity = try XCTUnwrap(client.identity)
         let bobProvider = Provider()
         let bob = try Identity(provider: bobProvider, userId: "bob")
         let cid = try ChannelId(cid: "team:project:proposal-test")
@@ -826,10 +910,6 @@ final class MlsPersistenceTests: XCTestCase {
         )
         XCTAssertEqual(group.pendingProposalsCount(), 1)
 
-        let client = MlsClient()
-        client.provider = provider
-        client.identity = identity
-        client.userId = "alice"
         try client.clearPendingProposal(in: cid)
 
         let reloaded = try Group.loadFromStorage(provider: provider, cid: cid.rawValue)
@@ -838,8 +918,9 @@ final class MlsPersistenceTests: XCTestCase {
     }
 
     func testClearPendingProposalsKeepsPendingCommit() throws {
-        let provider = Provider()
-        let identity = try Identity(provider: provider, userId: "alice")
+        let client = try makeCheckpointBackedClient(userId: "alice")
+        let provider = try XCTUnwrap(client.provider)
+        let identity = try XCTUnwrap(client.identity)
         let cid = try ChannelId(cid: "team:project:pending-commit-test")
         let group = try Group.createWithCid(
             provider: provider,
@@ -849,10 +930,6 @@ final class MlsPersistenceTests: XCTestCase {
         _ = try group.selfUpdate(provider: provider, sender: identity)
         XCTAssertTrue(group.hasPendingCommit())
 
-        let client = MlsClient()
-        client.provider = provider
-        client.identity = identity
-        client.userId = "alice"
         try client.clearPendingProposal(in: cid)
 
         let reloaded = try Group.loadFromStorage(provider: provider, cid: cid.rawValue)
@@ -861,8 +938,9 @@ final class MlsPersistenceTests: XCTestCase {
     }
 
     func testClearPendingCommitKeepsPendingProposals() throws {
-        let provider = Provider()
-        let identity = try Identity(provider: provider, userId: "alice")
+        let client = try makeCheckpointBackedClient(userId: "alice")
+        let provider = try XCTUnwrap(client.provider)
+        let identity = try XCTUnwrap(client.identity)
         let bobProvider = Provider()
         let bob = try Identity(provider: bobProvider, userId: "bob")
         let cid = try ChannelId(cid: "team:project:pending-proposal-test")
@@ -878,10 +956,6 @@ final class MlsPersistenceTests: XCTestCase {
         )
         XCTAssertEqual(group.pendingProposalsCount(), 1)
 
-        let client = MlsClient()
-        client.provider = provider
-        client.identity = identity
-        client.userId = "alice"
         try client.clearPendingCommit(in: cid)
 
         let reloaded = try Group.loadFromStorage(provider: provider, cid: cid.rawValue)

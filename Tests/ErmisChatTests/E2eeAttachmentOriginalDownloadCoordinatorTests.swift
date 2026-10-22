@@ -4,6 +4,7 @@
 
 @testable import ErmisChat
 import CoreData
+import CryptoKit
 import XCTest
 
 final class E2eeAttachmentOriginalDownloadCoordinatorTests: XCTestCase {
@@ -736,7 +737,10 @@ final class E2eeAttachmentOriginalDownloadCoordinatorTests: XCTestCase {
                         stickerUrl: nil
                     ),
                     messageId: messageId,
-                    ciphertextHash: Data([1, 2, 3])
+                    // Bind to the exact decoded parent representation used by
+                    // the persistence layer. The transport model may retain
+                    // the base64 envelope rather than its decoded bytes.
+                    ciphertextHash: message.encryptedData.map { Data(SHA256.hash(data: $0)) }
                 )
                 message.decryptedMessage = decrypted
             }

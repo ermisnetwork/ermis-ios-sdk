@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "package_version": "0.1.0-local-archive-pin",
+  "package_version": "0.1.0-local-pre-contact-rebuilt-20261022",
   "openmls_source_repository": "../../../../openmls",
-  "openmls_source_revision": "d0aefc1baea3b80ebe0b9427c7c3dbec976281c9",
-  "cargo_lock_sha256": "b98bd0d4a35e2c787db4f1ee635659aac4d8c241d4c1f35945a277bdf743729f",
+  "openmls_source_revision": "e6815e370865c0ee273b1e01f01373e7d467fed3",
+  "cargo_lock_sha256": "ce58625488f14f67b8391802e066191dd5ea2f4bed846a1f5cebecd6d46f6c0b",
   "minimum_ios_version": "15.0",
   "slices": [
     "arm64-apple-ios",
@@ -23,19 +23,48 @@
     "save_state",
     "recovery_vault",
     "recovery_archive_crypto",
-    "recovery_journal"
+    "recovery_journal",
+    "device_registration_signature",
+    "lor_request_signature",
+    "private_key_package_ownership",
+    "key_package_upload_provider_id",
+    "prepare_key_package_upload",
+    "recover_key_package_upload",
+    "public_context_fingerprint",
+    "staged_external_commit_public_context_fingerprint",
+    "evicted_external_commit_public_context_fingerprint",
+    "process_evicted_epoch_application_deferred"
   ],
   "intentionally_not_exposed": [
     "sender_data_peek"
   ],
-  "verification_status": "Built locally from dirty source; 7 archive-PIN fixture XCTest passed on physical iPhone. Real-backend acceptance not verified.",
-  "openmls_tracked_diff_sha256": "8b9e51165000cb64e51a49feb3df029f5e136775ad15a80956db4adcc7a37763",
-  "openmls_source_manifest_sha256": "fc73d15f39f33eb3f9bc486e11444afbeb0e6f5330d19389d3403b3f997bde2d",
-  "verification": {
+  "verification_status": "Fresh host/two iOS slices/three Android ABIs built; current runtime acceptance unverified",
+  "openmls_tracked_diff_sha256": "d47cc4e8cf95e36daa272532b84ee2dcff3c5c737fec1293eab27f82c0189114",
+  "openmls_source_manifest_sha256": "fcda0294c9d0f1f283e20dde67cfb753e576db9e2d4e1c867637cbcb1826f907",
+  "historical_verification": {
     "rust_tests": "7 passed; crypto tamper and journal reopen/transaction/paging",
     "web_interop": "native-to-web and web-to-native crypto passed",
     "physical_device_runtime": "7 XCTest passed on iPhone 13 Pro Max; final native artifact, Keychain, queue and repeated recovery verified",
     "evidence_log": "/private/tmp/epoch-archive-ios-hosted-tests7.log",
     "pin_retry": "Explicit repair issues a fresh PIN request after skip; physical fixture assertion passed"
-  }
+  },
+  "producer": {
+    "repository": "openmls",
+    "branch": "feat/epoch-archive",
+    "head": "e6815e370865c0ee273b1e01f01373e7d467fed3",
+    "dirty_diff_sha256": "d47cc4e8cf95e36daa272532b84ee2dcff3c5c737fec1293eab27f82c0189114",
+    "cargo_lock_sha256": "ce58625488f14f67b8391802e066191dd5ea2f4bed846a1f5cebecd6d46f6c0b",
+    "build_script_sha256": "99079052146d6e69cde5de7dc6b520fed42df5cd4b928f135652f8e6dc6d9ee8",
+    "isolated_recipe_sha256": "5c213c3d82d556ddd7faab546e6bf2a951cddb09e6528561abfd1c001bcc91ae",
+    "source_manifest_sha256": "fcda0294c9d0f1f283e20dde67cfb753e576db9e2d4e1c867637cbcb1826f907",
+    "qa_run": "20261022T051052Z-02cce29dd453",
+    "uncommitted": true
+  },
+  "verification": {
+    "qa_run": "20261022T051052Z-02cce29dd453",
+    "producer_build": "PASS",
+    "consumer_build": "pending",
+    "physical_device_runtime": "unverified"
+  },
+  "verification_evidence": ".task-artifacts/qa/runs/20261022T051052Z-02cce29dd453/report.md"
 }

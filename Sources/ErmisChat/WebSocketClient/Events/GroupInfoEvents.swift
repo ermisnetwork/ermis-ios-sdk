@@ -99,3 +99,19 @@ final class GroupInfoUploadedEventDTO: EventDTO {
         )
     }
 }
+
+struct GiPublicationRequestedEvent: ChannelSpecificEvent {
+    let cid: ChannelId
+    let parentCid: ChannelId? = nil
+    let topicCids: [ChannelId] = []
+}
+
+final class GiPublicationRequestedEventDTO: EventDTO {
+    let payload: EventPayload
+    let cid: ChannelId
+    init(from response: EventPayload) throws {
+        guard let cid = response.cid else { throw ClientError("Missing GI publication scope") }
+        self.cid = cid; payload = response
+    }
+    func toDomainEvent(session: DatabaseSession) -> Event? { GiPublicationRequestedEvent(cid: cid) }
+}

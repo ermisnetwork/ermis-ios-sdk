@@ -364,4 +364,60 @@ final class MlsGenerationRebootstrapTests: XCTestCase {
             )
         )
     }
+    func testRetainedLegacyHistoryUsesOldGroupWithoutMutatingEitherProviderAcrossRestart() throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent("lor-retained-history-"+UUID().uuidString)
+        let suite="lor-history-"+UUID().uuidString
+        let defaults=try XCTUnwrap(UserDefaults(suiteName:suite))
+        defer {defaults.removePersistentDomain(forName:suite);try? FileManager.default.removeItem(at:root)}
+        let client=MlsClient(storageFolderURL:root,userDefaults:defaults);try client.setup(with:"bob")
+        let original=try XCTUnwrap(client.provider),bob=try XCTUnwrap(client.identity)
+        let sender=Provider(),alice=try Identity(provider:sender,userId:"alice"),cid="team:project:retained-history"
+        let old=try Group.createWithCid(provider:sender,founder:alice,cid:cid)
+        let add=try old.addMembers(provider:sender,sender:alice,newMembers:[bob.keyPackage(provider:original)])
+        try old.mergePendingCommit(provider:sender)
+        let retained=try Group.joinWithWelcome(provider:original,welcome:try XCTUnwrap(add.welcome),ratchetTree:old.exportRatchetTree())
+        try retained.saveState(provider:original)
+        let payload=E2ePayload(text:"unseen old history",attachments:[],stickerUrl:nil)
+        let cipher=try old.createMessage(provider:sender,sender:alice,plaintext:JSONEncoder().encode(payload))
+        let op=UUID().uuidString.lowercased(),newId=Data(UUID().uuidString.utf8)
+        let candidate=try client.prepareRebootstrapCandidate(operationId:op,groupId:newId,keyPackages:[])
+        try client.activateRebootstrapCandidate(cid:cid,generation:1,operationId:op,candidate:candidate)
+        try client.reset()
+        let reopened=MlsClient(storageFolderURL:root,userDefaults:defaults);try reopened.setup(with:"bob")
+        let before=try reopened.loadGroup(cid:cid,generation:1,groupId:newId)
+        XCTAssertEqual(before.groupId(),newId)
+        let first=try reopened.processRetainedHistoricalApplication(data:cipher,cid:cid,generation:0)
+        let second=try reopened.processRetainedHistoricalApplication(data:cipher,cid:cid,generation:0)
+        XCTAssertEqual(first.payload.text,"unseen old history");XCTAssertEqual(first.plaintext,second.plaintext)
+        XCTAssertEqual(try reopened.loadGroup(cid:cid,generation:1,groupId:newId).epoch(),before.epoch())
+        XCTAssertThrowsError(try reopened.processRetainedHistoricalApplication(data:cipher,cid:cid,generation:1))
+        XCTAssertThrowsError(try reopened.processRetainedHistoricalApplication(data:cipher,cid:cid,generation:2))
+        XCTAssertThrowsError(try reopened.processRetainedHistoricalApplication(data:cipher,cid:"messaging:foreign",generation:0))
+        try reopened.reset()
+        let third=MlsClient(storageFolderURL:root,userDefaults:defaults);try third.setup(with:"bob")
+        XCTAssertEqual(try third.processRetainedHistoricalApplication(data:cipher,cid:cid,generation:0).payload.text,"unseen old history")
+        XCTAssertEqual(third.loadGenerationMarker(cid:cid)?.generation,1)
+
+        let database=DatabaseContainer(kind:.inMemory,shouldResetEphemeralValuesOnStart:false)
+        let loaded=XCTNSPredicateExpectation(predicate:NSPredicate { _,_ in !database.persistentStoreCoordinator.persistentStores.isEmpty },object:nil)
+        XCTAssertEqual(XCTWaiter.wait(for:[loaded],timeout:5),.completed)
+        let json: [String:Any] = ["channel":["cid":cid,"type":"team","save_message":true,"member_count":2,"mls_enabled":true,"created_at":"2026-10-19T00:00:00Z","updated_at":"2026-10-19T00:00:00Z"],
+            "messages":[["id":"unseen-old-history","type":"regular","user":["id":"alice","project_id":"project"],"text":"","mls_ciphertext":cipher.base64EncodedString(),"mls_epoch":1,"group_generation":0,"created_at":"2026-10-19T00:00:00Z","updated_at":"2026-10-19T00:00:00Z"]],"read":[]]
+        let channel=try JSONDecoder.default.decode(ChannelPayload.self,from:JSONSerialization.data(withJSONObject:json))
+        try database.writeAndWait {session in _ = try session.saveChannel(payload:channel)}
+        let base=try XCTUnwrap(URL(string:"https://example.invalid"))
+        let encoder=DefaultRequestEncoder(baseURL:base,authURL:base,stickerURL:base,apiKey:APIKey("fixture")),decoder=DefaultRequestDecoder(),config=URLSessionConfiguration.ephemeral
+        let api=APIClient(sessionConfiguration:config,requestEncoder:encoder,requestDecoder:decoder,
+            uploader:ErmisUploader(uploadClient:ErmisUploadClient(encoder:encoder,decoder:decoder,sessionConfiguration:config)),
+            downloader:ErmisDownloader(client:ErmisDownloadClient(sessionConfiguration:config)))
+        let repository=E2eRepository(database:database,eventNotificationCenter:EventNotificationCenter(database:database),mlsClient:third,apiClient:api)
+        repository.hydrateCachedAttachmentPreviews(messageIds:["unseen-old-history"],cid:try ChannelId(cid:cid))
+        let decrypted=XCTNSPredicateExpectation(predicate:NSPredicate {_,_ in
+            var text:String?;database.viewContext.performAndWait {text=MessageDecryptDTO.load(messageId:"unseen-old-history",context:database.viewContext)?.text}
+            return text == "unseen old history"
+        },object:nil)
+        XCTAssertEqual(XCTWaiter.wait(for:[decrypted],timeout:5),.completed,"Actual channel-page consumer must populate retained history cache without HTTP/cursor reset")
+        withExtendedLifetime(repository) {}
+    }
+
 }

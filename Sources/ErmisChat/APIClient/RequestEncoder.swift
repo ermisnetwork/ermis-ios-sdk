@@ -88,6 +88,7 @@ class DefaultRequestEncoder: RequestEncoder {
     private let waiterTimeout: TimeInterval = 10
     weak var connectionProviderDelegate: ConnectionProviderDelegate?
     var deviceIdStore: MlsDeviceIdStore?
+    var mlsProofAuthorizer: MlsRequestProofAuthorizer?
 
     func encodeRequest<ResponsePayload: Decodable>(
         for endpoint: Endpoint<ResponsePayload>,
@@ -95,6 +96,7 @@ class DefaultRequestEncoder: RequestEncoder {
     ) {
         var request: URLRequest
         do {
+            try endpoint.localMlsGuard?()
             // Prepare the URL
             var url = try encodeRequestURL(for: endpoint)
             url = try url.appendingQueryItems(["api_key": apiKey.apiKeyString])
@@ -151,7 +153,12 @@ class DefaultRequestEncoder: RequestEncoder {
                         self.addDeviceIdIfNeeded(
                             request: requestWithConnectionId,
                             endpoint: endpoint,
-                            completion: completion
+                            completion: { result in
+                                if case let .success(encoded) = result, let authorizer = self.mlsProofAuthorizer {
+                                    do { try endpoint.localMlsGuard?() } catch { completion(.failure(error)); return }
+                                    authorizer.authorize(encoded, guardScope: endpoint.localMlsGuard, deadline: endpoint.localMlsDeadline, completion: completion)
+                                } else { completion(result) }
+                            }
                         )
                     case let .failure(error):
                         completion(.failure(error))

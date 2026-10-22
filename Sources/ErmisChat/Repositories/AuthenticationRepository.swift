@@ -337,7 +337,15 @@ class AuthenticationRepository {
                apiKey: String,
                completion: @escaping ((Result<AuthenticationPayload, Error>) -> Void)) {
         let endpoint = Endpoint<AuthenticationPayload>.loginWithGoogle(token: googleIdToken, apiKey: apiKey)
-        apiClient.unmanagedRequest(endpoint: endpoint, completion: completion)
+        apiClient.unmanagedRequest(endpoint: endpoint) { result in
+            switch result {
+            case .success:
+                print("uhm_auth phase=google_backend result=success")
+            case .failure(let error):
+                print("uhm_auth phase=google_backend result=failure " + ErmisAuthenticationDiagnostics.marker(for: error))
+            }
+            completion(result)
+        }
     }
 
     /// Login with apple token:

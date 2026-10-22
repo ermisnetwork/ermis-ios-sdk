@@ -411,7 +411,15 @@ struct GroupInfoRefreshRequestPayload: Codable, Equatable {
     }
 }
 
+struct GiPublicationMarker: Decodable {
+    let request_id: String
+    let group_generation: UInt64
+    let epoch: UInt64
+    let observed_hash: String?
+}
+
 struct GroupInfoRefreshResponsePayload: Decodable {
+    let marker: GiPublicationMarker?
     let request: GroupInfoRefreshRequestPayload?
 }
 

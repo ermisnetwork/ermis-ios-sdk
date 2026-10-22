@@ -15,12 +15,16 @@ public struct UploadGroupInfoRequestBody: Encodable {
     public let groupInfo: [UInt8]
     /// New epoch after the commit.
     public let epoch: Int
+    public let expected: GiPublicationTarget?
+    public let observedHash: String?
     public let requestId: String?
     public let leaseToken: String?
 
-    public init(groupInfo: Data, epoch: Int, requestId: String? = nil, leaseToken: String? = nil) {
+    public init(groupInfo: Data, epoch: Int, requestId: String? = nil, leaseToken: String? = nil, expected: GiPublicationTarget? = nil, observedHash: String? = nil) {
         self.groupInfo = groupInfo.uint8Array
         self.epoch = epoch
+        self.expected = expected
+        self.observedHash = observedHash
         self.requestId = requestId
         self.leaseToken = leaseToken
     }
@@ -28,6 +32,8 @@ public struct UploadGroupInfoRequestBody: Encodable {
     enum CodingKeys: String, CodingKey {
         case groupInfo = "group_info"
         case epoch
+        case expected
+        case observedHash = "observed_hash"
         case requestId = "request_id"
         case leaseToken = "lease_token"
     }
@@ -36,6 +42,8 @@ public struct UploadGroupInfoRequestBody: Encodable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
         try container.encode(epoch, forKey: .epoch)
+        try container.encodeIfPresent(expected, forKey: .expected)
+        try container.encodeIfPresent(observedHash, forKey: .observedHash)
         try container.encodeIfPresent(requestId, forKey: .requestId)
         try container.encodeIfPresent(leaseToken, forKey: .leaseToken)
     }
@@ -190,6 +198,8 @@ public struct ExternalJoinRequestBody: Encodable {
     /// TLS-serialized external commit bytes.
     public let commit: [UInt8]
     /// New epoch after the external join.
+    public let groupInfo: [UInt8]
+    public let operationId: String
     public let epoch: Int
     public let groupGeneration: Int
     public let groupId: [UInt8]?
@@ -201,12 +211,16 @@ public struct ExternalJoinRequestBody: Encodable {
     public init(
         commit: Data,
         epoch: Int,
+        groupInfo: Data,
+        operationId: String,
         groupGeneration: Int = 0,
         groupId: Data? = nil,
         projectId: String? = nil,
         members: [String]? = nil
     ) {
         self.commit = commit.uint8Array
+        self.groupInfo = groupInfo.uint8Array
+        self.operationId = operationId
         self.epoch = epoch
         self.groupGeneration = groupGeneration
         self.groupId = groupId?.uint8Array
@@ -216,6 +230,8 @@ public struct ExternalJoinRequestBody: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case commit
+        case groupInfo = "group_info"
+        case operationId = "operation_id"
         case epoch
         case groupGeneration = "group_generation"
         case groupId = "group_id"
@@ -226,6 +242,8 @@ public struct ExternalJoinRequestBody: Encodable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeE2eeBytes(commit, forKey: .commit)
+        try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
+        try container.encode(operationId, forKey: .operationId)
         try container.encode(epoch, forKey: .epoch)
         try container.encode(groupGeneration, forKey: .groupGeneration)
         if let groupId {
@@ -470,4 +488,10 @@ public struct CommitEvictionRequestBody: Encodable {
         try container.encodeE2eeBytes(groupInfo, forKey: .groupInfo)
         try container.encode(epoch, forKey: .epoch)
     }
+}
+
+public struct GiPublicationTarget: Encodable {
+    let groupGeneration: UInt64
+    let groupId: String?
+    enum CodingKeys: String, CodingKey { case groupGeneration = "group_generation", groupId = "group_id" }
 }

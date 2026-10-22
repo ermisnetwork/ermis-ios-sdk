@@ -7,6 +7,39 @@ import Combine
 import EventSource
 import ErmisShared
 
+/// Owns only one scoped request completion/task. Encoding and auth waits share the absolute budget.
+private final class MlsRequestCompletion<Response> {
+    private let lock = NSLock()
+    private let deadline: Date
+    private var callback: ((Result<Response, Error>) -> Void)?
+    private var timer: DispatchSourceTimer?
+    private var task: URLSessionTask?
+    var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return callback == nil }
+    init(deadline: Date, completion: @escaping (Result<Response, Error>) -> Void) {
+        self.deadline = deadline; callback = completion
+        let timer = DispatchSource.makeTimerSource(queue: .global())
+        self.timer = timer
+        timer.schedule(deadline: .now() + max(0, deadline.timeIntervalSinceNow))
+        timer.setEventHandler { [weak self] in self?.finish(.failure(ClientError.Unexpected("key_package_operation_expired"))) }
+        timer.resume()
+    }
+    func attach(_ task: URLSessionTask) {
+        lock.lock()
+        let closed = callback == nil
+        if !closed { self.task = task }
+        lock.unlock()
+        if closed { task.cancel() }
+    }
+    func finish(_ result: Result<Response, Error>) {
+        lock.lock()
+        let completion = callback, timer = self.timer, task = self.task, expired = Date() >= deadline
+        callback = nil; self.timer = nil; self.task = nil
+        lock.unlock()
+        timer?.cancel()
+        if expired { task?.cancel() }
+        completion?(expired ? .failure(ClientError.Unexpected("key_package_operation_expired")) : result)
+    }
+}
 
 /// An object which making api request to Ermis Chat servers.
 class APIClient {
@@ -219,7 +252,11 @@ class APIClient {
         endpoint: Endpoint<Response>,
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
-        let requestOperation = operation(endpoint: endpoint, isRecoveryOperation: false, completion: completion)
+        // A suspended auth queue must not outlive this operation's original deadline.
+        let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, completion: completion) }
+        let requestOperation = operation(endpoint: endpoint, isRecoveryOperation: false) { result in
+            if let budget { budget.finish(result) } else { completion(result) }
+        }
         operationQueue.addOperation(requestOperation)
     }
 
@@ -276,11 +313,17 @@ class APIClient {
         isRecoveryOperation: Bool,
         completion: @escaping (Result<Response, Error>) -> Void
     ) -> AsyncOperation {
-        AsyncOperation(maxRetries: maximumRequestRetries) { [weak self] operation, done in
+        // Scoped MLS retries only one authentication refresh, never ambiguous transport.
+        AsyncOperation(maxRetries: endpoint.localMlsGuard == nil ? maximumRequestRetries : 1) { [weak self] operation, done in
             guard let self = self else {
                 done(.continue)
                 return
             }
+
+            do {
+                try endpoint.localMlsGuard?()
+                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected("key_package_operation_expired") }
+            } catch { completion(.failure(error)); done(.continue); return }
 
             log.debug(
                 "[API_REQUEST] state=queued refreshing_token=\(self.isRefreshingToken) queue_suspended=\(self.operationQueue.isSuspended)",
@@ -295,7 +338,7 @@ class APIClient {
                 return
             }
             
-            self.executeRequest(endpoint: endpoint) { [weak self] result in
+            self.executeRequest(endpoint: endpoint, allowAuthRefresh: endpoint.localMlsGuard == nil || operation.canRetry) { [weak self] result in
                 switch result {
                 case .failure(_ as ClientError.RefreshingToken):
                     // Requeue request
@@ -316,7 +359,7 @@ class APIClient {
                     done(.continue)
                 case .failure(_ as ClientError.WaiterTimeout):
                     // When waiters timeout, chances are that we are still connecting. We are going to retry until we reach max retries
-                    if operation.canRetry {
+                    if endpoint.localMlsGuard == nil && operation.canRetry {
                         done(.retry)
                     } else {
                         completion(result)
@@ -327,14 +370,14 @@ class APIClient {
                     // If a non recovery request comes in while we are in recovery mode, we want to queue if still has
                     // retries left
                     let inRecoveryMode = self?.isInRecoveryMode == true
-                    if inRecoveryMode && !isRecoveryOperation && operation.canRetry {
+                    if endpoint.localMlsGuard == nil && inRecoveryMode && !isRecoveryOperation && operation.canRetry {
                         self?.request(endpoint: endpoint, completion: completion)
                         done(.continue)
                         return
                     }
                     
                     // Do not retry unless its a connection problem and we still have retries left
-                    if operation.canRetry {
+                    if endpoint.localMlsGuard == nil && operation.canRetry {
                         done(.retry)
                         return
                     }
@@ -343,7 +386,7 @@ class APIClient {
                         completion(.failure(ClientError.ConnectionError()))
                     } else {
                         // Offline Queuing
-                        self?.queueOfflineRequest?(endpoint.withDataResponse)
+                        if endpoint.localMlsGuard == nil { self?.queueOfflineRequest?(endpoint.withDataResponse) }
                         completion(result)
                     }
                     
@@ -391,15 +434,41 @@ class APIClient {
     ///   - completion: Called when the networking request is finished.
     private func executeRequest<Response: Decodable>(
         endpoint: Endpoint<Response>,
+        allowAuthRefresh: Bool = true,
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
+        // This gate also releases AsyncOperation when encoding/registration/refresh never calls back.
+        let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, completion: completion) }
+        let complete: (Result<Response, Error>) -> Void = { result in
+            if let budget { budget.finish(result) } else { completion(result) }
+        }
+        if let deadline = endpoint.localMlsDeadline, deadline <= Date() {
+            complete(.failure(ClientError.Unexpected("key_package_operation_expired"))); return
+        }
         encoder.encodeRequest(for: endpoint) { [weak self] (requestResult) in
-            let urlRequest: URLRequest
+            if budget?.isFinished == true { return }
+            var urlRequest: URLRequest
             do {
+                try endpoint.localMlsGuard?()
+                if let deadline = endpoint.localMlsDeadline, deadline <= Date() {
+                    throw ClientError.Unexpected("key_package_operation_expired")
+                }
                 urlRequest = try requestResult.get()
+                if let deadline = endpoint.localMlsDeadline {
+                    guard deadline > Date() else { throw ClientError.Unexpected("key_package_operation_expired") }
+                    urlRequest.timeoutInterval = min(5, deadline.timeIntervalSinceNow)
+                }
             } catch {
                 log.error("[API_REQUEST] state=encoding_failed", subsystems: .httpRequests)
-                completion(.failure(error))
+                // Proof registration happens during encoding and can receive the same bare
+                // HTTP401 as the final request. Join the existing refresh queue in that case.
+                if error is ClientError.ExpiredToken, let self {
+                    guard allowAuthRefresh else { complete(.failure(ClientError.TokenRefreshRetryLimitExceeded())); return }
+                    if case .refreshToken = endpoint.path { complete(.failure(error)); return }
+                    self.refreshToken { complete(.failure($0)) }
+                } else {
+                    complete(.failure(error))
+                }
                 return
             }
 
@@ -410,12 +479,25 @@ class APIClient {
 
             guard let self = self else {
                 log.warning("Callback called while self is nil", subsystems: .httpRequests)
-                completion(.failure(ClientError("APIClient was deallocated")))
+                complete(.failure(ClientError("APIClient was deallocated")))
                 return
             }
             
             let task = self.session.dataTask(with: urlRequest) { [decoder = self.decoder] (data, response, error) in
+                if budget?.isFinished == true { return }
+                let path = urlRequest.url?.path ?? ""
+                if path == "/uss/v1/auth/google_login" {
+                    print(ErmisAuthenticationDiagnostics.googleResponseMarker(data: data, response: response, error: error))
+                }
+                if path.hasPrefix("/v1/e2ee/channels/"),
+                   path.hasSuffix("/external_join") || path.contains("/external_join/operations/") {
+                    let stage = path.hasSuffix("/external_join") ? "commit" : "receipt"
+                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    let result = error == nil ? "response" : "transport_error"
+                    log.warning("mls_join_http stage=\(stage) result=\(result) status=\(status)", subsystems: .mls)
+                }
                 do {
+                    try endpoint.localMlsGuard?()
                     let decodedResponse: Response = try decoder.decodeRequestResponse(
                         data: data,
                         response: response,
@@ -425,7 +507,7 @@ class APIClient {
                         urlRequest.privacySafeDiagnosticSummary(state: .succeeded),
                         subsystems: .httpRequests
                     )
-                    completion(.success(decodedResponse))
+                    complete(.success(decodedResponse))
                 } catch {
                     log.debug(
                         urlRequest.privacySafeDiagnosticSummary(state: .failed),
@@ -433,13 +515,14 @@ class APIClient {
                     )
                     
                     if error is ClientError.ExpiredToken == false {
-                        completion(.failure(error))
+                        complete(.failure(error))
                         return
                     }
+                    guard allowAuthRefresh else { complete(.failure(ClientError.TokenRefreshRetryLimitExceeded())); return }
 
                     // If Refresh Token is expired, don't continue refresh
                     if case .refreshToken = endpoint.path {
-                        completion(.failure(error))
+                        complete(.failure(error))
                         return
                     }
 
@@ -451,7 +534,7 @@ class APIClient {
                     /// But when ClientError.TokenRefreshed is returned, just retry the execution.
                     /// This is done because we want to make sure that when the queue is running serial, there order is kept.
                     self.refreshToken { refreshResult in
-                        completion(.failure(refreshResult))
+                        complete(.failure(refreshResult))
                     }
                 }
             }
@@ -459,7 +542,12 @@ class APIClient {
                 urlRequest.privacySafeDiagnosticSummary(state: .resumed),
                 subsystems: .httpRequests
             )
-            task.resume()
+            budget?.attach(task)
+            do {
+                try endpoint.localMlsGuard?()
+                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected("key_package_operation_expired") }
+                if budget?.isFinished != true { task.resume() }
+            } catch { task.cancel(); complete(.failure(error)) }
         }
     }
     

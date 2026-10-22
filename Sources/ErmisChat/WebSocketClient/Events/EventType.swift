@@ -70,6 +70,7 @@ public extension EventType {
     static let channelTopicReopen: Self = "channel.topic.reopen"
     /// When a channel receive mls protocol message.
     static let mlsProtocol: Self = "protocol"
+    static let giPublicationRequested: Self = "group_info.publish_requested"
     static let groupInfoRefreshRequested: Self = "group_info.refresh_requested"
     static let groupInfoUploaded: Self = "group_info.uploaded"
     static let keyPackagesLow: Self = "key_packages.low"
@@ -194,6 +195,7 @@ extension EventType {
         case .channelTopicClosed: return try ChannelTopicClosedEventDTO(from: response)
         case .channelTopicReopen: return try ChannelTopicReopenedEventDTO(from: response)
         case .mlsProtocol: return try MLSEventDTO(from: response)
+        case .giPublicationRequested: return try GiPublicationRequestedEventDTO(from: response)
         case .groupInfoRefreshRequested: return try GroupInfoRefreshRequestedEventDTO(from: response)
         case .groupInfoUploaded: return try GroupInfoUploadedEventDTO(from: response)
         case .keyPackagesLow, .keyPackagesEmpty, .keyPackagesExpiring:

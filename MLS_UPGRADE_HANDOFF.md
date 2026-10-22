@@ -404,3 +404,38 @@ Canonical implementation/history/status: [existing parity plan](../../bellboy/do
 Evidence: [source/artifact provenance](../../bellboy/docs/evidence/local_main_plan/20261007-kp-durability-auth/artifact-provenance.json). Web65focused PASS; Android23JVM/26native/6Room+HTTP multi-channel crash boundaries PASS; iOS50focused/4receiver SIGKILL boundaries PASS. Failed compile/preparation/overlap reports retained in the canonical journal. Native libraries unchanged.
 
 iOS connected `refreshAuthentication` uses the existing provider; explicit DEBUG field renewal was accepted and persisted on the physical iPhone. This is forced HTTP renewal, not natural expiry acceptance. Updated Uhm/Uhm Dev preserve real data; owner retained/new-message confirmation pending. Old server KP mismatch, complete call-path atomicity and historical crypto failures remain OPEN. Owner waived further routine membership repetitions.
+
+
+### 2026-10-19 DEC085 exact legacy journal reader
+
+Bundle append-only `recover_key_package_upload` with its generated bindings and SHA256 manifests. Production pipeline reconstructs only an existing exact UUID/scope/signer/hash/count journal, rechecks private refs and checkpoints ready before original-UUID upload. Missing journal retains external-evidence-required; no generation, count-based replacement, unconsume or purge. See [disposition and iOS applied-Welcome protocol](../../bellboy/docs/mls_rollout_runbook.md#legacy-preparing-disposition-dec085) and [canonical design/journal](../../bellboy/docs/todo/e2ee_mls_lifetime_ownership_recovery_plan.md#2026-10-19-dec085--remaining-gate-protocol-before-code). New [execution report](../../.task-artifacts/qa/runs/20261019T095248Z-8c705ce87a8d/report.md) separates build/native/fault tests/appUI/paired/server. Release/rollback remains OPEN until compatible reader artifact rehearsal; disabling flags is not binary rollback. Do not change signing/account/private state.
+
+
+2026-10-19 DEC085 pending release capability: `public_context_fingerprint` and
+`staged_external_commit_public_context_fingerprint` are append-only native APIs.
+The first hashes full TLS public GroupContext with domain separation; it is not
+Ready or receipt proof. The second verifies an external public commit against a
+separately loaded native handle inside an always-rollback SQLite savepoint. It
+returns the staged context hash without merging or persisting receiver state.
+Never expose private provider/archive/key bytes for this comparison.
+Android accepted-candidate completion requires immutable exact receipt bindings;
+a concurrent Welcome can prove the same staged branch while retaining its old
+epoch provider. A v1 retained epoch boundary routes old ciphertext before native
+decrypt. Receipt proof, active provider/marker, boundary and pending removal share
+one durable preference commit. Unknown acceptance, fork, corrupt proof or missing
+boundary stays blocked. Existing Ready/retry/KP readers are unchanged, but a binary
+that ignores the new same-generation epoch boundaries is NOT a compatible rollback
+reader. No global minimum version or server flag is enabled. Final consumer/device
+verification and manifest provenance must follow the actual promoted artifact;
+see canonical DEC085 and run20261019T095248Z-8c705ce87a8d/report.md.
+
+
+### 2026-10-20 — Scoped MLS whole-operation completion and finite auth retry
+
+<details><summary>Change log</summary>
+
+- Scoped MLS requests keep the original absolute localMlsDeadline across queued auth, encoding/proof registration, refresh and final HTTP. A per-request completion gate starts before encoding, completes once on expiry, cancels only its own attached task and suppresses late callbacks. Queued requests cannot encode after deadline.
+- Exactly one auth401 refresh may retry encoding/signing the existing endpoint/body/operation; repeated401 stops before a second refresh. Transport/WaiterTimeout do not gain hidden retries. KP pipeline30s, signed5s and registration2s ceilings stay unchanged. Timeout is unknown acceptance, so exact jobs/private refs remain retained.
+- No native ABI, persistence/schema, OAuth/signing or server contract change. Compatible final SDK/app rebuild is required; old binaries lack this liveness behavior and remain unqualified rollback candidates. Physical regression failures, fixed results and final source/artifact identities live in the [canonical LOR plan](../../bellboy/docs/todo/e2ee_mls_lifetime_ownership_recovery_plan.md).
+
+</details>

@@ -3,6 +3,7 @@
 //
 
 import CoreData
+import CryptoKit
 import Foundation
 
 /// Serializes durable E2EE inbox and checkpoint writes through the database writer context.
@@ -443,6 +444,90 @@ final class E2eeDurableInboxStore {
             channel.mlsFirstDecryptableEpoch = NSNumber(value: firstDecryptableEpoch)
             channel.mlsGroupJoinedAt = now
         }
+    }
+
+    // Auxiliary local checkpoints never replace the real scope's fetch/apply
+    // cursor. Version and all installation dimensions participate in the key.
+    static func welcomeBoundaryScope(accountId: String, scopeCid: String, generation: UInt64,
+                                     groupId: Data, deviceId: String) throws -> String {
+        let binding = try JSONEncoder().encode([accountId, scopeCid, deviceId, String(generation), groupId.base64EncodedString()])
+        return "__lor_welcome_v1__:" + SHA256.hash(data: binding).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func matchesWelcome(_ envelope: E2eSyncEventEnvelope, accountId: String,
+                                       generation: UInt64, groupId: Data, deviceId: String) -> Bool {
+        guard case .protocol(let data) = envelope.event else { return false }
+        return data.type == .welcome && UInt64(exactly: data.groupGeneration) == generation &&
+            data.groupId.map({ Data($0) }) == groupId && data.targetDeviceIds?.contains(deviceId) == true &&
+            data.targetUserIds?.contains(accountId) == true
+    }
+
+    /// Reads at most100 applied envelopes per invocation until an exact pointer
+    /// is found. The scan survives restart. Every hot pointer is revalidated.
+    func installedWelcomeBoundary(accountId: String, scopeCid: String, generation: UInt64,
+                                  groupId: Data, deviceId: String,
+                                  onContinuation: (() -> Void)? = nil) throws -> E2eSyncEventEnvelope? {
+        var boundary: E2eSyncEventEnvelope?
+        var hasMore = false
+        try database.writeAndWait { context in
+            guard let context = context as? NSManagedObjectContext else {
+                throw ClientError.Unexpected("Core Data writer context is unavailable.")
+            }
+            let key = try Self.welcomeBoundaryScope(accountId: accountId, scopeCid: scopeCid,
+                generation: generation, groupId: groupId, deviceId: deviceId)
+            let checkpoint = try E2eeSyncCheckpointDTO.loadOrCreate(accountId: accountId, scopeCid: key, context: context)
+            guard (checkpoint.applyCreatedAt == nil) == (checkpoint.applyEventId == nil),
+                  (checkpoint.fetchCreatedAt == nil) == (checkpoint.fetchEventId == nil) else {
+                throw E2eeDurableInboxError.welcomeBoundaryProofMismatch
+            }
+            func row(_ cursor: ScopeSyncCursorPayload) throws -> (E2eeInboxEventDTO, E2eSyncEventEnvelope) {
+                guard let event = try E2eeInboxEventDTO.load(accountId: accountId, scopeCid: scopeCid,
+                    eventId: cursor.eventId, context: context), event.appliedAt != nil, event.failureCategory == nil else {
+                    throw E2eeDurableInboxError.welcomeBoundaryProofMismatch
+                }
+                let envelope = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: event.rawEnvelope)
+                guard envelope.eventId == cursor.eventId, envelope.createdAtRaw == cursor.createdAt,
+                      event.createdAt == envelope.createdAt.bridgeDate else {
+                    throw E2eeDurableInboxError.welcomeBoundaryProofMismatch
+                }
+                return (event, envelope)
+            }
+            if let pointer = checkpoint.applyCursor {
+                let (_, envelope) = try row(pointer)
+                guard Self.matchesWelcome(envelope, accountId: accountId, generation: generation,
+                    groupId: groupId, deviceId: deviceId) else { throw E2eeDurableInboxError.welcomeBoundaryProofMismatch }
+                boundary = envelope
+                return
+            }
+            let request = NSFetchRequest<E2eeInboxEventDTO>(entityName: E2eeInboxEventDTO.entityName)
+            var predicates = [NSPredicate(format: "accountId == %@ AND scopeCid == %@ AND appliedAt != nil AND failureCategory == nil", accountId, scopeCid)]
+            if let cursor = checkpoint.fetchCursor {
+                let (last, _) = try row(cursor)
+                predicates.append(NSPredicate(format: "createdAt < %@ OR (createdAt == %@ AND eventId < %@)", last.createdAt, last.createdAt, last.eventId))
+            }
+            request.predicate = NSCompoundPredicate(andPredicateWithSubpredicates: predicates)
+            request.sortDescriptors = [NSSortDescriptor(key: "createdAt", ascending: false), NSSortDescriptor(key: "eventId", ascending: false)]
+            request.fetchLimit = 100
+            let rows = try context.fetch(request)
+            for row in rows {
+                let envelope = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: row.rawEnvelope)
+                guard row.eventId == envelope.eventId, row.createdAt == envelope.createdAt.bridgeDate else {
+                    throw E2eeDurableInboxError.welcomeBoundaryProofMismatch
+                }
+                let cursor = ScopeSyncCursorPayload(createdAt: envelope.createdAtRaw, eventId: envelope.eventId)
+                if Self.matchesWelcome(envelope, accountId: accountId, generation: generation, groupId: groupId, deviceId: deviceId) {
+                    checkpoint.setApplyCursor(cursor)
+                    checkpoint.fetchCreatedAt = nil; checkpoint.fetchEventId = nil
+                    boundary = envelope
+                    return
+                }
+                checkpoint.setFetchCursor(cursor)
+            }
+            if rows.count < 100 { checkpoint.fetchCreatedAt = nil; checkpoint.fetchEventId = nil }
+            else { hasMore = true }
+        }
+        if hasMore { onContinuation?() }
+        return boundary
     }
 
     func localJoinReceiptProof(accountId: String, scopeCid: String) throws -> LocalJoinReceiptProof? {
@@ -1105,7 +1190,8 @@ final class E2eeDurableInboxStore {
         accountId: String,
         scopeCid: String,
         envelope: E2eSyncEventEnvelope,
-        preservingFailure: Bool = false
+        preservingFailure: Bool = false,
+        installedWelcomeDeviceId: String? = nil
     ) throws {
         try database.writeAndWait { context in
             guard let context = context as? NSManagedObjectContext else {
@@ -1146,6 +1232,17 @@ final class E2eeDurableInboxStore {
             event.appliedAt = Date().bridgeDate
             if !preservingFailure {
                 event.failureCategory = nil
+            }
+            if !preservingFailure, let deviceId = installedWelcomeDeviceId,
+               case .protocol(let data) = envelope.event, data.type == .welcome,
+               let generation = UInt64(exactly: data.groupGeneration), generation > 0,
+               let groupId = data.groupId.map({ Data($0) }),
+               Self.matchesWelcome(envelope, accountId: accountId, generation: generation, groupId: groupId, deviceId: deviceId) {
+                let key = try Self.welcomeBoundaryScope(accountId: accountId, scopeCid: scopeCid,
+                    generation: generation, groupId: groupId, deviceId: deviceId)
+                let pointer = try E2eeSyncCheckpointDTO.loadOrCreate(accountId: accountId, scopeCid: key, context: context)
+                pointer.setApplyCursor(.init(createdAt: envelope.createdAtRaw, eventId: envelope.eventId))
+                pointer.fetchCreatedAt = nil; pointer.fetchEventId = nil
             }
             let checkpoint = try E2eeSyncCheckpointDTO.loadOrCreate(
                 accountId: accountId,

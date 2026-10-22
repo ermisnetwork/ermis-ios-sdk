@@ -1520,4 +1520,78 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         try close([migratedDatabase])
         try FileManager.default.removeItem(at: directory)
     }
+    private func generationWelcome() throws -> E2eSyncEventEnvelope {
+        let object: [String: Any] = ["event_id":"00000000-0000-4000-8000-000000000000","created_at":"2026-10-19T00:00:00Z","type":"protocol",
+            "data":["epoch":1,"user":["id":"founder","project_id":"project"],"type":"welcome","created_at":"2026-10-19T00:00:00Z","group_generation":1,"group_id":"AQID","target_user_ids":[accountId],"target_device_ids":["ios-device"],"welcome":"AA==","ratchet_tree":"AA=="]]
+        return try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    func testLongHistoryWelcomeContinuationPersistsAcrossReopenAndTimestampTies() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("history.sqlite")
+        let database = try makeDatabase(kind: .onDisk(databaseFileURL: url))
+        let store = E2eeDurableInboxStore(database: database)
+        let welcome = try generationWelcome()
+        let tail = try (1...250).map { try envelope(eventId: String(format: "00000000-0000-4000-8000-%012d", $0), createdAt: welcome.createdAtRaw) }
+        let events = [welcome] + tail
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: events, hasMore: false, nextCursor: nil)
+        for event in events { try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: event) }
+        let realCursor = try store.applyCursor(accountId: accountId, scopeCid: scopeCid)
+        // Legacy store has no pointer. First invocation can inspect only100 rows.
+        var continuations = 0
+        XCTAssertNil(try store.installedWelcomeBoundary(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device", onContinuation: { continuations += 1 }))
+        XCTAssertEqual(continuations, 1)
+        try close([database])
+        let reopened = try makeDatabase(kind: .onDisk(databaseFileURL: url))
+        let reader = E2eeDurableInboxStore(database: reopened)
+        XCTAssertNil(try reader.installedWelcomeBoundary(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device"))
+        XCTAssertEqual(try reader.installedWelcomeBoundary(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device")?.eventId, welcome.eventId)
+        XCTAssertEqual(try reader.applyCursor(accountId: accountId, scopeCid: scopeCid), realCursor)
+        try close([reopened])
+        let hot = try makeDatabase(kind: .onDisk(databaseFileURL: url))
+        XCTAssertEqual(try E2eeDurableInboxStore(database: hot).installedWelcomeBoundary(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device")?.eventId, welcome.eventId)
+        try close([hot])
+    }
+
+    func testAppliedWelcomeSeedsExactPointerAndCorruptPartialPointerFailsClosed() throws {
+        let database = try makeDatabase(), store = E2eeDurableInboxStore(database: database)
+        let event = try generationWelcome()
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [event], hasMore: false, nextCursor: nil)
+        try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: event, installedWelcomeDeviceId: "ios-device")
+        XCTAssertEqual(try store.installedWelcomeBoundary(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device")?.eventId, event.eventId)
+        let key = try E2eeDurableInboxStore.welcomeBoundaryScope(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device")
+        try database.writeAndWait { context in
+            let context = try XCTUnwrap(context as? NSManagedObjectContext)
+            let pointer = try XCTUnwrap(E2eeSyncCheckpointDTO.load(accountId: self.accountId, scopeCid: key, context: context))
+            pointer.applyEventId = "missing"
+        }
+        XCTAssertThrowsError(try store.installedWelcomeBoundary(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device"))
+        try database.writeAndWait { context in
+            let context = try XCTUnwrap(context as? NSManagedObjectContext)
+            let pointer = try XCTUnwrap(E2eeSyncCheckpointDTO.load(accountId: self.accountId, scopeCid: key, context: context))
+            pointer.applyCreatedAt = nil
+        }
+        XCTAssertThrowsError(try store.installedWelcomeBoundary(accountId: accountId, scopeCid: scopeCid, generation: 1, groupId: Data([1,2,3]), deviceId: "ios-device"))
+        XCTAssertNotNil(try store.applyCursor(accountId: accountId, scopeCid: scopeCid))
+    }
+
+    func testInstalledWelcomeBoundaryRequiresAppliedExactGenerationGroupAndDevice() throws {
+        let database=try makeDatabase(),store=E2eeDurableInboxStore(database:database)
+        let object:[String:Any] = ["event_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","created_at":"2026-10-19T00:00:00Z","type":"protocol",
+            "data":["epoch":1,"user":["id":"founder","project_id":"project"],"type":"welcome","created_at":"2026-10-19T00:00:00Z","group_generation":1,"group_id":"AQID","target_user_ids":[accountId],"target_device_ids":["ios-device"],"welcome":"AA==","ratchet_tree":"AA=="]]
+        let event=try JSONDecoder.default.decode(E2eSyncEventEnvelope.self,from:JSONSerialization.data(withJSONObject:object))
+        let cursor=ScopeSyncCursorPayload(createdAt:event.createdAtRaw,eventId:event.eventId)
+        _ = try store.persistPage(accountId:accountId,scopeCid:scopeCid,events:[event],hasMore:false,nextCursor:cursor)
+        let id=Data([1,2,3])
+        XCTAssertNil(try store.installedWelcomeBoundary(accountId:accountId,scopeCid:scopeCid,generation:1,groupId:id,deviceId:"ios-device"))
+        try store.markApplied(accountId:accountId,scopeCid:scopeCid,envelope:event)
+        XCTAssertEqual(try store.installedWelcomeBoundary(accountId:accountId,scopeCid:scopeCid,generation:1,groupId:id,deviceId:"ios-device")?.eventId,event.eventId)
+        XCTAssertNil(try store.installedWelcomeBoundary(accountId:accountId,scopeCid:scopeCid,generation:2,groupId:id,deviceId:"ios-device"))
+        XCTAssertNil(try store.installedWelcomeBoundary(accountId:accountId,scopeCid:scopeCid,generation:1,groupId:Data([4]),deviceId:"ios-device"))
+        XCTAssertNil(try store.installedWelcomeBoundary(accountId:accountId,scopeCid:scopeCid,generation:1,groupId:id,deviceId:"foreign"))
+        XCTAssertNil(try store.installedWelcomeBoundary(accountId:"foreign",scopeCid:scopeCid,generation:1,groupId:id,deviceId:"ios-device"))
+    }
+
 }

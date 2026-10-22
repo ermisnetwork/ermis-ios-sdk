@@ -36,12 +36,26 @@ struct DefaultRequestDecoder: RequestDecoder {
             throw error
         }
 
+        // Bellboy's JWT middleware can return a bodyless 401 before a handler
+        // produces an Ermis error envelope. Renewal must not depend on that body.
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 401 {
+            throw ClientError.ExpiredToken()
+        }
+
         guard var data = data else {
             throw ClientError.ResponseBodyEmpty()
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
             throw ClientError.Unexpected("Expected an HTTP response.")
+        }
+
+        if httpResponse.statusCode == 400, httpResponse.url?.path == "/v1/e2ee/key_packages",
+           let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           value["reason"] as? String == "key_package_validation_failed",
+           let batchId = value["batch_id"] as? String, UUID(uuidString: batchId) != nil,
+           let errors = value["errors"] as? [Any], (1...100).contains(errors.count) {
+            throw MlsKeyPackageUploadRejection(batchId: batchId)
         }
 
         // Handler ermis api error.

@@ -578,6 +578,8 @@ public protocol GroupProtocol : AnyObject {
 
     func epoch()  -> UInt64
 
+    func evictedExternalCommitPublicContextFingerprint(provider: Provider, commit: Data, ratchetTree: Data, beforeEpoch: UInt64) throws  -> Data
+
     func exportGroupInfo(provider: Provider, sender: Identity, withRatchetTree: Bool) throws  -> Data
 
     func exportKey(provider: Provider, label: String, context: Data, keyLength: UInt32) throws  -> Data
@@ -604,6 +606,8 @@ public protocol GroupProtocol : AnyObject {
 
     func pendingProposalsCount()  -> UInt64
 
+    func processEvictedEpochApplicationDeferred(provider: Provider, msg: Data, ratchetTree: Data, beforeEpoch: UInt64) throws  -> ProcessedMessage
+
     func processMessage(provider: Provider, msg: Data) throws  -> ProcessedMessage
 
     func processMessageAt(provider: Provider, msg: Data, serverAcceptedAtSeconds: UInt64) throws  -> ProcessedMessage
@@ -626,6 +630,8 @@ public protocol GroupProtocol : AnyObject {
 
     func proposeSelfUpdate(provider: Provider, sender: Identity) throws  -> ProposalMessage
 
+    func publicContextFingerprint() throws  -> Data
+
     func removeMembers(provider: Provider, sender: Identity, memberIndices: [UInt32]) throws  -> CommitBundle
 
     func removeUser(provider: Provider, sender: Identity, userId: String) throws  -> CommitBundle
@@ -637,6 +643,8 @@ public protocol GroupProtocol : AnyObject {
     func selfUpdate(provider: Provider, sender: Identity) throws  -> CommitBundle
 
     func setAad(aad: Data)
+
+    func stagedExternalCommitPublicContextFingerprint(provider: Provider, commit: Data) throws  -> Data
 
 }
 
@@ -884,6 +892,17 @@ open func epoch() -> UInt64 {
 })
 }
 
+open func evictedExternalCommitPublicContextFingerprint(provider: Provider, commit: Data, ratchetTree: Data, beforeEpoch: UInt64)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_group_evicted_external_commit_public_context_fingerprint(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterData.lower(commit),
+        FfiConverterData.lower(ratchetTree),
+        FfiConverterUInt64.lower(beforeEpoch),$0
+    )
+})
+}
+
 open func exportGroupInfo(provider: Provider, sender: Identity, withRatchetTree: Bool)throws  -> Data {
     return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_group_export_group_info(self.uniffiClonePointer(),
@@ -982,6 +1001,17 @@ open func ownLeafIndex() -> UInt32 {
 open func pendingProposalsCount() -> UInt64 {
     return try!  FfiConverterUInt64.lift(try! rustCall() {
     uniffi_openmls_uniffi_fn_method_group_pending_proposals_count(self.uniffiClonePointer(),$0
+    )
+})
+}
+
+open func processEvictedEpochApplicationDeferred(provider: Provider, msg: Data, ratchetTree: Data, beforeEpoch: UInt64)throws  -> ProcessedMessage {
+    return try  FfiConverterTypeProcessedMessage.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_group_process_evicted_epoch_application_deferred(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterData.lower(msg),
+        FfiConverterData.lower(ratchetTree),
+        FfiConverterUInt64.lower(beforeEpoch),$0
     )
 })
 }
@@ -1097,6 +1127,13 @@ open func proposeSelfUpdate(provider: Provider, sender: Identity)throws  -> Prop
 })
 }
 
+open func publicContextFingerprint()throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_group_public_context_fingerprint(self.uniffiClonePointer(),$0
+    )
+})
+}
+
 open func removeMembers(provider: Provider, sender: Identity, memberIndices: [UInt32])throws  -> CommitBundle {
     return try  FfiConverterTypeCommitBundle.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_group_remove_members(self.uniffiClonePointer(),
@@ -1148,6 +1185,15 @@ open func setAad(aad: Data) {try! rustCall() {
         FfiConverterData.lower(aad),$0
     )
 }
+}
+
+open func stagedExternalCommitPublicContextFingerprint(provider: Provider, commit: Data)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_group_staged_external_commit_public_context_fingerprint(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterData.lower(commit),$0
+    )
+})
 }
 
 
@@ -1215,7 +1261,13 @@ public protocol IdentityProtocol : AnyObject {
 
     func keyPackages(provider: Provider, count: UInt32) throws  -> [KeyPackage]
 
+    func lorRequestSignature(contextJson: String) throws  -> Data
+
     func ownsKeyPackageRef(provider: Provider, reference: Data) throws  -> Bool
+
+    func prepareKeyPackageUpload(provider: Provider, operationId: String, scope: String, expectedProviderId: String, count: UInt32) throws  -> [Data]
+
+    func recoverKeyPackageUpload(provider: Provider, operationId: String, scope: String) throws  -> [Data]?
 
     func signaturePublicKey()  -> Data
 
@@ -1320,11 +1372,41 @@ open func keyPackages(provider: Provider, count: UInt32)throws  -> [KeyPackage] 
 })
 }
 
+open func lorRequestSignature(contextJson: String)throws  -> Data {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_lor_request_signature(self.uniffiClonePointer(),
+        FfiConverterString.lower(contextJson),$0
+    )
+})
+}
+
 open func ownsKeyPackageRef(provider: Provider, reference: Data)throws  -> Bool {
     return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_identity_owns_key_package_ref(self.uniffiClonePointer(),
         FfiConverterTypeProvider.lower(provider),
         FfiConverterData.lower(reference),$0
+    )
+})
+}
+
+open func prepareKeyPackageUpload(provider: Provider, operationId: String, scope: String, expectedProviderId: String, count: UInt32)throws  -> [Data] {
+    return try  FfiConverterSequenceData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_prepare_key_package_upload(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterString.lower(operationId),
+        FfiConverterString.lower(scope),
+        FfiConverterString.lower(expectedProviderId),
+        FfiConverterUInt32.lower(count),$0
+    )
+})
+}
+
+open func recoverKeyPackageUpload(provider: Provider, operationId: String, scope: String)throws  -> [Data]? {
+    return try  FfiConverterOptionSequenceData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_recover_key_package_upload(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterString.lower(operationId),
+        FfiConverterString.lower(scope),$0
     )
 })
 }
@@ -1555,6 +1637,8 @@ public protocol ProviderProtocol : AnyObject {
 
     func groupCount() throws  -> UInt32
 
+    func keyPackageUploadProviderId() throws  -> String
+
     func loadIdentity() throws  -> Data?
 
     func storeIdentity(userId: String, identityBytes: Data) throws
@@ -1650,6 +1734,13 @@ open func deleteIdentity()throws  {try rustCallWithError(FfiConverterTypeMlsErro
 open func groupCount()throws  -> UInt32 {
     return try  FfiConverterUInt32.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_provider_group_count(self.uniffiClonePointer(),$0
+    )
+})
+}
+
+open func keyPackageUploadProviderId()throws  -> String {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_provider_key_package_upload_provider_id(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -3480,6 +3571,30 @@ fileprivate struct FfiConverterOptionTypeRecoveryJournalEntry: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionSequenceData: FfiConverterRustBuffer {
+    typealias SwiftType = [Data]?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterSequenceData.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterSequenceData.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceUInt32: FfiConverterRustBuffer {
     typealias SwiftType = [UInt32]
 
@@ -3522,6 +3637,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceData: FfiConverterRustBuffer {
+    typealias SwiftType = [Data]
+
+    public static func write(_ value: [Data], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterData.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [Data] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [Data]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterData.read(from: &buf))
         }
         return seq
     }
@@ -3852,6 +3992,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_group_epoch() != 60420) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_group_evicted_external_commit_public_context_fingerprint() != 54896) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_group_export_group_info() != 54540) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3891,6 +4034,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_group_pending_proposals_count() != 47881) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_group_process_evicted_epoch_application_deferred() != 55890) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_group_process_message() != 27067) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3924,6 +4070,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_group_propose_self_update() != 21588) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_group_public_context_fingerprint() != 61845) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_group_remove_members() != 64285) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3942,6 +4091,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_group_set_aad() != 37656) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_group_staged_external_commit_public_context_fingerprint() != 50846) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_identity_device_registration_signature() != 11689) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3951,7 +4103,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_identity_key_packages() != 40854) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_identity_lor_request_signature() != 30284) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_identity_owns_key_package_ref() != 3053) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_identity_prepare_key_package_upload() != 53900) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_identity_recover_key_package_upload() != 38860) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_method_identity_signature_public_key() != 8711) {
@@ -3979,6 +4140,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_method_provider_group_count() != 2809) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_provider_key_package_upload_provider_id() != 54053) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_method_provider_load_identity() != 59798) {

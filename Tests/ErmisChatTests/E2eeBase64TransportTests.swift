@@ -42,9 +42,11 @@ final class E2eeBase64TransportTests: XCTestCase {
     }
 
     func testRepresentativeMlsRequestBodiesAlwaysEncodeBase64Strings() throws {
-        let externalJoin = ExternalJoinRequestBody(commit: Data([0, 1, 2]), epoch: 7)
+        let externalJoin = ExternalJoinRequestBody(commit: Data([0, 1, 2]), epoch: 7, groupInfo: Data([3, 4]), operationId: "00000000-0000-4000-8000-000000000001")
         let joinObject = try jsonObject(JSONEncoder.ermis.encode(externalJoin))
         XCTAssertEqual(joinObject["commit"] as? String, "AAEC")
+        XCTAssertEqual(joinObject["group_info"] as? String, "AwQ=")
+        XCTAssertEqual(joinObject["operation_id"] as? String, "00000000-0000-4000-8000-000000000001")
 
         let enable = EnableEncryptionRequestBody(
             commit: Data([0]),

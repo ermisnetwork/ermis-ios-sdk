@@ -39,7 +39,8 @@
     "mls_membership_trace stage=removed event_id=[A-Za-z0-9_-]{1,64} created_at_ms=[0-9]{1,16} self_remove=(?:true|false) target_user=[A-Za-z0-9_-]{1,64}(?![a-z0-9_-])",
     "mls_membership_trace stage=competing_epoch epoch=[0-9]{1,12} commit_hash=[a-f0-9]{12}(?![a-f0-9])",
     "mls_membership_audit stage=(?:retained rows=[0-9]{1,3} limit=500|read_failed)(?![a-z0-9_])",
-    "mls_scope_trace stage=(?:requested|protocol_received|removed_ignored|removed_cleanup) cid=[A-Za-z0-9_:-]{1,192} event_id=[A-Za-z0-9_-]{1,64} created_at=[0-9TZ:.+-]{20,40}(?![0-9A-Za-z_:.+-])"
+    "mls_scope_trace stage=(?:requested|protocol_received|removed_ignored|removed_cleanup) cid=[A-Za-z0-9_:-]{1,192} event_id=[A-Za-z0-9_-]{1,64} created_at=[0-9TZ:.+-]{20,40}(?![0-9A-Za-z_:.+-])",
+    "mls_join_http stage=(registration|receipt|commit) result=(response|transport_error) status=(0|[1-5][0-9]{2})(?![0-9a-z_])"
   ],
   "join_stages": [
     "application_epoch_classified",
@@ -198,7 +199,13 @@
         "ready",
         "rebootstrapping",
         "syncing",
-        "waitingForRepair"
+        "waitingForRepair",
+        "restoring",
+        "recovered",
+        "history_incomplete",
+        "waiting_for_repair",
+        "client_upgrade_required",
+        "infrastructure_retryable"
       ]
     }
   ]

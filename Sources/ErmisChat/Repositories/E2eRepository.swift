@@ -409,6 +409,10 @@ class E2eRepository: EventsControllerDelegate {
         label: "io.ermis.e2e.key-package-refill-state"
     )
     private var keyPackageRefillInFlight = false
+    private var keyPackageRefillToken: UUID?
+    private var keyPackagePipeline: MlsKeyPackagePipeline?
+    private var keyPackageWake: DispatchWorkItem?
+    private var welcomeBoundaryWakes = Set<String>() // protected by durableApplyLock
     private var keyPackageRefillCompletedAtUptime: TimeInterval = 0
     
     private static let loginTimeKey = "ermis_mls_login_time"
@@ -659,6 +663,27 @@ class E2eRepository: EventsControllerDelegate {
         self.mlsClient = mlsClient
         self.eventNotificationCenter = eventNotificationCenter
         self.eventController = EventsController(notificationCenter: eventNotificationCenter)
+        if let encoder = apiClient.encoder as? DefaultRequestEncoder {
+            encoder.mlsProofAuthorizer = MlsRequestProofAuthorizer(session: apiClient.session) { [weak self] in
+                guard let self else { throw ClientError.MlsNoIdentityError() }
+                return try self.performMlsMutation(cidString: "__identity__") {
+                    guard let identity = self.mlsClient.identity, let user = self.mlsClient.userId,
+                        let device = self.mlsClient.currentDeviceId else { throw ClientError.MlsNoIdentityError() }
+                    let current: () throws -> Void = { [weak self] in
+                        guard let self, self.mlsClient.userId == user, self.mlsClient.currentDeviceId == device,
+                            self.mlsClient.identity === identity else { throw ClientError.Unexpected("MLS proof owner changed") }
+                    }
+                    return MlsRequestProofOwner(userId: user, deviceId: device, publicKey: identity.signaturePublicKey(),
+                        assertCurrent: current,
+                        registrationSignature: { device, project, issued in
+                            try self.performMlsMutation(cidString: "__identity__") { try current(); return try identity.deviceRegistrationSignature(deviceId: device, projectId: project, issuedAt: issued) }
+                        }, sign: { context in
+                            try self.performMlsMutation(cidString: "__identity__") { try current(); return try identity.lorRequestSignature(contextJson: context) }
+                        })
+                }
+            }
+        }
+
         mlsClient.archiveCaptureHandler = { [weak self] cid, generation, group, role in
             guard let recovery = self?.archiveRecovery else { return }
             do { try recovery.capture(cid: cid, generation: generation, group: group, role: role) }
@@ -739,6 +764,8 @@ class E2eRepository: EventsControllerDelegate {
             decryptUpdatedMessageEventIfNeeded(message: event.message, cid: event.cid)
         } else if let event = event as? MLSEvent {
             handleMlsEvent(event)
+        } else if let event = event as? GiPublicationRequestedEvent {
+            reconcileGiPublication(cid: event.cid)
         } else if let event = event as? GroupInfoRefreshRequestedEvent {
             handleGroupInfoRefreshRequested(event)
         } else if let event = event as? GroupInfoUploadedEvent {
@@ -1407,68 +1434,54 @@ class E2eRepository: EventsControllerDelegate {
 
     private func reconcileKeyPackageInventory(reason: String) {
         guard beginKeyPackageRefill() else { return }
-        reconcileKeyPackageInventory(reason: reason, attempt: 0)
-    }
-
-    private func reconcileKeyPackageInventory(reason: String, attempt: Int) {
-        apiClient.request(endpoint: .keyPackagesCount(reason: reason)) { [weak self] result in
-            guard let self else { return }
-            guard case let .success(inventory) = result else {
-                self.completeKeyPackageRefill()
-                log.error("[MLS] state=keypackage_refill_failed reason=inventory_transport", subsystems: .mls)
-                return
+        let token = UUID()
+        keyPackageRefillStateQueue.sync { keyPackageRefillToken = token }
+        do {
+            let snapshot = try performMlsMutation(cidString: "__identity__") { () -> (String, String, Identity, Provider, MlsKeyPackageWorkStore) in
+                guard let user = self.mlsClient.userId, let device = self.mlsClient.currentDeviceId,
+                    let identity = self.mlsClient.identity, let provider = self.mlsClient.provider else { throw ClientError.MlsNoIdentityError() }
+                return (user, device, identity, provider, try self.mlsClient.keyPackageWorkStore(origin: self.apiClient.encoder.baseURL.absoluteString))
             }
-            guard let batchSize = E2eeKeyPackageRefillPolicy.batchSize(
-                remaining: inventory.remaining,
-                target: inventory.target,
-                lowWatermark: inventory.lowWatermark,
-                requestedDelta: inventory.requestedDelta,
-                refillGeneration: inventory.refillGeneration
-            ) else {
-                self.completeKeyPackageRefill()
-                log.error("[MLS] state=keypackage_refill_failed reason=contract", subsystems: .mls)
-                return
+            let origin = apiClient.encoder.baseURL
+            let current: () throws -> Void = { [weak self] in
+                guard let self, self.mlsClient.userId == snapshot.0, self.mlsClient.currentDeviceId == snapshot.1,
+                    self.mlsClient.identity === snapshot.2, self.mlsClient.provider === snapshot.3,
+                    self.apiClient.encoder.baseURL == origin,
+                    self.keyPackageRefillStateQueue.sync(execute: { self.keyPackageRefillToken == token }) else { throw ClientError.Unexpected("key_package_scope_changed") }
             }
-            guard batchSize > 0 else {
-                self.completeKeyPackageRefill()
-                return
-            }
-            // Recount after the final upload even when its ACK was lost; the
-            // generation budget remains five batches.
-            guard attempt < E2eeKeyPackageRefillPolicy.maximumAttempts else {
-                self.completeKeyPackageRefill()
-                log.warning("[MLS] state=keypackage_refill_pending reason=attempts_exhausted", subsystems: .mls)
-                return
-            }
-
-            let keyPackages: [[UInt8]]
-            do {
-                keyPackages = try self.performMlsMutation(cidString: "__identity__") {
-                    try self.mlsClient.getKeyPackage(count: batchSize).map(\.uint8Array)
-                }
-            } catch {
-                self.completeKeyPackageRefill()
-                log.error(
-                    "[MLS] state=keypackage_refill_failed reason=generation",
-                    subsystems: .mls
-                )
-                return
-            }
-
-            self.apiClient.request(endpoint: .uploadKeyPackages(keyPackages: keyPackages)) {
-                [weak self] uploadResult in
-                guard let self else { return }
-                switch uploadResult {
-                case .success:
-                    self.reconcileKeyPackageInventory(reason: reason, attempt: attempt + 1)
-                case .failure:
-                    let delay = E2eeKeyPackageRefillPolicy.retryBaseDelay
-                        * pow(2, Double(attempt))
-                    DispatchQueue.global().asyncAfter(deadline: .now() + delay) { [weak self] in
-                        self?.reconcileKeyPackageInventory(reason: reason, attempt: attempt + 1)
+            let pipeline = try MlsKeyPackagePipeline(api: apiClient, store: snapshot.4, assertOwner: current,
+                probe: { [weak self] refs in
+                    guard let self else { throw ClientError.MlsNoProviderError() }
+                    return try self.performMlsMutation(cidString: "__identity__") { try current(); return try self.mlsClient.probeKeyPackageOwnership(refs) }
+                }, providerId: { [weak self] in
+                    guard let self else { throw ClientError.MlsNoProviderError() }
+                    return try self.performMlsMutation(cidString: "__identity__") { try current(); return try self.mlsClient.keyPackageUploadProviderId() }
+                }, generate: { [weak self] id, nativeProviderId, count in
+                    guard let self else { throw ClientError.MlsNoProviderError() }
+                    return try self.performMlsMutation(cidString: "__identity__") { try current(); return try self.mlsClient.prepareKeyPackageUpload(id: id, scope: snapshot.4.scope, nativeProviderId: nativeProviderId, count: count) }
+                }, recover: { [weak self] id in
+                    guard let self else { throw ClientError.MlsNoProviderError() }
+                    return try self.performMlsMutation(cidString: "__identity__") { try current(); return try self.mlsClient.recoverKeyPackageUpload(id: id, scope: snapshot.4.scope) }
+                }, completion: { [weak self] at in
+                    guard let self else { return }
+                    self.keyPackageRefillStateQueue.async {
+                        guard self.keyPackageRefillToken == token else { return }
+                        self.keyPackageRefillInFlight = false
+                        self.keyPackageRefillCompletedAtUptime = ProcessInfo.processInfo.systemUptime
+                        self.keyPackagePipeline = nil
+                        self.keyPackageWake?.cancel()
+                        let wake = DispatchWorkItem { [weak self] in
+                            do { try current(); self?.reconcileKeyPackageInventory(reason: reason) } catch { }
+                        }
+                        self.keyPackageWake = wake
+                        DispatchQueue.global().asyncAfter(deadline: .now() + max(30, at - Date().timeIntervalSince1970), execute: wake)
                     }
-                }
-            }
+                })
+            keyPackageRefillStateQueue.sync { keyPackagePipeline = pipeline }
+            pipeline.start(reason: reason)
+        } catch {
+            completeKeyPackageRefill()
+            log.warning("[MLS] state=keypackage_refill_pending reason=private_or_storage_uncertain", subsystems: .mls)
         }
     }
 
@@ -1932,7 +1945,25 @@ class E2eRepository: EventsControllerDelegate {
                     installedGeneration: localGeneration,
                     groupLoaded: self.mlsClient.isGroupLoaded(cid: cid.rawValue)
                 ) {
-                    self.externalJoinAuthoritativeGeneration(cid: cid, trace: trace)
+                    // An offline reset recipient may already have a durable Welcome.
+                    // Reconcile an existing candidate first; otherwise drain that Welcome
+                    // before constructing a competing external commit.
+                    if self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue) != nil {
+                        self.externalJoinAuthoritativeGeneration(cid: cid, trace: trace)
+                    } else {
+                        self.performE2eChannelSync(cids: [cid.rawValue]) { [weak self] in
+                            guard let self else { return }
+                            let marker = self.mlsClient.loadGenerationMarker(cid: cid.rawValue)
+                            if marker?.generation == UInt64(state.groupGeneration),
+                               marker?.groupId == state.groupId.map({ Data($0) }),
+                               self.mlsClient.isGroupLoaded(cid: cid.rawValue),
+                               !self.mlsClient.hasNonOperationalGroup(cid: cid.rawValue) {
+                                self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
+                            } else {
+                                self.externalJoinAuthoritativeGeneration(cid: cid, trace: trace)
+                            }
+                        }
+                    }
                     return
                 }
                 if state.state == .eligible, state.capability.automaticEnabled {
@@ -2585,9 +2616,56 @@ class E2eRepository: EventsControllerDelegate {
         return blocked
     }
 
+    private func installedGenerationWelcomeBoundary(for cidString: String) throws -> E2eSyncEventEnvelope? {
+        guard mlsClient.loadPendingGenerationJoin(cid: cidString) == nil,
+              let marker = mlsClient.loadGenerationMarker(cid: cidString), marker.status == "active", marker.generation > 0,
+              let groupId = marker.groupId, let account = mlsClient.userId, let device = mlsClient.currentDeviceId else { return nil }
+        return try durableInboxStore.installedWelcomeBoundary(accountId: account, scopeCid: cidString,
+            generation: marker.generation, groupId: groupId, deviceId: device,
+            onContinuation: { [weak self] in
+                self?.continueWelcomeBoundaryScan(cidString: cidString, account: account, device: device,
+                    generation: marker.generation, groupId: groupId)
+            })
+    }
+
+    private func continueWelcomeBoundaryScan(cidString: String, account: String, device: String,
+                                             generation: UInt64, groupId: Data) {
+        guard let provider = mlsClient.provider, let identity = mlsClient.identity,
+              let key = try? E2eeDurableInboxStore.welcomeBoundaryScope(accountId: account, scopeCid: cidString,
+                generation: generation, groupId: groupId, deviceId: device) else { return }
+        let wakeKey = key + String(describing: ObjectIdentifier(provider)) + String(describing: ObjectIdentifier(identity))
+        durableApplyLock.lock()
+        let inserted = welcomeBoundaryWakes.insert(wakeKey).inserted
+        durableApplyLock.unlock()
+        guard inserted else { return }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            self.durableApplyLock.lock(); self.welcomeBoundaryWakes.remove(wakeKey); self.durableApplyLock.unlock()
+            guard self.mlsClient.userId == account, self.mlsClient.currentDeviceId == device,
+                  self.mlsClient.provider === provider, self.mlsClient.identity === identity,
+                  self.mlsClient.loadPendingGenerationJoin(cid: cidString) == nil,
+                  let marker = self.mlsClient.loadGenerationMarker(cid: cidString), marker.status == "active",
+                  marker.generation == generation, marker.groupId == groupId else { return }
+            do {
+                if try self.installedGenerationWelcomeBoundary(for: cidString) != nil,
+                   self.mlsClient.userId == account, self.mlsClient.currentDeviceId == device,
+                   self.mlsClient.provider === provider, self.mlsClient.identity === identity,
+                   self.mlsClient.loadPendingGenerationJoin(cid: cidString) == nil,
+                   let cid = try? ChannelId(cid: cidString) {
+                    self.retryPendingGroupApplications(in: cid)
+                    self.ensureE2eeReady(for: cid, completion: { _ in })
+                }
+            } catch {
+                log.error("[E2EReadiness] state=needsRetry reason=welcome_boundary_proof_unavailable", subsystems: .mls)
+            }
+        }
+    }
+
     private func hasLocalJoinReceipt(for cidString: String) -> Bool {
+        if mlsClient.loadPendingGenerationJoin(cid: cidString)?.candidateFenceVersion == 1 { return true }
         guard let accountId = mlsClient.userId else { return false }
         do {
+            if try installedGenerationWelcomeBoundary(for: cidString) != nil { return false }
             let finalized = try durableInboxStore.finalizeAppliedLocalJoinReceiptIfPossible(
                 accountId: accountId,
                 scopeCid: cidString
@@ -3166,6 +3244,13 @@ class E2eRepository: EventsControllerDelegate {
 
         completions.forEach { $0() }
         for cidString in completedCids {
+            // A prior binary may have retained same-epoch applications behind
+            // the old generation's merged join receipt. Re-evaluate those rows
+            // only after this real scope invocation proves an installed Welcome.
+            if let cid = try? ChannelId(cid: cidString),
+               (try? installedGenerationWelcomeBoundary(for: cidString)) != nil {
+                retryPendingGroupApplications(in: cid)
+            }
             membershipRequestLock.lock()
             let due = Date().timeIntervalSince(membershipLastAttempt[cidString] ?? .distantPast) >= 30
             membershipRequestLock.unlock()
@@ -3291,7 +3376,8 @@ class E2eRepository: EventsControllerDelegate {
                     accountId: accountId, scopeCid: cidString, envelope: event, disposition: applicationDisposition
                 )
             case .requiresCursorAdvance:
-                try durableInboxStore.markApplied(accountId: accountId, scopeCid: cidString, envelope: event)
+                try durableInboxStore.markApplied(accountId: accountId, scopeCid: cidString, envelope: event,
+                    installedWelcomeDeviceId: mlsClient.currentDeviceId)
             case .cursorAdvancedAtomically:
                 break
             case let .finalizeExternalJoin(commitHash, epoch, deviceId, requireReceipt):
@@ -3514,7 +3600,8 @@ class E2eRepository: EventsControllerDelegate {
                         try self.durableInboxStore.markApplied(
                             accountId: accountId,
                             scopeCid: cidString,
-                            envelope: event
+                            envelope: event,
+                            installedWelcomeDeviceId: self.mlsClient.currentDeviceId
                         )
                         if case .protocol(let protocolData) = event.event,
                            protocolData.type == .externalCommit,
@@ -3643,21 +3730,31 @@ class E2eRepository: EventsControllerDelegate {
                     mlsClient.loadGenerationMarker(cid: effectiveCid.rawValue)?.generation ?? 0
                 )
                 if data.groupGeneration < localGeneration {
-                    return .application(.preJoinHistorical)
+                    guard let cipher = data.mlsCiphertext else { throw E2eeSyncApplyError.missingCiphertext(messageId: data.id) }
+                    do {
+                        _ = try retainedHistoricalPayload(messageId: data.id, encryptedData: Data(cipher), cid: cid,
+                            generation: data.groupGeneration, expectedEnvelope: data.e2eeReceivedEnvelope)
+                        return .application(.decrypted)
+                    } catch {
+                        // Missing historical secrets cannot authorize current-provider decrypt
+                        // or block eligible current-generation work in this scope.
+                        return .application(.preJoinHistorical)
+                    }
                 }
                 if data.groupGeneration > localGeneration {
                     enqueueBootstrap(for: effectiveCid)
                     return .application(.pendingGroup)
                 }
                 let firstDecryptableEpoch = firstDecryptableEpoch(for: effectiveCid)
-                let joinBoundary = try durableInboxStore.localJoinBoundary(
+                let welcomeBoundary = try installedGenerationWelcomeBoundary(for: cidString)
+                let joinBoundary = try welcomeBoundary ?? durableInboxStore.localJoinBoundary(
                     accountId: accountId,
                     scopeCid: cidString
                 )
                 let awaitingBoundary = try durableInboxStore.localJoinReceiptProof(
                     accountId: accountId,
                     scopeCid: cidString
-                )?.status == .merged && joinBoundary == nil
+                )?.status == .merged && joinBoundary == nil && welcomeBoundary == nil
                 let groupLoaded = mlsClient.isGroupLoaded(cid: effectiveCid.rawValue)
                 let action = E2eeApplicationEpochAction.resolve(
                     envelope: envelope,
@@ -3835,6 +3932,25 @@ class E2eRepository: EventsControllerDelegate {
     func hydrateCachedAttachmentPreviews(messageIds: [MessageId], cid: ChannelId) {
         guard !messageIds.isEmpty else { return }
         let uniqueMessageIds = Array(Set(messageIds))
+        let assertOwner = captureRetainedHistoryOwner()
+        let operation = BlockOperation { [weak self] in
+            guard let self, (try? assertOwner()) != nil else { return }
+            let current = self.groupGeneration(for: cid)
+            var retained: [(String, Data, Int)] = []
+            self.e2eReadContext.performAndWait {
+                for id in uniqueMessageIds.prefix(100) {
+                    guard let row = self.e2eReadContext.message(id: id), let bytes = row.encryptedData,
+                          row.decryptedMessage == nil, row.mlsGroupGeneration < current else { continue }
+                    retained.append((id, bytes, Int(row.mlsGroupGeneration)))
+                }
+            }
+            for (id, bytes, generation) in retained {
+                guard (try? assertOwner()) != nil else { return }
+                _ = try? self.retainedHistoricalPayload(messageId: id, encryptedData: bytes, cid: cid, generation: generation)
+            }
+        }
+        operation.queuePriority = .high
+        enqueueGroupOperation(operation, cidString: mlsGroupCid(for: cid).rawValue)
         e2eReadContext.perform { [weak self] in
             guard let self else { return }
             for messageId in uniqueMessageIds {
@@ -3910,14 +4026,15 @@ class E2eRepository: EventsControllerDelegate {
                     disposition: .pendingGroup
                 )
                 let firstEpoch = self.firstDecryptableEpoch(for: self.mlsGroupCid(for: cid))
-                let boundary = try self.durableInboxStore.localJoinBoundary(
+                let welcomeBoundary = try self.installedGenerationWelcomeBoundary(for: scopeCid)
+                let boundary = try welcomeBoundary ?? self.durableInboxStore.localJoinBoundary(
                     accountId: accountId,
                     scopeCid: scopeCid
                 )
                 let awaitingBoundary = try self.durableInboxStore.localJoinReceiptProof(
                     accountId: accountId,
                     scopeCid: scopeCid
-                )?.status == .merged && boundary == nil
+                )?.status == .merged && boundary == nil && welcomeBoundary == nil
                 for envelope in events {
                     do {
                         guard case .application(let application) = envelope.event else { continue }
@@ -5277,171 +5394,115 @@ class E2eRepository: EventsControllerDelegate {
         return .init(accountId: accountId, deviceId: deviceId)
     }
 
+    private struct GiPublicationJob: Codable {
+        let identity: String
+        let body: Data
+        var attempts: Int
+        var dueAt: Date
+        var finished: Bool
+    }
+    private let giPublicationLock = NSLock()
+    private var giPublicationsInFlight = Set<String>()
+    private var giDiscoveryLastAt = Date.distantPast
+
+    private func giPublicationKey(cid: String, scope: GroupInfoRepairScope) -> String {
+        let owner = Data("\(scope.accountId):\(scope.deviceId):\(cid)".utf8)
+        return "ermis_gi_publication_v1:" + SHA256.hash(data: owner).map { String(format: "%02x", $0) }.joined()
+    }
+
     private func handleGroupInfoRefreshRequested(_ event: GroupInfoRefreshRequestedEvent) {
-        guard mlsRolloutControls.groupInfoRepairEnabled else { return }
-        guard let scope = groupInfoRepairScope else { return }
-        guard groupInfoRepairCoordinator.enqueue(scope: scope, cid: event.cid.rawValue, request: event.request) else {
-            return
-        }
-        processGroupInfoRefresh(cid: event.cid, request: event.request, attempt: 0)
+        reconcileGiPublication(cid: event.cid)
     }
 
     private func handleGroupInfoUploaded(_ event: GroupInfoUploadedEvent) {
-        guard mlsRolloutControls.groupInfoRepairEnabled else { return }
-        guard let scope = groupInfoRepairScope else { return }
-        groupInfoRepairCoordinator.clearUploaded(
-            scope: scope,
-            cid: event.cid.rawValue,
-            requestId: event.requestId,
-            epoch: event.epoch
-        )
-        groupInfoRepairCoordinator.finish(cid: event.cid.rawValue)
+        // Availability hints never activate MLS state or grant Ready.
+    }
+
+    private struct GiDiscoveryBody: Encodable { let protocol_version = 1; let cids: [String] }
+    private struct GiDiscoveryResponse: Decodable {
+        struct Item: Decodable { let result: String; let publication_marker: GiPublicationMarker? }
+        let states: [String: Item]
     }
 
     private func reconcilePendingGroupInfoRepairs() {
-        guard mlsRolloutControls.groupInfoRepairEnabled else { return }
-        guard let scope = groupInfoRepairScope else { return }
-        let pending = groupInfoRepairCoordinator.pending(scope: scope)
-        var cids = Set(pending.map(\.cid))
-        if let storedCids = try? mlsClient.getStoredGroupIdList() {
-            cids.formUnion(storedCids)
-        }
-        for cidString in cids {
-            guard let cid = try? ChannelId(cid: cidString) else {
-                groupInfoRepairCoordinator.clearRemoved(scope: scope, cid: cidString)
-                continue
-            }
-            apiClient.request(endpoint: .getGroupInfoRefresh(cid: cid)) { [weak self] result in
-                guard let self else { return }
-                switch result {
-                case .success(let response):
-                    guard let request = response.request else {
-                        self.groupInfoRepairCoordinator.clearUploaded(
-                            scope: scope,
-                            cid: cidString,
-                            requestId: "reconciled",
-                            epoch: Int.max
-                        )
-                        return
-                    }
-                    guard self.groupInfoRepairCoordinator.enqueue(
-                        scope: scope,
-                        cid: cidString,
-                        request: request
-                    ) else { return }
-                    self.processGroupInfoRefresh(cid: cid, request: request, attempt: 0)
-                case .failure(let error):
-                    if GroupInfoRepairCoordinator.shouldClearAfterServerFailure(error) {
-                        self.groupInfoRepairCoordinator.clearRemoved(scope: scope, cid: cidString)
-                    } else {
-                        self.groupInfoRepairCoordinator.emitRetryable(cid: cidString, delay: nil)
-                    }
+        guard mlsRolloutControls.groupInfoRepairEnabled, let scope = groupInfoRepairScope else { return }
+        giPublicationLock.lock()
+        guard Date().timeIntervalSince(giDiscoveryLastAt) >= 30 else { giPublicationLock.unlock(); return }
+        giDiscoveryLastAt = Date()
+        giPublicationLock.unlock()
+        // One bounded batch per page replaces all-group claim/lease scans.
+        let cids = (try? mlsClient.getStoredGroupIdList()) ?? []
+        for offset in stride(from: 0, to: cids.count, by: 20) {
+            let body = GiDiscoveryBody(cids: Array(cids[offset..<min(offset + 20, cids.count)]))
+            let endpoint = Endpoint<GiDiscoveryResponse>(path: .mlsControl("v1/e2ee/mls/recovery/discover"), method: .post, body: body, needDeviceId: true)
+            apiClient.request(endpoint: endpoint) { [weak self] result in
+                guard let self, self.groupInfoRepairScope == scope, case .success(let response) = result else { return }
+                for (raw, item) in response.states where item.result == "state" {
+                    guard let marker = item.publication_marker, let cid = try? ChannelId(cid: raw) else { continue }
+                    self.publishGi(cid: cid, marker: marker, scope: scope)
                 }
             }
         }
     }
 
-    private func processGroupInfoRefresh(
-        cid: ChannelId,
-        request: GroupInfoRefreshRequestPayload,
-        attempt: Int
-    ) {
-        guard mlsRolloutControls.groupInfoRepairEnabled else { return }
-        guard request.expiresAt > Date() else {
-            groupInfoRepairCoordinator.finish(cid: cid.rawValue)
-            return
+    private func reconcileGiPublication(cid: ChannelId) {
+        guard mlsRolloutControls.groupInfoRepairEnabled, let scope = groupInfoRepairScope else { return }
+        apiClient.request(endpoint: .getGroupInfoRefresh(cid: cid)) { [weak self] result in
+            guard let self, self.groupInfoRepairScope == scope,
+                case .success(let response) = result, let marker = response.marker else { return }
+            self.publishGi(cid: cid, marker: marker, scope: scope)
         }
-        apiClient.request(endpoint: .claimGroupInfoRefresh(cid: cid, requestId: request.requestId)) {
-            [weak self] result in
+    }
+
+    private func publishGi(cid: ChannelId, marker: GiPublicationMarker, scope: GroupInfoRepairScope) {
+        let identityOwner = mlsClient.identity
+        let key = giPublicationKey(cid: cid.rawValue, scope: scope)
+        giPublicationLock.lock()
+        guard giPublicationsInFlight.insert(key).inserted else { giPublicationLock.unlock(); return }
+        giPublicationLock.unlock()
+        let finish: () -> Void = { [weak self] in
             guard let self else { return }
-            switch result {
-            case .failure(let error):
-                if GroupInfoRepairCoordinator.shouldClearAfterServerFailure(error),
-                   let scope = self.groupInfoRepairScope {
-                    self.groupInfoRepairCoordinator.clearRemoved(scope: scope, cid: cid.rawValue)
-                } else {
-                    self.scheduleGroupInfoRepairRetry(cid: cid, request: request, attempt: attempt)
-                }
-            case .success(let lease):
-                guard let leaseToken = lease.leaseToken else {
-                    self.scheduleGroupInfoRepairRetry(cid: cid, request: request, attempt: attempt)
-                    return
-                }
-                let material: (Data, Int)
-                do {
-                    material = try self.performMlsMutation(cidString: cid.rawValue) {
-                        let group = try self.mlsClient.loadGroup(with: cid.rawValue)
-                        let epoch = Int(group.epoch())
-                        guard epoch >= request.minimumEpoch else {
-                            throw ClientError("Local MLS epoch is behind GroupInfo refresh minimum")
-                        }
-                        let groupInfo = try self.mlsClient.exportGroupInfo(of: group)
-                        guard !groupInfo.isEmpty, groupInfo.count <= 1_048_576 else {
-                            throw ClientError("Exported GroupInfo violates the 1 MiB contract")
-                        }
-                        return (groupInfo, epoch)
-                    }
-                } catch {
-                    self.scheduleGroupInfoRepairRetry(cid: cid, request: request, attempt: attempt)
-                    return
-                }
-                let body = UploadGroupInfoRequestBody(
-                    groupInfo: material.0,
-                    epoch: material.1,
-                    requestId: request.requestId,
-                    leaseToken: leaseToken
-                )
-                self.apiClient.request(endpoint: .uploadGroupInfo(cid: cid, body: body)) { [weak self] uploadResult in
-                    guard let self else { return }
-                    switch uploadResult {
-                    case .failure(let error):
-                        if GroupInfoRepairCoordinator.shouldClearAfterServerFailure(error),
-                           let scope = self.groupInfoRepairScope {
-                            self.groupInfoRepairCoordinator.clearRemoved(scope: scope, cid: cid.rawValue)
-                        } else {
-                            self.scheduleGroupInfoRepairRetry(cid: cid, request: request, attempt: attempt)
-                        }
-                    case .success:
-                        self.apiClient.request(endpoint: .getGroupInfoRefresh(cid: cid)) { [weak self] reconcileResult in
-                            guard let self else { return }
-                            switch reconcileResult {
-                            case .success(let response) where response.request == nil:
-                                guard let scope = self.groupInfoRepairScope else { return }
-                                self.groupInfoRepairCoordinator.clearUploaded(
-                                    scope: scope,
-                                    cid: cid.rawValue,
-                                    requestId: request.requestId,
-                                    epoch: material.1
-                                )
-                                self.groupInfoRepairCoordinator.finish(cid: cid.rawValue)
-                            case .failure(let error)
-                                where GroupInfoRepairCoordinator.shouldClearAfterServerFailure(error):
-                                guard let scope = self.groupInfoRepairScope else { return }
-                                self.groupInfoRepairCoordinator.clearRemoved(scope: scope, cid: cid.rawValue)
-                            default:
-                                self.scheduleGroupInfoRepairRetry(cid: cid, request: request, attempt: attempt)
-                            }
-                        }
-                    }
+            self.giPublicationLock.lock(); self.giPublicationsInFlight.remove(key); self.giPublicationLock.unlock()
+        }
+        do {
+            let target = mlsClient.loadGenerationMarker(cid: cid.rawValue)
+            let body: UploadGroupInfoRequestBody = try performMlsMutation(cidString: cid.rawValue) {
+                guard self.groupInfoRepairScope == scope, self.mlsClient.identity === identityOwner, self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue) == nil,
+                    self.loadMlsRebootstrapCheckpoint(cid: cid.rawValue) == nil,
+                    (target?.generation ?? 0) == marker.group_generation else { throw ClientError("GI publication owner changed") }
+                let group = try self.mlsClient.loadGroup(with: cid.rawValue)
+                guard group.isOperational(), !group.hasPendingCommit(), group.epoch() == marker.epoch else { throw ClientError("GI publication epoch changed") }
+                let gi = try self.mlsClient.exportGroupInfo(of: group)
+                guard !gi.isEmpty, gi.count <= 1_048_576 else { throw ClientError("Invalid GroupInfo size") }
+                return UploadGroupInfoRequestBody(groupInfo: gi, epoch: Int(marker.epoch),
+                    expected: GiPublicationTarget(groupGeneration: marker.group_generation, groupId: target?.groupId?.base64EncodedString()),
+                    observedHash: marker.observed_hash)
+            }
+            guard let signer = identityOwner?.signaturePublicKey() else { finish(); return }
+            let signerHash = SHA256.hash(data: signer).map { String(format: "%02x", $0) }.joined()
+            let identity = "\(signerHash):\(marker.group_generation):\(marker.epoch):\(target?.groupId?.base64EncodedString() ?? ""):\(marker.observed_hash ?? "")"
+            let stored = try mlsClient.readRecoveryCheckpoint(key: key)
+            var job = try stored.map { try JSONDecoder().decode(GiPublicationJob.self, from: $0) }
+            if job?.identity != identity { job = GiPublicationJob(identity: identity, body: try JSONEncoder.ermis.encode(body), attempts: 0, dueAt: .distantPast, finished: false) }
+            guard var reserved = job, !reserved.finished, reserved.attempts < 3, reserved.dueAt <= Date() else { finish(); return }
+            reserved.attempts += 1
+            reserved.dueAt = Date().addingTimeInterval(pow(2, Double(reserved.attempts)))
+            let saved = try JSONEncoder().encode(reserved)
+            try mlsClient.writeRecoveryCheckpoint(saved, key: key)
+            guard try mlsClient.readRecoveryCheckpoint(key: key) == saved, groupInfoRepairScope == scope,
+                mlsClient.loadGenerationMarker(cid: cid.rawValue) == target else { finish(); return }
+            let endpoint = Endpoint<ChannelPayload>(path: .uploadGroupInfo(cid), method: .post, body: reserved.body, needDeviceId: true)
+            apiClient.request(endpoint: endpoint) { [weak self] result in
+                defer { finish() }
+                guard let self, self.groupInfoRepairScope == scope, self.mlsClient.identity === identityOwner,
+                    self.mlsClient.loadGenerationMarker(cid: cid.rawValue) == target,
+                    (try? self.mlsClient.readRecoveryCheckpoint(key: key)) == saved else { return }
+                if case .success = result {
+                    var settled = reserved; settled.finished = true
+                    if let data = try? JSONEncoder().encode(settled) { try? self.mlsClient.writeRecoveryCheckpoint(data, key: key) }
                 }
             }
-        }
-    }
-
-    private func scheduleGroupInfoRepairRetry(
-        cid: ChannelId,
-        request: GroupInfoRefreshRequestPayload,
-        attempt: Int
-    ) {
-        guard let retryDelay = groupInfoRepairCoordinator.retryDelay(attempt: attempt) else {
-            groupInfoRepairCoordinator.emitRetryable(cid: cid.rawValue, delay: nil)
-            groupInfoRepairCoordinator.finish(cid: cid.rawValue)
-            return
-        }
-        groupInfoRepairCoordinator.emitRetryable(cid: cid.rawValue, delay: retryDelay)
-        DispatchQueue.global().asyncAfter(deadline: .now() + retryDelay) { [weak self] in
-            self?.processGroupInfoRefresh(cid: cid, request: request, attempt: attempt + 1)
-        }
+        } catch { finish() }
     }
 
     private func reportGroupInfoFailure(cid: ChannelId, groupInfo: GroupInfoPayload, reason: String) {
@@ -5454,12 +5515,8 @@ class E2eRepository: EventsControllerDelegate {
         apiClient.request(endpoint: .reportGroupInfoFailure(cid: cid, body: body)) { [weak self] result in
             guard let self else { return }
             switch result {
-            case .success(let response):
-                if let request = response.request,
-                   let scope = self.groupInfoRepairScope,
-                   self.groupInfoRepairCoordinator.enqueue(scope: scope, cid: cid.rawValue, request: request) {
-                    self.processGroupInfoRefresh(cid: cid, request: request, attempt: 0)
-                }
+            case .success:
+                self.reconcileGiPublication(cid: cid)
                 self.groupInfoRepairCoordinator.emitRetryable(cid: cid.rawValue, delay: nil)
             case .failure(let error):
                 if GroupInfoRepairCoordinator.shouldClearAfterServerFailure(error),
@@ -5603,10 +5660,9 @@ class E2eRepository: EventsControllerDelegate {
                                 expectedGroupId: groupInfo.groupId.map { Data($0) })
                         }
                         guard !self.mlsClient.isGroupLoaded(cid: cid.rawValue) else { return nil }
-                        return try self.mlsClient.externalJoin(
-                            groupInfo: groupInfo.groupInfo.data,
-                            expectedGroupId: groupInfo.groupId.map { Data($0) }
-                        )
+                        return try self.mlsClient.externalJoinIsolated(cid: cid.rawValue,
+                            generation: UInt64(groupInfo.groupGeneration), groupInfo: groupInfo.groupInfo.data,
+                            expectedGroupId: groupInfo.groupId.map { Data($0) })
                     }
                     guard let externalJoinResult else {
                         trace.info(
@@ -5720,6 +5776,16 @@ class E2eRepository: EventsControllerDelegate {
             return true
         }
 
+        if let marker = mlsClient.loadPendingGenerationJoin(cid: cid.rawValue), marker.externalJoinBody != nil {
+            do {
+                guard let candidate = try performMlsMutation(cidString: cid.rawValue, { try self.mlsClient.resumeExternalJoinCandidate(cid: cid.rawValue) }) else {
+                    throw ClientError.Unexpected("External join checkpoint unavailable")
+                }
+                requestExternalJoin(to: cid, externalJoinResult: candidate, groupGeneration: Int(marker.generation), groupId: marker.groupId, completion: completion)
+            } catch { completion(error) }
+            return true
+        }
+
         guard let proof else {
             if mlsClient.isGroupLoaded(cid: cid.rawValue) {
                 trace.info(
@@ -5830,6 +5896,16 @@ class E2eRepository: EventsControllerDelegate {
                 completion(error)
             }
             return true
+        case .prepared where mlsClient.loadPendingGenerationJoin(cid: cid.rawValue)?.externalJoinBody != nil:
+            do {
+                guard let marker = mlsClient.loadPendingGenerationJoin(cid: cid.rawValue),
+                    let candidate = try performMlsMutation(cidString: cid.rawValue, { try self.mlsClient.resumeExternalJoinCandidate(cid: cid.rawValue) }) else {
+                    throw ClientError.Unexpected("External join candidate unavailable")
+                }
+                requestExternalJoin(to: cid, externalJoinResult: candidate, groupGeneration: Int(marker.generation),
+                    groupId: marker.groupId, completion: completion)
+            } catch { completion(error) }
+            return true
         case .prepared, .finalized:
             try? performMlsMutation(cidString: cid.rawValue) {
                 try? self.mlsClient.clearPendingCommit(in: cid)
@@ -5873,6 +5949,7 @@ class E2eRepository: EventsControllerDelegate {
             completion(error)
             return
         }
+        let identityOwner = mlsClient.identity
         let targetEpoch = externalJoinResult.group.epoch()
         let commitHash = Data(SHA256.hash(data: Data(externalJoinResult.commit)))
         trace.info(
@@ -5900,6 +5977,11 @@ class E2eRepository: EventsControllerDelegate {
                     )
                 )
             }
+            if let previous = try durableInboxStore.localJoinReceiptProof(accountId: accountId, scopeCid: cid.rawValue) {
+                guard previous.epoch == targetEpoch, previous.commitHash == commitHash, previous.requestDeviceId == requestDeviceId else {
+                    throw ClientError("External join local receipt changed")
+                }
+            } else {
             try durableInboxStore.prepareLocalJoinReceipt(
                 accountId: accountId,
                 scopeCid: cid.rawValue,
@@ -5907,9 +5989,8 @@ class E2eRepository: EventsControllerDelegate {
                 commitHash: commitHash,
                 requestDeviceId: requestDeviceId
             )
+            }
         } catch {
-            try? clearPendingCommit(in: cid)
-            mlsClient.removePendingGenerationJoin(cid: cid.rawValue)
             trace.failure(
                 stage: "join_receipt_prepare_failed",
                 source: "external_join",
@@ -5929,17 +6010,22 @@ class E2eRepository: EventsControllerDelegate {
             groupLoaded: true,
             localEpoch: targetEpoch
         )
+        let inlineGI: Data
+        do { inlineGI = try performMlsMutation(cidString: cid.rawValue) { try self.mlsClient.exportGroupInfo(of: externalJoinResult.group) } }
+        catch { completion(error); return }
         let body = ExternalJoinRequestBody(commit: externalJoinResult.commit,
                                            epoch: Int(targetEpoch),
+                                           groupInfo: inlineGI,
+                                           operationId: mlsClient.loadPendingGenerationJoin(cid: cid.rawValue)?.operationId ?? UUID().uuidString.lowercased(),
                                            groupGeneration: groupGeneration,
                                            groupId: groupId,
                                            projectId: cid.projectId)
-        apiClient.request(endpoint: .externalJoin(cid: cid, body: body)) { [weak self] result in
+        submitAtomicExternalJoin(cid: cid, body: body) { [weak self] result in
             guard let self else {
                 return
             }
             switch result {
-            case .success:
+            case .success(let acceptedCandidate):
                 trace.info(
                     stage: "external_commit_accepted",
                     source: "external_join",
@@ -5949,13 +6035,19 @@ class E2eRepository: EventsControllerDelegate {
                     localEpoch: targetEpoch
                 )
                 do {
+                    if try durableInboxStore.localJoinReceiptProof(accountId: accountId, scopeCid: cid.rawValue)?.status != .merged {
                     try durableInboxStore.markLocalJoinServerAccepted(
                         accountId: accountId,
                         scopeCid: cid.rawValue
                     )
+                    }
                     let (groupInfo, epoch) = try performMlsMutation(cidString: cid.rawValue) {
-                        try self.mlsClient.mergePendingCommit(in: cid)
+                        guard self.mlsClient.userId == accountId, self.mlsClient.currentDeviceId == requestDeviceId,
+                            self.mlsClient.identity === identityOwner else { throw ClientError("External join owner changed") }
+                        try self.mlsClient.assertExternalJoinCandidateCurrent(cid: cid.rawValue)
+                        if externalJoinResult.group.hasPendingCommit() { try self.mlsClient.mergePendingCommit(in: cid) }
                         let group = externalJoinResult.group
+                        try self.mlsClient.activateExternalJoinCandidate(cid: cid.rawValue, expected: acceptedCandidate, group: group)
                         return (try self.mlsClient.exportGroupInfo(of: group), group.epoch())
                     }
                     try durableInboxStore.markLocalJoinMerged(
@@ -5963,20 +6055,8 @@ class E2eRepository: EventsControllerDelegate {
                         scopeCid: cid.rawValue,
                         firstDecryptableEpoch: epoch
                     )
-                    if groupGeneration > 0 || self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue)?.providerPath != nil {
-                        let pending = self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue)
-                        try self.mlsClient.saveGenerationMarker(
-                            .init(
-                                cid: cid.rawValue,
-                                generation: UInt64(groupGeneration),
-                                groupId: groupId ?? externalJoinResult.group.groupId(),
-                                epoch: epoch,
-                                status: "active",
-                                operationId: nil,
-                                providerPath: pending?.providerPath
-                            )
-                        )
-                        self.mlsClient.removePendingGenerationJoin(cid: cid.rawValue)
+                    try performMlsMutation(cidString: cid.rawValue) {
+                        try self.mlsClient.finishExternalJoinCandidate(cid: cid.rawValue, expected: acceptedCandidate)
                     }
                     try durableInboxStore.clearNoMatchingKeyPackageJoinPrerequisite(
                         accountId: accountId,
@@ -5986,33 +6066,14 @@ class E2eRepository: EventsControllerDelegate {
                     trace.info(
                         stage: "external_commit_merged",
                         source: "external_join",
-                        result: "group_info_publish_required",
+                        result: "group_info_accepted_inline",
                         receipt: "merged",
                         groupLoaded: true,
                         localEpoch: epoch
                     )
-                    uploadGroupInfo(in: cid, groupInfo: groupInfo, epoch: Int(epoch)) { error in
-                        if let error {
-                            trace.failure(
-                                stage: "group_info_publish_failed",
-                                source: "external_join",
-                                error: error,
-                                receipt: self.joinReceiptTraceStatus(for: cid.rawValue),
-                                groupLoaded: self.mlsClient.isGroupLoaded(cid: cid.rawValue),
-                                localEpoch: epoch
-                            )
-                        } else {
-                            trace.info(
-                                stage: "group_info_published",
-                                source: "external_join",
-                                result: "post_sync_required",
-                                receipt: self.joinReceiptTraceStatus(for: cid.rawValue),
-                                groupLoaded: true,
-                                localEpoch: epoch
-                            )
-                        }
-                        completion(error)
-                    }
+                    // GI was durably accepted with the commit; no second publication request.
+                    _ = groupInfo
+                    completion(nil)
                 } catch (let error) {
                     trace.failure(
                         stage: "external_commit_merge_failed",
@@ -6025,7 +6086,6 @@ class E2eRepository: EventsControllerDelegate {
                     completion(error)
                 }
             case .failure(let error):
-                try? clearPendingCommit(in: cid)
                 trace.failure(
                     stage: "external_commit_request_failed",
                     source: "external_join",
@@ -6039,9 +6099,88 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
     
+    private struct AtomicJoinReceipt: Decodable {
+        let version: Int
+        let operation_id: String
+        let cid: String
+        let state: String
+        let group_generation: UInt64?
+        let epoch: UInt64?
+        let group_id: String?
+        let commit_sha256: String?
+        let group_info_sha256: String?
+        let event_id: String?
+        let rejection_reason: String?
+        let rejected_at: String?
+    }
+
+    private func submitAtomicExternalJoin(cid: ChannelId, body: ExternalJoinRequestBody,
+        completion: @escaping (Result<MlsClient.GroupGenerationMarker, Error>) -> Void) {
+        do {
+            guard let account = mlsClient.userId, var marker = mlsClient.loadPendingGenerationJoin(cid: cid.rawValue) else {
+                throw ClientError.Unexpected("Isolated external join checkpoint required")
+            }
+            let encoded = try marker.externalJoinBody ?? JSONEncoder.ermis.encode(body)
+            guard let json = try JSONSerialization.jsonObject(with: encoded) as? [String: Any],
+                let operation = json["operation_id"] as? String, UUID(uuidString: operation) != nil,
+                let commitString = json["commit"] as? String, let commit = Data(base64Encoded: commitString),
+                let giString = json["group_info"] as? String, let gi = Data(base64Encoded: giString) else {
+                throw ClientError.Unexpected("External join checkpoint invalid")
+            }
+            marker.externalJoinBody = encoded
+            try mlsClient.savePendingGenerationJoin(marker)
+            let identityOwner = mlsClient.identity, deviceOwner = mlsClient.currentDeviceId
+            let frozen = marker
+            let current: () throws -> Void = { [weak self] in
+                guard let self, self.mlsClient.userId == account, self.mlsClient.currentDeviceId == deviceOwner,
+                    self.mlsClient.identity === identityOwner,
+                    self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue) == frozen else {
+                    throw ClientError.Unexpected("External join owner changed")
+                }
+            }
+            let hash: (Data) -> String = { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }
+            let receiptEndpoint = Endpoint<AtomicJoinReceipt>(path: .mlsControl("v1/e2ee/channels/\(cid.apiPath)/external_join/operations/\(operation)"),
+                method: .get, needDeviceId: true)
+            let settle: (Result<AtomicJoinReceipt, Error>) -> Void = { [weak self] result in
+                do {
+                    try current()
+                    let receipt = try result.get()
+                    guard receipt.version == 1, receipt.operation_id == operation, receipt.cid == cid.rawValue,
+                        receipt.group_generation == frozen.generation, receipt.epoch == frozen.epoch,
+                        receipt.commit_sha256 == hash(commit), receipt.group_info_sha256 == hash(gi),
+                        receipt.group_id.flatMap({ Data(base64Encoded: $0) }) == (frozen.generation > 0 ? frozen.groupId : nil) else {
+                        throw ClientError.Unexpected("External join outcome unknown or inconsistent")
+                    }
+                    if receipt.state == "rejected", receipt.rejection_reason == "head_conflict", receipt.rejected_at != nil {
+                        guard self?.mlsClient.removePendingGenerationJoin(cid: cid.rawValue, expected: frozen) == true else { throw ClientError("External join rejection owner changed") }
+                        try self?.durableInboxStore.discardLocalJoinReceipt(accountId: account, scopeCid: cid.rawValue)
+                        throw ClientError.Unexpected("External join head conflict")
+                    }
+                    guard receipt.state == "accepted", receipt.event_id != nil else {
+                        throw ClientError.Unexpected("External join outcome unknown")
+                    }
+                    completion(.success(frozen))
+                } catch { completion(.failure(error)) }
+            }
+            apiClient.request(endpoint: receiptEndpoint) { [weak self] first in
+                do {
+                    try current()
+                    let receipt = try first.get()
+                    if receipt.state != "outcome_unknown" { settle(first); return }
+                    self?.apiClient.request(endpoint: Endpoint<ChannelPayload>(path: .externalJoin(cid), method: .post,
+                        body: encoded, needDeviceId: true)) { [weak self] _ in
+                        do { try current(); self?.apiClient.request(endpoint: receiptEndpoint, completion: settle) }
+                        catch { completion(.failure(error)) }
+                    }
+                } catch { completion(.failure(error)) }
+            }
+        } catch { completion(.failure(error)) }
+    }
+
     private func uploadGroupInfo(in cid: ChannelId, groupInfo: Data, epoch: Int, completion: @escaping (Error?) -> Void) {
-        let body = UploadGroupInfoRequestBody(groupInfo: groupInfo,
-                                              epoch: epoch)
+        let marker = mlsClient.loadGenerationMarker(cid: cid.rawValue)
+        let body = UploadGroupInfoRequestBody(groupInfo: groupInfo, epoch: epoch,
+            expected: GiPublicationTarget(groupGeneration: marker?.generation ?? 0, groupId: marker?.groupId?.base64EncodedString()))
         apiClient.request(endpoint: .uploadGroupInfo(cid: cid, body: body)) { [weak self] result in
             switch result {
             case .success:
@@ -6113,6 +6252,7 @@ class E2eRepository: EventsControllerDelegate {
         // never contends with them on the MLS SQLite store (latency). The operation does
         // no Core Data work, so blocking the caller via `waitUntilFinished` is deadlock-safe.
         let groupCid = mlsGroupCid(for: cid).rawValue
+        guard mlsClient.loadPendingGenerationJoin(cid: groupCid)?.candidateFenceVersion != 1 else { throw ClientError("External join outcome pending") }
         let scopedTrace = trace?.scoped(to: groupCid)
         guard message.attachments.isEmpty else { throw E2eeMessageAADError.authenticatedMetadataMismatch }
         if !message.e2eeAttachments.isEmpty {
@@ -6416,9 +6556,11 @@ class E2eRepository: EventsControllerDelegate {
         // Consuming its ratchet key here discards skipped keys before ordered scope replay.
         // Display callers may read bound cache; only the durable scope owner consumes MLS.
         let groupCid = mlsGroupCid(for: cid).rawValue
+        let assertOwner = captureRetainedHistoryOwner()
         let publishCached: () -> Void = { [weak self] in
             guard let self else { return }
             do {
+                try assertOwner()
                 guard let payload = try self.boundDisplayPayload(
                     messageId: messageId, encryptedData: encryptedData, expectedEnvelope: expectedEnvelope
                 ) else {
@@ -6436,6 +6578,7 @@ class E2eRepository: EventsControllerDelegate {
         let op = BlockOperation { [weak self] in
             guard let self else { return }
             do {
+                try assertOwner()
                 if try self.boundDisplayPayload(messageId: messageId, encryptedData: encryptedData,
                                                expectedEnvelope: expectedEnvelope) != nil {
                     publishCached()
@@ -6443,6 +6586,20 @@ class E2eRepository: EventsControllerDelegate {
                 }
             } catch {
                 completion?(.failure(error))
+                return
+            }
+            var historicalGeneration: Int?
+            let currentGeneration = self.groupGeneration(for: cid)
+            self.e2eReadContext.performAndWait {
+                if let row = self.e2eReadContext.message(id: messageId), row.encryptedData == encryptedData,
+                   row.mlsGroupGeneration < currentGeneration {
+                    historicalGeneration = Int(row.mlsGroupGeneration)
+                }
+            }
+            if let generation = historicalGeneration {
+                do { completion?(.success(try self.retainedHistoricalPayload(messageId: messageId,
+                    encryptedData: encryptedData, cid: cid, generation: generation, expectedEnvelope: expectedEnvelope))) }
+                catch { completion?(.failure(error)) }
                 return
             }
             // A commit's pending-message sweep is already inside scope catch-up. Its ordered
@@ -6454,6 +6611,36 @@ class E2eRepository: EventsControllerDelegate {
         }
         op.queuePriority = .high
         enqueueGroupOperation(op, cidString: groupCid)
+    }
+
+    private func captureRetainedHistoryOwner() -> () throws -> Void {
+        let user = mlsClient.userId, device = mlsClient.currentDeviceId
+        let provider = mlsClient.provider, identity = mlsClient.identity
+        return { [weak self] in
+            guard let self, user != nil, self.mlsClient.userId == user,
+                  self.mlsClient.currentDeviceId == device, self.mlsClient.provider === provider,
+                  self.mlsClient.identity === identity else { throw ClientError.Unexpected("Historical MLS owner changed.") }
+        }
+    }
+
+    /// Local read of a retained generation; caller is on the existing mutation executor.
+    private func retainedHistoricalPayload(messageId: MessageId, encryptedData: Data, cid: ChannelId,
+        generation: Int, expectedEnvelope: E2eeReceivedMessageEnvelope? = nil) throws -> E2ePayload {
+        let assertOwner = captureRetainedHistoryOwner(); try assertOwner()
+        if let cached = try boundDisplayPayload(messageId: messageId, encryptedData: encryptedData, expectedEnvelope: expectedEnvelope) { try assertOwner(); return cached }
+        guard generation >= 0 else { throw ClientError.Unexpected("Invalid historical MLS generation.") }
+        let processed = try mlsClient.processRetainedHistoricalApplication(data: encryptedData,
+            cid: mlsGroupCid(for: cid).rawValue, generation: UInt64(generation))
+        let payload = try validatedPayload(processed.payload, processedAAD: processed.aad,
+            messageId: messageId, cid: cid, expectedEnvelope: expectedEnvelope)
+        let hash = Data(SHA256.hash(data: encryptedData)); try assertOwner()
+        try database.writeAndWait { session in
+            try assertOwner()
+            try session.saveMessageDecrypt(payload: payload, messageId: messageId, ciphertextHash: hash)
+            session.message(id: messageId)?.text = payload.text
+        }
+        e2eeAttachmentReceiveCoordinator.hydratePreviews(payload: payload, messageId: messageId, cid: cid, source: .directDecrypt)
+        return payload
     }
 
     private func boundDisplayPayload(
@@ -6515,8 +6702,38 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
         let currentGeneration = groupGeneration(for: cid)
-        guard (message.mlsGroupGeneration ?? 0) == currentGeneration else {
-            completion(.failure(ClientError.Unexpected("Message belongs to an inactive MLS group generation.")))
+        let messageGeneration = message.mlsGroupGeneration ?? 0
+        guard messageGeneration <= currentGeneration, messageGeneration >= 0 else {
+            completion(.failure(ClientError.Unexpected("Message belongs to a future MLS group generation.")))
+            return
+        }
+        if messageGeneration < currentGeneration {
+            let owner = mlsClient.userId, provider = mlsClient.provider, identity = mlsClient.identity, device = mlsClient.currentDeviceId
+            let op = BlockOperation { [weak self] in
+                guard let self, self.mlsClient.userId == owner, self.mlsClient.provider === provider, self.mlsClient.identity === identity, self.mlsClient.currentDeviceId == device else { completion(.failure(ClientError.Unexpected("Historical MLS owner changed."))); return }
+                do {
+                    let payload: E2ePayload
+                    if let cached = try self.boundDisplayPayload(messageId: message.id, encryptedData: encryptedData, expectedEnvelope: nil) {
+                        payload = cached
+                    } else {
+                        let processed = try self.mlsClient.processRetainedHistoricalApplication(data: encryptedData,
+                            cid: self.mlsGroupCid(for: cid).rawValue, generation: UInt64(messageGeneration))
+                        payload = try self.validatedPayload(processed.payload, processedAAD: processed.aad,
+                            messageId: message.id, cid: cid, expectedEnvelope: nil)
+                        let hash = Data(SHA256.hash(data: encryptedData))
+                        try self.database.writeAndWait { session in
+                            guard self.mlsClient.userId == owner, self.mlsClient.provider === provider, self.mlsClient.identity === identity, self.mlsClient.currentDeviceId == device else { throw ClientError.Unexpected("Historical MLS owner changed.") }
+                            try session.saveMessageDecrypt(payload: payload, messageId: message.id, ciphertextHash: hash)
+                            session.message(id: message.id)?.text = payload.text
+                        }
+                    }
+                    var updated = message; updated.text = payload.text; updated.stickerUrl = payload.stickerUrl; updated.decryptedMessage = payload
+                    self.e2eeAttachmentReceiveCoordinator.hydratePreviews(payload: payload, messageId: message.id, cid: cid, source: .directDecrypt)
+                    completion(.success(updated))
+                } catch { completion(.failure(error)) }
+            }
+            op.queuePriority = .high
+            enqueueGroupOperation(op, cidString: mlsGroupCid(for: cid).rawValue)
             return
         }
 

@@ -6,6 +6,7 @@ import Foundation
 
 enum EndpointPath: Codable {
     case connect
+    case mlsControl(String)
     case sync
     case friendContacts
     case users
@@ -138,6 +139,7 @@ enum EndpointPath: Codable {
 
     var value: String {
         switch self {
+        case .mlsControl(let path): return path
         case .connect: 
             return "connect"
         case .sync:

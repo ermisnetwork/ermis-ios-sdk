@@ -21,12 +21,12 @@ extension Endpoint {
     ///
     /// - Parameter keyPackages: An array of byte arrays, each representing one serialized KeyPackage.
     /// - Returns: The endpoint to upload KeyPackages.
-    static func uploadKeyPackages(keyPackages: [[UInt8]]) -> Endpoint<UploadKeyPackagesPayload> {
+    static func uploadKeyPackages(keyPackages: [[UInt8]], operationId: String? = nil) -> Endpoint<UploadKeyPackagesPayload> {
         .init(
             path: .uploadKeyPackages,
             method: .post,
             body: UploadKeyPackagesRequestBody(keyPackages: keyPackages),
-            needDeviceId: true
+            needDeviceId: true, headers: operationId.map { ["X-Ermis-MLS-Upload-Operation": $0] } ?? [:]
         )
     }
 

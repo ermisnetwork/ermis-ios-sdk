@@ -20,6 +20,26 @@ final class MlsFieldLogDestinationTests: XCTestCase {
         XCTAssertEqual(MlsFieldMarkerProjector.project(marker), marker)
     }
 
+    func testJoinHttpStagesKeepOnlyStatusAndClosedEnums() {
+        for stage in ["registration", "receipt", "commit"] {
+            let marker = "mls_join_http stage=\(stage) result=response status=401"
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture"), marker)
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+            XCTAssertFalse(MlsFieldMarkerProjector.isCanonical(marker + " token=private-fixture"))
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project("mls_join_http stage=arbitrary result=response status=401"))
+        XCTAssertNil(MlsFieldMarkerProjector.project("mls_join_http stage=registration result=response status=2000"))
+    }
+
+    func testReadinessMarkersUseActualLifecycleRawValues() {
+        for state in [E2eeChannelReadiness.restoring, .recovered, .historyIncomplete,
+                      .waitingForRepair, .clientUpgradeRequired, .infrastructureRetryable] {
+            let marker = "join_checkpoint stage=readiness_changed source=readiness readiness=\(state.rawValue)"
+            XCTAssertEqual(MlsFieldMarkerProjector.project("[E2EE_JOIN] stage=readiness_changed source=readiness readiness=\(state.rawValue)"), marker)
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+        }
+    }
+
     func testMembershipBoundariesKeepOnlyBoundedMetadata() {
         let ack = "mls_membership_trace stage=ack action=add epoch=9 commit_hash=5715069c36b1"
         let leave = "mls_self_leave stage=group_deleted cid=team:project:qa-channel"

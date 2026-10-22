@@ -20,6 +20,9 @@ struct Endpoint<ResponseType: Decodable>: Codable {
     let urlType: URLType
     let body: Encodable?
     let headers: [String: String]
+    // In-memory-only operation fences; never serialized into the offline queue.
+    var localMlsGuard: (() throws -> Void)? = nil
+    var localMlsDeadline: Date? = nil
 
     init(
         path: EndpointPath,

@@ -14,6 +14,7 @@ enum E2eeDurableInboxError: Error, Equatable {
     case outOfOrderApply(expectedEventId: String, actualEventId: String)
     case pageTooLarge(scopeCid: String, rawBytes: Int, maximumRawBytes: Int)
     case protocolCommitProofMismatch(eventId: String)
+    case welcomeBoundaryProofMismatch
 }
 
 @objc(E2eeInboxEventDTO)
