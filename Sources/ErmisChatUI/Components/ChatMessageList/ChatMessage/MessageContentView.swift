@@ -663,7 +663,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             setNeedsLayout()
         }
 
-        if let message = content, message.poll != nil, message.deletedAt == nil {
+        if components.isPollsEnabled, let message = content, message.poll != nil, message.deletedAt == nil {
             if pollCard == nil {
                 let card = PollCardView()
                 pollCard = card
@@ -729,6 +729,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             }
         }
         // Set the text content
+        if !components.isPollsEnabled, content?.poll != nil, content?.deletedAt == nil {
+            text = PollStrings.text("Unsupported message type", "Loại tin nhắn chưa được hỗ trợ")
+        }
         if textView?.text != text {
             let attributedText = NSAttributedString(
                 string: text,
@@ -789,7 +792,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         }
 
         // PollCard owns the complete surface; avoid nesting it inside the text bubble border/insets.
-        let showsPoll = content?.poll != nil && content?.deletedAt == nil
+        let showsPoll = components.isPollsEnabled && content?.poll != nil && content?.deletedAt == nil
         bubbleContentContainer.layoutMargins = showsPoll ? .zero : .init(top: 8, left: 16, bottom: 8, right: 16)
         bubbleContentContainer.backgroundColor = showsPoll ? .clear : bubbleContentContainer.backgroundColor
         bubbleView?.layer.borderWidth = showsPoll ? 0 : 1

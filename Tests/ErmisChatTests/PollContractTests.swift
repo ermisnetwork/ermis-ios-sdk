@@ -1,6 +1,8 @@
 import CoreData
 import XCTest
 @testable import ErmisChat
+@testable import ErmisChatUI
+import UIKit
 
 final class PollContractTests: XCTestCase {
     private let json = """
@@ -49,6 +51,22 @@ final class PollContractTests: XCTestCase {
             XCTAssertEqual(userId,"fixture-author");XCTAssertEqual(question,"Lunch with friends")
         } else { XCTFail("Poll-close system message lost") }
     }
+    @MainActor
+    func testDisabledPollMenuKeepsFilesAndLeavesPayloadIntact() throws {
+        let previous = Components.default.isPollsEnabled
+        defer { Components.default.isPollsEnabled = previous }
+        Components.default.isPollsEnabled = false
+        let button = ComposerMenuButton()
+        let actions = button.menuItems().compactMap { $0 as? UIAction }
+        XCTAssertEqual(actions.count, 1)
+        XCTAssertEqual(actions.first?.title, button.title(for: .file))
+        let message = try payload()
+        XCTAssertEqual(message.type, .poll)
+        XCTAssertEqual(message.poll?.totalVoters, 2)
+        Components.default.isPollsEnabled = true
+        XCTAssertEqual(button.menuItems().count, 2)
+    }
+
     func testPersistsPollAndIncludesItInChannelFetch() throws {
         let database = DatabaseContainer(kind:.inMemory,shouldResetEphemeralValuesOnStart:false)
         let loaded = XCTNSPredicateExpectation(predicate:NSPredicate { _,_ in !database.persistentStoreCoordinator.persistentStores.isEmpty },object:nil)

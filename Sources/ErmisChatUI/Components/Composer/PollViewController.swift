@@ -22,6 +22,14 @@ public final class PollViewController: UIViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     public override func viewDidLoad() {
         super.viewDidLoad()
+        guard Components.default.isPollsEnabled else {
+            let label = UILabel()
+            label.text = PollStrings.text("Unsupported message type", "Loại tin nhắn chưa được hỗ trợ")
+            label.textAlignment = .center
+            label.numberOfLines = 0
+            view = label
+            return
+        }
         navigationItem.title = PollStrings.text(model.message == nil ? "New poll" : "Poll", model.message == nil ? "Bình chọn mới" : "Bình chọn")
         navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "xmark"), primaryAction: UIAction { [weak self] _ in self?.model.dismiss?() })
         navigationItem.leftBarButtonItem?.accessibilityLabel = PollStrings.text("Close", "Đóng")

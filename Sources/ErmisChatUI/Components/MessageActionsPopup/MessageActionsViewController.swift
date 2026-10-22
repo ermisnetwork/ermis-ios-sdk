@@ -187,7 +187,7 @@ open class MessageActionsViewController: _ViewController, UIProvider {
 
     /// Matches the poll card capability and keeps SDK/server authorization authoritative.
     public var canClosePoll: Bool {
-        guard let message, message.poll?.closed==false, message.isDeleted==false,
+        guard components.isPollsEnabled, let message, message.poll?.closed==false, message.isDeleted==false,
             let channel, !channel.isE2eeEnabled else { return false }
         return message.author.userId==messageController.client.currentUserId || channel.membership?.isModerator==true
     }

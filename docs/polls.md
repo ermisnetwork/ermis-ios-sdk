@@ -1,5 +1,8 @@
 # Polls
 
+> External branch (2026-10-22): On the `external` app, `Components.default.isPollsEnabled = false` hides creation, vote/results/voter UI and close actions. Existing polls show “Loại tin nhắn chưa được hỗ trợ” / “Unsupported message type”. The flag defaults to true for other SDK consumers; poll models, API and persisted payloads remain unchanged.
+
+
 Polls use the same server contract as Uhm web. Secure/E2EE channels are rejected before plaintext requests, including inherited MLS state for topics. Server authorization and returned snapshots are authoritative.
 
 ## iOS

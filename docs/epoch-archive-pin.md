@@ -1,5 +1,8 @@
 # Epoch archive–PIN trên iOS và Android
 
+> External branch (2026-10-22): External app: `ErmisChatWrapper.epochArchiveEnabled = false` disables archive capture/upload/restore and hides PIN/backup/repair UI because the external backend has no PIN flow. Core SDK/bindings and stored state remain available and unchanged. The historical behavior below describes an enabled integration.
+
+
 ## Hành vi đã triển khai
 
 - PIN thuộc về user và được cấu hình/mở khóa từ màn hồ sơ, không nằm trong menu từng channel. Lần login thật giải thích PIN dùng để mở kho archive và đưa toàn bộ channel E2EE vào queue restore; bỏ qua thì có thể tiếp tục từ mục PIN khôi phục lịch sử trong hồ sơ. Repair từng channel hoặc lỗi đồng bộ không thể tự khắc phục chỉ hỏi PIN khi vault chưa mở khóa.

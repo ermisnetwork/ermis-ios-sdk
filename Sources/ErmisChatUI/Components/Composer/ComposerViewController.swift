@@ -1256,6 +1256,7 @@ open class ComposerViewController: _ViewController,
         case .file:
             showFilePicker()
         case .poll:
+            guard components.isPollsEnabled else { return }
             guard let channelController else { return }
             if channelController.isE2eeEnabled {
                 presentAlert(message: PollStrings.text("Polls are not supported in secure chats yet.", "Chưa hỗ trợ bình chọn trong cuộc trò chuyện bảo mật."))
