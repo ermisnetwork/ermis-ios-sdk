@@ -18,11 +18,21 @@ class MessageRepository {
     let database: DatabaseContainer
     let apiClient: APIClient
     let e2eRepository: E2eRepository
+    private let reconcileLock = NSLock()
+    private var reconciliationWakeInFlight = false
+    private var reconciliationWakePending = false
+    // Canonical acceptance may synchronously enter the MLS executor, whose inbox
+    // reads also need Core Data's writer. Never invoke it while holding that writer.
+    private let sendPersistenceCompletionQueue = DispatchQueue(
+        label: "network.ermis.MessageRepository.send-persistence-completion",
+        qos: .userInitiated
+    )
 
     init(database: DatabaseContainer, apiClient: APIClient, e2eRepository: E2eRepository) {
         self.database = database
         self.apiClient = apiClient
         self.e2eRepository = e2eRepository
+        e2eRepository.resumeOutgoingReconciliation = { [weak self] in self?.resumeDispatchedIntents() }
     }
 
     func sendMessage(
@@ -52,7 +62,7 @@ class MessageRepository {
             // Check the message still have `pendingSend` state.
             let localState = dto.localMessageState
             let isEpochStaleRetry = localState == .pendingSendAfterE2eeEpochStale
-            guard localState == .pendingSend || isEpochStaleRetry else {
+            guard !dto.isHardDeleted, localState == .pendingSend || isEpochStaleRetry else {
                 log.info("[MESSAGE_SEND] state=skipped reason=not_pending")
                 completion(.failure(.messageNotPendingSend))
                 return
@@ -65,10 +75,18 @@ class MessageRepository {
             }
 
             var requestBody = dto.asRequestBody() as MessageRequestBody
+            var outgoingIntent: MlsSendIntent? = nil
+            var outgoingSessionFence: (() throws -> Void)? = nil
 
             // Topics inherit their parent channel's MLS group, so `isE2eeEnabled`
             // also returns true for a topic under an E2EE parent.
-            let isEncrypted = dto.channel?.isE2eeEnabled == true
+            let checkpoint: MlsSendIntent?
+            do { checkpoint = try self.e2eRepository.outgoingSendIntent(uuid: messageId) }
+            catch {
+                completion(.failure(.failedToEncryptedMessage(error)))
+                return
+            }
+            let isEncrypted = dto.channel?.isE2eeEnabled == true || dto.encryptedData != nil || checkpoint != nil
             let e2eeTrace = isEncrypted
                 ? E2eeSendTrace.Context(messageId: messageId, cid: cid)
                 : nil
@@ -113,6 +131,10 @@ class MessageRepository {
                 let e2ePayload: E2ePayload
                 let authenticatedAAD: E2eeMessageAADV1?
                 do {
+                    if let original = checkpoint {
+                        e2ePayload = try JSONDecoder().decode(E2ePayload.self, from: original.payload)
+                        authenticatedAAD = original.aad.isEmpty ? nil : try E2eeMessageAADV1.decoded(from: original.aad)
+                    } else {
                     let cachedPayload = try dto.decryptedMessage?.asPayload()
                     try Self.validateE2eeAttachmentSendBinding(message: dto, cachedPayload: cachedPayload)
                     if let cachedPayload, !cachedPayload.e2eeAttachments.isEmpty {
@@ -145,6 +167,7 @@ class MessageRepository {
                     if requestBody.requiresE2eeAuthenticatedSendLane && authenticatedAAD == nil {
                         throw E2eeMessageAADError.authenticatedSendLaneUnavailable
                     }
+                    }
                 } catch {
                     e2eeTrace?.failure(stage: "authenticated_send_lane_unavailable", error: error)
                     // This is a deterministic local preflight failure. The sender worker removes
@@ -156,92 +179,28 @@ class MessageRepository {
                     return
                 }
                 do {
-                    let currentGroupGeneration = e2eRepository.groupGeneration(for: cid)
-                    if let durableCiphertext = requestBody.encryptedData,
-                       let durableEpoch = requestBody.mlsEpoch {
-                        guard (requestBody.groupGeneration ?? 0) == currentGroupGeneration else {
-                            throw ClientError.Unexpected(
-                                "Durable E2EE ciphertext belongs to an inactive MLS group generation."
-                            )
+                    let intent = try self.e2eRepository.prepareOutgoingSend(requestBody, payload: e2ePayload, cid: cid)
+                    guard let cipher = intent.ciphertext, let epoch = intent.epoch,
+                          epoch <= UInt64(Int.max), intent.generation <= UInt64(Int.max) else { throw MlsSendIntentError.invalid }
+                    let boundPayload = try E2eeArchiveMessageValidator.validate(
+                        JSONDecoder().decode(E2ePayload.self, from: intent.payload),
+                        processedAAD: intent.aad, messageId: messageId, cid: cid.rawValue,
+                        groupCid: e2eRepository.mlsGroupCid(for: cid).rawValue)
+                    try database.writeAndWait { session in
+                        guard let messageDTO = session.message(id: messageId), !messageDTO.isHardDeleted, messageDTO.localMessageState == localState else {
+                            throw MessageRepositoryError.messageNotPendingSend
                         }
-                        e2eeTrace?.info(
-                            stage: "durable_intent_reused",
-                            epoch: UInt64(max(0, durableEpoch)),
-                            ciphertextBytes: durableCiphertext.count,
-                            reusedIntent: true
-                        )
-                        requestBody.bindE2eeNetworkIntent(
-                            ciphertext: durableCiphertext,
-                            epoch: durableEpoch,
-                            groupGeneration: currentGroupGeneration
-                        )
-                    } else {
-                        e2eeTrace?.info(stage: "encrypt_requested", reusedIntent: false)
-                        let encryptedResult: ([UInt8], Int)
-                        if let authenticatedAAD {
-                            encryptedResult = try e2eRepository.encryptedMessage(
-                                e2ePayload,
-                                aad: authenticatedAAD,
-                                in: cid,
-                                trace: e2eeTrace
-                            )
-                        } else {
-                            encryptedResult = try e2eRepository.encryptedMessage(
-                                e2ePayload,
-                                in: cid,
-                                trace: e2eeTrace
-                            )
-                        }
-                        let (encryptedData, epoch) = encryptedResult
-                        let boundPayload = try E2eeArchiveMessageValidator.validate(
-                            e2ePayload, processedAAD: try authenticatedAAD?.encoded() ?? Data(),
-                            messageId: messageId, cid: cid.rawValue,
-                            groupCid: e2eRepository.mlsGroupCid(for: cid).rawValue
-                        )
-
-                        // `encryptedMessage` has already saved the OpenMLS provider state. The
-                        // exact retry intent must now be durable before local state becomes
-                        // `.sending` and before any network request can start. If the app dies in
-                        // the narrow saveState-before-this-write window, no intent exists and the
-                        // next launch safely creates a fresh MLS generation.
-                        let intentPersistenceStartedAt = E2eeSendTrace.nowNanoseconds()
-                        e2eeTrace?.info(
-                            stage: "durable_intent_persist_started",
-                            epoch: UInt64(max(0, epoch)),
-                            ciphertextBytes: encryptedData.count,
-                            reusedIntent: false
-                        )
-                        try database.writeAndWait { session in
-                            guard let messageDTO = session.message(id: messageId),
-                                  messageDTO.localMessageState == localState else {
-                                throw MessageRepositoryError.messageNotPendingSend
-                            }
-                            messageDTO.encryptedData = Data(encryptedData)
-                            messageDTO.mlsEpoch = Int64(epoch)
-                            messageDTO.mlsGroupGeneration = Int64(currentGroupGeneration)
-                            try session.saveMessageDecrypt(
-                                payload: boundPayload,
-                                messageId: messageId,
-                                ciphertextHash: Data(SHA256.hash(data: Data(encryptedData)))
-                            )
-                        }
-                        e2eeTrace?.info(
-                            stage: "durable_intent_persist_succeeded",
-                            epoch: UInt64(max(0, epoch)),
-                            ciphertextBytes: encryptedData.count,
-                            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
-                                since: intentPersistenceStartedAt
-                            ),
-                            reusedIntent: false
-                        )
-                        requestBody.bindE2eeNetworkIntent(
-                            ciphertext: encryptedData,
-                            epoch: epoch,
-                            groupGeneration: currentGroupGeneration
-                        )
+                        messageDTO.encryptedData = cipher
+                        messageDTO.mlsEpoch = Int64(epoch)
+                        messageDTO.mlsGroupGeneration = Int64(intent.generation)
+                        try session.saveMessageDecrypt(payload: boundPayload, messageId: messageId,
+                            ciphertextHash: Data(SHA256.hash(data: cipher)))
                     }
+                    requestBody.bindE2eeNetworkIntent(ciphertext: Array(cipher), epoch: Int(epoch), groupGeneration: Int(intent.generation))
+                    outgoingIntent = intent
                 } catch (let error) {
                     e2eeTrace?.failure(stage: "encrypt_or_intent_persist_failed", error: error)
+                    self.retireOutgoingIntentAfterLocalCancellation(messageId: messageId, cid: cid)
                     // The sender queue removes a completed request. Leaving this row in
                     // `.pendingSend` therefore strands the bubble until a new worker is created
                     // on the next app launch, at which point it is sent unexpectedly. Encryption
@@ -257,7 +216,7 @@ class MessageRepository {
             let sendingStateStartedAt = E2eeSendTrace.nowNanoseconds()
             e2eeTrace?.info(stage: "local_state_sending_started")
             self.database.write({
-                guard let messageDTO = $0.message(id: messageId),
+                guard let messageDTO = $0.message(id: messageId), !messageDTO.isHardDeleted,
                       messageDTO.localMessageState == localState else {
                     throw MessageRepositoryError.messageNotPendingSend
                 }
@@ -266,6 +225,7 @@ class MessageRepository {
                     : .sending
             }, completion: { error in
                 if let error = error {
+                    if isEncrypted { self.retireOutgoingIntentAfterLocalCancellation(messageId: messageId, cid: cid) }
                     if let e2eeTrace {
                         e2eeTrace.failure(
                             stage: "local_state_sending_failed",
@@ -289,10 +249,35 @@ class MessageRepository {
                     )
                 )
 
-                let endpoint: Endpoint<MessagePayload.Boxed> = .sendMessage(
-                    cid: cid,
-                    messagePayload: requestBody
-                )
+                var endpoint: Endpoint<MessagePayload.Boxed>
+                do {
+                    if let prepared = outgoingIntent {
+                        let reconcile = prepared.requiresReconcile
+                        let dispatched = try self.e2eRepository.markOutgoingDispatch(prepared)
+                        outgoingIntent = dispatched
+                        guard let envelope = dispatched.wireEnvelope else { throw MlsSendIntentError.invalid }
+                        endpoint = Endpoint(path: .mlsControl("v1/e2ee/channels/" + cid.apiPath + "/message" + (reconcile ? "/reconcile" : "")),
+                            method: .post, body: envelope, needDeviceId: true)
+                        let sessionFence = try self.e2eRepository.outgoingSessionFence(dispatched)
+                        outgoingSessionFence = sessionFence
+                        // One existing request owner covers auth/encoding/network completion. On
+                        // expiration the durable dispatched intent remains unknown/reconcile-only.
+                        endpoint.localMlsDeadline = Date().addingTimeInterval(15)
+                        endpoint.localMlsTimeoutReason = "mls_send_outcome_unknown"
+                        endpoint.localMlsGuard = { [weak self] in
+                            try sessionFence()
+                            guard let self else { throw MlsSendIntentError.conflict }
+                            try self.e2eRepository.assertOutgoingOwner(dispatched)
+                        }
+                    } else {
+                        endpoint = .sendMessage(cid: cid, messagePayload: requestBody)
+                    }
+                } catch {
+                    self.markMessageAsFailedToSend(id: messageId, trace: e2eeTrace) {
+                        completion(.failure(.failedToSendMessage(error)))
+                    }
+                    return
+                }
                 let requestStartedAt = E2eeSendTrace.nowNanoseconds()
                 e2eeTrace?.info(
                     stage: "http_request_started",
@@ -303,6 +288,15 @@ class MessageRepository {
                 self.apiClient.request(endpoint: endpoint) {
                     switch $0 {
                     case let .success(payload):
+                        if let intent = outgoingIntent {
+                            do {
+                                try outgoingSessionFence?()
+                                try self.e2eRepository.validateOutgoingAcceptance(intent, message: payload.message, destination: cid)
+                            } catch {
+                                completion(.failure(.failedToSendMessage(error)))
+                                return
+                            }
+                        }
                         e2eeTrace?.info(
                             stage: "http_request_succeeded",
                             epoch: payload.message.mlsEpoch.map { UInt64(max(0, $0)) },
@@ -313,11 +307,15 @@ class MessageRepository {
                         self.saveSuccessfullySentMessage(
                             cid: cid,
                             message: payload.message,
-                            trace: e2eeTrace
+                            trace: e2eeTrace,
+                            assertCurrent: outgoingSessionFence
                         ) { result in
                             switch result {
                             case let .success(message):
-                                completion(.success(message))
+                                do {
+                                    if let intent = outgoingIntent { try self.e2eRepository.acceptOutgoingSend(intent) }
+                                    completion(.success(message))
+                                } catch { completion(.failure(.failedToSendMessage(error))) }
                             case let .failure(error):
                                 completion(.failure(.failedToSendMessage(error)))
                             }
@@ -331,7 +329,7 @@ class MessageRepository {
                                 since: requestStartedAt
                             )
                         )
-                        if isEncrypted,
+                        if isEncrypted, outgoingIntent == nil,
                            !isEpochStaleRetry,
                            let rejection = E2eeMessageEpochStaleRejection.parse(error),
                            let intentEpoch = requestBody.mlsEpoch,
@@ -365,7 +363,15 @@ class MessageRepository {
                                 error,
                                 messageId: messageId,
                                 trace: e2eeTrace,
-                                completion: completion
+                                completion: { [weak self] result in
+                                    // HTTP failure cannot revoke acceptance. End the caller's
+                                    // loading state, then wake the existing read-only owner;
+                                    // do not wait for a later unrelated sync or UI Retry.
+                                    completion(result)
+                                    if outgoingIntent?.requiresReconcile == true {
+                                        self?.resumeDispatchedIntents()
+                                    }
+                                }
                             )
                         }
                     }
@@ -374,16 +380,119 @@ class MessageRepository {
         }
     }
 
+    /// One indexed page (at most four) on an existing sync wake. Requests use APIClient's
+    /// existing serial operation queue. No new worker, timer, full-account scan or retry loop.
+    private func resumeDispatchedIntents() {
+        reconcileLock.lock()
+        guard !reconciliationWakeInFlight else {
+            reconciliationWakePending = true
+            reconcileLock.unlock()
+            return
+        }
+        reconciliationWakeInFlight = true
+        reconcileLock.unlock()
+        do { reconcileNext(ArraySlice(try e2eRepository.pendingOutgoingReconciliations())) }
+        catch { finishReconciliationWake() }
+    }
+    private func finishReconciliationWake() {
+        reconcileLock.lock()
+        reconciliationWakeInFlight = false
+        let followUp = reconciliationWakePending
+        reconciliationWakePending = false
+        reconcileLock.unlock()
+        // Only an actual incoming wake schedules this bounded follow-up. An unknown
+        // reconciliation result never schedules itself or creates a polling loop.
+        if followUp { resumeDispatchedIntents() }
+    }
+    private func reconcileNext(_ records: ArraySlice<MlsSendIntent>) {
+        guard let record = records.first else { finishReconciliationWake(); return }
+        let rest = records.dropFirst()
+        do {
+            guard record.requiresReconcile, let wire = record.wireEnvelope,
+                  let root = try JSONSerialization.jsonObject(with: record.originalEnvelope) as? [String: Any],
+                  let message = root["message"] as? [String: Any], let raw = message["cid"] as? String else { throw MlsSendIntentError.invalid }
+            let cid = try ChannelId(cid: raw), sessionFence = try e2eRepository.outgoingSessionFence(record)
+            var endpoint = Endpoint<MessagePayload.Boxed>(path: .mlsControl("v1/e2ee/channels/" + cid.apiPath + "/message/reconcile"), method: .post, body: wire, needDeviceId: true)
+            endpoint.localMlsGuard = { [weak self] in
+                try sessionFence()
+                guard let self else { throw MlsSendIntentError.conflict }
+                try self.e2eRepository.assertOutgoingOwner(record)
+            }
+            endpoint.localMlsDeadline = Date().addingTimeInterval(15)
+            endpoint.localMlsTimeoutReason = "mls_send_outcome_unknown"
+            apiClient.request(endpoint: endpoint) { [weak self] result in
+                guard let self else { return }
+                do {
+                    try sessionFence()
+                    let payload = try result.get()
+                    try self.e2eRepository.validateOutgoingAcceptance(record, message: payload.message, destination: cid)
+                    self.saveSuccessfullySentMessage(cid: cid, message: payload.message, assertCurrent: sessionFence) { saved in
+                        if case .success = saved { try? self.e2eRepository.acceptOutgoingSend(record) }
+                        self.reconcileNext(rest)
+                    }
+                } catch { self.reconcileNext(rest) }
+            }
+        } catch { reconcileNext(rest) }
+    }
+
+    /// A cancel can observe no intent before prepare creates it. If the local row wins
+    /// that race, settle any late native/client artifact before completing the failed send.
+    /// No Core Data transaction is held while the MLS executor commits cancellation.
+    private func retireOutgoingIntentAfterLocalCancellation(messageId: MessageId, cid: ChannelId) {
+        do {
+            var locallyCanceled = false
+            try database.writeAndWait { session in
+                guard let dto = session.message(id: messageId), dto.channel?.cid == cid.rawValue,
+                      dto.isHardDeleted, try session.currentUserIsAuthor(of: dto) else { return }
+                locallyCanceled = true
+            }
+            if locallyCanceled { _ = try e2eRepository.cancelOutgoingSend(uuid: messageId, destination: cid) }
+        } catch {
+            // Terminal client records retain their retirement obligation for the next existing
+            // sync wake when protected storage is temporarily unavailable. Never reseal/retry.
+            log.warning("mls_send_cancel result=retained_for_next_wake", subsystems: .mls)
+        }
+    }
+
+    func preparePendingSendCancellation(messageId: MessageId, cid: ChannelId,
+                                        completion: @escaping (Result<MlsSendIntent?, Error>) -> Void) {
+        database.backgroundReadOnlyContext.perform { [weak self] in
+            guard let self else { return }
+            do {
+                guard let record = try self.e2eRepository.outgoingSendIntent(uuid: messageId), record.phase != .accepted else {
+                    completion(.success(nil)); return
+                }
+                guard let dto = self.database.backgroundReadOnlyContext.message(id: messageId),
+                      dto.channel?.cid == cid.rawValue,
+                      try self.database.backgroundReadOnlyContext.currentUserIsAuthor(of: dto) else { throw MlsSendIntentError.conflict }
+                // No Core Data write transaction is held while native/client journal commits.
+                completion(.success(try self.e2eRepository.cancelOutgoingSend(uuid: messageId, destination: cid)))
+            } catch { completion(.failure(error)) }
+        }
+    }
+
+    func retryOutgoingIntent(messageId: MessageId) throws {
+        try e2eRepository.retryOutgoingSend(uuid: messageId)
+    }
+
     func saveSuccessfullySentMessage(
         cid: ChannelId,
         message: MessagePayload,
         trace: E2eeSendTrace.Context? = nil,
+        assertCurrent: (() throws -> Void)? = nil,
         completion: @escaping (Result<ChatMessage, Error>) -> Void
     ) {
         let persistenceStartedAt = E2eeSendTrace.nowNanoseconds()
         trace?.info(stage: "response_persist_started")
         var persistedMessage: ChatMessage?
         database.write({
+            try assertCurrent?()
+            if assertCurrent != nil, let pending = $0.message(id: message.id),
+               pending.localMessageState == .pendingSend || pending.localMessageState == .pendingSendAfterE2eeEpochStale {
+                // Only validated canonical send/reconcile responses may settle a rescued
+                // pending intent. Ordinary cache/realtime saveMessage keeps its unsent guard.
+                pending.localMessageState = .sending
+            }
             let messageDTO = try $0.saveMessage(payload: message, for: cid, syncOwnReactions: false, cache: nil)
             if messageDTO.localMessageState == .sending ||
                 messageDTO.localMessageState == .sendingAfterE2eeEpochStale ||
@@ -392,35 +501,37 @@ class MessageRepository {
             }
 
             persistedMessage = try messageDTO.asModel()
-        }, completion: {
-            if let error = $0 {
-                if let trace {
-                    trace.failure(
-                        stage: "response_persist_failed",
-                        error: error,
+        }, completion: { error in
+            self.sendPersistenceCompletionQueue.async {
+                if let error {
+                    if let trace {
+                        trace.failure(
+                            stage: "response_persist_failed",
+                            error: error,
+                            operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
+                                since: persistenceStartedAt
+                            )
+                        )
+                    } else {
+                        log.error(
+                            "[MESSAGE_SEND] state=response_persist_failed \(PrivacySafeLogMetadata.errorFields(error))",
+                            subsystems: .offlineSupport
+                        )
+                    }
+                    completion(.failure(error))
+                } else {
+                    trace?.info(
+                        stage: "response_persist_succeeded",
                         operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
                             since: persistenceStartedAt
                         )
                     )
-                } else {
-                    log.error(
-                        "[MESSAGE_SEND] state=response_persist_failed \(PrivacySafeLogMetadata.errorFields(error))",
-                        subsystems: .offlineSupport
-                    )
+                    guard let persistedMessage else {
+                        completion(.failure(MessageRepositoryError.messageDoesNotExist))
+                        return
+                    }
+                    completion(.success(persistedMessage))
                 }
-                completion(.failure(error))
-            } else {
-                trace?.info(
-                    stage: "response_persist_succeeded",
-                    operationMilliseconds: E2eeSendTrace.elapsedMilliseconds(
-                        since: persistenceStartedAt
-                    )
-                )
-                guard let persistedMessage else {
-                    completion(.failure(MessageRepositoryError.messageDoesNotExist))
-                    return
-                }
-                completion(.success(persistedMessage))
             }
         })
         enqueueDecryptIfNeeded(messageId: message.id, payload: message, cid: cid)

@@ -62,6 +62,7 @@ public class KeyPackagesCountPayload: Decodable {
     public let remaining: Int
     public let target: Int
     public let lowWatermark: Int
+    public let signerRecoveryRequired: Bool?
     public let requestedDelta: Int
     public let refillGeneration: Int?
 
@@ -69,6 +70,7 @@ public class KeyPackagesCountPayload: Decodable {
         case remaining
         case target
         case lowWatermark = "low_watermark"
+        case signerRecoveryRequired = "signer_recovery_required"
         case requestedDelta = "requested_delta"
         case refillGeneration = "refill_generation"
     }
@@ -246,6 +248,7 @@ struct MlsGenerationStatePayload: Decodable, Equatable {
     let firstUnresolvedAt: Date?
     let incidentDeadlineAt: Date?
     let capability: MlsRebootstrapCapabilityPayload
+    let recoveryControl: MlsRecoveryControl?
 
     func isValidIdentity(installedGeneration: Int) -> Bool {
         let maximumSafeInteger = 9_007_199_254_740_991
@@ -286,6 +289,7 @@ struct MlsGenerationStatePayload: Decodable, Equatable {
         firstUnresolvedAt = try container.decodeIfPresent(Date.self, forKey: .firstUnresolvedAt)
         incidentDeadlineAt = try container.decodeIfPresent(Date.self, forKey: .incidentDeadlineAt)
         capability = try container.decode(MlsRebootstrapCapabilityPayload.self, forKey: .capability)
+        recoveryControl = try MlsRecoveryControl.decodeIfPresent(from: decoder)
     }
 }
 

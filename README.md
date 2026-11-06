@@ -34,6 +34,15 @@ Generation-aware GroupId, trusted historical processing and archive v2 must
 be verified against the binary actually linked by the app; changing OpenMLS
 source or a package version string alone does not update it.
 
+For an explicitly opted-in retained-tree migration, set
+`config.e2eeAllowExpiredJoinTreeLeaves = true` **before** creating `ErmisClient`.
+The setting is immutable for that MLS owner and is forwarded to Welcome and both
+External Join paths. The SDK default remains `false` (`Verify`). The opt-in selects
+the native checked `AllowExpired` policy for existing join-tree leaves only; it
+keeps not-before, signed lifetime bounds, signatures, tree integrity and new Add
+KeyPackages strict. It does not establish a backend receipt or local Ready by itself.
+
+
 For an MLS upgrade, follow this repository's
 [`MLS_UPGRADE_HANDOFF.md`](MLS_UPGRADE_HANDOFF.md). Do not replace this vendor
 with the old remote tag. If a remote artifact is later published, review its generated
@@ -75,6 +84,13 @@ You can add the ErmisChat SDK to your project IOS using Swift Package Manager.
 4. Swift Package Manager will automatically sets the dependency rule to "Up To Next Major" and install the latest version.
 
 ### Step 3: Create ErmisClient
+
+<details><summary>Change log</summary>
+
+- `2026-10-23`: Optional `ErmisClientConfig.localStorageNamespace` scopes chat/provider/attachment storage and device-ID Keychain/preferences. Nil/empty retains existing paths. An explicit namespace disables legacy provider/defaults import and refuses unavailable scoped storage; it does not change authentication or account/project IDs. Configure it before creating the client and keep it stable for that environment.
+
+</details>
+
 
 ErmisClient is the root object representing a Ermis Chat.
 When starting the app, you need to create an instance of `ErmisClient` first.

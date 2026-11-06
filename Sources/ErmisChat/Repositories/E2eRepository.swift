@@ -1394,6 +1394,9 @@ class E2eRepository: EventsControllerDelegate {
             message?.forwardCid = authenticatedPayload.authenticatedMetadata?.forwardCid
         }
         log.info("[MLS] application_checkpoint stage=decoded_committed result=stored", subsystems: .mls)
+        MlsIncomingTrace.record(.decodedCacheSaved, uuid: messageId, ciphertext: encryptedData)
+        let diagnosticHash = ciphertextHash.map { String(format: "%02x", $0) }.joined()
+        log.info("mls_application_readback uuid=\(messageId.lowercased()) cipher_sha256=\(diagnosticHash) result=committed", subsystems: .mls)
         try mlsClient.saveState(of: group)
         log.info("[MLS] application_checkpoint stage=provider_saved result=stored", subsystems: .mls)
         e2eeAttachmentReceiveCoordinator.hydratePreviews(
@@ -1623,6 +1626,8 @@ class E2eRepository: EventsControllerDelegate {
         }
         isSyncing = true
         syncLock.unlock()
+        resumeOutgoingRetirements()
+        resumeOutgoingReconciliation?()
         auditRetainedMembershipIfRequested()
         
         var cursors: [String: ScopeSyncCursorPayload] = [:]
@@ -1668,10 +1673,17 @@ class E2eRepository: EventsControllerDelegate {
     func handleNewEncryptedChannels(_ cids: [ChannelId]) {
         let resolved = Dictionary(grouping: cids.map(mlsGroupCid(for:)), by: \.rawValue)
             .compactMap { $0.value.first }
-        let candidates = resolved.filter {
-            guard let state = trackedReadiness(for: $0.rawValue) else { return true }
-            return mlsClient.hasNonOperationalGroup(cid: $0.rawValue)
-                || ![.ready, .recovered, .historyIncomplete].contains(state)
+        // List hydration discovers scopes; it is not retry authority. In particular,
+        // another page/realtime list refresh must not restart a failed scope's entire
+        // generation/sync/GroupInfo budget. Explicit scope demand and authoritative
+        // events still enter the existing bootstrap queue. Reserve under the same
+        // readiness lock so overlapping list callbacks cannot both admit a scope.
+        let candidates = resolved.filter { cid in
+            readinessLock.lock()
+            defer { readinessLock.unlock() }
+            guard readinessByCid[cid.rawValue] == nil else { return false }
+            readinessByCid[cid.rawValue] = .restoring
+            return true
         }
         let existing = candidates.filter {
             mlsClient.isGroupLoaded(cid: $0.rawValue)
@@ -1716,6 +1728,12 @@ class E2eRepository: EventsControllerDelegate {
 
     func readiness(for cid: ChannelId) -> E2eeChannelReadiness {
         let groupCid = mlsGroupCid(for: cid).rawValue
+        if !recoveryControlAllowsReady(cid: groupCid) {
+            if let state = trackedReadiness(for: groupCid), ![.ready, .recovered, .historyIncomplete].contains(state) {
+                return state
+            }
+            return .restoring
+        }
         if let store = try? mlsClient.membershipMutationStore(),
            store.hasIntent(cid: groupCid) || (try? store.load(cid: groupCid)) != nil { return .needsRetry }
         readinessLock.lock()
@@ -1891,6 +1909,48 @@ class E2eRepository: EventsControllerDelegate {
         if shouldStart { runNextBootstrap() }
     }
 
+    private func recoveryControlOwner() throws -> (String, String, String, Identity) {
+        guard let user = mlsClient.userId, let device = mlsClient.currentDeviceId,
+              let identity = mlsClient.identity else { throw ClientError.MlsNoIdentityError() }
+        let signer = SHA256.hash(data: identity.signaturePublicKey()).map { String(format: "%02x", $0) }.joined()
+        return (user, device, signer, identity)
+    }
+
+    private func observeRecoveryControl(_ state: MlsGenerationStatePayload, cid: ChannelId) throws -> MlsRecoveryControlCheckpoint? {
+        guard let control = state.recoveryControl else { return nil }
+        return try performMlsMutation(cidString: cid.rawValue) {
+            guard state.isValidIdentity(installedGeneration: 0) else { throw MlsRecoveryControlError.invalidMetadata }
+            let (user, device, signer, identity) = try self.recoveryControlOwner()
+            let record = MlsRecoveryControlCheckpoint(userId: user, deviceId: device, signerSha256: signer,
+                cid: cid.rawValue, generation: UInt64(state.groupGeneration), groupId: state.groupId.map { Data($0) }, control: control)
+            let selected = try self.mlsClient.recoveryControlStore().observe(record) {
+                guard self.mlsClient.userId == user, self.mlsClient.currentDeviceId == device,
+                      self.mlsClient.identity === identity else { throw ClientError.Unexpected("mls_control_owner_changed") }
+            }
+            guard selected.generation == record.generation, selected.control == record.control else {
+                throw ClientError.Unexpected("mls_control_observation_stale")
+            }
+            return selected
+        }
+    }
+
+    private func installedRecoveryControl(cid: String) throws -> MlsRecoveryControlCheckpoint? {
+        try performMlsMutation(cidString: cid) {
+            let (user, device, signer, _) = try self.recoveryControlOwner()
+            return try self.mlsClient.recoveryControlStore().load(userId: user, deviceId: device, signerSha256: signer, cid: cid)
+        }
+    }
+
+    private func recoveryControlAllowsReady(cid: String) -> Bool {
+        do {
+            guard let control = try installedRecoveryControl(cid: cid) else { return false }
+            let marker = mlsClient.loadGenerationMarker(cid: cid)
+            return control.control.action != .manualInterventionRequired
+                && control.generation == (marker?.generation ?? 0)
+                && (control.generation == 0 || control.groupId == marker?.groupId)
+        } catch { return false }
+    }
+
     private func runNextBootstrap() {
         guard let cid = bootstrapQueue.dequeue() else { return }
 
@@ -1903,25 +1963,28 @@ class E2eRepository: EventsControllerDelegate {
             groupLoaded: mlsClient.isGroupLoaded(cid: cid.rawValue)
         )
         setReadiness(.syncing, for: cid.rawValue)
-        if mlsClient.isGroupLoaded(cid: cid.rawValue),
-           !mlsClient.hasNonOperationalGroup(cid: cid.rawValue),
-           !hasLocalJoinReceipt(for: cid.rawValue) {
-            recoverRetainedGroupIfBehind(cid: cid) { [weak self] in
-                guard let self else { return }
-                self.performE2eChannelSync(cids: [cid.rawValue]) {
-                    self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
-                }
-            }
-            return
-        }
+        let ownerIdentity = mlsClient.identity
+        let ownerUser = mlsClient.userId
+        let ownerDevice = mlsClient.currentDeviceId
         apiClient.request(endpoint: .mlsGeneration(cid: cid)) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.mlsClient.identity === ownerIdentity,
+                  self.mlsClient.userId == ownerUser, self.mlsClient.currentDeviceId == ownerDevice else { return }
             switch result {
             case .success(let state):
                 guard state.capability.protocolVersion
                         == MlsRebootstrapCapabilityPayload.currentProtocolVersion,
                       state.capability.repairTimeoutSeconds == 15 * 60 else {
                     self.finishBootstrap(cid: cid, state: .clientUpgradeRequired)
+                    return
+                }
+                do {
+                    let control = try self.observeRecoveryControl(state, cid: cid)
+                    if control?.control.action == .manualInterventionRequired {
+                        self.finishBootstrap(cid: cid, state: .needsRetry)
+                        return
+                    }
+                } catch {
+                    self.finishBootstrap(cid: cid, state: .infrastructureRetryable)
                     return
                 }
                 if let checkpoint = self.loadMlsRebootstrapCheckpoint(cid: cid.rawValue) {
@@ -1962,6 +2025,18 @@ class E2eRepository: EventsControllerDelegate {
                             } else {
                                 self.externalJoinAuthoritativeGeneration(cid: cid, trace: trace)
                             }
+                        }
+                    }
+                    return
+                }
+                if self.mlsClient.isGroupLoaded(cid: cid.rawValue),
+                   !self.mlsClient.hasNonOperationalGroup(cid: cid.rawValue),
+                   !self.hasLocalJoinReceipt(for: cid.rawValue) {
+                    self.recoverRetainedGroupIfBehind(cid: cid) { [weak self] in
+                        guard let self, self.mlsClient.identity === ownerIdentity else { return }
+                        self.performE2eChannelSync(cids: [cid.rawValue]) {
+                            guard self.mlsClient.identity === ownerIdentity else { return }
+                            self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
                         }
                     }
                     return
@@ -2434,6 +2509,8 @@ class E2eRepository: EventsControllerDelegate {
             switch receipt.state {
             case .activated, .deliveryFailedRetryable:
                 guard receipt.operationId == checkpoint.completeBody.operationId,
+                      receipt.operationKey == checkpoint.completeBody.operationKey,
+                      receipt.expectedGeneration == checkpoint.completeBody.expectedGeneration,
                       receipt.currentGeneration == checkpoint.completeBody.newGeneration,
                       receipt.currentEpoch == checkpoint.completeBody.newEpoch,
                       receipt.groupId == checkpoint.completeBody.groupId else {
@@ -2447,12 +2524,29 @@ class E2eRepository: EventsControllerDelegate {
                         candidate: candidate
                     )
                 }
-                removeMlsRebootstrapCheckpoint(cid: cid.rawValue)
-                removeMlsRebootstrapClaimIntent(cid: cid.rawValue)
-                finishBootstrap(
-                    cid: cid,
-                    state: receipt.reason == .historyIncomplete ? .historyIncomplete : .recovered
-                )
+                let installedOwner = mlsClient.identity
+                apiClient.request(endpoint: .mlsGeneration(cid: cid)) { [weak self] result in
+                    guard let self, self.mlsClient.identity === installedOwner else { return }
+                    do {
+                        let state = try result.get()
+                        guard let control = try self.observeRecoveryControl(state, cid: cid),
+                              control.generation == UInt64(receipt.currentGeneration),
+                              control.groupId == receipt.groupId.map({ Data($0) }) else {
+                            throw MlsRecoveryControlError.generationBindingConflict
+                        }
+                        self.removeMlsRebootstrapCheckpoint(cid: cid.rawValue)
+                        self.removeMlsRebootstrapClaimIntent(cid: cid.rawValue)
+                        if control.control.action == .manualInterventionRequired {
+                            self.finishBootstrap(cid: cid, state: .needsRetry)
+                        } else {
+                            self.continueBootstrapAfterGenerationDiscovery(cid: cid, trace: trace)
+                        }
+                    } catch {
+                        // Keep installed group and operation checkpoint; next normal wake observes
+                        // authority again. A successful receipt never substitutes for that authority.
+                        self.finishBootstrap(cid: cid, state: .infrastructureRetryable)
+                    }
+                }
             case .cancelledRepairWon:
                 try mlsClient.removeRebootstrapCandidate(at: checkpoint.providerPath)
                 removeMlsRebootstrapCheckpoint(cid: cid.rawValue)
@@ -2574,7 +2668,10 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
-    private func setReadiness(_ state: E2eeChannelReadiness, for cidString: String) {
+    private func setReadiness(_ requestedState: E2eeChannelReadiness, for cidString: String) {
+        let successStates: Set<E2eeChannelReadiness> = [.ready, .recovered, .historyIncomplete]
+        let state = successStates.contains(requestedState) && !recoveryControlAllowsReady(cid: cidString)
+            ? E2eeChannelReadiness.needsRetry : requestedState
         readinessLock.lock()
         readinessByCid[cidString] = state
         let terminalStates: Set<E2eeChannelReadiness> = [
@@ -2976,6 +3073,15 @@ class E2eRepository: EventsControllerDelegate {
                         )
                     } catch {
                         failedScopes.insert(cidString)
+                        let diagnosticId: String?
+                        if case E2eeDurableInboxError.duplicateEventPayloadMismatch(let eventId) = error {
+                            diagnosticId = eventId
+                        } else {
+                            diagnosticId = channelPayload.events.first?.eventId
+                        }
+                        if let diagnosticId {
+                            MlsIncomingTrace.record(.scopePageFailed, uuid: diagnosticId, ciphertext: nil, error: error)
+                        }
                         if case .invalidPagination = error as? E2eeDurableInboxError,
                            channelPayload.nextCursor != nil,
                            let original = cursors[cidString],
@@ -3462,6 +3568,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func blockDurableScope(_ cidString: String, eventId: String?, error: Error) {
+        if let eventId { MlsIncomingTrace.record(.scopeBlocked, uuid: eventId, ciphertext: nil, error: error) }
         durableApplyLock.lock()
         blockedDurableScopes.insert(cidString)
         durableApplyLock.unlock()
@@ -4376,6 +4483,21 @@ class E2eRepository: EventsControllerDelegate {
         receiveSource: E2eeAttachmentReceiveSource,
         expectedEnvelope: E2eeReceivedMessageEnvelope? = nil
     ) throws -> E2ePayload {
+        MlsIncomingTrace.record(.decryptStarted, uuid: messageId, ciphertext: encryptedData)
+        do {
+            return try decryptMessagePayloadBody(messageId: messageId, encryptedData: encryptedData,
+                cid: cid, receiveSource: receiveSource, expectedEnvelope: expectedEnvelope)
+        } catch {
+            MlsIncomingTrace.record(.decryptFailed, uuid: messageId, ciphertext: encryptedData, error: error)
+            throw error
+        }
+    }
+
+    private func decryptMessagePayloadBody(
+        messageId: MessageId, encryptedData: Data, cid: ChannelId,
+        receiveSource: E2eeAttachmentReceiveSource,
+        expectedEnvelope: E2eeReceivedMessageEnvelope?
+    ) throws -> E2ePayload {
         // Re-check the DB cache — a prior operation may have populated it.
         // Read on the background read-only context so the decrypt hot path never
         // hops to (and blocks on) the main-queue `viewContext`, and never on
@@ -4397,6 +4519,7 @@ class E2eRepository: EventsControllerDelegate {
             do {
                 let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
                 let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
+                MlsIncomingTrace.record(.decryptSucceeded, uuid: messageId, ciphertext: encryptedData)
                 let authenticatedPayload = try persistProcessedApplicationMessage(
                     processed,
                     messageId: messageId,
@@ -4429,6 +4552,7 @@ class E2eRepository: EventsControllerDelegate {
         let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
         log.debug("[MLS] Current group epoch: \(group.epoch())", subsystems: .mls)
         let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
+        MlsIncomingTrace.record(.decryptSucceeded, uuid: messageId, ciphertext: encryptedData)
         let authenticatedPayload = try persistProcessedApplicationMessage(
             processed,
             messageId: messageId,
@@ -5697,11 +5821,9 @@ class E2eRepository: EventsControllerDelegate {
                         completion: completion
                     )
                 } catch (let error) {
-                    try? self.performMlsMutation(cidString: cid.rawValue) {
-                        if !replaceRetainedGroup, self.mlsClient.isGroupLoaded(cid: cid.rawValue) {
-                            try self.mlsClient.deleteGroup(cid: cid.rawValue)
-                        }
-                    }
+                    // External Join stages into an isolated provider. A loaded live group
+                    // belongs to an independently accepted Welcome/recovery and must survive
+                    // a candidate/discovery failure, including a Welcome queued at this boundary.
                     guard self.mlsRolloutControls.groupInfoRepairEnabled else {
                         completion(error)
                         return
@@ -6213,6 +6335,246 @@ class E2eRepository: EventsControllerDelegate {
         return Int(mlsClient.loadGenerationMarker(cid: effectiveCid.rawValue)?.generation ?? 0)
     }
 
+    // Existing coalesced sync wakes the message repository; it owns HTTP and projection.
+    var resumeOutgoingReconciliation: (() -> Void)?
+    func pendingOutgoingReconciliations() throws -> [MlsSendIntent] {
+        try performMlsMutation(cidString: "__send_intent__") {
+            try self.mlsClient.sendIntentStore().pendingReconciliations(owner: self.mlsClient.sendIntentOwner())
+        }
+    }
+
+    private func captureSendOwnerFence() throws -> () throws -> Void {
+        guard let identity = mlsClient.identity, let user = mlsClient.userId,
+              let device = mlsClient.currentDeviceId else { throw MlsSendIntentError.conflict }
+        return { [weak self] in
+            guard let self, self.mlsClient.hasSetup, self.mlsClient.identity === identity,
+                  self.mlsClient.userId == user, self.mlsClient.currentDeviceId == device else {
+                throw MlsSendIntentError.conflict
+            }
+        }
+    }
+
+    func outgoingSendIntent(uuid: String) throws -> MlsSendIntent? {
+        guard mlsClient.hasSetup else { return nil }
+        return try performMlsMutation(cidString: "__send_intent__") {
+            try self.mlsClient.sendIntentStore().load(uuid: uuid.lowercased(), owner: self.mlsClient.sendIntentOwner())
+        }
+    }
+
+    func prepareOutgoingSend(_ request: MessageRequestBody, payload: E2ePayload, cid: ChannelId) throws -> MlsSendIntent {
+        let groupCid = mlsGroupCid(for: cid).rawValue
+        return try performMlsMutation(cidString: groupCid) {
+            let owner = try self.mlsClient.sendIntentOwner()
+            let assertCurrent = try self.captureSendOwnerFence()
+            let store = try self.mlsClient.sendIntentStore()
+            var record = try store.load(uuid: request.id.lowercased(), owner: owner)
+            if let existing = record {
+                guard existing.cid == groupCid else { throw MlsSendIntentError.conflict }
+                if existing.phase == .failedUnsealed { throw MlsSendIntentError.explicitRetryRequired }
+                if existing.phase == .accepted || existing.phase == .canceled { throw MlsSendIntentError.terminal }
+                if existing.ciphertext != nil { return existing }
+            }
+            if let control = try self.installedRecoveryControl(cid: groupCid), control.control.action == .manualInterventionRequired {
+                throw ClientError.Unexpected("mls_manual_intervention_required")
+            }
+            if record == nil {
+                let binding = try self.mlsClient.applicationSendBinding(cid: groupCid)
+                guard request.groupGeneration == nil || (request.groupGeneration! >= 0 && UInt64(request.groupGeneration!) == binding.0) else { throw MlsSendIntentError.conflict }
+                let aad = try request.authenticatedAAD()?.encoded() ?? Data()
+                let payloadBytes = try JSONEncoder().encode(payload)
+                var immutableRequest = request
+                immutableRequest.cid = cid
+                let envelope = try JSONEncoder.ermis.encode(["message": immutableRequest])
+                let scopeBytes = try JSONEncoder().encode([owner, cid.rawValue, groupCid, String(binding.0), binding.1.base64EncodedString(), binding.2])
+                let scope = SHA256.hash(data: scopeBytes).map { String(format: "%02x", $0) }.joined()
+                let created = MlsSendIntent(version: 1, uuid: request.id.lowercased(), owner: owner,
+                    cid: groupCid, scope: scope, groupId: binding.1, generation: binding.0, providerId: binding.2,
+                    payload: payloadBytes, aad: aad, originalEnvelope: envelope, phase: .unsealed,
+                    ciphertext: nil, epoch: nil, wireEnvelope: nil, revision: 0)
+                record = try store.save(created, replacing: nil) { try assertCurrent() }
+            }
+            guard let original = record else { throw MlsSendIntentError.invalid }
+            do {
+                let artifact: ApplicationSendArtifact
+                if let legacyCipher = request.encryptedData, let epoch = request.mlsEpoch {
+                    // Imported pre-journal ciphertext has already crossed the old dispatch path.
+                    // Preserve exact bytes and conservatively reconcile; never reseal it.
+                    guard epoch >= 0 else { throw MlsSendIntentError.invalid }
+                    artifact = ApplicationSendArtifact(ciphertext: Data(legacyCipher), epoch: UInt64(epoch))
+                } else {
+                    artifact = try self.mlsClient.prepareApplicationSend(original)
+                }
+                var sealed = original; sealed.phase = .sealed; sealed.revision += 1
+                sealed.ciphertext = artifact.ciphertext; sealed.epoch = artifact.epoch
+                sealed.nativeSealed = request.encryptedData == nil
+                sealed.wireEnvelope = try Self.applicationSendEnvelope(original, artifact: artifact)
+                var selected = try store.save(sealed, replacing: original) { try assertCurrent() }
+                if request.encryptedData != nil {
+                    var imported = selected; imported.phase = .dispatched; imported.revision += 1
+                    selected = try store.save(imported, replacing: selected) { try assertCurrent() }
+                }
+                return selected
+            } catch {
+                // Leave the original intent recoverable after a native commit/client-save gap.
+                // An explicit Retry resumes this UUID and native artifact; no new encryption.
+                var failed = original; failed.phase = .failedUnsealed; failed.revision += 1
+                _ = try? store.save(failed, replacing: original, assertCurrent: assertCurrent)
+                throw error
+            }
+        }
+    }
+
+    private static func applicationSendEnvelope(_ intent: MlsSendIntent, artifact: ApplicationSendArtifact) throws -> Data {
+        guard var root = try JSONSerialization.jsonObject(with: intent.originalEnvelope) as? [String: Any],
+              var message = root["message"] as? [String: Any],
+              (message["id"] as? String)?.lowercased() == intent.uuid else { throw MlsSendIntentError.invalid }
+        message["mls_ciphertext"] = artifact.ciphertext.base64EncodedString()
+        message["mls_epoch"] = artifact.epoch
+        message["group_generation"] = intent.generation
+        for key in ["text", "attachments", "sticker_url"] { message.removeValue(forKey: key) }
+        root["message"] = message
+        return try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
+    }
+
+    func outgoingSessionFence(_ intent: MlsSendIntent) throws -> () throws -> Void {
+        try performMlsMutation(cidString: intent.cid) {
+            guard try self.mlsClient.sendIntentOwner() == intent.owner else { throw MlsSendIntentError.conflict }
+            return try self.captureSendOwnerFence()
+        }
+    }
+
+    func validateOutgoingAcceptance(_ intent: MlsSendIntent, message: MessagePayload, destination: ChannelId) throws {
+        try performMlsMutation(cidString: intent.cid) {
+            guard try self.mlsClient.sendIntentOwner() == intent.owner,
+                  message.user.id == self.mlsClient.userId,
+                  message.sendingDeviceId == self.mlsClient.currentDeviceId,
+                  message.id.lowercased() == intent.uuid,
+                  message.encryptedData.map({ Data($0) }) == intent.ciphertext,
+                  message.mlsEpoch.map({ $0 >= 0 ? UInt64($0) : UInt64.max }) == intent.epoch,
+                  message.groupGeneration >= 0, UInt64(message.groupGeneration) == intent.generation,
+                  message.canonicalMessageSequence.map({ $0 > 0 }) == true,
+                  message.cid == nil || message.cid == destination else { throw MlsSendIntentError.conflict }
+            let root = try JSONSerialization.jsonObject(with: intent.wireEnvelope ?? Data()) as? [String: Any]
+            guard let envelope = root?["message"] as? [String: Any],
+                  (envelope["parent_id"] as? String) == message.parentId,
+                  (envelope["quoted_message_id"] as? String) == message.quotedMessageId,
+                  (envelope["forward_cid"] as? String) == message.forwardChannelId?.rawValue,
+                  (envelope["forward_message_id"] as? String) == message.forwardMessageId,
+                  (envelope["mentioned_all"] as? Bool ?? false) == message.mentionedAll,
+                  Set(envelope["mentioned_users"] as? [String] ?? []) == Set(message.mentionedUsers),
+                  Set(envelope["e2ee_attachment_ids"] as? [String] ?? []) == Set(message.e2eeAttachmentIds) else {
+                throw MlsSendIntentError.conflict
+            }
+            if let parent = envelope["forward_parent_cid"] as? String {
+                guard parent == message.forwardParentCid else { throw MlsSendIntentError.conflict }
+            }
+        }
+    }
+
+    func assertOutgoingOwner(_ intent: MlsSendIntent) throws {
+        try performMlsMutation(cidString: intent.cid) {
+            guard try self.mlsClient.sendIntentOwner() == intent.owner,
+                  let current = try self.mlsClient.sendIntentStore().load(uuid: intent.uuid, owner: intent.owner),
+                  current.requiresReconcile, current.ciphertext == intent.ciphertext,
+                  current.wireEnvelope == intent.wireEnvelope else { throw MlsSendIntentError.conflict }
+        }
+    }
+
+    func markOutgoingDispatch(_ original: MlsSendIntent) throws -> MlsSendIntent {
+        try performMlsMutation(cidString: original.cid) {
+            guard try self.mlsClient.sendIntentOwner() == original.owner else { throw MlsSendIntentError.conflict }
+            let assertCurrent = try self.captureSendOwnerFence()
+            if original.requiresReconcile { return original }
+            guard original.phase == .sealed else { throw MlsSendIntentError.terminal }
+            var next = original; next.phase = .dispatched; next.revision += 1
+            return try self.mlsClient.sendIntentStore().save(next, replacing: original) {
+                try assertCurrent()
+            }
+        }
+    }
+
+    func retryOutgoingSend(uuid: String) throws {
+        try performMlsMutation(cidString: "__send_intent__") {
+            let owner = try self.mlsClient.sendIntentOwner(), store = try self.mlsClient.sendIntentStore()
+            let assertCurrent = try self.captureSendOwnerFence()
+            guard let original = try store.load(uuid: uuid.lowercased(), owner: owner) else { return }
+            guard original.phase != .accepted, original.phase != .canceled,
+                  original.phase != .canceledDispatched else { throw MlsSendIntentError.terminal }
+            if original.phase == .failedUnsealed {
+                var retry = original; retry.phase = .unsealed; retry.revision += 1
+                try store.save(retry, replacing: original) { try assertCurrent() }
+            }
+        }
+    }
+
+    func cancelOutgoingSend(uuid: String, destination: ChannelId) throws -> MlsSendIntent? {
+        try performMlsMutation(cidString: "__send_intent__") {
+            let owner = try self.mlsClient.sendIntentOwner(), fence = try self.captureSendOwnerFence()
+            let store = try self.mlsClient.sendIntentStore()
+            guard let original = try store.load(uuid: uuid.lowercased(), owner: owner) else { return nil }
+            guard let root = try JSONSerialization.jsonObject(with: original.originalEnvelope) as? [String: Any],
+                  let message = root["message"] as? [String: Any],
+                  (message["cid"] as? String).map({ $0 == destination.rawValue }) ?? true else { throw MlsSendIntentError.conflict }
+            if original.phase == .accepted { return nil }
+            if original.phase == .canceled || original.phase == .canceledDispatched { return original }
+            var canceled = original
+            // A client-unsealed record can already own a committed native ciphertext after
+            // process death. Recover exact bytes, persist their retirement hash authority with
+            // cancellation, then retire. Never infer native absence from a client phase flag.
+            if original.ciphertext == nil, let recovered = try self.mlsClient.recoverApplicationSend(original) {
+                canceled.ciphertext = recovered.ciphertext
+                canceled.epoch = recovered.epoch
+                canceled.wireEnvelope = try Self.applicationSendEnvelope(original, artifact: recovered)
+                canceled.nativeSealed = true
+            }
+            canceled.phase = original.requiresReconcile ? .canceledDispatched : .canceled
+            canceled.revision += 1
+            try store.save(canceled, replacing: original, assertCurrent: fence)
+            if canceled.phase == .canceled { try self.finishOutgoingRetirement(canceled, store: store, assertCurrent: fence) }
+            return canceled
+        }
+    }
+
+    func acceptOutgoingSend(_ original: MlsSendIntent) throws {
+        try performMlsMutation(cidString: original.cid) {
+            guard try self.mlsClient.sendIntentOwner() == original.owner else { throw MlsSendIntentError.conflict }
+            let assertCurrent = try self.captureSendOwnerFence()
+            let store = try self.mlsClient.sendIntentStore()
+            guard let current = try store.load(uuid: original.uuid, owner: original.owner),
+                  current.ciphertext == original.ciphertext, current.wireEnvelope == original.wireEnvelope else { throw MlsSendIntentError.conflict }
+            if current.phase == .accepted && current.nativeRetired { return }
+            var accepted = current
+            if accepted.phase != .accepted {
+                accepted.phase = .accepted; accepted.revision += 1
+                try store.save(accepted, replacing: current, assertCurrent: assertCurrent)
+            }
+            try self.finishOutgoingRetirement(accepted, store: store, assertCurrent: assertCurrent)
+        }
+    }
+
+    private func finishOutgoingRetirement(_ terminal: MlsSendIntent, store: MlsSendIntentStore,
+                                           assertCurrent: () throws -> Void) throws {
+        guard [.accepted, .canceled].contains(terminal.phase) else { throw MlsSendIntentError.terminal }
+        if terminal.nativeRetired { return }
+        try assertCurrent()
+        if terminal.nativeSealed { try mlsClient.retireApplicationSend(terminal) }
+        var retired = terminal; retired.nativeRetired = true; retired.revision += 1
+        try store.save(retired, replacing: terminal, assertCurrent: assertCurrent)
+    }
+
+    private func resumeOutgoingRetirements() {
+        do {
+            try performMlsMutation(cidString: "__send_retirement__") {
+                let owner = try self.mlsClient.sendIntentOwner(), fence = try self.captureSendOwnerFence()
+                let store = try self.mlsClient.sendIntentStore()
+                for record in try store.pendingRetirements(owner: owner) {
+                    do { try self.finishOutgoingRetirement(record, store: store, assertCurrent: fence) }
+                    catch { log.warning("mls_send_retirement result=retained_for_next_wake", subsystems: .mls) }
+                }
+            }
+        } catch { log.warning("mls_send_retirement result=owner_or_storage_unavailable", subsystems: .mls) }
+    }
+
     func encryptedMessage(
         _ message: E2ePayload,
         in cid: ChannelId,
@@ -6288,6 +6650,10 @@ class E2eRepository: EventsControllerDelegate {
             scopedTrace?.info(stage: "mls_group_load_started")
             let group: Group
             do {
+                if let control = try self.installedRecoveryControl(cid: groupCid),
+                   control.control.action == .manualInterventionRequired {
+                    throw ClientError.Unexpected("mls_manual_intervention_required")
+                }
                 group = try self.mlsClient.loadGroup(with: groupCid)
             } catch {
                 log.debug(

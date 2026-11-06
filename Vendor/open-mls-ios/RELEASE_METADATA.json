@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "package_version": "0.1.0-local-pre-contact-rebuilt-20261022",
-  "openmls_source_repository": "../../../../openmls",
-  "openmls_source_revision": "e6815e370865c0ee273b1e01f01373e7d467fed3",
+  "package_version": "0.1.0-local-atomic-send-20261102",
+  "openmls_source_repository": "immutable QA handoff source archive, see IOS_ATOMIC_SEND_PROVENANCE.json",
+  "openmls_source_revision": "2976e664a74d8dcb1d9896977339b25c0f9fce21",
   "cargo_lock_sha256": "ce58625488f14f67b8391802e066191dd5ea2f4bed846a1f5cebecd6d46f6c0b",
   "minimum_ios_version": "15.0",
   "slices": [
@@ -33,38 +33,38 @@
     "public_context_fingerprint",
     "staged_external_commit_public_context_fingerprint",
     "evicted_external_commit_public_context_fingerprint",
-    "process_evicted_epoch_application_deferred"
+    "process_evicted_epoch_application_deferred",
+    "prepare_application_send",
+    "recover_application_send",
+    "retire_application_send"
   ],
   "intentionally_not_exposed": [
     "sender_data_peek"
   ],
-  "verification_status": "Fresh host/two iOS slices/three Android ABIs built; current runtime acceptance unverified",
-  "openmls_tracked_diff_sha256": "d47cc4e8cf95e36daa272532b84ee2dcff3c5c737fec1293eab27f82c0189114",
-  "openmls_source_manifest_sha256": "fcda0294c9d0f1f283e20dde67cfb753e576db9e2d4e1c867637cbcb1826f907",
-  "historical_verification": {
-    "rust_tests": "7 passed; crypto tamper and journal reopen/transaction/paging",
-    "web_interop": "native-to-web and web-to-native crypto passed",
-    "physical_device_runtime": "7 XCTest passed on iPhone 13 Pro Max; final native artifact, Keychain, queue and repeated recovery verified",
-    "evidence_log": "/private/tmp/epoch-archive-ios-hosted-tests7.log",
-    "pin_retry": "Explicit repair issues a fresh PIN request after skip; physical fixture assertion passed"
-  },
+  "verification_status": "Two iOS slices built; Swift consumer and physical native crash/reopen passed; UHM acceptance pending",
+  "openmls_source_manifest_sha256": "7ac58730bf1c1ca8cb56d260979ea40c1caa0537ce990a3a74e54874d2c95ef9",
   "producer": {
     "repository": "openmls",
-    "branch": "feat/epoch-archive",
-    "head": "e6815e370865c0ee273b1e01f01373e7d467fed3",
-    "dirty_diff_sha256": "d47cc4e8cf95e36daa272532b84ee2dcff3c5c737fec1293eab27f82c0189114",
-    "cargo_lock_sha256": "ce58625488f14f67b8391802e066191dd5ea2f4bed846a1f5cebecd6d46f6c0b",
-    "build_script_sha256": "99079052146d6e69cde5de7dc6b520fed42df5cd4b928f135652f8e6dc6d9ee8",
-    "isolated_recipe_sha256": "5c213c3d82d556ddd7faab546e6bf2a951cddb09e6528561abfd1c001bcc91ae",
-    "source_manifest_sha256": "fcda0294c9d0f1f283e20dde67cfb753e576db9e2d4e1c867637cbcb1826f907",
-    "qa_run": "20261022T051052Z-02cce29dd453",
-    "uncommitted": true
+    "head": "2976e664a74d8dcb1d9896977339b25c0f9fce21",
+    "qa_run": "20261101T154607Z-2be286bdc635",
+    "uncommitted": true,
+    "source_archive_sha256": "5275b032923ade458200bf54705c2cbc37df51855bb5c5a6228623c9dff89016",
+    "source_manifest_sha256": "7ac58730bf1c1ca8cb56d260979ea40c1caa0537ce990a3a74e54874d2c95ef9",
+    "supplements": "base-commit README and SQLite migration files; producer byte equivalence pending handoff",
+    "cargo_lock_sha256": "ce58625488f14f67b8391802e066191dd5ea2f4bed846a1f5cebecd6d46f6c0b"
   },
   "verification": {
-    "qa_run": "20261022T051052Z-02cce29dd453",
-    "producer_build": "PASS",
-    "consumer_build": "pending",
-    "physical_device_runtime": "unverified"
+    "qa_run": "20261102T030130Z-6d4de0c70768",
+    "producer_build": "PASS_DEVICE_AND_SIMULATOR",
+    "consumer_build": "PASS_SDK",
+    "physical_native_runtime": "PASS",
+    "physical_process_crash_recovery": "PASS",
+    "uhm_ui_runtime": "NOT_RUN",
+    "keychain_and_upgrade_acceptance": "NOT_RUN",
+    "android_verification": "NOT_CLAIMED"
   },
-  "verification_evidence": ".task-artifacts/qa/runs/20261022T051052Z-02cce29dd453/report.md"
+  "verification_evidence": ".task-artifacts/qa/runs/20261102T030130Z-6d4de0c70768/physical-native-process-crash-evidence.json",
+  "ios_atomic_send_run": "20261102T030130Z-6d4de0c70768",
+  "uncommitted_producer_checkpoint": true,
+  "device_runtime_verification": "PASS_NATIVE_FIXTURE_ONLY"
 }

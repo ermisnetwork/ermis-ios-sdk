@@ -4,6 +4,12 @@ import open_mls_ios
 @testable import ErmisChat
 
 final class MlsRequestProofAuthorizerTests: XCTestCase {
+    private func fixtureAuthorization(project: String, user: String = "proof-user") throws -> String {
+        let payload = try JSONSerialization.data(withJSONObject: ["user_id": user, "client_id": UUID().uuidString,
+            "project_id": project, "chain_id": 1, "ermis": false]).base64EncodedString()
+        return "Bearer e30." + payload + ".fixture"
+    }
+
     private final class FixtureProtocol: URLProtocol {
         static var handler: ((URLRequest) throws -> Data)?
         static var statusCode = 200
@@ -74,6 +80,9 @@ final class MlsRequestProofAuthorizerTests: XCTestCase {
         for status in [401, 403, 503] {
             FixtureProtocol.statusCode = status
             let done = expectation(description: "registration status \(status)")
+            if request.value(forHTTPHeaderField: "Authorization") == nil {
+                request.setValue(try fixtureAuthorization(project: project), forHTTPHeaderField: "Authorization")
+            }
             authorizer.authorize(request) { result in
                 if case .failure(let error) = result { XCTAssertEqual(error is ClientError.ExpiredToken, status == 401) }
                 else { XCTFail("Failed registration must not authorize a join") }
@@ -95,7 +104,7 @@ final class MlsRequestProofAuthorizerTests: XCTestCase {
         FixtureProtocol.handler = { request in
             registrations += 1
             XCTAssertEqual(request.url?.path, "/v1/e2ee/devices/register")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "fixture-auth")
+            XCTAssertTrue(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Bearer e30.") == true)
             var body = request.httpBody ?? Data()
             if body.isEmpty, let stream = request.httpBodyStream {
                 stream.open(); defer { stream.close() }
@@ -121,9 +130,12 @@ final class MlsRequestProofAuthorizerTests: XCTestCase {
             request.httpMethod = operation == 4 ? "POST" : "GET"
             request.httpBody = operation == 4 ? Data(#"{"commit":"AQ==","group_info":"Ag==","epoch":1}"#.utf8) : nil
             request.setValue(device, forHTTPHeaderField: "X-Device-ID")
-            request.setValue("fixture-auth", forHTTPHeaderField: "Authorization")
+            request.setValue(try fixtureAuthorization(project: project), forHTTPHeaderField: "Authorization")
             let done = expectation(description: "signed operation \(operation)")
             let original = request
+            if request.value(forHTTPHeaderField: "Authorization") == nil {
+                request.setValue(try fixtureAuthorization(project: project), forHTTPHeaderField: "Authorization")
+            }
             authorizer.authorize(request) { result in
                 defer { done.fulfill() }
                 do {
@@ -170,6 +182,9 @@ final class MlsRequestProofAuthorizerTests: XCTestCase {
             request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization"); request.setValue(device, forHTTPHeaderField: "X-Device-ID")
             if operation == 6 { request.setValue(batch, forHTTPHeaderField: "X-Ermis-MLS-Upload-Operation") }
             let done = expectation(description: "operation \(operation)")
+            if request.value(forHTTPHeaderField: "Authorization") == nil {
+                request.setValue(try fixtureAuthorization(project: project), forHTTPHeaderField: "Authorization")
+            }
             authorizer.authorize(request) { result in
                 defer { done.fulfill() }
                 do {
@@ -185,6 +200,75 @@ final class MlsRequestProofAuthorizerTests: XCTestCase {
             }
             wait(for:[done],timeout:5)
         }
+    }
+
+    func testRegistrationDenialsPreserveDeviceBindingAndNeverSendOriginalRequest() throws {
+        let provider = Provider(), identity = try Identity(provider: provider, userId: "proof-user")
+        let identityBefore = try identity.toBytes()
+        let project = "00000000-0000-4000-8000-000000000084", device = "proof-device"
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FixtureProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel(); FixtureProtocol.handler = nil; FixtureProtocol.statusCode = 200 }
+        for reason in ["mls_device_signer_mismatch", "mls_legacy_pool_signer_mismatch", "mls_device_inactive", "mls_device_project_conflict", "mls_device_unauthorized", "mls_signer_owned_by_other_device", "mls_legacy_pool_unverified", "unknown"] {
+            var requests = 0
+            FixtureProtocol.statusCode = 403
+            FixtureProtocol.handler = { request in
+                requests += 1
+                XCTAssertEqual(request.url?.path, "/v1/e2ee/devices/register")
+                return try JSONSerialization.data(withJSONObject: ["reason": reason])
+            }
+            let authorizer = MlsRequestProofAuthorizer(session: session) {
+                MlsRequestProofOwner(userId: "proof-user", deviceId: device, publicKey: identity.signaturePublicKey(), assertCurrent: {},
+                    registrationSignature: { try identity.deviceRegistrationSignature(deviceId: $0, projectId: $1, issuedAt: $2) },
+                    sign: { try identity.lorRequestSignature(contextJson: $0) })
+            }
+            var request = URLRequest(url: try XCTUnwrap(URL(string: "https://mls-proof.invalid/v1/e2ee/channels/team/\(project):scope/external_join")))
+            request.httpMethod = "POST"; request.setValue(device, forHTTPHeaderField: "X-Device-ID")
+            let done = expectation(description: reason)
+            if request.value(forHTTPHeaderField: "Authorization") == nil {
+                request.setValue(try fixtureAuthorization(project: project), forHTTPHeaderField: "Authorization")
+            }
+            authorizer.authorize(request) { result in
+                if case .failure(let error) = result {
+                    XCTAssertEqual((error as? MlsRegistrationFailure)?.reason,
+                                   MlsRegistrationFailure.allowedReasons.contains(reason) ? reason : "mls_device_unauthorized")
+                }
+                else { XCTFail("Rejected registration cannot send join") }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 5)
+            XCTAssertEqual(requests, 1)
+            XCTAssertEqual(try identity.toBytes(), identityBefore)
+        }
+    }
+
+    func testExternalJoinCannotRegisterForDifferentJWTAccountOrProject() throws {
+        let provider = Provider(), identity = try Identity(provider: provider, userId: "proof-user")
+        let project = "00000000-0000-4000-8000-000000000084", device = "proof-device"
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FixtureProtocol.self]
+        let session = URLSession(configuration: config)
+        defer { session.invalidateAndCancel(); FixtureProtocol.handler = nil }
+        var requests = 0
+        FixtureProtocol.handler = { _ in requests += 1; return Data() }
+        let authorizer = MlsRequestProofAuthorizer(session: session) {
+            MlsRequestProofOwner(userId: "proof-user", deviceId: device, publicKey: identity.signaturePublicKey(), assertCurrent: {},
+                registrationSignature: { try identity.deviceRegistrationSignature(deviceId: $0, projectId: $1, issuedAt: $2) },
+                sign: { try identity.lorRequestSignature(contextJson: $0) })
+        }
+        for (user, jwtProject, reason) in [("another-user", project, "mls_request_account_mismatch"),
+            ("proof-user", "00000000-0000-4000-8000-000000000085", "mls_request_project_mismatch")] {
+            var request = URLRequest(url: try XCTUnwrap(URL(string: "https://mls-proof.invalid/v1/e2ee/channels/team/\(project):scope/external_join")))
+            request.httpMethod = "POST"; request.setValue(device, forHTTPHeaderField: "X-Device-ID")
+            request.setValue(try fixtureAuthorization(project: jwtProject, user: user), forHTTPHeaderField: "Authorization")
+            let done = expectation(description: reason)
+            authorizer.authorize(request) { result in
+                if case .failure(let error) = result { XCTAssertEqual((error as? MlsRegistrationFailure)?.reason, reason) }
+                else { XCTFail("Foreign request cannot be registered") }
+                done.fulfill()
+            }
+            wait(for: [done], timeout: 1)
+        }
+        XCTAssertEqual(requests, 0)
     }
 
 }

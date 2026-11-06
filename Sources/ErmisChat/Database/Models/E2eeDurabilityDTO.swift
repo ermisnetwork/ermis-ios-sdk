@@ -135,7 +135,7 @@ final class E2eeInboxEventDTO: NSManagedObject {
             let canonicalStoredEnvelope = try E2eeWireJSONCanonicalizer.canonicalizeJSONData(
                 existing.rawEnvelope
             )
-            guard canonicalStoredEnvelope == envelope.rawEnvelope else {
+            guard E2eeScopeEnvelopeIdentity.matches(canonicalStoredEnvelope, envelope.rawEnvelope) else {
                 throw E2eeDurableInboxError.duplicateEventPayloadMismatch(eventId: envelope.eventId)
             }
             if existing.rawEnvelope != canonicalStoredEnvelope {

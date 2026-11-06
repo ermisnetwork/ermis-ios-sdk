@@ -23,6 +23,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
     // In-memory-only operation fences; never serialized into the offline queue.
     var localMlsGuard: (() throws -> Void)? = nil
     var localMlsDeadline: Date? = nil
+    var localMlsTimeoutReason: String = "key_package_operation_expired"
 
     init(
         path: EndpointPath,

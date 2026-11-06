@@ -49,7 +49,7 @@ public class ErmisClient {
     private let archiveOwnerLock = NSLock()
     public var archiveRecovery: E2eeArchiveRecovery? {
         archiveOwnerLock.lock(); defer { archiveOwnerLock.unlock() }
-        guard config.e2eeMlsRolloutControls.epochArchiveEnabled, let userId = currentUserId, let root = config.localStorageFolderURL else { return nil }
+        guard config.e2eeMlsRolloutControls.epochArchiveEnabled, let userId = currentUserId, let root = config.resolvedLocalStorageFolderURL else { return nil }
         if let existing = e2eRepository.archiveRecovery { return existing }
         let namespaceInput = "\(config.endpointEnviroment.baseURL.absoluteString)|\(config.apiKey.apiKeyString)|\(projectId)|\(userId)|\(mlsClient.currentDeviceId ?? "")"
         let namespace = Data(CryptoKit.SHA256.hash(data: Data(namespaceInput.utf8))).map { String(format: "%02x", $0) }.joined()
@@ -262,7 +262,7 @@ public class ErmisClient {
             rootProjectId: token?.projectId ?? "",
             chainId: token?.chainId,
             environment: environment,
-            notificationTokenProvider: notificationTokenProvider ?? DefaultNotificationTokenProvider(),
+            notificationTokenProvider: notificationTokenProvider ?? DefaultNotificationTokenProvider(config: resolvedConfig),
             factory: .init(config: resolvedConfig, environment: environment)
         )
 
@@ -299,12 +299,19 @@ public class ErmisClient {
             // an attachment. The cleanup helper is safe when multiple clients share a process.
             try? E2eeAttachmentOriginalDownloadCoordinator.cleanupStalePlaintextAtMainAppLaunch()
         }
-        let deviceIdStore = MlsDeviceIdStore(applicationGroupIdentifier: config.applicationGroupIdentifier)
+        let deviceIdStore = MlsDeviceIdStore(applicationGroupIdentifier: config.applicationGroupIdentifier,
+                                            storageNamespace: config.localStorageNamespace)
+        let hasStorageNamespace = config.localStorageNamespace?.isEmpty == false
+        let scopedDefaults = config.namespacedUserDefaults
         let mlsClient = MlsClient(
             storageFolderURL: config.mlsStorageFolderURL,
-            legacyStorageFolderURLs: [config.localStorageFolderURL].compactMap { $0 },
+            legacyStorageFolderURLs: [config.resolvedLocalStorageFolderURL].compactMap { $0 },
             applicationGroupIdentifier: config.applicationGroupIdentifier,
-            deviceIdStore: deviceIdStore
+            deviceIdStore: deviceIdStore,
+            userDefaults: scopedDefaults,
+            importLegacyStorage: !hasStorageNamespace,
+            storageIsolationAvailable: !hasStorageNamespace || (scopedDefaults != nil && config.mlsStorageFolderURL != nil),
+            allowExpiredJoinTreeLeaves: config.e2eeAllowExpiredJoinTreeLeaves
         )
         let e2eeAttachmentTransferCoordinator: E2eeBackgroundTransferCoordinator?
         if !Bundle.main.isAppExtension,
@@ -388,6 +395,9 @@ public class ErmisClient {
             environment.timerType
         )
         authRepository.configureDeviceIdStore(deviceIdStore)
+        mlsClient.deviceBindingDidChange = { [weak authRepository] in
+            authRepository?.configureDeviceIdStore(deviceIdStore)
+        }
 
         let walletRepository = environment.walletRepositoryBuilder(
             databaseContainer,
@@ -433,6 +443,7 @@ public class ErmisClient {
         if let userId = currentUserId {
             do {
                 try mlsClient.setup(with: userId)
+                authenticationRepository.configureDeviceIdStore(mlsClient.deviceIdStore)
             } catch {
                 log.error("Failed to initialize MLS: \(error)")
             }
@@ -500,6 +511,7 @@ public class ErmisClient {
         authenticationRepository.update(token: token, userInfo: userInfo)
             do {
                 try mlsClient.setup(with: token.userId)
+                authenticationRepository.configureDeviceIdStore(mlsClient.deviceIdStore)
             } catch {
                 log.error("Failed to initialize MLS: \(error)")
             }

@@ -74,12 +74,101 @@ public class MlsClient {
     let deviceIdStore: MlsDeviceIdStore
     private let storageFolderURL: URL?
     private let legacyStorageFolderURLs: [URL]
+    private let importLegacyStorage: Bool
+    private let storageIsolationAvailable: Bool
+    let allowExpiredJoinTreeLeaves: Bool
     private var providerDatabaseURL: URL?
+    private let installationSetupLock = NSRecursiveLock()
+    private var providerScopeLeases: [MlsProviderScopeLease] = []
+    var deviceBindingDidChange: (() -> Void)?
 
     func membershipMutationStore() throws -> MlsMembershipMutationStore {
         guard userId != nil, let providerDatabaseURL else { throw ClientError.MlsNoProviderError() }
         return MlsMembershipMutationStore(root: providerDatabaseURL.appendingPathExtension("member-mutations"))
     }
+    func sendIntentStore() throws -> MlsSendIntentStore {
+        guard hasSetup, let providerDatabaseURL else { throw ClientError.MlsNoProviderError() }
+        return try MlsSendIntentStore(url: providerDatabaseURL)
+    }
+
+    func sendIntentOwner() throws -> String {
+        assertMutationExecutor()
+        guard hasSetup, let provider, let identity, let userId, let device = currentDeviceId else {
+            throw ClientError.MlsNoIdentityError()
+        }
+        let input = try JSONEncoder().encode([userId, device, identity.signaturePublicKey().base64EncodedString(),
+                                             try provider.keyPackageUploadProviderId()])
+        return SHA256.hash(data: input).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Capture only public native binding. No group handle survives the native prepare boundary.
+    func applicationSendBinding(cid: String) throws -> (UInt64, Data, String) {
+        assertMutationExecutor()
+        let marker = loadGenerationMarker(cid: cid)
+        guard loadPendingGenerationJoin(cid: cid) == nil else { throw ClientError.Unexpected("mls_join_outcome_pending") }
+        let context = try generationContext(for: marker)
+        let group = try loadGroup(with: cid)
+        guard group.isOperational(), !group.hasPendingCommit() else { throw ClientError.Unexpected("mls_group_not_ready") }
+        return (marker?.generation ?? 0, group.groupId(), try context.provider.keyPackageUploadProviderId())
+    }
+
+    func prepareApplicationSend(_ intent: MlsSendIntent) throws -> ApplicationSendArtifact {
+        assertMutationExecutor()
+        guard try sendIntentOwner() == intent.owner, intent.phase == .unsealed else { throw MlsSendIntentError.conflict }
+        let marker = loadGenerationMarker(cid: intent.cid)
+        guard (marker?.generation ?? 0) == intent.generation,
+              loadPendingGenerationJoin(cid: intent.cid) == nil else { throw MlsSendIntentError.conflict }
+        let context = try generationContext(for: marker)
+        guard try context.provider.keyPackageUploadProviderId() == intent.providerId else { throw MlsSendIntentError.conflict }
+        // The native primitive loads a transaction-local group, commits ratchet+cipher together,
+        // and releases it. Never save a previously loaded handle after this call.
+        return try context.identity.prepareApplicationSend(provider: context.provider,
+            operationId: intent.uuid, scope: intent.scope, expectedProviderId: intent.providerId,
+            groupId: intent.groupId, plaintext: intent.payload, aad: intent.aad)
+    }
+
+    func recoverApplicationSend(_ intent: MlsSendIntent) throws -> ApplicationSendArtifact? {
+        assertMutationExecutor()
+        guard try sendIntentOwner() == intent.owner else { throw MlsSendIntentError.conflict }
+        let marker = loadGenerationMarker(cid: intent.cid)
+        guard (marker?.generation ?? 0) == intent.generation else { throw MlsSendIntentError.conflict }
+        let context = try generationContext(for: marker)
+        guard try context.provider.keyPackageUploadProviderId() == intent.providerId else { throw MlsSendIntentError.conflict }
+        return try context.identity.recoverApplicationSend(provider: context.provider, operationId: intent.uuid, scope: intent.scope)
+    }
+
+    func retireApplicationSend(_ intent: MlsSendIntent) throws {
+        assertMutationExecutor()
+        guard intent.phase == .accepted || intent.phase == .canceled,
+              try sendIntentOwner() == intent.owner, let ciphertext = intent.ciphertext else { throw MlsSendIntentError.terminal }
+        // Canonical acceptance may arrive after the active generation advanced. Retiring an
+        // immutable artifact only touches its own journal/tombstone, never the active ratchet.
+        // A legacy/root artifact remains retireable after a later selected provider replaces
+        // its scope. Match the immutable provider binding before consulting mutable markers.
+        if let provider, let identity,
+           try provider.keyPackageUploadProviderId() == intent.providerId {
+            try identity.retireApplicationSend(provider: provider, operationId: intent.uuid,
+                scope: intent.scope, ciphertextHash: Data(SHA256.hash(data: ciphertext)))
+            return
+        }
+        let marker = loadGenerationMarker(cid: intent.cid, generation: intent.generation)
+        // Generation zero is also allowed to select an isolated External Join provider.
+        // Only an unmarked legacy generation-zero scope may use the root provider.
+        guard (marker == nil && intent.generation == 0) ||
+                (marker?.generation == intent.generation && marker?.groupId == intent.groupId) else {
+            throw MlsSendIntentError.conflict
+        }
+        let context = try generationContext(for: marker)
+        guard try context.provider.keyPackageUploadProviderId() == intent.providerId else { throw MlsSendIntentError.conflict }
+        try context.identity.retireApplicationSend(provider: context.provider, operationId: intent.uuid,
+            scope: intent.scope, ciphertextHash: Data(SHA256.hash(data: ciphertext)))
+    }
+
+    func recoveryControlStore() throws -> MlsRecoveryControlStore {
+        guard hasSetup, let providerDatabaseURL else { throw ClientError.MlsNoProviderError() }
+        return try MlsRecoveryControlStore(url: providerDatabaseURL)
+    }
+
     private var providerDatabaseCleanupURLs: [URL] = []
     private var currentProviderMigrationMarkerKey: String?
     private var mutationExecutorAssertion: (() -> Void)?
@@ -135,21 +224,29 @@ public class MlsClient {
         legacyStorageFolderURLs: [URL] = [],
         applicationGroupIdentifier: String? = nil,
         deviceIdStore: MlsDeviceIdStore? = nil,
-        userDefaults: UserDefaults? = nil
+        userDefaults: UserDefaults? = nil,
+        importLegacyStorage: Bool = true,
+        storageIsolationAvailable: Bool = true,
+        allowExpiredJoinTreeLeaves: Bool = false
     ) {
         self.storageFolderURL = storageFolderURL
         self.legacyStorageFolderURLs = legacyStorageFolderURLs
+        self.importLegacyStorage = importLegacyStorage
+        self.storageIsolationAvailable = storageIsolationAvailable
+        self.allowExpiredJoinTreeLeaves = allowExpiredJoinTreeLeaves
         self.userDefaults = userDefaults
             ?? applicationGroupIdentifier.flatMap(UserDefaults.init(suiteName:))
             ?? .standard
         self.deviceIdStore = deviceIdStore ?? MlsDeviceIdStore(defaults: self.userDefaults)
-        if self.userDefaults !== UserDefaults.standard {
+        if importLegacyStorage && self.userDefaults !== UserDefaults.standard {
             Self.migrateLegacyDefaultsIfNeeded(to: self.userDefaults)
         }
         initLogger()
     }
 
     public func reset() throws {
+        installationSetupLock.lock()
+        defer { installationSetupLock.unlock() }
         provider = nil
         identity = nil
         userId = nil
@@ -161,15 +258,36 @@ public class MlsClient {
         generationIdentities = [:]
         providerContextByGroupId = [:]
         externalJoinCandidateContexts = [:]
+        providerScopeLeases = []
     }
 
     public func setup(with userId: String) throws {
-//        guard self.userId != userId || !hasSetup else {
-//            generateDeviceIdIfNeeded(for: userId)
-//            return
-//        }
-        
-        
+        installationSetupLock.lock()
+        defer { installationSetupLock.unlock() }
+        guard storageIsolationAvailable else { throw ClientError.Unexpected("mls_storage_namespace_unavailable") }
+        if hasSetup {
+            guard self.userId == userId else { throw ClientError.Unexpected("mls_owner_replacement_requires_stop") }
+            guard provider != nil, identity != nil, currentDeviceId != nil else {
+                throw ClientError.Unexpected("mls_owner_storage_unavailable")
+            }
+            return
+        }
+        // Incomplete initialization must never publish or keep a second provider owner.
+        var setupCompleted = false
+        defer {
+            if !setupCompleted {
+                provider = nil
+                identity = nil
+                self.userId = nil
+                providerDatabaseURL = nil
+                generationProviders = [:]
+                generationIdentities = [:]
+                providerContextByGroupId = [:]
+                externalJoinCandidateContexts = [:]
+                providerScopeLeases = []
+                hasSetup = false
+            }
+        }
         // Releasing these references closes the SQLite provider before any cross-directory copy.
         provider = nil
         identity = nil
@@ -183,7 +301,6 @@ public class MlsClient {
         externalJoinCandidateContexts = [:]
 
         self.userId = userId
-        generateDeviceIdIfNeeded(for: userId)
         guard let storageRoot = storageFolderURL ?? Self.defaultStorageFolderURL() else {
             throw CocoaError(.fileNoSuchFile)
         }
@@ -198,19 +315,38 @@ public class MlsClient {
             in: .userDomainMask
         ).first
         var legacyRoots = legacyStorageFolderURLs
-        if let documentDirectory {
+        if importLegacyStorage, let documentDirectory {
             legacyRoots.append(documentDirectory)
         }
-        let legacyCandidates = Self.legacyProviderCandidates(
+        let legacyCandidates = importLegacyStorage ? Self.legacyProviderCandidates(
             roots: legacyRoots,
             userId: userId,
             dbName: dbName,
             documentDirectory: documentDirectory
-        )
+        ) : []
+        // Claim destination and every existing migration input before verifier/copy opens it.
+        // Sorted canonical paths avoid lock-order inversion. Nonblocking acquisition never
+        // waits for an extension while holding this owner, and cannot steal a live lease.
+        let leaseURLs = Self.uniqueURLs([destinationURL] + legacyCandidates.filter {
+            FileManager.default.fileExists(atPath: $0.path)
+        }).map { $0.standardizedFileURL.resolvingSymlinksInPath() }.sorted { $0.path < $1.path }
+        var leases: [MlsProviderScopeLease] = []
+        for url in leaseURLs {
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            leases.append(try MlsProviderScopeLease(databaseURL: url))
+        }
+        providerScopeLeases = leases
         let markerKey = Self.providerMigrationMarkerKey(
             namespace: namespace,
             destinationURL: destinationURL
         )
+        // Earlier iOS builds hashed the whole URL before SQLite created it. Foundation
+        // can resolve a different spelling after creation; retain that marker authority
+        // for this exact destination while converging on the stable parent namespace.
+        if Self.legacyProviderMigrationMarkerKeys(namespace: namespace, destinationURL: destinationURL)
+            .contains(where: { userDefaults.bool(forKey: $0) }) {
+            userDefaults.set(true, forKey: markerKey)
+        }
         let migrator = MlsProviderStoreMigrator(defaults: userDefaults)
         let resolvedURL = try migrator.resolveDatabaseURL(
             legacyCandidates: legacyCandidates,
@@ -224,14 +360,24 @@ public class MlsClient {
         }
 
         let provider = try Provider.newWithPath(dbPath: resolvedURL.path)
-        if let identityBytes = try provider.loadIdentity() {
+        let persistedIdentity = try provider.loadIdentity()
+        if let identityBytes = persistedIdentity {
             self.identity = try Identity.fromBytes(provider: provider, data: identityBytes)
         } else {
+            // A durable installation binding proves this provider already owned a signer.
+            // Missing identity is corruption/unavailable private state, never a fresh install.
+            // Check before native key generation or storeIdentity can change its bytes.
+            guard try MlsInstallationBindingStore(url: resolvedURL).load() == nil else {
+                throw ClientError.Unexpected("mls_bound_provider_identity_missing")
+            }
             let identity = try Identity(provider: provider, userId: userId)
             self.identity = identity
             let identityBytes = try identity.toBytes()
             try provider.storeIdentity(userId: userId, identityBytes: identityBytes)
         }
+        guard let identity = self.identity, identity.userId() == userId else { throw ClientError.MlsNoIdentityError() }
+        try reconcileInstallationBinding(providerURL: resolvedURL, userId: userId,
+                                         identity: identity, createdIdentity: persistedIdentity == nil)
         try migrator.protectResolvedStore(at: resolvedURL)
         if resolvedURL.standardizedFileURL == destinationURL.standardizedFileURL {
             // Fresh installs have no legacy store to migrate, but still need an authoritative
@@ -247,6 +393,36 @@ public class MlsClient {
         )
         currentProviderMigrationMarkerKey = markerKey
         hasSetup = true
+        setupCompleted = true
+    }
+
+    /// The binding shares the provider's SQLite file and survives preference loss.
+    private func reconcileInstallationBinding(providerURL: URL, userId: String,
+                                               identity: Identity, createdIdentity: Bool) throws {
+        let store = try MlsInstallationBindingStore(url: providerURL)
+        let signer = SHA256.hash(data: identity.signaturePublicKey()).map { String(format: "%02x", $0) }.joined()
+        if let binding = try store.load() {
+            guard binding.userId == userId, binding.signerSha256 == signer, !createdIdentity else {
+                throw ClientError.Unexpected("mls_provider_binding_mismatch")
+            }
+            try deviceIdStore.restoreProviderDeviceId(binding.deviceId, for: userId)
+            return
+        }
+        let deviceId: String
+        if createdIdentity {
+            // Keychain may have survived uninstall while its provider did not.
+            deviceId = "ios-" + UUID().uuidString
+        } else {
+            guard let existing = deviceIdStore.canonicalDeviceId(for: userId) else {
+                throw ClientError.Unexpected("mls_device_binding_unavailable")
+            }
+            deviceId = existing
+        }
+        let stored = try store.reserve(MlsInstallationBinding(userId: userId, deviceId: deviceId, signerSha256: signer))
+        guard stored.userId == userId, stored.signerSha256 == signer else {
+            throw ClientError.Unexpected("mls_provider_binding_mismatch")
+        }
+        try deviceIdStore.restoreProviderDeviceId(stored.deviceId, for: userId)
     }
 
     func purgeCurrentUserData() throws {
@@ -313,6 +489,14 @@ public class MlsClient {
         if let migrationMarkerKey {
             userDefaults.removeObject(forKey: migrationMarkerKey)
         }
+        // Explicit purge must retire old path-spelling aliases as well; otherwise a
+        // legacy authority bit could be imported into a newly created private scope.
+        for url in baseDatabaseURLs {
+            let keys = [Self.providerMigrationMarkerKey(namespace: namespace, destinationURL: url)]
+                + Self.legacyProviderMigrationMarkerKeys(namespace: namespace, destinationURL: url)
+            keys.forEach(userDefaults.removeObject(forKey:))
+        }
+        providerScopeLeases = []
     }
 
     /// Installs the repository-owned runtime guard after dependency construction. Direct
@@ -337,10 +521,18 @@ public class MlsClient {
     }
 
     private static func providerMigrationMarkerKey(namespace: String, destinationURL: URL) -> String {
-        let destinationNamespace = storageNamespace(
-            for: destinationURL.standardizedFileURL.path
-        )
-        return "ermis_mls_provider_migration_v1_\(namespace)_\(destinationNamespace)"
+        // Canonicalize the parent, whose directory is created before this key is read.
+        // Resolving the complete URL is existence-dependent on physical iOS.
+        let stableDestination = destinationURL.deletingLastPathComponent()
+            .standardizedFileURL.resolvingSymlinksInPath()
+            .appendingPathComponent(destinationURL.lastPathComponent)
+        return "ermis_mls_provider_migration_v1_\(namespace)_\(storageNamespace(for: stableDestination.path))"
+    }
+
+    private static func legacyProviderMigrationMarkerKeys(namespace: String, destinationURL: URL) -> [String] {
+        [destinationURL.path, destinationURL.standardizedFileURL.path].map {
+            "ermis_mls_provider_migration_v1_\(namespace)_\(storageNamespace(for: $0))"
+        }
     }
 
     private static func defaultStorageFolderURL() -> URL? {
@@ -574,6 +766,21 @@ public class MlsClient {
         operationId: String,
         candidate: MlsRebootstrapCandidate
     ) throws {
+        if let installed = loadGenerationMarker(cid: cid), installed.generation >= generation {
+            guard installed.generation == generation, installed.status == "active",
+                  installed.operationId == operationId, installed.groupId == candidate.groupId,
+                  installed.providerPath == candidate.providerPath else {
+                throw ClientError.Unexpected("MLS activation owner or generation changed.")
+            }
+            let context = try generationContext(for: installed)
+            let group = try Group.loadFromStorageWithGroupId(provider: context.provider, groupId: candidate.groupId)
+            guard group.isOperational(), group.epoch() >= candidate.epoch else {
+                throw ClientError.Unexpected("Installed MLS activation is not usable.")
+            }
+            // A receipt can be observed again after sync advanced this group. Do not replace
+            // its marker/checkpoint with the candidate's old epoch or rewrite native state.
+            return
+        }
         let marker = GroupGenerationMarker(
             cid: cid,
             generation: generation,
@@ -1255,7 +1462,8 @@ public class MlsClient {
             throw ClientError.MlsNoProviderError()
         }
         log.debug("[MLS] Join with welcome", subsystems: .mls)
-        let group = try Group.joinWithWelcome(provider: provider, welcome: welcome, ratchetTree: ratchetTree)
+        let group = try Group.joinWithWelcomeWithPolicy(provider: provider, welcome: welcome, ratchetTree: ratchetTree,
+                                                       allowExpiredTreeLeaves: allowExpiredJoinTreeLeaves)
         if generation > 0 {
             guard let groupId, group.groupId() == groupId else {
                 throw ClientError.Unexpected("Welcome GroupId does not match authoritative generation.")
@@ -1288,7 +1496,8 @@ public class MlsClient {
         guard let identity else {
             throw ClientError.MlsNoIdentityError()
         }
-        let externalJoinResult = try joinExternal(provider: provider, identity: identity, groupInfo: groupInfo, ratchetTree: nil)
+        let externalJoinResult = try joinExternalWithPolicy(provider: provider, identity: identity, groupInfo: groupInfo,
+                                                           ratchetTree: nil, allowExpiredTreeLeaves: allowExpiredJoinTreeLeaves)
         if let expectedGroupId, externalJoinResult.group.groupId() != expectedGroupId {
             throw ClientError.Unexpected(
                 "External-join GroupId does not match authoritative generation."
@@ -1312,7 +1521,8 @@ public class MlsClient {
         let identityBytes = try identity.toBytes()
         let candidateIdentity = try Identity.fromBytes(provider: candidate, data: identityBytes)
         try candidate.storeIdentity(userId: userId, identityBytes: identityBytes)
-        let result = try joinExternal(provider: candidate, identity: candidateIdentity, groupInfo: groupInfo, ratchetTree: nil)
+        let result = try joinExternalWithPolicy(provider: candidate, identity: candidateIdentity, groupInfo: groupInfo,
+                                               ratchetTree: nil, allowExpiredTreeLeaves: allowExpiredJoinTreeLeaves)
         if let expectedGroupId, result.group.groupId() != expectedGroupId {
             throw ClientError.Unexpected("External recovery group identity mismatch.")
         }

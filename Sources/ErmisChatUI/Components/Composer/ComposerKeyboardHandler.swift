@@ -114,10 +114,14 @@ open class ComposerKeyboardHandler: KeyboardHandler {
     }
 
     @objc open func keyboardDidHide(_ notification: Notification) {
-        DispatchQueue.main.async(execute: {
-            self.composerVC?.textView.resignFirstResponder()
-            self.composerVC?.textView.inputView = nil
-            self.composerVC?.reloadInputViews()
+        DispatchQueue.main.async(execute: { [weak self] in
+            guard let composer = self?.composerVC,
+                  !composer.textView.isFirstResponder else { return }
+            // Software-keyboard visibility does not own input focus (for example,
+            // hardware-keyboard editing). A queued hide may also precede a new tap.
+            // Only clean up a custom input after the composer actually resigned.
+            composer.textView.inputView = nil
+            composer.reloadInputViews()
         })
     }
 }

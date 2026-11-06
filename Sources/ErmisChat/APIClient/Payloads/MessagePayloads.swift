@@ -19,6 +19,8 @@ enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
     case encryptedData = "mls_ciphertext"
     case mlsEpoch = "mls_epoch"
     case groupGeneration = "group_generation"
+    case canonicalMessageSequence = "msg_seq"
+    case sendingDeviceId = "device_id"
     case createdAt = "created_at"
     case updatedAt = "updated_at"
     case deletedAt = "deleted_at"
@@ -89,6 +91,8 @@ class MessagePayload: Decodable {
     let encryptedData: [UInt8]?
     let mlsEpoch: Int?
     let groupGeneration: Int
+    var canonicalMessageSequence: UInt64? = nil
+    var sendingDeviceId: String? = nil
     let oldTexts: [MessageEditHistoryPayload]?
     let command: String?
     let args: String?
@@ -152,6 +156,8 @@ class MessagePayload: Decodable {
         encryptedData = try container.decodeE2eeBytesIfPresent(forKey: .encryptedData)
         mlsEpoch = try container.decodeIfPresent(Int.self, forKey: .mlsEpoch)
         groupGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration) ?? 0
+        canonicalMessageSequence = try container.decodeIfPresent(UInt64.self, forKey: .canonicalMessageSequence)
+        sendingDeviceId = try container.decodeIfPresent(String.self, forKey: .sendingDeviceId)
         oldTexts = try container.decodeIfPresent([MessageEditHistoryPayload].self, forKey: .oldTexts)
         isSilent = try container.decodeIfPresent(Bool.self, forKey: .isSilent) ?? false
         isShadowed = try container.decodeIfPresent(Bool.self, forKey: .shadowed) ?? false

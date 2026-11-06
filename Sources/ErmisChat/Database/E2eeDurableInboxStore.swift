@@ -113,7 +113,14 @@ final class E2eeDurableInboxStore {
             guard let context = context as? NSManagedObjectContext else {
                 throw ClientError.Unexpected("Core Data writer context is unavailable.")
             }
+            var pageInsertions: [String: E2eSyncEventEnvelope] = [:]
             for envelope in events {
+                if let first = pageInsertions[envelope.eventId] {
+                    guard E2eeScopeEnvelopeIdentity.matches(first.rawEnvelope, envelope.rawEnvelope) else {
+                        throw E2eeDurableInboxError.duplicateEventPayloadMismatch(eventId: envelope.eventId)
+                    }
+                    continue
+                }
                 let existing = try E2eeInboxEventDTO.load(
                     accountId: accountId,
                     scopeCid: scopeCid,
@@ -124,7 +131,8 @@ final class E2eeDurableInboxStore {
                     let canonicalStoredEnvelope = try E2eeWireJSONCanonicalizer.canonicalizeJSONData(
                         existing.rawEnvelope
                     )
-                    guard canonicalStoredEnvelope == envelope.rawEnvelope else {
+                    guard E2eeScopeEnvelopeIdentity.matches(canonicalStoredEnvelope, envelope.rawEnvelope) else {
+                        MlsIncomingTrace.recordDuplicate(uuid: envelope.eventId, stored: canonicalStoredEnvelope, incoming: envelope.rawEnvelope)
                         throw E2eeDurableInboxError.duplicateEventPayloadMismatch(
                             eventId: envelope.eventId
                         )
@@ -134,6 +142,7 @@ final class E2eeDurableInboxStore {
                     }
                 } else {
                     insertedEvents.append(envelope)
+                    pageInsertions[envelope.eventId] = envelope
                 }
             }
 

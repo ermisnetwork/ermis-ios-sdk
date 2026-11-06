@@ -1265,9 +1265,15 @@ public protocol IdentityProtocol : AnyObject {
 
     func ownsKeyPackageRef(provider: Provider, reference: Data) throws  -> Bool
 
+    func prepareApplicationSend(provider: Provider, operationId: String, scope: String, expectedProviderId: String, groupId: Data, plaintext: Data, aad: Data) throws  -> ApplicationSendArtifact
+
     func prepareKeyPackageUpload(provider: Provider, operationId: String, scope: String, expectedProviderId: String, count: UInt32) throws  -> [Data]
 
+    func recoverApplicationSend(provider: Provider, operationId: String, scope: String) throws  -> ApplicationSendArtifact?
+
     func recoverKeyPackageUpload(provider: Provider, operationId: String, scope: String) throws  -> [Data]?
+
+    func retireApplicationSend(provider: Provider, operationId: String, scope: String, ciphertextHash: Data) throws
 
     func signaturePublicKey()  -> Data
 
@@ -1389,6 +1395,20 @@ open func ownsKeyPackageRef(provider: Provider, reference: Data)throws  -> Bool 
 })
 }
 
+open func prepareApplicationSend(provider: Provider, operationId: String, scope: String, expectedProviderId: String, groupId: Data, plaintext: Data, aad: Data)throws  -> ApplicationSendArtifact {
+    return try  FfiConverterTypeApplicationSendArtifact.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_prepare_application_send(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterString.lower(operationId),
+        FfiConverterString.lower(scope),
+        FfiConverterString.lower(expectedProviderId),
+        FfiConverterData.lower(groupId),
+        FfiConverterData.lower(plaintext),
+        FfiConverterData.lower(aad),$0
+    )
+})
+}
+
 open func prepareKeyPackageUpload(provider: Provider, operationId: String, scope: String, expectedProviderId: String, count: UInt32)throws  -> [Data] {
     return try  FfiConverterSequenceData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_identity_prepare_key_package_upload(self.uniffiClonePointer(),
@@ -1401,6 +1421,16 @@ open func prepareKeyPackageUpload(provider: Provider, operationId: String, scope
 })
 }
 
+open func recoverApplicationSend(provider: Provider, operationId: String, scope: String)throws  -> ApplicationSendArtifact? {
+    return try  FfiConverterOptionTypeApplicationSendArtifact.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_recover_application_send(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterString.lower(operationId),
+        FfiConverterString.lower(scope),$0
+    )
+})
+}
+
 open func recoverKeyPackageUpload(provider: Provider, operationId: String, scope: String)throws  -> [Data]? {
     return try  FfiConverterOptionSequenceData.lift(try rustCallWithError(FfiConverterTypeMlsError.lift) {
     uniffi_openmls_uniffi_fn_method_identity_recover_key_package_upload(self.uniffiClonePointer(),
@@ -1409,6 +1439,16 @@ open func recoverKeyPackageUpload(provider: Provider, operationId: String, scope
         FfiConverterString.lower(scope),$0
     )
 })
+}
+
+open func retireApplicationSend(provider: Provider, operationId: String, scope: String, ciphertextHash: Data)throws  {try rustCallWithError(FfiConverterTypeMlsError.lift) {
+    uniffi_openmls_uniffi_fn_method_identity_retire_application_send(self.uniffiClonePointer(),
+        FfiConverterTypeProvider.lower(provider),
+        FfiConverterString.lower(operationId),
+        FfiConverterString.lower(scope),
+        FfiConverterData.lower(ciphertextHash),$0
+    )
+}
 }
 
 open func signaturePublicKey() -> Data {
@@ -2130,6 +2170,72 @@ public func FfiConverterTypeRecoveryJournal_lift(_ pointer: UnsafeMutableRawPoin
 #endif
 public func FfiConverterTypeRecoveryJournal_lower(_ value: RecoveryJournal) -> UnsafeMutableRawPointer {
     return FfiConverterTypeRecoveryJournal.lower(value)
+}
+
+
+public struct ApplicationSendArtifact {
+    public var ciphertext: Data
+    public var epoch: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(ciphertext: Data, epoch: UInt64) {
+        self.ciphertext = ciphertext
+        self.epoch = epoch
+    }
+}
+
+
+
+extension ApplicationSendArtifact: Equatable, Hashable {
+    public static func ==(lhs: ApplicationSendArtifact, rhs: ApplicationSendArtifact) -> Bool {
+        if lhs.ciphertext != rhs.ciphertext {
+            return false
+        }
+        if lhs.epoch != rhs.epoch {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(ciphertext)
+        hasher.combine(epoch)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeApplicationSendArtifact: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ApplicationSendArtifact {
+        return
+            try ApplicationSendArtifact(
+                ciphertext: FfiConverterData.read(from: &buf),
+                epoch: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ApplicationSendArtifact, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.ciphertext, into: &buf)
+        FfiConverterUInt64.write(value.epoch, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationSendArtifact_lift(_ buf: RustBuffer) throws -> ApplicationSendArtifact {
+    return try FfiConverterTypeApplicationSendArtifact.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeApplicationSendArtifact_lower(_ value: ApplicationSendArtifact) -> RustBuffer {
+    return FfiConverterTypeApplicationSendArtifact.lower(value)
 }
 
 
@@ -3523,6 +3629,30 @@ fileprivate struct FfiConverterOptionTypeRatchetTree: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeApplicationSendArtifact: FfiConverterRustBuffer {
+    typealias SwiftType = ApplicationSendArtifact?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeApplicationSendArtifact.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeApplicationSendArtifact.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeMemberInfo: FfiConverterRustBuffer {
     typealias SwiftType = MemberInfo?
 
@@ -3900,7 +4030,7 @@ private enum InitializationResult {
 }
 // Use a global variable to perform the versioning checks. Swift ensures that
 // the code inside is only computed once.
-private let initializationResult: InitializationResult = {
+private var initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
     let bindings_contract_version = 26
     // Get the scaffolding contract version by calling the into the dylib
@@ -4109,10 +4239,19 @@ private let initializationResult: InitializationResult = {
     if (uniffi_openmls_uniffi_checksum_method_identity_owns_key_package_ref() != 3053) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_identity_prepare_application_send() != 1131) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_identity_prepare_key_package_upload() != 53900) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_openmls_uniffi_checksum_method_identity_recover_application_send() != 52180) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_openmls_uniffi_checksum_method_identity_recover_key_package_upload() != 38860) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_openmls_uniffi_checksum_method_identity_retire_application_send() != 60111) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_openmls_uniffi_checksum_method_identity_signature_public_key() != 8711) {

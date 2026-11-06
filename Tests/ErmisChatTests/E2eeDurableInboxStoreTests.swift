@@ -177,6 +177,50 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         XCTAssertEqual(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).count, 1)
     }
 
+    func testDualIndexApplicationAliasDoesNotBlockSubsequentPageOrReplaceStoredEnvelope() throws {
+        let store = E2eeDurableInboxStore(database: try makeDatabase())
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let original = try applicationEnvelope(ciphertextJSON: #""AAEC""#, messageId: id)
+        var raw = try JSONDecoder().decode(RawJSON.self, from: original.rawEnvelope)
+        raw["created_at"] = "2026-08-06T10:00:00.123470Z"
+        let alias = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: JSONEncoder().encode(raw))
+        let tail = try applicationEnvelope(ciphertextJSON: #""AQID""#, eventId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", messageId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", createdAt: "2026-08-06T10:00:01.123456Z")
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [original], hasMore: true, nextCursor: ScopeSyncCursorPayload(createdAt: original.createdAtRaw, eventId: original.eventId))
+        let cursor = ScopeSyncCursorPayload(createdAt: tail.createdAtRaw, eventId: tail.eventId)
+        let result = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [alias, tail], hasMore: false, nextCursor: cursor)
+        XCTAssertEqual(result.insertedEvents.map(\.eventId), [tail.eventId])
+        let pending = try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid)
+        XCTAssertEqual(pending.count, 2)
+        XCTAssertEqual(pending.first?.rawEnvelope, original.rawEnvelope)
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), cursor)
+        XCTAssertNil(try store.applyCursor(accountId: accountId, scopeCid: scopeCid))
+    }
+
+    func testDualIndexAliasesWithinOnePageProduceOneDurableApplication() throws {
+        let store = E2eeDurableInboxStore(database: try makeDatabase())
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let original = try applicationEnvelope(ciphertextJSON: #""AAEC""#, messageId: id)
+        var raw = try JSONDecoder().decode(RawJSON.self, from: original.rawEnvelope)
+        raw["created_at"] = "2026-08-06T10:00:00.123470Z"
+        let alias = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: JSONEncoder().encode(raw))
+        let cursor = ScopeSyncCursorPayload(createdAt: alias.createdAtRaw, eventId: alias.eventId)
+        let result = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [original, alias], hasMore: false, nextCursor: cursor)
+        XCTAssertEqual(result.insertedEvents.count, 1)
+        XCTAssertEqual(result.backlog.insertedEventCount, 1)
+        XCTAssertEqual(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).map(\.rawEnvelope), [original.rawEnvelope])
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), cursor)
+    }
+
+    func testConflictingApplicationAliasWithinOnePageDoesNotAdvanceCursor() throws {
+        let store = E2eeDurableInboxStore(database: try makeDatabase())
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let first = try applicationEnvelope(ciphertextJSON: #""AAEC""#, messageId: id)
+        let changed = try applicationEnvelope(ciphertextJSON: #""AAED""#, messageId: id)
+        XCTAssertThrowsError(try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [first, changed], hasMore: false, nextCursor: ScopeSyncCursorPayload(createdAt: changed.createdAtRaw, eventId: changed.eventId)))
+        XCTAssertNil(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid))
+        XCTAssertTrue(try store.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).isEmpty)
+    }
+
     func testDurableReplayPreservesBellboyKindRankAtSameTimestamp() throws {
         let database = try makeDatabase()
         let store = E2eeDurableInboxStore(database: database)

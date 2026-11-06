@@ -13,6 +13,26 @@ final class MlsFieldLogDestinationTests: XCTestCase {
         try test(directory)
     }
 
+    func testIncomingStagesRemainCorrelatedAndExcludePrivateErrors() {
+        for stage in ["decrypt_started", "decrypt_succeeded", "decrypt_failed", "decoded_cache_saved", "ui_rendered", "ui_encrypted", "scope_blocked", "scope_page_failed"] {
+            let marker = "mls_incoming stage=\(stage) uuid=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa cipher_sha256=" + String(repeating: "a", count: 64) + " error=crypto"
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " plaintext=private-fixture token=private-fixture"), marker)
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+            XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "error=crypto", with: "error=private-fixture")))
+        }
+        XCTAssertEqual(MlsIncomingTrace.errorClass(NSError(domain: "private-fixture", code: 7)), "other")
+    }
+
+    func testComposerSubmissionKeepsOnlyClosedStageAndBooleans() {
+        for stage in ["tap_received", "draft_busy", "draft_started", "draft_saved", "draft_failed", "controls_updated"] {
+            let marker = "mls_composer_submit stage=\(stage) nonempty=true send_enabled=true send_hidden=false draft_pending=false"
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " plaintext=private-fixture token=private-fixture"), marker)
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+            XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "nonempty=true", with: "nonempty=private-fixture")))
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project("mls_composer_submit stage=private-fixture nonempty=true send_enabled=true send_hidden=false draft_pending=false"))
+    }
+
     func testBundledContractAndKnownMarker() throws {
         let contract = try XCTUnwrap(MlsFieldMarkerProjector.contract)
         XCTAssertEqual(contract.version, 1)
@@ -71,6 +91,18 @@ final class MlsFieldLogDestinationTests: XCTestCase {
         }
         XCTAssertNil(MlsFieldMarkerProjector.project(cursor.replacingOccurrences(of: "removed_ignored", with: "unknown")))
         XCTAssertNil(MlsFieldMarkerProjector.project(protocolMarker.replacingOccurrences(of: device, with: String(repeating: "a", count: 193))))
+    }
+
+    func testStorageAndApplicationReadbackMarkersExcludePayloads() {
+        let storage = "mls_storage_readback disk=true file_exists=true description_matches=true"
+        let application = "mls_application_readback uuid=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa cipher_sha256=" + String(repeating: "a", count: 64) + " result=committed"
+        for marker in [storage, application] {
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " plaintext=private-fixture"), marker)
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+            XCTAssertFalse(MlsFieldMarkerProjector.isCanonical(marker + " token=private-fixture"))
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project(application.replacingOccurrences(of: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", with: "private-fixture")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(storage.replacingOccurrences(of: "disk=true", with: "disk=unknown")))
     }
 
     func testUnknownEnumsAndDuplicateJoinFieldsRejected() {

@@ -66,6 +66,50 @@ final class MlsPersistenceTests: XCTestCase {
         XCTAssertNotEqual(first, ErmisClientFactory.storageNamespace(apiKey: "other", userId: "alice"))
     }
 
+    func testEnvironmentKeychainAndPreferencesDoNotImportDefaultDevice() throws {
+        let user = "scope-test-\(UUID().uuidString)"
+        let suite = "scope-preferences-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let scopeA = "test-A-\(UUID().uuidString)", scopeB = "test-B-\(UUID().uuidString)"
+        let keychain = [MlsDeviceIdKeychainStore(), MlsDeviceIdKeychainStore(storageNamespace: scopeA), MlsDeviceIdKeychainStore(storageNamespace: scopeB)]
+        defer { defaults.removePersistentDomain(forName: suite); for store in keychain { try? store.remove(userId: user) } }
+        try keychain[0].save(deviceId: "production-device", userId: user)
+        defaults.set([user: "production-device"], forKey: MlsDeviceIdStore.deviceIdKey)
+        let a = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, storageNamespace: scopeA)
+        let b = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, storageNamespace: scopeB)
+        let idA = try XCTUnwrap(a.canonicalDeviceId(for: user))
+        let idB = try XCTUnwrap(b.canonicalDeviceId(for: user))
+        XCTAssertNotEqual(idA, idB); XCTAssertNotEqual(idA, "production-device")
+        XCTAssertEqual(try keychain[0].load(userId: user), "production-device")
+        XCTAssertEqual(defaults.dictionary(forKey: MlsDeviceIdStore.deviceIdKey) as? [String: String], [user: "production-device"])
+        defaults.removePersistentDomain(forName: suite)
+        XCTAssertEqual(MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, storageNamespace: scopeA).canonicalDeviceId(for: user), idA)
+    }
+
+    func testExplicitEnvironmentProviderDoesNotMigrateLegacySigner() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "scope-provider-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        func store() -> MlsDeviceIdStore { MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: DeviceIdSecureStore()) }
+        let original = MlsClient(storageFolderURL: root.appendingPathComponent("original"), deviceIdStore: store(), userDefaults: defaults)
+        try original.setup(with: "alice")
+        let signer = try XCTUnwrap(original.identity).signaturePublicKey()
+        let device = original.currentDeviceId
+        try original.reset()
+        let scoped = MlsClient(storageFolderURL: root.appendingPathComponent("clone"), legacyStorageFolderURLs: [root.appendingPathComponent("original")], deviceIdStore: store(), userDefaults: defaults, importLegacyStorage: false)
+        try scoped.setup(with: "alice")
+        XCTAssertNotEqual(try XCTUnwrap(scoped.identity).signaturePublicKey(), signer)
+        XCTAssertNotEqual(scoped.currentDeviceId, device)
+        try scoped.reset()
+        try original.setup(with: "alice")
+        XCTAssertEqual(try XCTUnwrap(original.identity).signaturePublicKey(), signer)
+        XCTAssertEqual(original.currentDeviceId, device)
+        let unavailable = MlsClient(storageFolderURL: nil, userDefaults: defaults, importLegacyStorage: false, storageIsolationAvailable: false)
+        XCTAssertThrowsError(try unavailable.setup(with: "alice"))
+        XCTAssertNil(unavailable.identity)
+    }
+
     func testMlsResetPreservesProviderAndDeviceIdentity() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("ermis-mls-reset-\(UUID().uuidString)", isDirectory: true)
@@ -97,6 +141,46 @@ final class MlsPersistenceTests: XCTestCase {
 
         XCTAssertEqual(client.currentDeviceId, originalDeviceId)
         XCTAssertNotNil(client.identity)
+    }
+
+    func testProviderBindingRestoresDeviceAfterPreferencesAndKeychainLoss() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "mls-binding-loss-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let secure = DeviceIdSecureStore()
+        let store = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: secure)
+        let first = MlsClient(storageFolderURL: root, deviceIdStore: store, userDefaults: defaults)
+        try first.setup(with: "alice")
+        let id = try XCTUnwrap(first.currentDeviceId)
+        let signer = try XCTUnwrap(first.identity).signaturePublicKey()
+        let package = try XCTUnwrap(first.getKeyPackage())
+        try first.reset()
+        defaults.removePersistentDomain(forName: suite)
+        secure.values.removeAll()
+        let second = MlsClient(storageFolderURL: root, deviceIdStore: store, userDefaults: defaults)
+        try second.setup(with: "alice")
+        XCTAssertEqual(second.currentDeviceId, id)
+        XCTAssertEqual(try XCTUnwrap(second.identity).signaturePublicKey(), signer)
+        XCTAssertFalse(package.isEmpty)
+    }
+
+    func testFreshProviderDoesNotReuseKeychainOnlyDeviceId() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let suite = "mls-binding-reinstall-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let secure = DeviceIdSecureStore()
+        let store = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: secure)
+        let first = MlsClient(storageFolderURL: root.appendingPathComponent("old"), deviceIdStore: store, userDefaults: defaults)
+        try first.setup(with: "alice")
+        let id = first.currentDeviceId
+        let signer = try XCTUnwrap(first.identity).signaturePublicKey()
+        try first.reset()
+        let second = MlsClient(storageFolderURL: root.appendingPathComponent("new"), deviceIdStore: store, userDefaults: defaults)
+        try second.setup(with: "alice")
+        XCTAssertNotEqual(second.currentDeviceId, id)
+        XCTAssertNotEqual(try XCTUnwrap(second.identity).signaturePublicKey(), signer)
     }
 
     func testGeneratedKeyPackageSurvivesProviderResetAndJoinsWelcome() throws {

@@ -52,6 +52,18 @@ class MessageUpdater: Worker {
     ///   - onlyForMe: The `Boolean` value, true if delete only for me, otherwhise delete for all users.
     ///   - completion: The completion. Will be called with an error if smth goes wrong, otherwise - will be called with `nil`.
     func deleteMessage(message: ChatMessage, cid: ChannelId, onlyForMe: Bool, completion: ((Error?) -> Void)? = nil) {
+        repository.preparePendingSendCancellation(messageId: message.id, cid: cid) { [self] result in
+            switch result {
+            case .failure(let error): completion?(error)
+            case .success(let cancellation):
+                self.deleteMessageAfterCancellation(message: message, cid: cid, onlyForMe: onlyForMe,
+                    canceledIntent: cancellation, completion: completion)
+            }
+        }
+    }
+
+    private func deleteMessageAfterCancellation(message: ChatMessage, cid: ChannelId, onlyForMe: Bool,
+                                                canceledIntent: MlsSendIntent?, completion: ((Error?) -> Void)?) {
         var shouldDeleteOnBackend = true
 
         database.write({ session in
@@ -76,14 +88,15 @@ class MessageUpdater: Worker {
             // and authored by this user. A stale/corrupt local state on somebody else's server
             // message must never suppress the delete-for-me backend request.
             let shouldBeHardDeleted = (try? session.currentUserIsAuthor(of: messageDTO)) == true
-                && messageDTO.isLocalOnly
+                && (messageDTO.isLocalOnly || canceledIntent != nil)
             messageDTO.isHardDeleted = shouldBeHardDeleted
             if shouldBeHardDeleted {
                 messageDTO.type = MessageType.deleted.rawValue
                 messageDTO.deletedAt = DBDate()
                 messageDTO.text = ""
-                // If a message is local only, it means it is not in the server, so we should
-                // not make any call to the server.
+                if canceledIntent?.phase != .canceledDispatched { messageDTO.localMessageState = .sendingFailed }
+                // Canceling a dispatched send does not prove server absence. Its immutable
+                // ciphertext and reconcile obligation remain in the durable send journal.
                 shouldDeleteOnBackend = false
 
                 // Ensures bounced message deletion updates the channel preview.
@@ -659,6 +672,8 @@ class MessageUpdater: Worker {
         completion: @escaping (Error?
         ) -> Void
     ) {
+        do { try repository.retryOutgoingIntent(messageId: messageId) }
+        catch { completion(error); return }
         database.write({
             let messageDTO = try $0.messageEditableByCurrentUser(messageId)
 

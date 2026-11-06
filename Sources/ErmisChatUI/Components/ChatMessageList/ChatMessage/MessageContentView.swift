@@ -729,6 +729,16 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             }
         }
         // Set the text content
+        if let message = content, let bytes = message.encryptedData {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.content?.id == message.id,
+                      self.window != nil, !self.isHidden, self.alpha > 0,
+                      let textView = self.textView, !textView.isHidden,
+                      textView.text?.isEmpty == false else { return }
+                MlsIncomingTrace.record(message.isEncrypted ? .uiEncrypted : .uiRendered,
+                    uuid: message.id, ciphertext: bytes)
+            }
+        }
         if textView?.text != text {
             let attributedText = NSAttributedString(
                 string: text,

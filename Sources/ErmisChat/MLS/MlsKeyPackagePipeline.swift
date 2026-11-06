@@ -138,8 +138,9 @@ final class MlsKeyPackagePipeline {
             request(.keyPackagesCount(reason: reason)) { result in
                 do {
                     let count = try result.get()
-                    guard let size = E2eeKeyPackageRefillPolicy.batchSize(remaining: count.remaining, target: count.target, lowWatermark: count.lowWatermark,
+                    guard let normalSize = E2eeKeyPackageRefillPolicy.batchSize(remaining: count.remaining, target: count.target, lowWatermark: count.lowWatermark,
                         requestedDelta: count.requestedDelta, refillGeneration: count.refillGeneration) else { throw ClientError.Unexpected("key_package_count_invalid") }
+                    let size = count.signerRecoveryRequired == true ? 1 : normalSize
                     guard size > 0, remaining > 0 else { self.finish(); return }
                     var next = self.state; next.upload = .init(id: UUID().uuidString, status: "preparing", createdAt: self.now().timeIntervalSince1970)
                     next.upload?.generationVersion = 1; next.upload?.batchSize = size; next.upload?.nativeProviderId = try self.providerId()

@@ -11,16 +11,17 @@ import ErmisShared
 private final class MlsRequestCompletion<Response> {
     private let lock = NSLock()
     private let deadline: Date
+    private let timeoutReason: String
     private var callback: ((Result<Response, Error>) -> Void)?
     private var timer: DispatchSourceTimer?
     private var task: URLSessionTask?
     var isFinished: Bool { lock.lock(); defer { lock.unlock() }; return callback == nil }
-    init(deadline: Date, completion: @escaping (Result<Response, Error>) -> Void) {
-        self.deadline = deadline; callback = completion
+    init(deadline: Date, timeoutReason: String, completion: @escaping (Result<Response, Error>) -> Void) {
+        self.deadline = deadline; self.timeoutReason = timeoutReason; callback = completion
         let timer = DispatchSource.makeTimerSource(queue: .global())
         self.timer = timer
         timer.schedule(deadline: .now() + max(0, deadline.timeIntervalSinceNow))
-        timer.setEventHandler { [weak self] in self?.finish(.failure(ClientError.Unexpected("key_package_operation_expired"))) }
+        timer.setEventHandler { [weak self] in self?.finish(.failure(ClientError.Unexpected(timeoutReason))) }
         timer.resume()
     }
     func attach(_ task: URLSessionTask) {
@@ -37,7 +38,7 @@ private final class MlsRequestCompletion<Response> {
         lock.unlock()
         timer?.cancel()
         if expired { task?.cancel() }
-        completion?(expired ? .failure(ClientError.Unexpected("key_package_operation_expired")) : result)
+        completion?(expired ? .failure(ClientError.Unexpected(timeoutReason)) : result)
     }
 }
 
@@ -253,7 +254,7 @@ class APIClient {
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
         // A suspended auth queue must not outlive this operation's original deadline.
-        let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, completion: completion) }
+        let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, timeoutReason: endpoint.localMlsTimeoutReason, completion: completion) }
         let requestOperation = operation(endpoint: endpoint, isRecoveryOperation: false) { result in
             if let budget { budget.finish(result) } else { completion(result) }
         }
@@ -322,7 +323,7 @@ class APIClient {
 
             do {
                 try endpoint.localMlsGuard?()
-                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected("key_package_operation_expired") }
+                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
             } catch { completion(.failure(error)); done(.continue); return }
 
             log.debug(
@@ -438,12 +439,12 @@ class APIClient {
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
         // This gate also releases AsyncOperation when encoding/registration/refresh never calls back.
-        let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, completion: completion) }
+        let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, timeoutReason: endpoint.localMlsTimeoutReason, completion: completion) }
         let complete: (Result<Response, Error>) -> Void = { result in
             if let budget { budget.finish(result) } else { completion(result) }
         }
         if let deadline = endpoint.localMlsDeadline, deadline <= Date() {
-            complete(.failure(ClientError.Unexpected("key_package_operation_expired"))); return
+            complete(.failure(ClientError.Unexpected(endpoint.localMlsTimeoutReason))); return
         }
         encoder.encodeRequest(for: endpoint) { [weak self] (requestResult) in
             if budget?.isFinished == true { return }
@@ -451,11 +452,11 @@ class APIClient {
             do {
                 try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() {
-                    throw ClientError.Unexpected("key_package_operation_expired")
+                    throw ClientError.Unexpected(endpoint.localMlsTimeoutReason)
                 }
                 urlRequest = try requestResult.get()
                 if let deadline = endpoint.localMlsDeadline {
-                    guard deadline > Date() else { throw ClientError.Unexpected("key_package_operation_expired") }
+                    guard deadline > Date() else { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
                     urlRequest.timeoutInterval = min(5, deadline.timeIntervalSinceNow)
                 }
             } catch {
@@ -545,7 +546,7 @@ class APIClient {
             budget?.attach(task)
             do {
                 try endpoint.localMlsGuard?()
-                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected("key_package_operation_expired") }
+                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
                 if budget?.isFinished != true { task.resume() }
             } catch { task.cancel(); complete(.failure(error)) }
         }

@@ -129,6 +129,22 @@ class DatabaseContainer: NSPersistentContainer {
                 return
             }
             log.info("mls_storage_checkpoint mode=\(storageMode) result=loaded", subsystems: .mls)
+            if let self, let store = self.persistentStoreCoordinator.persistentStores.first {
+                let disk = store.type == NSSQLiteStoreType && store.url?.path != "/dev/null"
+                let exists = store.url.map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+                let matches = store.url == self.persistentStoreDescriptions.first?.url
+                log.info("mls_storage_readback disk=\(disk) file_exists=\(exists) description_matches=\(matches)", subsystems: .mls)
+                if let url = store.url {
+                    let parts = url.pathComponents
+                    let groupIndex = parts.firstIndex(of: "AppGroup")
+                    let appIndex = parts.firstIndex(of: "Application")
+                    let index = groupIndex ?? appIndex
+                    let container = groupIndex != nil ? "group" : (appIndex != nil ? "app" : "other")
+                    let containerId = index.flatMap { parts.indices.contains($0 + 1) ? UUID(uuidString: parts[$0 + 1]) : nil }?.uuidString.lowercased() ?? "unknown"
+                    log.info("mls_storage_location container=\(container) container_id=\(containerId) scoped=\(parts.contains("scopes")) account=\(parts.contains("users"))", subsystems: .mls)
+
+                }
+            }
             if shouldResetEphemeralValuesOnStart {
                 self?.resetEphemeralValues()
             }

@@ -87,22 +87,17 @@ struct MlsProviderStoreMigrator {
         }
 
         if let legacyURL, destinationExists {
-            do {
-                guard try verifier.snapshot(databaseURL: legacyURL)
-                    == verifier.snapshot(databaseURL: destinationURL) else {
-                    throw MigrationError.verificationMismatch
-                }
-                try protectStore(at: destinationURL)
-                defaults.set(true, forKey: markerKey)
-                try? removeStaleStagingDirectories(
-                    in: destinationURL.deletingLastPathComponent()
-                )
-                return destinationURL
-            } catch {
-                // Destination may be a partial promotion left by a process kill. Keep the legacy
-                // store untouched and retry a clean staged copy below.
-                try? removeSQLiteSet(at: destinationURL)
+            // Preferences can disappear independently of private databases. Without the marker,
+            // two existing stores have no replacement authority: validate equality or fail closed.
+            // A verifier/open/protection error must preserve both files as well.
+            guard try verifier.snapshot(databaseURL: legacyURL)
+                == verifier.snapshot(databaseURL: destinationURL) else {
+                throw MigrationError.verificationMismatch
             }
+            try protectStore(at: destinationURL)
+            defaults.set(true, forKey: markerKey)
+            try? removeStaleStagingDirectories(in: destinationURL.deletingLastPathComponent())
+            return destinationURL
         }
 
         guard let legacyURL else {
