@@ -1,5 +1,6 @@
 import XCTest
 import CoreData
+import CryptoKit
 import open_mls_ios
 @testable import ErmisChat
 
@@ -74,6 +75,154 @@ final class MessageRepositoryAtomicTransportTests: XCTestCase {
     func testWakeArrivingDuringReconcileIsCoalescedAfterUnknownOutcome() throws {
         try scenario(cancelAfterDispatch: false, coalescedWake: true)
     }
+    func testAuthenticatedCaptionEditKeepsManifestAndReconcilesLostResponse() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("caption-edit-" + UUID().uuidString)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "caption-edit-" + UUID().uuidString))
+        let devices = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: SecureStore())
+        let client = MlsClient(storageFolderURL: root, deviceIdStore: devices, userDefaults: defaults, importLegacyStorage: false)
+        try client.setup(with: "native-sender")
+        let cid = try ChannelId(cid: "team:project:caption-transport")
+        let native = try XCTUnwrap(client.provider), signer = try XCTUnwrap(client.identity)
+        let group = try Group.createWithCid(provider: native, founder: signer, cid: cid.rawValue)
+        let peerProvider = Provider(), peer = try Identity(provider: peerProvider, userId: "caption-peer")
+        let join = try group.addMembers(provider: native, sender: signer, newMembers: [peer.keyPackage(provider: peerProvider)])
+        try group.mergePendingCommit(provider: native); try group.saveState(provider: native)
+        let peerGroup = try Group.joinWithWelcome(provider: peerProvider, welcome: XCTUnwrap(join.welcome), ratchetTree: group.exportRatchetTree())
+        let database = DatabaseContainer(kind: .inMemory, shouldResetEphemeralValuesOnStart: false)
+        let loaded = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in !database.persistentStoreCoordinator.persistentStores.isEmpty }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 5), .completed)
+        let now = Date()
+        let account = CurrentUserPayload(id: "native-sender", projectId: "project", name: "Fixture", imageURL: nil,
+            phone: nil, email: nil, role: .user, createdAt: now, updatedAt: now, deactivatedAt: nil,
+            lastActiveAt: now, isOnline: false, isInvisible: false, isBanned: false, isBlocked: false,
+            language: nil, isEmailVerified: true, bellBoyId: "", aboutMe: "")
+        let id = UUID().uuidString.lowercased(), attachmentId = UUID().uuidString.lowercased()
+        let manifest = E2eeAttachmentManifestV1(attachmentId: attachmentId, assets: [
+            E2eeAttachmentManifestAssetV1(assetId: UUID().uuidString.lowercased(), kind: .original,
+                cipherSize: 24, cipherSha256: String(repeating: "b", count: 64), frameSize: 262144,
+                contentKey: Data(repeating: 7, count: 32).base64EncodedString(),
+                noncePrefix: Data(repeating: 9, count: 8).base64EncodedString(), plaintextSize: 0,
+                plaintextSha256: SHA256.hash(data: Data()).map { String(format: "%02x", $0) }.joined(),
+                display: ["name": "qaatt-fixture.txt", "mime_type": "text/plain", "size": 0])])
+        var canonical: [String: Any] = ["id": id, "cid": cid.rawValue, "type": "regular",
+            "user": ["id": "native-sender", "project_id": "project"], "text": "", "mls_ciphertext": "AQID",
+            "mls_epoch": 1, "group_generation": 0, "e2ee_group_id": cid.rawValue, "e2ee_attachment_ids": [attachmentId],
+            "msg_seq": 7, "last_event_seq": 10, "device_id": try XCTUnwrap(client.currentDeviceId),
+            "created_at": "2026-11-07T03:30:21.905Z", "updated_at": "2026-11-07T03:30:21.905Z"]
+        let channel: [String: Any] = ["cid": cid.rawValue, "type": "team", "mls_enabled": true,
+            "created_at": "2026-11-07T00:00:00Z", "updated_at": "2026-11-07T03:30:21.905Z", "member_count": 2]
+        try database.writeAndWait { session in
+            try session.saveCurrentUser(payload: account, projectId: "project")
+            let channelPayload = try JSONDecoder.ermis.decode(ChannelPayload.self,
+                from: JSONSerialization.data(withJSONObject: ["channel": channel, "messages": [canonical], "read": []]))
+            try session.saveChannel(payload: channelPayload)
+            try session.saveMessageDecrypt(payload: E2ePayload(text: "QAATT-caption-original", attachments: [],
+                e2eeAttachments: [manifest], stickerUrl: nil,
+                authenticatedMetadata: .init(forwardCid: nil, forwardMessageId: nil, forwardParentCid: nil, attachmentIds: [attachmentId])),
+                messageId: id, ciphertextHash: Data(SHA256.hash(data: Data([1, 2, 3]))))
+        }
+        let url = try XCTUnwrap(URL(string: "https://caption-fixture.invalid"))
+        let encoder = DefaultRequestEncoder(baseURL: url, authURL: url, stickerURL: url, apiKey: APIKey("fixture"))
+        let decoder = DefaultRequestDecoder(), config = URLSessionConfiguration.ephemeral
+        let api = TransportAPI(sessionConfiguration: config, requestEncoder: encoder, requestDecoder: decoder,
+            uploader: ErmisUploader(uploadClient: ErmisUploadClient(encoder: encoder, decoder: decoder, sessionConfiguration: config)),
+            downloader: ErmisDownloader(client: ErmisDownloadClient(sessionConfiguration: config)))
+        let e2e = E2eRepository(database: database, eventNotificationCenter: EventNotificationCenter(database: database), mlsClient: client, apiClient: api)
+        let repository = MessageRepository(database: database, apiClient: api, e2eRepository: e2e)
+        let updater = MessageUpdater(isLocalStorageEnabled: true, messageRepository: repository,
+            paginationStateHandler: MessagesPaginationStateHandler(), database: database, apiClient: api)
+        var editPosts = 0, queries = 0, sentCiphertexts: [Data] = [], editVersions: [[String: Any]] = []
+        api.transport = { path, body in
+            if path.hasSuffix("/query") {
+                queries += 1
+                return try JSONSerialization.data(withJSONObject: ["channel": channel, "messages": [canonical], "read": []])
+            }
+            XCTAssertTrue(path.hasSuffix("/" + id))
+            let root = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+            var wire = try XCTUnwrap(root["message"] as? [String: Any])
+            XCTAssertNil(wire["old_texts"]); XCTAssertNil(wire["text"]); XCTAssertNil(wire["attachments"])
+            XCTAssertEqual(wire["id"] as? String, id)
+            XCTAssertEqual(wire["e2ee_attachment_ids"] as? [String], [attachmentId])
+            let cipher = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(wire["mls_ciphertext"] as? String)))
+            let processed = try peerGroup.processMessageDeferred(provider: peerProvider, msg: cipher)
+            let plain = try E2eeArchiveMessageValidator.validate(
+                JSONDecoder().decode(E2ePayload.self, from: XCTUnwrap(processed.content)),
+                processedAAD: processed.aad, messageId: id, cid: cid.rawValue, groupCid: cid.rawValue)
+            XCTAssertEqual(plain.e2eeAttachments, [manifest]); XCTAssertEqual(plain.oldTexts?.count, editPosts + 1)
+            XCTAssertEqual(plain.oldTexts?.first?.text, "QAATT-caption-original")
+            sentCiphertexts.append(cipher); editPosts += 1
+            wire["created_at"] = canonical["created_at"]; wire["updated_at"] = "2026-11-07T03:31:21.957Z"
+            wire["msg_seq"] = 7; wire["last_event_seq"] = 10 + editPosts
+            wire["user"] = canonical["user"]; wire["device_id"] = client.currentDeviceId
+            canonical = wire
+            editVersions.append(wire)
+            if editPosts == 1 { throw URLError(.timedOut) }
+            return try JSONSerialization.data(withJSONObject: ["message": canonical])
+        }
+        func stage(_ text: String) throws -> E2eeCaptionEditSnapshot {
+            let staged = expectation(description: "caption intent staged")
+            updater.editMessage(messageId: id, text: text) { error in XCTAssertNil(error); staged.fulfill() }
+            wait(for: [staged], timeout: 5)
+            var result: E2eeCaptionEditSnapshot?
+            try database.writeAndWait { session in result = try E2eeCaptionEditSnapshot.decode(XCTUnwrap(session.message(id: id)?.e2eeCaptionEditData)) }
+            return try XCTUnwrap(result)
+        }
+        let first = try stage("QAATT-caption-one")
+        let lost = expectation(description: "lost response remains unresolved")
+        repository.editCaptionMessage(with: id) { result in
+            if case .success = result { XCTFail("Timeout cannot imply acceptance") }; lost.fulfill()
+        }
+        wait(for: [lost], timeout: 10)
+        XCTAssertEqual(editPosts, 1)
+        let conflict = expectation(description: "unresolved competing edit rejected")
+        updater.editMessage(messageId: id, text: "QAATT-caption-competing") { error in XCTAssertNotNil(error); conflict.fulfill() }
+        wait(for: [conflict], timeout: 5)
+        let recovered = expectation(description: "canonical reconciliation after reopen boundary")
+        repository.editCaptionMessage(with: id) { result in
+            if case .failure(let error) = result { XCTFail("Canonical edit reconciliation failed: \(error)") }
+            recovered.fulfill()
+        }
+        wait(for: [recovered], timeout: 10)
+        XCTAssertEqual(editPosts, 1); XCTAssertEqual(queries, 1)
+        try database.writeAndWait { session in
+            let dto = try XCTUnwrap(session.message(id: id)); XCTAssertNil(dto.e2eeCaptionEditData); XCTAssertNil(dto.localMessageState)
+            XCTAssertEqual(try dto.decryptedMessage?.asPayload().e2eeAttachments, [manifest])
+            XCTAssertEqual(try dto.asModel().oldTexts?.count, 1)
+        }
+        let second = try stage("QAATT-caption-two")
+        XCTAssertNotEqual(first.operationId, second.operationId); XCTAssertEqual(first.messageId, second.messageId)
+        let final = expectation(description: "second caption version accepted")
+        repository.editCaptionMessage(with: id) { result in
+            if case .failure(let error) = result { XCTFail("Second caption edit failed: \(error)") }
+            final.fulfill()
+        }
+        wait(for: [final], timeout: 10)
+        XCTAssertEqual(editPosts, 2); XCTAssertNotEqual(sentCiphertexts.first, sentCiphertexts.last)
+        let accepted = try e2e.prepareOutgoingCaptionEdit(second)
+        XCTAssertEqual(accepted.phase, .accepted); XCTAssertTrue(accepted.nativeRetired)
+        try database.writeAndWait { session in
+            let dto = try XCTUnwrap(session.message(id: id)); let payload = try XCTUnwrap(dto.decryptedMessage?.asPayload())
+            XCTAssertEqual(payload.text, "QAATT-caption-two"); XCTAssertEqual(payload.oldTexts?.map(\.text), ["QAATT-caption-original", "QAATT-caption-one"])
+            XCTAssertEqual(payload.e2eeAttachments, [manifest]); XCTAssertNil(dto.localMessageState)
+        }
+        // Ordered scope replay may encounter earlier own-device accepted edits after the
+        // timeline already holds the latest ciphertext. Recover from accepted exact intents,
+        // then apply the later version, without consuming our own sender ratchet.
+        for version in editVersions {
+            let wire: [String: Any] = ["message": version, "sender": canonical["user"] as Any,
+                "created_at": "2026-11-07T03:32:21.957Z"]
+            let update = try JSONDecoder.ermis.decode(MessageUpdatedSyncData.self,
+                from: JSONSerialization.data(withJSONObject: wire))
+            try e2e.handleMessageUpdatedSyncEvent(update, cid: cid)
+            try database.writeAndWait { session in
+                let row = try XCTUnwrap(session.message(id: id))
+                XCTAssertEqual(row.encryptedData, Data(base64Encoded: try XCTUnwrap(version["mls_ciphertext"] as? String)))
+                XCTAssertNotNil(try row.asModel().decryptedMessage)
+            }
+        }
+        XCTAssertEqual(editPosts, 2, "Replay must never POST another edit")
+    }
+
     private func scenario(cancelAfterDispatch: Bool, cancelBeforeIntent: Bool = false,
                           automaticReconcile: Bool = false, coalescedWake: Bool = false,
                           directAcceptance: Bool = false) throws {

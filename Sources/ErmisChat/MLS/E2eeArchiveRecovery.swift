@@ -263,6 +263,25 @@ public actor E2eeArchiveRecovery {
         publish("ready")
     }
 
+    /// Reads this installation's retained, device-protected checkpoint only. No PIN,
+    /// remote archive, provider mutation or upload is involved in local materialization repair.
+    nonisolated func localCheckpoint(cid: String, generation: UInt64, epoch: UInt64) throws -> (archive: Data, snapshot: Data)? {
+        try session.check()
+        guard isCurrentAccount(), try self.generation(cid) == generation else { throw E2eeArchiveError.invalidData }
+        let identity = "\(cid):\(generation):\(epoch)"
+        for scope in ["account_owned", "group_sponsored"] {
+            guard let row = try journal.get(key: "checkpoint:\(identity):\(scope)") else { continue }
+            guard row.cid == cid, row.groupGeneration == generation, row.epoch == epoch else { throw E2eeArchiveError.invalidData }
+            let checkpoint = try JSONDecoder().decode(ArchiveCheckpoint.self, from: row.payload)
+            guard Self.hex(Data(SHA256.hash(data: checkpoint.snapshot))) == checkpoint.hash else { throw E2eeArchiveError.invalidData }
+            let archive = try keys.open(checkpoint.archive, purpose: "archive:\(identity)")
+            try session.check()
+            guard isCurrentAccount(), try self.generation(cid) == generation else { throw E2eeArchiveError.invalidData }
+            return (archive, checkpoint.snapshot)
+        }
+        return nil
+    }
+
     /// Called synchronously by the MLS executor; only export once for each captured epoch.
     nonisolated func capture(cid: String, generation: UInt64, group: Group, role: String) throws {
         try session.check()

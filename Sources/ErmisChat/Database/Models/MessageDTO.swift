@@ -28,6 +28,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var mlsEpoch: Int64
     @NSManaged var mlsGroupGeneration: Int64
     @NSManaged var pollData: Data?
+    @NSManaged var e2eeCaptionEditData: Data?
     @NSManaged var type: String
     @NSManaged var command: String?
     @NSManaged var createdAt: DBDate
@@ -1267,7 +1268,10 @@ private extension ChatMessage {
         mlsGroupGeneration = Int(dto.mlsGroupGeneration)
         type = MessageType(rawValue: dto.type) ?? .regular
         poll = dto.pollData.flatMap { try? JSONDecoder().decode(Poll.self, from: $0) }
-        oldTexts = dto.oldTexts?.map { $0.asModel() }
+        let captionPayload = dto.e2eeCaptionEditData.flatMap { try? E2eeCaptionEditSnapshot.decode($0).authenticatedPayload }
+            ?? (try? dto.decryptedMessage?.asPayload())
+        oldTexts = captionPayload?.oldTexts?.map { MessageEditHistory(text: $0.text, createdAt: $0.createdAt) }
+            ?? (dto.encryptedData == nil ? dto.oldTexts?.map { $0.asModel() } : nil)
         stickerUrl = dto.stickerUrl
         command = dto.command
         createdAt = dto.createdAt.bridgeDate
@@ -1294,7 +1298,11 @@ private extension ChatMessage {
                 action: MessageModerationAction(rawValue: $0.action)
             )
         }
-        decryptedMessage = try? dto.decryptedMessage?.asPayload()
+        if let pending = dto.e2eeCaptionEditData, dto.localMessageState != nil {
+            decryptedMessage = try E2eeCaptionEditSnapshot.decode(pending).authenticatedPayload
+        } else {
+            decryptedMessage = try? dto.decryptedMessage?.asPayload()
+        }
         // If decrypted content is available, override the encrypted placeholders so callers
         // never need to check decryptedMessage separately for display.
         if let payload = decryptedMessage {

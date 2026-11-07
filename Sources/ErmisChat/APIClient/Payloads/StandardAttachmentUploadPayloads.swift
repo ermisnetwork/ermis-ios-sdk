@@ -7,10 +7,12 @@ import Foundation
 struct StandardAttachmentPresignRequest: Encodable, Equatable {
     let fileName: String
     let contentType: String
+    var purpose: AttachmentUploadPurpose? = nil
 
     enum CodingKeys: String, CodingKey {
         case fileName = "file_name"
         case contentType = "content_type"
+        case purpose
     }
 }
 
@@ -30,11 +32,13 @@ struct StandardAttachmentConfirmRequest: Encodable, Equatable {
     let attachmentId: String
     let fileName: String
     let contentType: String
+    var purpose: AttachmentUploadPurpose? = nil
 
     enum CodingKeys: String, CodingKey {
         case attachmentId = "attachment_id"
         case fileName = "file_name"
         case contentType = "content_type"
+        case purpose
     }
 }
 

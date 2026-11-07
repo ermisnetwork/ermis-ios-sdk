@@ -91,6 +91,15 @@ public class MlsClient {
         return try MlsSendIntentStore(url: providerDatabaseURL)
     }
 
+    func captionEditIntentStore() throws -> MlsSendIntentStore {
+        guard hasSetup, let providerDatabaseURL else { throw ClientError.MlsNoProviderError() }
+        return try MlsSendIntentStore(url: providerDatabaseURL.appendingPathExtension("caption-edits"))
+    }
+
+    func outgoingIntentStore(_ intent: MlsSendIntent) throws -> MlsSendIntentStore {
+        try intent.editMessageId == nil ? sendIntentStore() : captionEditIntentStore()
+    }
+
     func sendIntentOwner() throws -> String {
         assertMutationExecutor()
         guard hasSetup, let provider, let identity, let userId, let device = currentDeviceId else {

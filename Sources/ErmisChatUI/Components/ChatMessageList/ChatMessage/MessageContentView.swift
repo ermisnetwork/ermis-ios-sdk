@@ -330,6 +330,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     open func layout(options: MessageLayoutOptions) {
         defer {
             customCellViewInjector?.contentViewDidLayout(options: options)
+            arrangeAttachmentCaption()
             if options.contains(.forwardedMessageIndicator) {
                 let label = UILabel()
                 if let content = content {
@@ -656,10 +657,26 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         return nil
     }
 
+    /// Keep attachment captions above the media after initial layout and async decryption/reuse.
+    private func arrangeAttachmentCaption() {
+        guard content?.allAttachments.isEmpty == false, content?.poll == nil,
+              let textView, textView.superview === bubbleContentContainer else { return }
+        if bubbleContentContainer.subviews.first !== textView {
+            bubbleContentContainer.removeArrangedSubview(textView)
+            bubbleContentContainer.insertArrangedSubview(textView, at: 0, respectsLayoutMargins: true)
+        }
+        if let dividerView, dividerView.superview === bubbleContentContainer,
+           bubbleContentContainer.subviews.firstIndex(of: dividerView) != 1 {
+            bubbleContentContainer.removeArrangedSubview(dividerView)
+            bubbleContentContainer.insertArrangedSubview(dividerView, at: 1, respectsLayoutMargins: true)
+        }
+    }
+
     override open func contentDidChanged() {
         super.contentDidChanged()
         defer {
             customCellViewInjector?.contentViewContentDidChanged()
+            arrangeAttachmentCaption()
             setNeedsLayout()
         }
 

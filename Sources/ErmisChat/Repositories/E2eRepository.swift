@@ -1279,18 +1279,10 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     private func decryptUpdatedMessageEventIfNeeded(message: ChatMessage, cid: ChannelId) {
-        guard let encryptedData = message.encryptedData else { return }
-        // Skip re-decryption for the current user's own edits — the local
-        // MessageDecryptDTO was already updated in MessageUpdater.editMessage().
-        // MLS cannot decrypt ciphertext produced by the same device.
-        if message.isSentByCurrentUser { return }
-        log.debug("[MLS] state=updated_message_redecrypt_started has_epoch=\(message.mlsEpoch != nil)")
-        decryptMessagePayload(
-            messageId: message.id,
-            encryptedData: encryptedData,
-            cid: cid,
-            receiveSource: .messageUpdate
-        )
+        // Another device of the same account can edit this message. The only own echo
+        // we may skip is one with plaintext bound to this exact canonical ciphertext.
+        // Reuse the normal ordered scope gate; never consume the ratchet on the UI path.
+        decryptNewMessageEventIfNeeded(message: message, cid: cid)
     }
 
     /// Re-decrypts a message after a `message.updated` event WITHOUT discarding the existing
@@ -1313,33 +1305,47 @@ class E2eRepository: EventsControllerDelegate {
         messageId: MessageId,
         encryptedData: Data,
         cid: ChannelId,
-        receiveSource: E2eeAttachmentReceiveSource
-    ) {
-        do {
-            let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
-            let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
-            _ = try persistProcessedApplicationMessage(
-                processed,
-                messageId: messageId,
-                encryptedData: encryptedData,
-                cid: cid,
-                group: group,
-                receiveSource: receiveSource
-            )
-        } catch {
-            // Unchanged/already-consumed ciphertext (a non-edit update) or an own-device message:
-            // keep the existing decrypted cache rather than regressing to the placeholder.
-            log.debug(
-                "[MLS] state=updated_message_redecrypt_skipped reason=unchanged_or_consumed "
-                    + PrivacySafeLogMetadata.errorFields(error),
-                subsystems: .mls
-            )
-            hydrateDurablePayloadIfPresent(
-                messageId: messageId,
-                cid: cid,
-                source: receiveSource
-            )
+        receiveSource: E2eeAttachmentReceiveSource,
+        expectedEnvelope: E2eeReceivedMessageEnvelope? = nil
+    ) throws {
+        if let cached = try boundDisplayPayload(messageId: messageId, encryptedData: encryptedData,
+                                               expectedEnvelope: expectedEnvelope) {
+            e2eeAttachmentReceiveCoordinator.hydratePreviews(payload: cached, messageId: messageId,
+                cid: cid, source: receiveSource)
+            return
         }
+        if let own = try acceptedOwnCaptionEditPayload(messageId: messageId, ciphertext: encryptedData,
+                                                       cid: cid, expectedEnvelope: expectedEnvelope) {
+            try database.writeAndWait { session in
+                try session.saveMessageDecrypt(payload: own, messageId: messageId,
+                    ciphertextHash: Data(SHA256.hash(data: encryptedData)))
+                session.message(id: messageId)?.text = own.text
+            }
+            e2eeAttachmentReceiveCoordinator.hydratePreviews(payload: own, messageId: messageId,
+                cid: cid, source: receiveSource)
+            return
+        }
+        _ = try decryptMessagePayloadSyncThrowing(messageId: messageId, encryptedData: encryptedData,
+            cid: cid, receiveSource: receiveSource, expectedEnvelope: expectedEnvelope)
+    }
+
+    private func acceptedOwnCaptionEditPayload(messageId: MessageId, ciphertext: Data, cid: ChannelId,
+        expectedEnvelope: E2eeReceivedMessageEnvelope?) throws -> E2ePayload? {
+        let owner = try mlsClient.sendIntentOwner(), fence = try captureSendOwnerFence()
+        guard let intent = try mlsClient.captionEditIntentStore().acceptedEdit(owner: owner,
+                messageId: messageId, ciphertext: ciphertext) else { return nil }
+        try fence()
+        guard intent.cid == mlsGroupCid(for: cid).rawValue,
+              intent.generation == UInt64(groupGeneration(for: cid)), intent.nativeSealed else {
+            throw MlsSendIntentError.conflict
+        }
+        let binding = try mlsClient.applicationSendBinding(cid: intent.cid)
+        guard binding.0 == intent.generation, binding.1 == intent.groupId, binding.2 == intent.providerId else {
+            throw MlsSendIntentError.conflict
+        }
+        try fence()
+        return try validatedPayload(JSONDecoder().decode(E2ePayload.self, from: intent.payload),
+            processedAAD: intent.aad, messageId: messageId, cid: cid, expectedEnvelope: expectedEnvelope)
     }
 
     /// Enqueues `reDecryptUpdatedMessageSync` on `MlsMutationExecutor`. Used by the WebSocket
@@ -1351,7 +1357,7 @@ class E2eRepository: EventsControllerDelegate {
         receiveSource: E2eeAttachmentReceiveSource
     ) {
         let op = BlockOperation { [weak self] in
-            self?.reDecryptUpdatedMessageSync(
+            try? self?.reDecryptUpdatedMessageSync(
                 messageId: messageId,
                 encryptedData: encryptedData,
                 cid: cid,
@@ -3350,6 +3356,7 @@ class E2eRepository: EventsControllerDelegate {
 
         completions.forEach { $0() }
         for cidString in completedCids {
+            if let cid = try? ChannelId(cid: cidString) { recoverSkippedCaptionUpdates(in: cid) }
             // A prior binary may have retained same-epoch applications behind
             // the old generation's merged join receipt. Re-evaluate those rows
             // only after this real scope invocation proves an installed Welcome.
@@ -3370,6 +3377,78 @@ class E2eRepository: EventsControllerDelegate {
         runSync(forCidStrings: pending, completion: {
             pendingCompletions.forEach { $0() }
         })
+    }
+
+    /// Old clients acknowledged unknown caption events; merely fetching after their cursor
+    /// cannot rediscover the missing cache. Repair retained, current versions after catch-up.
+    private func recoverSkippedCaptionUpdates(in cid: ChannelId) {
+        let groupCid = mlsGroupCid(for: cid).rawValue
+        let assertOwner = captureRetainedHistoryOwner()
+        let operation = BlockOperation { [weak self] in
+            guard let self else { return }
+            do {
+                try assertOwner()
+                guard let accountId = self.mlsClient.userId else { return }
+                let events = try self.durableInboxStore.skippedCaptionUpdates(accountId: accountId, scopeCid: groupCid)
+                for event in events {
+                    guard case .messageUpdated(let update) = event.event,
+                          let bytes = update.message.encryptedData,
+                          update.message.groupGeneration == self.groupGeneration(for: cid) else { continue }
+                    do {
+                        try assertOwner()
+                        do {
+                            try self.reDecryptUpdatedMessageSync(messageId: update.message.id, encryptedData: Data(bytes),
+                                cid: cid, receiveSource: .scopeSync, expectedEnvelope: update.message.e2eeReceivedEnvelope)
+                        } catch {
+                            // Later Android sends can age a skipped edit out of the live receiver
+                            // ratchet. Use only our existing device-local epoch checkpoint; verify
+                            // membership/AAD and publish cache without changing provider or cursors.
+                            guard let epoch = update.message.mlsEpoch.flatMap(UInt64.init(exactly:)),
+                                  let local = try self.archiveRecovery?.localCheckpoint(cid: groupCid,
+                                      generation: UInt64(update.message.groupGeneration), epoch: epoch) else {
+                                MlsIncomingTrace.record(.captionCheckpointMissing, uuid: update.message.id,
+                                    ciphertext: Data(bytes))
+                                throw error
+                            }
+                            var archive = local.archive
+                            defer { archive.resetBytes(in: 0..<archive.count) }
+                            let recovered = try self.mlsClient.decryptArchivedApplication(cid: groupCid,
+                                generation: UInt64(update.message.groupGeneration), archive: archive,
+                                snapshot: local.snapshot, ciphertext: Data(bytes))
+                            let members = try JSONDecoder().decode(E2eeArchiveWire.self, from: local.snapshot)["members"].array
+                            guard recovered.epoch == epoch, members.contains(where: {
+                                $0["leaf_index"].number == UInt64(recovered.senderIndex)
+                                    && $0["user_id"].string == update.message.user.id
+                            }) else { throw E2eeArchiveError.invalidData }
+                            let payload = try self.validatedPayload(recovered.payload, processedAAD: recovered.aad,
+                                messageId: update.message.id, cid: cid, expectedEnvelope: update.message.e2eeReceivedEnvelope)
+                            try assertOwner()
+                            try self.database.writeAndWait { session in
+                                guard let row = session.message(id: update.message.id), row.encryptedData == Data(bytes),
+                                      row.channel?.cid == cid.rawValue else { throw E2eeArchiveError.invalidData }
+                                try session.saveMessageDecrypt(payload: payload, messageId: row.id,
+                                    ciphertextHash: Data(SHA256.hash(data: Data(bytes))))
+                                row.text = payload.text
+                            }
+                            self.e2eeAttachmentReceiveCoordinator.hydratePreviews(payload: payload,
+                                messageId: update.message.id, cid: cid, source: .replayRecovery)
+                            MlsIncomingTrace.record(.captionCheckpointRestored, uuid: update.message.id,
+                                ciphertext: Data(bytes))
+                        }
+                        try assertOwner()
+                        try self.durableInboxStore.markSkippedCaptionUpdateRepaired(accountId: accountId,
+                            scopeCid: groupCid, envelope: event)
+                    } catch {
+                        MlsIncomingTrace.record(.decryptFailed, uuid: update.message.id, ciphertext: Data(bytes), error: error)
+                    }
+                }
+
+            } catch {
+                log.error("[E2eSync] state=caption_repair_failed " + PrivacySafeLogMetadata.errorFields(error), subsystems: .mls)
+            }
+        }
+        operation.queuePriority = .low
+        enqueueGroupOperation(operation, cidString: groupCid)
     }
 
     private func abortSync() {
@@ -4293,8 +4372,15 @@ class E2eRepository: EventsControllerDelegate {
 
     /// Handles a `message_updated` sync event by decrypting the latest snapshot and upserting it.
     /// Called on `MlsMutationExecutor`.
-    private func handleMessageUpdatedSyncEvent(_ data: MessageUpdatedSyncData, cid: ChannelId) throws {
+    func handleMessageUpdatedSyncEvent(_ data: MessageUpdatedSyncData, cid: ChannelId) throws {
+        try performMlsMutation(cidString: mlsGroupCid(for: cid).rawValue) {
+            try self.applyMessageUpdatedSyncEvent(data, cid: cid)
+        }
+    }
+
+    private func applyMessageUpdatedSyncEvent(_ data: MessageUpdatedSyncData, cid: ChannelId) throws {
         let messageId = data.message.id
+        guard data.cid == nil || data.cid == cid else { throw E2eeArchiveError.invalidData }
         log.debug("[E2eSync] state=metadata_apply_started type=message_updated", subsystems: .mls)
 
         // Check if the message has encrypted data that may need re-decryption
@@ -4308,11 +4394,12 @@ class E2eRepository: EventsControllerDelegate {
             try database.writeAndWait { session in
                 try session.saveMessage(payload: data.message, for: cid, syncOwnReactions: false, cache: nil)
             }
-            reDecryptUpdatedMessageSync(
+            try reDecryptUpdatedMessageSync(
                 messageId: messageId,
                 encryptedData: encryptedData,
                 cid: cid,
-                receiveSource: .scopeSync
+                receiveSource: .scopeSync,
+                expectedEnvelope: data.message.e2eeReceivedEnvelope
             )
         } else {
             // No encrypted data — just save the message payload directly
@@ -6427,11 +6514,11 @@ class E2eRepository: EventsControllerDelegate {
     private static func applicationSendEnvelope(_ intent: MlsSendIntent, artifact: ApplicationSendArtifact) throws -> Data {
         guard var root = try JSONSerialization.jsonObject(with: intent.originalEnvelope) as? [String: Any],
               var message = root["message"] as? [String: Any],
-              (message["id"] as? String)?.lowercased() == intent.uuid else { throw MlsSendIntentError.invalid }
+              (message["id"] as? String)?.lowercased() == (intent.editMessageId ?? intent.uuid) else { throw MlsSendIntentError.invalid }
         message["mls_ciphertext"] = artifact.ciphertext.base64EncodedString()
         message["mls_epoch"] = artifact.epoch
         message["group_generation"] = intent.generation
-        for key in ["text", "attachments", "sticker_url"] { message.removeValue(forKey: key) }
+        for key in ["text", "attachments", "sticker_url", "old_texts"] { message.removeValue(forKey: key) }
         root["message"] = message
         return try JSONSerialization.data(withJSONObject: root, options: [.sortedKeys])
     }
@@ -6443,12 +6530,65 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
+    func prepareOutgoingCaptionEdit(_ snapshot: E2eeCaptionEditSnapshot) throws -> MlsSendIntent {
+        let destination = try ChannelId(cid: snapshot.cid)
+        let groupCid = mlsGroupCid(for: destination).rawValue
+        return try performMlsMutation(cidString: groupCid) {
+            let owner = try self.mlsClient.sendIntentOwner(), fence = try self.captureSendOwnerFence()
+            let store = try self.mlsClient.captionEditIntentStore()
+            var record = try store.load(uuid: snapshot.operationId, owner: owner)
+            if let existing = record {
+                guard existing.editMessageId == snapshot.messageId, existing.cid == groupCid,
+                      existing.originalEnvelope == snapshot.originalEnvelope,
+                      existing.editBaseCiphertextHash == snapshot.baseCiphertextHash,
+                      (try JSONDecoder().decode(E2ePayload.self, from: existing.payload)) == snapshot.payload,
+                      existing.aad == snapshot.aad else {
+                    throw MlsSendIntentError.conflict
+                }
+                if existing.ciphertext != nil { return existing }
+                if existing.phase == .failedUnsealed {
+                    var retry = existing; retry.phase = .unsealed; retry.revision += 1
+                    record = try store.save(retry, replacing: existing, assertCurrent: fence)
+                }
+            }
+            if record == nil {
+                if let control = try self.installedRecoveryControl(cid: groupCid), control.control.action == .manualInterventionRequired {
+                    throw ClientError.Unexpected("mls_manual_intervention_required")
+                }
+                let binding = try self.mlsClient.applicationSendBinding(cid: groupCid)
+                _ = try E2eeArchiveMessageValidator.validate(snapshot.payload, processedAAD: snapshot.aad,
+                    messageId: snapshot.messageId, cid: snapshot.cid, groupCid: groupCid)
+                let scopeBytes = try JSONEncoder().encode([owner, snapshot.cid, groupCid, String(binding.0), binding.1.base64EncodedString(), binding.2])
+                let scope = SHA256.hash(data: scopeBytes).map { String(format: "%02x", $0) }.joined()
+                var created = MlsSendIntent(version: 1, uuid: snapshot.operationId, owner: owner,
+                    cid: groupCid, scope: scope, groupId: binding.1, generation: binding.0, providerId: binding.2,
+                    payload: try JSONEncoder().encode(snapshot.payload), aad: snapshot.aad,
+                    originalEnvelope: snapshot.originalEnvelope, phase: .unsealed, ciphertext: nil,
+                    epoch: nil, wireEnvelope: nil, revision: 0)
+                created.editMessageId = snapshot.messageId; created.editBaseCiphertextHash = snapshot.baseCiphertextHash
+                record = try store.save(created, replacing: nil, assertCurrent: fence)
+            }
+            guard let original = record else { throw MlsSendIntentError.invalid }
+            do {
+                let artifact = try self.mlsClient.prepareApplicationSend(original)
+                var next = original; next.phase = .sealed; next.revision += 1
+                next.ciphertext = artifact.ciphertext; next.epoch = artifact.epoch; next.nativeSealed = true
+                next.wireEnvelope = try Self.applicationSendEnvelope(original, artifact: artifact)
+                return try store.save(next, replacing: original, assertCurrent: fence)
+            } catch {
+                var failed = original; failed.phase = .failedUnsealed; failed.revision += 1
+                _ = try? store.save(failed, replacing: original, assertCurrent: fence)
+                throw error
+            }
+        }
+    }
+
     func validateOutgoingAcceptance(_ intent: MlsSendIntent, message: MessagePayload, destination: ChannelId) throws {
         try performMlsMutation(cidString: intent.cid) {
             guard try self.mlsClient.sendIntentOwner() == intent.owner,
                   message.user.id == self.mlsClient.userId,
                   message.sendingDeviceId == self.mlsClient.currentDeviceId,
-                  message.id.lowercased() == intent.uuid,
+                  message.id.lowercased() == (intent.editMessageId ?? intent.uuid),
                   message.encryptedData.map({ Data($0) }) == intent.ciphertext,
                   message.mlsEpoch.map({ $0 >= 0 ? UInt64($0) : UInt64.max }) == intent.epoch,
                   message.groupGeneration >= 0, UInt64(message.groupGeneration) == intent.generation,
@@ -6474,7 +6614,7 @@ class E2eRepository: EventsControllerDelegate {
     func assertOutgoingOwner(_ intent: MlsSendIntent) throws {
         try performMlsMutation(cidString: intent.cid) {
             guard try self.mlsClient.sendIntentOwner() == intent.owner,
-                  let current = try self.mlsClient.sendIntentStore().load(uuid: intent.uuid, owner: intent.owner),
+                  let current = try self.mlsClient.outgoingIntentStore(intent).load(uuid: intent.uuid, owner: intent.owner),
                   current.requiresReconcile, current.ciphertext == intent.ciphertext,
                   current.wireEnvelope == intent.wireEnvelope else { throw MlsSendIntentError.conflict }
         }
@@ -6487,7 +6627,7 @@ class E2eRepository: EventsControllerDelegate {
             if original.requiresReconcile { return original }
             guard original.phase == .sealed else { throw MlsSendIntentError.terminal }
             var next = original; next.phase = .dispatched; next.revision += 1
-            return try self.mlsClient.sendIntentStore().save(next, replacing: original) {
+            return try self.mlsClient.outgoingIntentStore(original).save(next, replacing: original) {
                 try assertCurrent()
             }
         }
@@ -6539,7 +6679,7 @@ class E2eRepository: EventsControllerDelegate {
         try performMlsMutation(cidString: original.cid) {
             guard try self.mlsClient.sendIntentOwner() == original.owner else { throw MlsSendIntentError.conflict }
             let assertCurrent = try self.captureSendOwnerFence()
-            let store = try self.mlsClient.sendIntentStore()
+            let store = try self.mlsClient.outgoingIntentStore(original)
             guard let current = try store.load(uuid: original.uuid, owner: original.owner),
                   current.ciphertext == original.ciphertext, current.wireEnvelope == original.wireEnvelope else { throw MlsSendIntentError.conflict }
             if current.phase == .accepted && current.nativeRetired { return }
@@ -6927,6 +7067,20 @@ class E2eRepository: EventsControllerDelegate {
             guard let self else { return }
             do {
                 try assertOwner()
+                if try self.boundDisplayPayload(messageId: messageId, encryptedData: encryptedData,
+                                               expectedEnvelope: expectedEnvelope) == nil,
+                   let accountId = self.mlsClient.userId,
+                   let retained = try self.durableInboxStore.skippedCaptionUpdate(accountId: accountId,
+                       scopeCid: groupCid, messageId: messageId, ciphertext: encryptedData),
+                   case .messageUpdated(let update) = retained.event,
+                   update.message.groupGeneration == self.groupGeneration(for: cid) {
+                    try assertOwner()
+                    try self.reDecryptUpdatedMessageSync(messageId: messageId, encryptedData: encryptedData,
+                        cid: cid, receiveSource: .scopeSync, expectedEnvelope: update.message.e2eeReceivedEnvelope)
+                    try assertOwner()
+                    try self.durableInboxStore.markSkippedCaptionUpdateRepaired(accountId: accountId,
+                        scopeCid: groupCid, envelope: retained)
+                }
                 guard let payload = try self.boundDisplayPayload(
                     messageId: messageId, encryptedData: encryptedData, expectedEnvelope: expectedEnvelope
                 ) else {

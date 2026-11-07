@@ -38,6 +38,8 @@ public enum MlsIncomingTrace {
         case uiEncrypted = "ui_encrypted"
         case scopeBlocked = "scope_blocked"
         case scopePageFailed = "scope_page_failed"
+        case captionCheckpointMissing = "caption_checkpoint_missing"
+        case captionCheckpointRestored = "caption_checkpoint_restored"
     }
     static func errorClass(_ error: Error?) -> String {
         guard let error else { return "none" }

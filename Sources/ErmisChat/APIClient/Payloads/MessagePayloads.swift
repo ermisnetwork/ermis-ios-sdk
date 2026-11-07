@@ -575,7 +575,7 @@ public struct Command: Codable, Hashable {
     }
 }
 
-public struct MessageEditHistoryPayload: Codable {
+public struct MessageEditHistoryPayload: Codable, Equatable {
     let text: String
     let createdAt: Date
 

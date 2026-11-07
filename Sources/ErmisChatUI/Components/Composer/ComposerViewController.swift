@@ -789,7 +789,8 @@ open class ComposerViewController: _ViewController,
     open func setupAttachmentsView() {
         addChildViewController(attachmentsVC, embedIn: composerView.inputMessageView.attachmentsViewContainer)
         attachmentsVC.didTapRemoveItemButton = { [weak self] index in
-            self?.content.attachments.remove(at: index)
+            guard let self, self.content.state != .edit, self.content.attachments.indices.contains(index) else { return }
+            self.content.attachments.remove(at: index)
         }
     }
 
@@ -891,7 +892,7 @@ open class ComposerViewController: _ViewController,
             let isLeadingActionsVisible = leadingViews
                 .filter { isNotShrinkInputButton($0) && self.composerView.composerMenuButton.isHidden }
                 .filter(\.isHidden).isEmpty
-            self.composerView.composerMenuButton.isHidden = self.content.isVoiceRecording //textView.text.isEmpty || self.content .hasCommand || !isLeadingActionsVisible
+            self.composerView.composerMenuButton.isHidden = self.content.isVoiceRecording || self.content.state == .edit
         }
     }
 
@@ -1013,6 +1014,7 @@ open class ComposerViewController: _ViewController,
     }
 
     open func updateInputAttachmentsView() {
+        attachmentsVC.isAttachmentRemovalEnabled = content.state != .edit
         attachmentsVC.content = content.attachments.map {
             if let provider = $0.payload as? AttachmentPreviewProvider {
                 return provider
@@ -1268,6 +1270,7 @@ open class ComposerViewController: _ViewController,
     }
 
     open func onMenuButtonDidSelected(item: ComposerMenuItemType) {
+        guard content.state != .edit else { return }
         switch item {
         case .location:
             presentAlert(message: "Feature under develop")

@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import ErmisChat
 
 final class MlsSendIntentStoreTests: XCTestCase {
@@ -94,6 +95,32 @@ final class MlsSendIntentStoreTests: XCTestCase {
             XCTAssertTrue(try reopened.pendingRetirements(owner: original.owner).isEmpty)
             XCTAssertThrowsError(try store.save(retired, replacing: accepted, assertCurrent: {}))
             XCTAssertEqual(try store.load(uuid: original.uuid, owner: original.owner)?.ciphertext, sealed.ciphertext)
+        }
+    }
+
+    func testAcceptedCaptionVersionIndexSurvivesReopenAndMigratesOldJournalWithoutResealing() throws {
+        try fixture { url, store in
+            var original = intent(); original.editMessageId = UUID().uuidString.lowercased()
+            original.editBaseCiphertextHash = Data(repeating: 4, count: 32)
+            try store.save(original, replacing: nil, assertCurrent: {})
+            var sealed = seal(original); sealed.nativeSealed = true
+            try store.save(sealed, replacing: original, assertCurrent: {})
+            XCTAssertNil(try store.acceptedEdit(owner: original.owner, messageId: original.editMessageId!, ciphertext: sealed.ciphertext!))
+            var sent = sealed; sent.phase = .dispatched; sent.revision += 1
+            try store.save(sent, replacing: sealed, assertCurrent: {})
+            var accepted = sent; accepted.phase = .accepted; accepted.revision += 1
+            try store.save(accepted, replacing: sent, assertCurrent: {})
+            var db: OpaquePointer?
+            XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
+            defer { sqlite3_close(db) }
+            // Simulate the caption journal emitted by the first fix, keeping every record/digest.
+            XCTAssertEqual(sqlite3_exec(db, "DROP INDEX ermis_caption_edit_cipher_v1", nil, nil, nil), SQLITE_OK)
+            XCTAssertEqual(sqlite3_exec(db, "ALTER TABLE ermis_send_intents_v1 DROP COLUMN edit_message_id", nil, nil, nil), SQLITE_OK)
+            XCTAssertEqual(sqlite3_exec(db, "ALTER TABLE ermis_send_intents_v1 DROP COLUMN cipher_sha256", nil, nil, nil), SQLITE_OK)
+            let reopened = try MlsSendIntentStore(url: url)
+            XCTAssertEqual(try reopened.acceptedEdit(owner: original.owner, messageId: original.editMessageId!, ciphertext: sealed.ciphertext!), accepted)
+            XCTAssertNil(try reopened.acceptedEdit(owner: "different-owner", messageId: original.editMessageId!, ciphertext: sealed.ciphertext!))
+            XCTAssertNil(try reopened.acceptedEdit(owner: original.owner, messageId: original.editMessageId!, ciphertext: Data([1])))
         }
     }
 

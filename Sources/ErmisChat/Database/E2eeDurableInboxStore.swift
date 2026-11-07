@@ -1193,8 +1193,117 @@ final class E2eeDurableInboxStore {
         }
     }
 
-    /// Marks one event applied and advances only the apply cursor, using the exact raw timestamp
-    /// and event ID from the durable envelope.
+    /// An old client could acknowledge an unsupported caption event without materializing it.
+    /// Read only that retained failure, bound to the current canonical ciphertext. This does
+    /// not rewind or advance either cursor, and never admits an unseen realtime ciphertext.
+    func skippedCaptionUpdate(accountId: String, scopeCid: String, messageId: String,
+                              ciphertext: Data) throws -> E2eSyncEventEnvelope? {
+        var result: E2eSyncEventEnvelope?
+        try database.writeAndWait { session in
+            guard let context = session as? NSManagedObjectContext,
+                  let current = session.message(id: messageId), current.encryptedData == ciphertext,
+                  current.channel?.cid == scopeCid else { return }
+            let request = NSFetchRequest<E2eeInboxEventDTO>(entityName: E2eeInboxEventDTO.entityName)
+            request.predicate = NSPredicate(format: "accountId == %@ AND scopeCid == %@ AND appliedAt != nil AND failureCategory == %@",
+                accountId, scopeCid, "metadata_unsupported_event")
+            request.sortDescriptors = [NSSortDescriptor(keyPath: \E2eeInboxEventDTO.createdAt, ascending: false),
+                                       NSSortDescriptor(keyPath: \E2eeInboxEventDTO.eventId, ascending: false)]
+            request.fetchLimit = 32
+            while result == nil {
+                let batch = try context.fetch(request)
+                for row in batch {
+                    let envelope = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: row.rawEnvelope)
+                    guard case .messageUpdated(let update) = envelope.event,
+                          update.message.id == messageId,
+                          update.message.encryptedData.map({ Data($0) }) == ciphertext,
+                          update.cid == nil || update.cid?.rawValue == scopeCid else { continue }
+                    result = envelope
+                    break
+                }
+                if batch.count < request.fetchLimit { break }
+                request.fetchOffset += batch.count
+            }
+        }
+        return result
+    }
+
+    /// A bounded materialization repair set for legacy acknowledged caption failures.
+    /// Canonical rows and both cursors are read-only; superseded versions are never returned.
+    func skippedCaptionUpdates(accountId: String, scopeCid: String, limit: Int = 32) throws -> [E2eSyncEventEnvelope] {
+        var result: [E2eSyncEventEnvelope] = []
+        try database.writeAndWait { session in
+            guard let context = session as? NSManagedObjectContext else { return }
+            let request = NSFetchRequest<E2eeInboxEventDTO>(entityName: E2eeInboxEventDTO.entityName)
+            request.predicate = NSPredicate(format: "accountId == %@ AND scopeCid == %@ AND appliedAt != nil AND failureCategory == %@",
+                accountId, scopeCid, "metadata_unsupported_event")
+            request.sortDescriptors = [NSSortDescriptor(keyPath: \E2eeInboxEventDTO.createdAt, ascending: false),
+                                       NSSortDescriptor(keyPath: \E2eeInboxEventDTO.eventId, ascending: false)]
+            request.fetchLimit = 32
+            var seen: Set<String> = []
+            while result.count < limit {
+                let batch = try context.fetch(request)
+                for row in batch {
+                    let event = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: row.rawEnvelope)
+                    guard case .messageUpdated(let update) = event.event,
+                          let bytes = update.message.encryptedData,
+                          update.cid == nil || update.cid?.rawValue == scopeCid,
+                          let current = session.message(id: update.message.id), current.channel?.cid == scopeCid,
+                          current.encryptedData == Data(bytes),
+                          current.decryptedMessage?.ciphertextHash != Data(SHA256.hash(data: Data(bytes))),
+                          seen.insert(update.message.id).inserted else { continue }
+                    result.append(event)
+                    if result.count == limit { break }
+                }
+                if batch.count < request.fetchLimit { break }
+                request.fetchOffset += batch.count
+            }
+        }
+        return result
+    }
+
+    /// Clear only the retained repair flag after the same proof required by normal apply.
+    /// The historical acknowledgement and both composite cursors remain untouched.
+    func markSkippedCaptionUpdateRepaired(accountId: String, scopeCid: String,
+                                         envelope: E2eSyncEventEnvelope) throws {
+        try database.writeAndWait { session in
+            guard let context = session as? NSManagedObjectContext,
+                  case .messageUpdated(let update) = envelope.event,
+                  let bytes = update.message.encryptedData,
+                  let event = try E2eeInboxEventDTO.load(accountId: accountId, scopeCid: scopeCid,
+                      eventId: envelope.eventId, context: context), event.appliedAt != nil,
+                  event.failureCategory == "metadata_unsupported_event",
+                  try E2eeWireJSONCanonicalizer.canonicalizeJSONData(event.rawEnvelope) == envelope.rawEnvelope else {
+                throw E2eeDurableInboxError.captionUpdateProofMissing(messageId: "retained-edit")
+            }
+            try Self.validateCaptionUpdateProof(update, bytes: bytes, scopeCid: scopeCid, context: context)
+            event.failureCategory = nil
+        }
+    }
+
+    private static func validateCaptionUpdateProof(_ update: MessageUpdatedSyncData, bytes: [UInt8],
+                                                   scopeCid: String, context: NSManagedObjectContext) throws {
+        let cipher = Data(bytes)
+        guard let row = context.message(id: update.message.id), row.encryptedData == cipher,
+              row.channel?.cid == scopeCid || update.message.cid?.rawValue == row.channel?.cid,
+              let decoded = row.decryptedMessage,
+              decoded.ciphertextHash == Data(SHA256.hash(data: cipher)),
+              let payload = try? decoded.asPayload() else {
+            throw E2eeDurableInboxError.captionUpdateProofMissing(messageId: update.message.id)
+        }
+        let expected = update.message.e2eeReceivedEnvelope
+        if expected.requiresAAD {
+            guard let metadata = payload.authenticatedMetadata,
+                  metadata.forwardCid == expected.forwardCid,
+                  metadata.forwardMessageId == expected.forwardMessageId,
+                  metadata.forwardParentCid == expected.forwardParentCid,
+                  metadata.attachmentIds == (try E2eeMessageAADV1.canonicalAttachmentIds(expected.attachmentIds)) else {
+                throw E2eeDurableInboxError.captionUpdateProofMissing(messageId: update.message.id)
+            }
+            try payload.e2eeAttachments.verifyCanonicalAttachmentIds(expected.attachmentIds)
+        }
+    }
+
+    /// Advances the apply cursor only after complete durable event proof.
     func markApplied(
         accountId: String,
         scopeCid: String,
@@ -1236,6 +1345,11 @@ final class E2eeDurableInboxStore {
             }
             if event.rawEnvelope != canonicalStoredEnvelope {
                 event.rawEnvelope = canonicalStoredEnvelope
+            }
+
+            if case .messageUpdated(let update) = envelope.event,
+               let bytes = update.message.encryptedData {
+                try Self.validateCaptionUpdateProof(update, bytes: bytes, scopeCid: scopeCid, context: context)
             }
 
             event.appliedAt = Date().bridgeDate

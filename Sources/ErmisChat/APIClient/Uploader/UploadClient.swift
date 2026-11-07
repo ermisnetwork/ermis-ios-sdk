@@ -177,7 +177,11 @@ class ErmisUploadClient: NSObject, UploadClient, URLSessionDataDelegate {
         let footerSize = stream.footerData.count
         let totalSize = headerSize + fileSize + footerSize
 
-        let endpoint = Endpoint<FileUploadPayload>.uploadAttachment(with: attachment.id.cid, type: attachment.type)
+        let endpoint = Endpoint<FileUploadPayload>.uploadAttachment(
+            with: attachment.id.cid,
+            type: attachment.type,
+            purpose: attachment.uploadingState?.purpose
+        )
 
         encoder.encodeRequest(for: endpoint) { [weak self] (requestResult) in
             var urlRequest: URLRequest

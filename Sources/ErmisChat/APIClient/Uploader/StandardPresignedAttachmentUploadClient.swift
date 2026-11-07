@@ -81,6 +81,7 @@ final class StandardPresignedAttachmentUploadClient {
             sourceURL: uploading.localFileURL,
             fileName: fileName,
             contentType: contentType,
+            purpose: uploading.purpose,
             renewalCount: 0,
             progress: progress,
             completion: completion
@@ -92,13 +93,15 @@ final class StandardPresignedAttachmentUploadClient {
         sourceURL: URL,
         fileName: String,
         contentType: String,
+        purpose: AttachmentUploadPurpose?,
         renewalCount: Int,
         progress: ((Double) -> Void)?,
         completion: @escaping (Result<UploadedFile, StandardPresignedUploadFailure>) -> Void
     ) {
         let request = StandardAttachmentPresignRequest(
             fileName: fileName,
-            contentType: contentType
+            contentType: contentType,
+            purpose: purpose
         )
         perform(
             Endpoint<StandardAttachmentPresignPayload>.presignStandardAttachment(
@@ -130,6 +133,7 @@ final class StandardPresignedAttachmentUploadClient {
                         sourceURL: sourceURL,
                         fileName: fileName,
                         contentType: contentType,
+                        purpose: purpose,
                         renewalCount: renewalCount,
                         progress: progress,
                         completion: completion
@@ -146,6 +150,7 @@ final class StandardPresignedAttachmentUploadClient {
         sourceURL: URL,
         fileName: String,
         contentType: String,
+        purpose: AttachmentUploadPurpose?,
         renewalCount: Int,
         progress: ((Double) -> Void)?,
         completion: @escaping (Result<UploadedFile, StandardPresignedUploadFailure>) -> Void
@@ -157,6 +162,7 @@ final class StandardPresignedAttachmentUploadClient {
                 payload: payload,
                 fileName: fileName,
                 contentType: contentType,
+                purpose: purpose,
                 retriesRemaining: 1,
                 progress: progress,
                 completion: completion
@@ -167,6 +173,7 @@ final class StandardPresignedAttachmentUploadClient {
                 sourceURL: sourceURL,
                 fileName: fileName,
                 contentType: contentType,
+                purpose: purpose,
                 renewalCount: 1,
                 progress: progress,
                 completion: completion
@@ -184,6 +191,7 @@ final class StandardPresignedAttachmentUploadClient {
                 payload: payload,
                 fileName: fileName,
                 contentType: contentType,
+                purpose: purpose,
                 progress: progress,
                 completion: completion
             )
@@ -195,6 +203,7 @@ final class StandardPresignedAttachmentUploadClient {
         payload: StandardAttachmentPresignPayload,
         fileName: String,
         contentType: String,
+        purpose: AttachmentUploadPurpose?,
         progress: ((Double) -> Void)?,
         completion: @escaping (Result<UploadedFile, StandardPresignedUploadFailure>) -> Void
     ) {
@@ -203,6 +212,7 @@ final class StandardPresignedAttachmentUploadClient {
             payload: payload,
             fileName: fileName,
             contentType: contentType,
+            purpose: purpose,
             retriesRemaining: 1,
             progress: progress
         ) { result in
@@ -223,6 +233,7 @@ final class StandardPresignedAttachmentUploadClient {
         payload: StandardAttachmentPresignPayload,
         fileName: String,
         contentType: String,
+        purpose: AttachmentUploadPurpose?,
         retriesRemaining: Int,
         progress: ((Double) -> Void)?,
         completion: @escaping (Result<UploadedFile, StandardPresignedUploadFailure>) -> Void
@@ -230,7 +241,8 @@ final class StandardPresignedAttachmentUploadClient {
         let body = StandardAttachmentConfirmRequest(
             attachmentId: payload.attachmentId,
             fileName: fileName,
-            contentType: contentType
+            contentType: contentType,
+            purpose: purpose
         )
         perform(
             Endpoint<StandardAttachmentConfirmPayload>.confirmStandardAttachment(
@@ -249,6 +261,7 @@ final class StandardPresignedAttachmentUploadClient {
                     payload: payload,
                     fileName: fileName,
                     contentType: contentType,
+                    purpose: purpose,
                     retriesRemaining: retriesRemaining - 1,
                     progress: progress,
                     completion: completion

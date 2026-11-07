@@ -88,6 +88,12 @@ class MessageEditor: Worker {
             }
 
             var requestBody = dto.asRequestBody() as MessageRequestBody
+            if dto.e2eeCaptionEditData != nil {
+                messageRepository?.editCaptionMessage(with: messageId) { _ in
+                    self.removeMessageIDAndContinue(messageId)
+                }
+                return
+            }
             // Topics inherit their parent channel's MLS group, so a topic under an
             // E2EE parent is encrypted too.
             let isEncrypted = dto.channel?.isE2eeEnabled == true

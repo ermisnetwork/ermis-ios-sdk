@@ -429,6 +429,7 @@ struct GroupInfoRefreshResponsePayload: Decodable {
 
 public struct E2ePayload: Codable, Equatable {
     let text: String
+    let oldTexts: [MessageEditHistoryPayload]?
     let attachments: [MessageAttachmentPayload]
     /// Attachment manifests encrypted inside the MLS application payload. This is a distinct
     /// lane from legacy `MessageAttachmentPayload`: mixing the two representations in one
@@ -443,6 +444,7 @@ public struct E2ePayload: Codable, Equatable {
         case text
         case attachments
         case stickerUrl = "sticker_url"
+        case oldTexts = "old_texts"
     }
 
     /// iOS releases before the cross-platform payload contract was aligned used the synthesized
@@ -453,7 +455,7 @@ public struct E2ePayload: Codable, Equatable {
     }
 
     public static func == (lhs: E2ePayload, rhs: E2ePayload) -> Bool {
-        lhs.text == rhs.text &&
+        lhs.text == rhs.text && lhs.oldTexts == rhs.oldTexts &&
             lhs.attachments == rhs.attachments &&
             lhs.e2eeAttachments == rhs.e2eeAttachments &&
             lhs.stickerUrl == rhs.stickerUrl &&
@@ -465,18 +467,21 @@ public struct E2ePayload: Codable, Equatable {
         attachments: [MessageAttachmentPayload],
         e2eeAttachments: [E2eeAttachmentManifestV1] = [],
         stickerUrl: URL?,
-        authenticatedMetadata: E2eeAuthenticatedMessageMetadata? = nil
+        authenticatedMetadata: E2eeAuthenticatedMessageMetadata? = nil,
+        oldTexts: [MessageEditHistoryPayload]? = nil
     ) {
         self.text = text
         self.attachments = attachments
         self.e2eeAttachments = e2eeAttachments
         self.stickerUrl = stickerUrl
         self.authenticatedMetadata = authenticatedMetadata
+        self.oldTexts = oldTexts
     }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.text = try container.decode(String.self, forKey: .text)
+        self.oldTexts = try container.decodeIfPresent([E2eeCaptionHistoryWire].self, forKey: .oldTexts)?.map(\.value)
         let wireAttachments = try container.decodeIfPresent(
             [E2ePayloadAttachmentWire].self,
             forKey: .attachments
@@ -498,6 +503,7 @@ public struct E2ePayload: Codable, Equatable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(oldTexts?.map(E2eeCaptionHistoryWire.init), forKey: .oldTexts)
         guard attachments.isEmpty || e2eeAttachments.isEmpty else {
             throw E2ePayloadCodingError.mixedAttachmentLanes
         }
@@ -515,8 +521,33 @@ public struct E2ePayload: Codable, Equatable {
             attachments: attachments,
             e2eeAttachments: e2eeAttachments,
             stickerUrl: stickerUrl,
-            authenticatedMetadata: metadata
+            authenticatedMetadata: metadata,
+            oldTexts: oldTexts
         )
+    }
+}
+
+/// MLS history uses the same ISO UTC wire representation regardless of the
+/// surrounding encoder (native journals also use Foundation's plain encoder).
+private struct E2eeCaptionHistoryWire: Codable {
+    let value: MessageEditHistoryPayload
+    init(_ value: MessageEditHistoryPayload) { self.value = value }
+    private enum CodingKeys: String, CodingKey { case text; case createdAt = "created_at" }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try c.decode(String.self, forKey: .createdAt)
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var date = f.date(from: raw)
+        if date == nil { f.formatOptions = [.withInternetDateTime]; date = f.date(from: raw) }
+        guard let date else { throw DecodingError.dataCorruptedError(forKey: .createdAt, in: c, debugDescription: "Invalid caption history date") }
+        value = .init(text: try c.decode(String.self, forKey: .text), createdAt: date)
+    }
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try c.encode(value.text, forKey: .text)
+        try c.encode(f.string(from: value.createdAt), forKey: .createdAt)
     }
 }
 
@@ -1078,16 +1109,23 @@ struct MessageDeletedSyncData: Decodable {
 /// The `data` payload for a `message_updated` sync event.
 /// Contains the latest edited snapshot that should be decrypted and upserted.
 struct MessageUpdatedSyncData: Decodable {
-    let cid: ChannelId
+    // Canonical Bellboy keeps CID on the outer scope envelope. Retain the old nested alias.
+    let cid: ChannelId?
     let message: MessagePayload
     let user: UserPayload
     let createdAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case cid
-        case message
-        case user
+        case cid, message, user, sender
         case createdAt = "created_at"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cid = try c.decodeIfPresent(ChannelId.self, forKey: .cid)
+        message = try c.decode(MessagePayload.self, forKey: .message)
+        user = try c.decodeIfPresent(UserPayload.self, forKey: .sender) ?? c.decode(UserPayload.self, forKey: .user)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
     }
 }
 

@@ -26,9 +26,14 @@ struct MlsSendIntent: Codable, Equatable {
     var revision: UInt64
     var nativeSealed: Bool = false
     var nativeRetired: Bool = false
+    var editMessageId: String? = nil
+    var editBaseCiphertextHash: Data? = nil
 
     var requiresReconcile: Bool { phase == .dispatched || phase == .canceledDispatched }
     func validate() throws {
+        guard (editMessageId == nil) == (editBaseCiphertextHash == nil),
+              editMessageId.map({ UUID(uuidString: $0) != nil }) ?? true,
+              editBaseCiphertextHash.map({ $0.count == 32 }) ?? true else { throw MlsSendIntentError.invalid }
         guard version == 1, UUID(uuidString: uuid) != nil, uuid == uuid.lowercased(),
               !owner.isEmpty, owner.utf8.count <= 512, !cid.isEmpty, cid.utf8.count <= 512,
               scope.count == 64, providerId.count == 64,
@@ -48,7 +53,7 @@ struct MlsSendIntent: Codable, Equatable {
 extension MlsSendIntent {
     enum CodingKeys: String, CodingKey {
         case version, uuid, owner, cid, scope, groupId, generation, providerId, payload, aad,
-             originalEnvelope, phase, ciphertext, epoch, wireEnvelope, revision, nativeSealed, nativeRetired
+             originalEnvelope, phase, ciphertext, epoch, wireEnvelope, revision, nativeSealed, nativeRetired, editMessageId, editBaseCiphertextHash
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -63,6 +68,8 @@ extension MlsSendIntent {
         revision = try c.decode(UInt64.self, forKey: .revision)
         nativeSealed = try c.decodeIfPresent(Bool.self, forKey: .nativeSealed) ?? false
         nativeRetired = try c.decodeIfPresent(Bool.self, forKey: .nativeRetired) ?? false
+        editMessageId = try c.decodeIfPresent(String.self, forKey: .editMessageId)
+        editBaseCiphertextHash = try c.decodeIfPresent(Data.self, forKey: .editBaseCiphertextHash)
         try validate()
     }
 }
@@ -97,6 +104,33 @@ final class MlsSendIntentStore {
             }
             try execute("CREATE INDEX IF NOT EXISTS ermis_send_intents_retirement_v1 ON ermis_send_intents_v1(owner,retirement)")
             try execute("CREATE INDEX IF NOT EXISTS ermis_send_intents_phase_v1 ON ermis_send_intents_v1(owner,phase)")
+            var columns: OpaquePointer?
+            guard sqlite3_prepare_v2(database, "PRAGMA table_info(ermis_send_intents_v1)", -1, &columns, nil) == SQLITE_OK else { throw MlsSendIntentError.storage }
+            var names = Set<String>()
+            while sqlite3_step(columns) == SQLITE_ROW {
+                if let name = sqlite3_column_text(columns, 1) { names.insert(String(cString: name)) }
+            }
+            sqlite3_finalize(columns)
+            if !names.contains("edit_message_id") || !names.contains("cipher_sha256") {
+                try execute("BEGIN IMMEDIATE")
+                do {
+                    if !names.contains("edit_message_id") { try execute("ALTER TABLE ermis_send_intents_v1 ADD COLUMN edit_message_id TEXT") }
+                    if !names.contains("cipher_sha256") { try execute("ALTER TABLE ermis_send_intents_v1 ADD COLUMN cipher_sha256 BLOB") }
+                    var rows: OpaquePointer?
+                    guard sqlite3_prepare_v2(database, "SELECT uuid FROM ermis_send_intents_v1", -1, &rows, nil) == SQLITE_OK else { throw MlsSendIntentError.storage }
+                    defer { sqlite3_finalize(rows) }
+                    var step = sqlite3_step(rows)
+                    while step == SQLITE_ROW {
+                        guard let key = sqlite3_column_text(rows, 0), let record = try read(String(cString: key)) else { throw MlsSendIntentError.storage }
+                        try writeEditIndex(record)
+                        step = sqlite3_step(rows)
+                    }
+                    guard step == SQLITE_DONE else { throw MlsSendIntentError.storage }
+                    try execute("COMMIT")
+                } catch { try? execute("ROLLBACK"); throw error }
+            }
+            try execute("CREATE INDEX IF NOT EXISTS ermis_caption_edit_cipher_v1 ON ermis_send_intents_v1(owner,edit_message_id,cipher_sha256,phase)")
+
         }
         catch { sqlite3_close(database); database = nil; throw error }
     }
@@ -122,6 +156,41 @@ final class MlsSendIntentStore {
         guard record.uuid == uuid, record.owner == String(cString: owner), record.phase.rawValue == String(cString: phase) else { throw MlsSendIntentError.conflict }
         return record
     }
+    private func writeEditIndex(_ record: MlsSendIntent) throws {
+        guard let id = record.editMessageId, let cipher = record.ciphertext else { return }
+        let hash = Data(SHA256.hash(data: cipher))
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "UPDATE ermis_send_intents_v1 SET edit_message_id=?,cipher_sha256=? WHERE uuid=?", -1, &statement, nil) == SQLITE_OK else { throw MlsSendIntentError.storage }
+        defer { sqlite3_finalize(statement) }
+        let result = hash.withUnsafeBytes { b in
+            sqlite3_bind_text(statement, 1, id.lowercased(), -1, transient) == SQLITE_OK &&
+            sqlite3_bind_blob(statement, 2, b.baseAddress, Int32(b.count), transient) == SQLITE_OK &&
+            sqlite3_bind_text(statement, 3, record.uuid, -1, transient) == SQLITE_OK && sqlite3_step(statement) == SQLITE_DONE
+        }
+        guard result else { throw MlsSendIntentError.storage }
+    }
+
+    /// Replays a past own-device edit from its accepted durable intent; never MLS-decrypts self.
+    func acceptedEdit(owner: String, messageId: String, ciphertext: Data) throws -> MlsSendIntent? {
+        lock.lock(); defer { lock.unlock() }
+        let hash = Data(SHA256.hash(data: ciphertext))
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT uuid FROM ermis_send_intents_v1 WHERE owner=? AND edit_message_id=? AND cipher_sha256=? AND phase='accepted' LIMIT 1", -1, &statement, nil) == SQLITE_OK else { throw MlsSendIntentError.storage }
+        defer { sqlite3_finalize(statement) }
+        let bound = hash.withUnsafeBytes { b in
+            sqlite3_bind_text(statement, 1, owner, -1, transient) == SQLITE_OK &&
+            sqlite3_bind_text(statement, 2, messageId.lowercased(), -1, transient) == SQLITE_OK &&
+            sqlite3_bind_blob(statement, 3, b.baseAddress, Int32(b.count), transient) == SQLITE_OK
+        }
+        guard bound else { throw MlsSendIntentError.storage }
+        let step = sqlite3_step(statement)
+        if step == SQLITE_DONE { return nil }
+        guard step == SQLITE_ROW, let id = sqlite3_column_text(statement, 0), let record = try read(String(cString: id)),
+              record.owner == owner, record.editMessageId?.lowercased() == messageId.lowercased(),
+              record.ciphertext == ciphertext, record.phase == .accepted else { throw MlsSendIntentError.storage }
+        return record
+    }
+
     func load(uuid: String, owner: String) throws -> MlsSendIntent? {
         lock.lock(); defer { lock.unlock() }
         let record = try read(uuid)
@@ -182,6 +251,7 @@ final class MlsSendIntentStore {
                       previous.groupId == next.groupId, previous.generation == next.generation,
                       previous.providerId == next.providerId, previous.payload == next.payload,
                       previous.aad == next.aad, previous.originalEnvelope == next.originalEnvelope,
+                      previous.editMessageId == next.editMessageId, previous.editBaseCiphertextHash == next.editBaseCiphertextHash,
                       previous.revision < UInt64.max, next.revision == previous.revision + 1 else { throw MlsSendIntentError.conflict }
                 if let cipher = previous.ciphertext {
                     guard next.ciphertext == cipher, next.epoch == previous.epoch, next.wireEnvelope == previous.wireEnvelope else { throw MlsSendIntentError.conflict }
@@ -224,6 +294,7 @@ final class MlsSendIntentStore {
                 sqlite3_step(statement) == SQLITE_DONE
             } }
             guard result, try read(next.uuid) == next else { throw MlsSendIntentError.storage }
+            try writeEditIndex(next)
             try assertCurrent()
             try execute("COMMIT")
             return next
