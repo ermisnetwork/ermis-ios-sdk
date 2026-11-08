@@ -116,15 +116,18 @@ class ChannelListUpdater: Worker {
     ///   - ids: The channel ids.
     ///   - completion: The callback once the request is complete.
     func startWatchingChannels(withIds ids: [ChannelId], userId: String?, completion: ((Error?) -> Void)? = nil) {
-        var query = ChannelListQuery(filter: .in(.cid, values: ids))
+        let query = ChannelListQuery(filter: .in(.cid, values: ids))
         fetch(channelListQuery: query) { [weak self] in
             switch $0 {
             case let .success(payload):
-                self?.database.write { session in
-                    session.saveChannelList(payload: payload, query: nil)
-                } completion: { _ in
-                    completion?(nil)
-                }
+                guard let database = self?.database else { return }
+                // Watching does not replace a channel-list query. Commit each complete
+                // channel, then let already queued live events use the serial writer.
+                WatchedChannelPageWriter.save(payload.channels, persist: { channel, didSave in
+                    database.write({ session in
+                        session.saveChannelList(payload: ChannelListPayload(channels: [channel]), query: nil)
+                    }, completion: didSave)
+                }, completion: { completion?($0) })
             case let .failure(error):
                 completion?(error)
             }

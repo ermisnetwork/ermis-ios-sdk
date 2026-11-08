@@ -241,7 +241,10 @@
 "message.unsupported-attachment" = "Tệp tin không được hỗ trợ";
 
 // Encryption
-"message.encrypted-message" = "Tin nhắn được mã hóa";
+"message.encrypted-message" = "Tin nhắn được mã hoá";
+"message.encrypted-message-decrypting" = "Đang giải mã tin nhắn...";
+"message.encrypted-message-failed" = "Không thể giải mã tin nhắn";
+"message.encrypted-message-unavailable" = "Tin nhắn mã hoá không khả dụng";
 "encryption.forward-downgrade-alert.title" = "Bỏ bảo vệ E2EE?";
 "encryption.forward-downgrade-alert.message" = "Kênh đích là kênh tiêu chuẩn. Nội dung được chuyển tiếp sẽ không còn được mã hóa đầu cuối.";
 /// Hiển thị phía trên trả lời trích dẫn khi tin nhắn gốc là của người dùng hiện tại.

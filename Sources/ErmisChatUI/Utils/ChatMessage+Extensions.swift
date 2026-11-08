@@ -82,10 +82,19 @@ public extension ChatMessage {
         }
 
         guard !isEncrypted else {
-            return L10n.Message.encryptedMessage
+            return encryptedMessageLabel
         }
 
         return text
+    }
+
+    var encryptedMessageLabel: String {
+        switch encryptedMessageState {
+        case .decrypting: return L10n.Message.encryptedMessageDecrypting
+        case .failed: return L10n.Message.encryptedMessageFailed
+        case .unavailable: return L10n.Message.encryptedMessageUnavailable
+        default: return L10n.Message.encryptedMessage
+        }
     }
 
     /// Returns last active thread participant.

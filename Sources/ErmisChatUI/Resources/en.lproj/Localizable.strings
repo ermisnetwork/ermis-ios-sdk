@@ -242,6 +242,9 @@
 
 // Encryption
 "message.encrypted-message" = "Encrypted message";
+"message.encrypted-message-decrypting" = "Decrypting encrypted message...";
+"message.encrypted-message-failed" = "Encrypted message could not be decrypted";
+"message.encrypted-message-unavailable" = "Encrypted message unavailable";
 "encryption.forward-downgrade-alert.title" = "Remove E2EE Protection?";
 "encryption.forward-downgrade-alert.message" = "The destination is a standard channel. Forwarded content will no longer have end-to-end encryption.";
 /// Shown above an inline reply when the quoted message was authored by the current user.

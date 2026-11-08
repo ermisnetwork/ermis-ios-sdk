@@ -6,6 +6,7 @@ import Foundation
 import ErmisShared
 
 class WebSocketClient {
+    private let transportTraceId = UUID()
     let rootProjectId: String
     /// The notification center `WebSocketClient` uses to send notifications about incoming events.
     let eventNotificationCenter: EventNotificationCenter
@@ -18,6 +19,16 @@ class WebSocketClient {
     /// The current state the web socket connection.
     @Atomic private(set) var connectionState: WebSocketConnectionState = .initialized {
         didSet {
+            let stage: MlsTransportTrace.Stage
+            switch connectionState {
+            case .initialized: stage = .initialized
+            case .connecting: stage = .connecting
+            case .waitingForConnectionId: stage = .waiting
+            case .connected: stage = .connected
+            case .disconnecting: stage = .disconnecting
+            case .disconnected: stage = .disconnected
+            }
+            MlsTransportTrace.record(stage, operation: transportTraceId)
             engineQueue.async { [connectionState, weak pingController] in
                 pingController?.connectionStateDidChange(connectionState)
             }
@@ -208,15 +219,19 @@ extension WebSocketClient: WebSocketEngineDelegate {
     }
 
     func webSocketDidReceiveMessage(_ message: String) {
+        MlsTransportTrace.record(.wireReceived, operation: transportTraceId, count: message.utf8.count)
         do {
             let messageData = Data(message.utf8)
             log.debug("[WebSocket] state=event_received bytes=\(messageData.count)", subsystems: .webSocket)
 
             let event = try eventDecoder.decode(from: messageData)
+            MlsTransportTrace.record(.decoded, operation: transportTraceId)
+            MlsTransportTrace.message(event, stage: .socketDecoded)
             if let healthCheckEvent = event as? HealthCheckEvent {
                 self.engineQueue.async { [weak self] in
                     guard let self else { return }
                     self.pingController.pongReceived()
+                    MlsTransportTrace.record(.pong, operation: self.transportTraceId)
 
                     let connectionId = self.activeConnectionId ?? healthCheckEvent.connectionId
                     self.activeConnectionId = connectionId
@@ -227,8 +242,10 @@ extension WebSocketClient: WebSocketEngineDelegate {
                 eventsBatcher.append(event)
             }
         } catch is ClientError.IgnoredEventType {
+            MlsTransportTrace.record(.ignored, operation: transportTraceId)
             log.info("[WebSocket] state=unsupported_event_skipped", subsystems: .webSocket)
         } catch {
+            MlsTransportTrace.record(.decodeFailed, operation: transportTraceId, code: (error as NSError).code)
             // Check if the message contains an error object from the server
             let webSocketError = message
                 .data(using: .utf8)
@@ -261,12 +278,14 @@ extension WebSocketClient: WebSocketEngineDelegate {
 
 extension WebSocketClient: WebSocketPingControllerDelegate {
     func sendPing() {
+        MlsTransportTrace.record(.ping, operation: transportTraceId)
         engineQueue.async { [weak engine] in
             engine?.sendPing()
         }
     }
 
     func disconnectOnNoPongReceived() {
+        MlsTransportTrace.record(.pongTimeout, operation: transportTraceId)
         disconnect(source: .noPongReceived) {
             log.debug("Websocket is disconnected because of no pong received", subsystems: .webSocket)
         }

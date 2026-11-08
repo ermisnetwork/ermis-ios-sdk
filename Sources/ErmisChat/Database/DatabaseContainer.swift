@@ -203,8 +203,8 @@ class DatabaseContainer: NSPersistentContainer {
     /// Use this method to safely mutate the content of the database. This method is asynchronous.
     ///
     /// - Parameter actions: A block that performs the actual mutation.
-    func write(_ actions: @escaping (DatabaseSession) throws -> Void) {
-        write(actions, completion: { _ in })
+    func write(_ actions: @escaping (DatabaseSession) throws -> Void, file: StaticString = #fileID, line: UInt = #line) {
+        write(actions, completion: { _ in }, file: file, line: line)
     }
 
     // This 👆 overload shouldn't be needed, but when a default parameter for completion 👇 is used,
@@ -215,13 +215,16 @@ class DatabaseContainer: NSPersistentContainer {
     /// - Parameters:
     ///   - actions: A block that performs the actual mutation.
     ///   - completion: Called when the changes are saved to the DB. If the changes can't be saved, called with an error.
-    func write(_ actions: @escaping (DatabaseSession) throws -> Void, completion: @escaping (Error?) -> Void) {
+    func write(_ actions: @escaping (DatabaseSession) throws -> Void, completion: @escaping (Error?) -> Void, file: StaticString = #fileID, line: UInt = #line) {
+        let trace = MlsTransportTrace.DatabaseWrite(file: file, line: line, synchronous: false)
         writableContext.perform {
+            trace.record(.admitted)
             log.debug("Starting a database session.", subsystems: .database)
             do {
                 FetchCache.clear()
                 try actions(self.writableContext)
                 FetchCache.clear()
+                trace.record(.modified)
 
                 for object in self.writableContext.updatedObjects {
                     if object.changedValues().isEmpty {
@@ -237,11 +240,13 @@ class DatabaseContainer: NSPersistentContainer {
                 }
 
 //                log.debug("Database session succesfully saved.", subsystems: .database)
+                trace.record(.saved)
                 completion(nil)
 
             } catch {
                 log.error("Failed to save data to DB. Error: \(error)", subsystems: .database)
                 FetchCache.clear()
+                trace.record(.failed)
                 completion(error)
             }
         }
@@ -251,13 +256,16 @@ class DatabaseContainer: NSPersistentContainer {
     ///
     /// MLS application-message processing uses this boundary to persist plaintext before
     /// advancing the receiver ratchet in the separate OpenMLS SQLite provider.
-    func writeAndWait(_ actions: (DatabaseSession) throws -> Void) throws {
+    func writeAndWait(_ actions: (DatabaseSession) throws -> Void, file: StaticString = #fileID, line: UInt = #line) throws {
+        let trace = MlsTransportTrace.DatabaseWrite(file: file, line: line, synchronous: true)
         var writeError: Error?
         writableContext.performAndWait {
+            trace.record(.admitted)
             do {
                 FetchCache.clear()
                 try actions(writableContext)
                 FetchCache.clear()
+                trace.record(.modified)
 
                 for object in writableContext.updatedObjects where object.changedValues().isEmpty {
                     writableContext.refresh(object, mergeChanges: true)
@@ -266,10 +274,12 @@ class DatabaseContainer: NSPersistentContainer {
                 if writableContext.hasChanges {
                     try writableContext.save()
                 }
+                trace.record(.saved)
             } catch {
                 writableContext.rollback()
                 FetchCache.clear()
                 writeError = error
+                trace.record(.failed)
             }
         }
 

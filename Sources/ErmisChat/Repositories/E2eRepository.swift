@@ -4571,10 +4571,21 @@ class E2eRepository: EventsControllerDelegate {
         expectedEnvelope: E2eeReceivedMessageEnvelope? = nil
     ) throws -> E2ePayload {
         MlsIncomingTrace.record(.decryptStarted, uuid: messageId, ciphertext: encryptedData)
+        let presentation = database.persistentStoreCoordinator.encryptedMessageStates
+        let key = EncryptedMessageStateStore.Key(cid: cid.rawValue, id: messageId, ciphertext: encryptedData)
+        var nativeAtExpectedEpoch = false
         do {
-            return try decryptMessagePayloadBody(messageId: messageId, encryptedData: encryptedData,
-                cid: cid, receiveSource: receiveSource, expectedEnvelope: expectedEnvelope)
+            let result = try decryptMessagePayloadBody(messageId: messageId, encryptedData: encryptedData,
+                cid: cid, receiveSource: receiveSource, expectedEnvelope: expectedEnvelope,
+                beforeNative: { localEpoch, messageEpoch in
+                    nativeAtExpectedEpoch = messageEpoch.map { $0 >= 0 && UInt64($0) == localEpoch } ?? false
+                    if nativeAtExpectedEpoch { presentation.begin(key) }
+                })
+            presentation.set(.encrypted, for: key)
+            return result
         } catch {
+            let state = EncryptedMessageFailurePresentation.state(for: error, nativeAtExpectedEpoch: nativeAtExpectedEpoch)
+            presentation.set(state, for: key)
             MlsIncomingTrace.record(.decryptFailed, uuid: messageId, ciphertext: encryptedData, error: error)
             throw error
         }
@@ -4583,7 +4594,8 @@ class E2eRepository: EventsControllerDelegate {
     private func decryptMessagePayloadBody(
         messageId: MessageId, encryptedData: Data, cid: ChannelId,
         receiveSource: E2eeAttachmentReceiveSource,
-        expectedEnvelope: E2eeReceivedMessageEnvelope?
+        expectedEnvelope: E2eeReceivedMessageEnvelope?,
+        beforeNative: (UInt64, Int64?) -> Void
     ) throws -> E2ePayload {
         // Re-check the DB cache — a prior operation may have populated it.
         // Read on the background read-only context so the decrypt hot path never
@@ -4591,8 +4603,10 @@ class E2eRepository: EventsControllerDelegate {
         // `backgroundReadOnlyContext` (which a synchronous send may be blocking).
         var cachedPayload: E2ePayload?
         var cachedCiphertextHash: Data?
+        var messageEpoch: Int64?
         let readContext = e2eReadContext
         readContext.performAndWait {
+            messageEpoch = MessageDTO.load(id: messageId, context: readContext)?.mlsEpoch
             if let dto = MessageDecryptDTO.load(messageId: messageId, context: readContext) {
                 cachedPayload = try? dto.asPayload()
                 cachedCiphertextHash = dto.ciphertextHash
@@ -4605,6 +4619,7 @@ class E2eRepository: EventsControllerDelegate {
             // provider save had already completed before the crash.
             do {
                 let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
+                beforeNative(group.epoch(), messageEpoch)
                 let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
                 MlsIncomingTrace.record(.decryptSucceeded, uuid: messageId, ciphertext: encryptedData)
                 let authenticatedPayload = try persistProcessedApplicationMessage(
@@ -4637,6 +4652,7 @@ class E2eRepository: EventsControllerDelegate {
         // No cache — run MLS decrypt. A topic message is encrypted with its parent
         // channel's MLS group, so resolve the topic cid to the group-owning cid first.
         let group = try mlsClient.loadGroup(with: mlsGroupCid(for: cid).rawValue)
+        beforeNative(group.epoch(), messageEpoch)
         log.debug("[MLS] Current group epoch: \(group.epoch())", subsystems: .mls)
         let processed = try mlsClient.processApplicationMessage(data: encryptedData, in: group)
         MlsIncomingTrace.record(.decryptSucceeded, uuid: messageId, ciphertext: encryptedData)

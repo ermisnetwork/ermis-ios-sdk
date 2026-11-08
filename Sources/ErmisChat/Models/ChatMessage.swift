@@ -23,6 +23,24 @@ public struct ChatMessage {
 
     public var encryptedData: Data?
 
+    var encryptedMessageStateStore: EncryptedMessageStateStore? = nil
+    var encryptedMessageStateKey: EncryptedMessageStateStore.Key? = nil
+
+    /// State is cipher-bound and transient; plaintext remains authoritative for display.
+    public var encryptedMessageState: EncryptedMessageState? {
+        guard isEncrypted else { return nil }
+        guard let store = encryptedMessageStateStore, let key = encryptedMessageStateKey,
+              let cid, let encryptedData,
+              key == EncryptedMessageStateStore.Key(cid: cid.rawValue, id: id, ciphertext: encryptedData) else { return .encrypted }
+        return store.state(for: key)
+    }
+
+    public func matchesEncryptedMessageStateChange(_ notification: Notification) -> Bool {
+        guard let store = encryptedMessageStateStore, let key = encryptedMessageStateKey else { return false }
+        return notification.object as AnyObject? === store &&
+            notification.userInfo?["key"] as? EncryptedMessageStateStore.Key == key
+    }
+
     public var mlsEpoch: Int?
 
     /// MLS group generation that produced `encryptedData`. Missing legacy data is generation 0.

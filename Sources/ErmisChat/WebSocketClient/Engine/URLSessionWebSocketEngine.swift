@@ -5,6 +5,7 @@
 import Foundation
 
 class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
+    private let transportTraceId = UUID()
     /// Keep the task alive for the whole engine lifetime. Relying on URLSession's internal
     /// retention makes the receive loop timing-dependent during login/reconnect.
     private var task: URLSessionWebSocketTask? {
@@ -34,6 +35,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
     }
 
     func connect() {
+        MlsTransportTrace.record(.engineStart, operation: transportTraceId)
         urlSessionDelegateHandler = makeURLSessionDelegateHandler()
 
         session = URLSession(
@@ -66,6 +68,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
     }
 
     func disconnect() {
+        MlsTransportTrace.record(.engineStop, operation: transportTraceId)
         task?.cancel(with: .normalClosure, reason: nil)
         session?.invalidateAndCancel()
 
@@ -77,6 +80,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
     func sendPing() {
         task?.send(.string(""), completionHandler: { error in
             if let error = error {
+                MlsTransportTrace.record(.pingFailed, operation: self.transportTraceId, code: (error as NSError).code)
                 log.error(
                     "[WebSocket] state=connect_failed \(PrivacySafeLogMetadata.errorFields(error))",
                     subsystems: .webSocket
@@ -86,6 +90,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
     }
 
     private func doRead() {
+        MlsTransportTrace.record(.readArmed, operation: transportTraceId)
         task?.receive { [weak self] result in
             guard let self = self else {
                 return
@@ -102,6 +107,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
                 self.doRead()
 
             case let .failure(error):
+                MlsTransportTrace.record(.readFailed, operation: self.transportTraceId, code: (error as NSError).code)
                 if error.isSocketNotConnectedError {
                     log.debug(
                         "[WebSocket] state=disconnected \(PrivacySafeLogMetadata.errorFields(error))",
@@ -120,6 +126,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
     private func makeURLSessionDelegateHandler() -> URLSessionDelegateHandler {
         let urlSessionDelegateHandler = URLSessionDelegateHandler()
         urlSessionDelegateHandler.onOpen = { [weak self] _ in
+            if let self { MlsTransportTrace.record(.engineOpen, operation: self.transportTraceId) }
             log.info("[WebSocket] state=transport_opened", subsystems: .webSocket)
             self?.callbackQueue.async {
                 self?.delegate?.webSocketDidConnect()
@@ -127,6 +134,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
         }
 
         urlSessionDelegateHandler.onClose = { [weak self] closeCode, reason in
+            if let self { MlsTransportTrace.record(.engineClosed, operation: self.transportTraceId, code: closeCode.rawValue) }
             log.info(
                 "[WebSocket] state=transport_closed code=\(closeCode.rawValue)",
                 subsystems: .webSocket
@@ -157,6 +165,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
         }
 
         urlSessionDelegateHandler.onCompletion = { [weak self] error in
+            if let self { MlsTransportTrace.record(.engineCompleted, operation: self.transportTraceId, code: (error as NSError?)?.code ?? 0) }
             // If we received this callback because we closed the WS connection
             // intentionally, `error` param will be `nil`.
             // Delegate is already informed with `didCloseWith` callback,

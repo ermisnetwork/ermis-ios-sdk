@@ -411,6 +411,9 @@ public enum L10n {
     public static var edited: String { L10n.tr("Localizable", "message.edited") }
     /// Encrypted message
     public static var encryptedMessage: String { L10n.tr("Localizable", "message.encrypted-message") }
+    public static var encryptedMessageDecrypting: String { L10n.tr("Localizable", "message.encrypted-message-decrypting") }
+    public static var encryptedMessageFailed: String { L10n.tr("Localizable", "message.encrypted-message-failed") }
+    public static var encryptedMessageUnavailable: String { L10n.tr("Localizable", "message.encrypted-message-unavailable") }
     /// Forwarded from %@
     public static func forwardedFromOther(_ p1: Any) -> String {
       return L10n.tr("Localizable", "message.forwarded-from-other", String(describing: p1))

@@ -56,6 +56,11 @@ public extension MessageContentViewDelegate {
 
 /// A view that displays the message content.
 open class MessageContentView: _View, UIProvider, UITextViewDelegate {
+    private var encryptedMessageStateObserver: NSObjectProtocol?
+
+    deinit {
+        if let observer = encryptedMessageStateObserver { NotificationCenter.default.removeObserver(observer) }
+    }
     /// The current layout options of the view.
     /// When this value is set the subviews are instantiated and laid out just once based on
     /// the received options.
@@ -639,6 +644,15 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
 
     override open func setUpUI() {
         super.setUpUI()
+
+        if encryptedMessageStateObserver == nil {
+            encryptedMessageStateObserver = NotificationCenter.default.addObserver(
+                forName: EncryptedMessageState.didChange, object: nil, queue: .main
+            ) { [weak self] notification in
+                guard let self, self.content?.matchesEncryptedMessageStateChange(notification) == true else { return }
+                self.updateContentIfNeeded()
+            }
+        }
 
         guard let options = layoutOptions else {
             log.assertionFailure("Layout options are missing")

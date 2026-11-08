@@ -4,6 +4,15 @@ import ErmisShared
 @testable import ErmisChat
 
 final class MlsFieldLogDestinationTests: XCTestCase {
+    func testTransportStagesKeepOnlyClosedMetadataAndBoundedCounters() {
+        let marker = "mls_transport stage=read_failed operation_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa count=32 code=-1005"
+        XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture url=private-fixture"), marker)
+        XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "read_failed", with: "private-fixture")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "count=32", with: "count=1234567890")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "code=-1005", with: "code=-1234567")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", with: "private-fixture")))
+    }
     private let marker = "mls_application_checkpoint stage=provider_saved result=stored"
     private let date = Date(timeIntervalSince1970: 1_791_184_000)
 
@@ -14,7 +23,7 @@ final class MlsFieldLogDestinationTests: XCTestCase {
     }
 
     func testIncomingStagesRemainCorrelatedAndExcludePrivateErrors() {
-        for stage in ["decrypt_started", "decrypt_succeeded", "decrypt_failed", "decoded_cache_saved", "ui_rendered", "ui_encrypted", "scope_blocked", "scope_page_failed"] {
+        for stage in ["socket_decoded", "event_queued", "event_persisted", "event_posted", "decrypt_started", "decrypt_succeeded", "decrypt_failed", "decoded_cache_saved", "ui_rendered", "ui_encrypted", "scope_blocked", "scope_page_failed"] {
             let marker = "mls_incoming stage=\(stage) uuid=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa cipher_sha256=" + String(repeating: "a", count: 64) + " error=crypto"
             XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " plaintext=private-fixture token=private-fixture"), marker)
             XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))

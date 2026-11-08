@@ -1264,6 +1264,11 @@ private extension ChatMessage {
         cid = try? dto.cid.map { try ChannelId(cid: $0) }
         text = dto.text
         encryptedData = dto.encryptedData
+        if let ciphertext = dto.encryptedData, let routeCid = dto.cid,
+           let coordinator = dto.managedObjectContext?.persistentStoreCoordinator {
+            encryptedMessageStateStore = coordinator.encryptedMessageStates
+            encryptedMessageStateKey = .init(cid: routeCid, id: dto.id, ciphertext: ciphertext)
+        }
         mlsEpoch = Int(dto.mlsEpoch)
         mlsGroupGeneration = Int(dto.mlsGroupGeneration)
         type = MessageType(rawValue: dto.type) ?? .regular
