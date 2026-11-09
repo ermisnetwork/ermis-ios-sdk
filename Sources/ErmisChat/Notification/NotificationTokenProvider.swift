@@ -10,23 +10,40 @@ public protocol NotificationTokenProviding {
 }
 
 public class DefaultNotificationTokenProvider: NotificationTokenProviding {
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    convenience init(config: ErmisClientConfig) {
+        guard config.localStorageNamespace?.isEmpty == false else {
+            self.init()
+            return
+        }
+        guard let defaults = config.namespacedUserDefaults else {
+            preconditionFailure("Scoped notification preferences are unavailable")
+        }
+        self.init(defaults: defaults)
+    }
+
     public var fcmToken: String? {
         get {
-            return UserDefaults.standard.string(forKey: "fcmToken")
+            return defaults.string(forKey: "fcmToken")
         }
 
         set {
-            UserDefaults.standard.setValue(newValue, forKey: "fcmToken")
+            defaults.setValue(newValue, forKey: "fcmToken")
         }
     }
 
     public var deviceToken: String? {
         get {
-            return UserDefaults.standard.string(forKey: "deviceToken")
+            return defaults.string(forKey: "deviceToken")
         }
 
         set {
-            UserDefaults.standard.setValue(newValue, forKey: "deviceToken")
+            defaults.setValue(newValue, forKey: "deviceToken")
         }
     }
 }

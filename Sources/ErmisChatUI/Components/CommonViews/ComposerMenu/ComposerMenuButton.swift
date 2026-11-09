@@ -76,9 +76,8 @@ open class ComposerMenuButton: _Button, ThemeProvider {
     }
 
     open func menuItems() -> [UIMenuElement] {
-        return items.filter { Components.default.isPollsEnabled || $0 != .poll }.map { item in
+        return items.map { item in
             UIAction(title: title(for: item), image: icon(for: item)) { [weak self] _ in
-                guard Components.default.isPollsEnabled || item != .poll else { return }
                 self?.onMenuItemDidTapped?(item)
             }
         }

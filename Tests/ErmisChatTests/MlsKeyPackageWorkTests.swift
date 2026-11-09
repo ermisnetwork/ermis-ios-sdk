@@ -269,6 +269,8 @@ final class MlsKeyPackageWorkTests: XCTestCase {
             first.start(reason:"manual");wait(for:[firstDone],timeout:5)
             let retained = try XCTUnwrap(store.read().upload); XCTAssertEqual(retained.status,"ready"); XCTAssertEqual(retained.attempts,1)
             let root = store.url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            // Reopen models a stopped process; the old private-scope owner must release first.
+            try client.reset()
             let reopened = MlsClient(storageFolderURL:root,deviceIdStore:client.deviceIdStore,userDefaults:client.userDefaults)
             try reopened.setup(with:"local-key-package-work")
             clock = clock.addingTimeInterval(31)
@@ -388,6 +390,8 @@ final class MlsKeyPackageWorkTests: XCTestCase {
                 let providerId = try XCTUnwrap(job.nativeProviderId)
                 let before = generated ? try client.prepareKeyPackageUpload(id: job.id, scope: store.scope, nativeProviderId: providerId, count: 2) : nil
                 let root = store.url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+                // Do not simulate restart by creating two live owners of the same provider.
+                try client.reset()
                 let reopened = MlsClient(storageFolderURL: root, deviceIdStore: client.deviceIdStore, userDefaults: client.userDefaults)
                 try reopened.setup(with: "local-key-package-work")
                 var posts = 0

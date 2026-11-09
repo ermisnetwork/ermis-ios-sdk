@@ -13,6 +13,11 @@ open class AttachmentsPreviewViewController: _ViewController, ComponentsProvider
         }
     }
 
+    /// Caption edits preserve their original attachment set.
+    open var isAttachmentRemovalEnabled: Bool = true {
+        didSet { updateContentIfNeeded() }
+    }
+
     /// The maximum number of vertical items before scrolling is enabled.
     open var maxNumberOfVerticalItems: Int = 3
 
@@ -83,7 +88,12 @@ open class AttachmentsPreviewViewController: _ViewController, ComponentsProvider
                 let cell = components.messageComposerAttachmentCell.init()
                     .withoutAutoresizingMaskConstraints
                 cell.embed(attachmentView: view)
-                cell.discardButtonHandler = { [weak self] in self?.didTapRemoveItemButton?(index) }
+                cell.discardButton.isHidden = !isAttachmentRemovalEnabled
+                cell.discardButton.isEnabled = isAttachmentRemovalEnabled
+                cell.discardButtonHandler = { [weak self] in
+                    guard let self, self.isAttachmentRemovalEnabled else { return }
+                    self.didTapRemoveItemButton?(index)
+                }
                 return cell
             }
     }

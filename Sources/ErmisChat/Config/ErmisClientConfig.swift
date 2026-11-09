@@ -4,6 +4,7 @@
 
 import Foundation
 import ErmisShared
+import CryptoKit
 
 /// Selects the local database namespace used by an Ermis client.
 ///
@@ -93,6 +94,11 @@ public struct ErmisClientConfig {
     /// Independent, fail-closed controls for staged MLS replay, fallback, and repair rollout.
     public var e2eeMlsRolloutControls = E2eeMlsRolloutControls()
 
+    /// Explicit compatibility for expired leaves already in a Welcome/External Join tree.
+    /// Keeps signatures, not-before, lifetime bounds and fresh Add validation strict.
+    /// The setting is immutable for the MLS owner created from this configuration.
+    public var e2eeAllowExpiredJoinTreeLeaves: Bool = false
+
     public var applicationGroupIdentifier: String? {
         didSet {
             localStorageFolderURL = Self.initLocalStorageFolderURL(groupIdentifier: applicationGroupIdentifier)
@@ -104,17 +110,37 @@ public struct ErmisClientConfig {
         Self.initLocalStorageFolderURL(groupIdentifier: nil)
     }()
 
+    /// Optional local environment scope. Nil keeps existing production storage
+    /// and device-ID keys; an explicit scope never imports another scope's data.
+    public var localStorageNamespace: String?
+
+    var namespacedUserDefaults: UserDefaults? {
+        guard let namespace = localStorageNamespace, !namespace.isEmpty else { return nil }
+        let name = SHA256.hash(data: Data(namespace.utf8)).map { String(format: "%02x", $0) }.joined()
+        return UserDefaults(suiteName: "network.ermis.chat.scopes." + name)
+    }
+
+    var resolvedLocalStorageFolderURL: URL? {
+        scopedStorageURL(localStorageFolderURL)
+    }
+
+    private func scopedStorageURL(_ url: URL?) -> URL? {
+        guard let namespace = localStorageNamespace, !namespace.isEmpty else { return url }
+        let name = SHA256.hash(data: Data(namespace.utf8)).map { String(format: "%02x", $0) }.joined()
+        return url?.appendingPathComponent("scopes", isDirectory: true).appendingPathComponent(name, isDirectory: true)
+    }
+
     /// MLS provider state is durable security state rather than a user-visible document or an
     /// evictable cache. Keep it in Application Support even while the legacy chat cache remains in
     /// Documents for source compatibility.
     var mlsStorageFolderURL: URL? {
-        Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier)
+        scopedStorageURL(Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier))
     }
 
     /// E2EE attachment ciphertext and multipart staging are durable, non-evictable transfer
     /// state. Keep them in Application Support, separate from the general attachment cache.
     var e2eeAttachmentStorageFolderURL: URL? {
-        Self.initMlsStorageFolderURL(groupIdentifier: applicationGroupIdentifier)?
+        mlsStorageFolderURL?
             .appendingPathComponent("E2EEAttachments", isDirectory: true)
     }
 

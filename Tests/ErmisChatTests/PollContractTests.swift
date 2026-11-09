@@ -52,21 +52,23 @@ final class PollContractTests: XCTestCase {
         } else { XCTFail("Poll-close system message lost") }
     }
     @MainActor
-    func testDisabledPollMenuKeepsFilesAndLeavesPayloadIntact() throws {
-        let previous = Components.default.isPollsEnabled
-        defer { Components.default.isPollsEnabled = previous }
-        Components.default.isPollsEnabled = false
+    func testPollMenuKeepsFilesAndLeavesPayloadIntact() throws {
         let button = ComposerMenuButton()
         let actions = button.menuItems().compactMap { $0 as? UIAction }
-        XCTAssertEqual(actions.count, 1)
-        XCTAssertEqual(actions.first?.title, button.title(for: .file))
+        XCTAssertEqual(actions.count, 2)
+        XCTAssertTrue(actions.contains { $0.title == button.title(for: .file) })
+        XCTAssertTrue(actions.contains { $0.title == button.title(for: .poll) })
         let message = try payload()
         XCTAssertEqual(message.type, .poll)
         XCTAssertEqual(message.poll?.totalVoters, 2)
-        Components.default.isPollsEnabled = true
-        XCTAssertEqual(button.menuItems().count, 2)
     }
 
+    private func renderedLabels(in view: UIView) -> [String] {
+        (view as? UILabel).flatMap { $0.text }.map { [$0] } ?? []
+            + view.subviews.flatMap { renderedLabels(in: $0) }
+    }
+
+    @MainActor
     func testPersistsPollAndIncludesItInChannelFetch() throws {
         let database = DatabaseContainer(kind:.inMemory,shouldResetEphemeralValuesOnStart:false)
         let loaded = XCTNSPredicateExpectation(predicate:NSPredicate { _,_ in !database.persistentStoreCoordinator.persistentStores.isEmpty },object:nil)
@@ -85,6 +87,24 @@ final class PollContractTests: XCTestCase {
             XCTAssertEqual(try? dto?.asModel().poll?.totalVoters,2)
             let request = MessageDTO.messagesFetchRequest(for:cid, pageSize:20, deletedMessagesVisibility:.alwaysHidden, shouldShowShadowedMessages:false)
             XCTAssertEqual(try? database.viewContext.fetch(request).filter { $0.type == "poll" }.count,1)
+            if let model = try? dto?.asModel() {
+                let parent = UIView()
+                let view = MessageContentView()
+                view.setUpUIIfNeeded(options: [.text], customCellViewInjectorType: nil)
+                parent.addSubview(view)
+                view.content = model
+                view.contentDidChanged()
+                XCTAssertTrue(self.renderedLabels(in: view).contains("Lunch?"))
+                view.content = nil
+                view.contentDidChanged()
+                XCTAssertEqual(view.textView?.text, "")
+                view.content = model
+                view.contentDidChanged()
+                XCTAssertTrue(self.renderedLabels(in: view).contains("Lunch?"))
+                XCTAssertEqual(model.poll?.totalVoters, 2)
+            } else {
+                XCTFail("Persisted poll fixture missing")
+            }
         }
     }
 }

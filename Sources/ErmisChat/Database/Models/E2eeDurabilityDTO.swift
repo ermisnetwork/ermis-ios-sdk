@@ -14,6 +14,7 @@ enum E2eeDurableInboxError: Error, Equatable {
     case outOfOrderApply(expectedEventId: String, actualEventId: String)
     case pageTooLarge(scopeCid: String, rawBytes: Int, maximumRawBytes: Int)
     case protocolCommitProofMismatch(eventId: String)
+    case captionUpdateProofMissing(messageId: String)
     case welcomeBoundaryProofMismatch
 }
 
@@ -135,7 +136,7 @@ final class E2eeInboxEventDTO: NSManagedObject {
             let canonicalStoredEnvelope = try E2eeWireJSONCanonicalizer.canonicalizeJSONData(
                 existing.rawEnvelope
             )
-            guard canonicalStoredEnvelope == envelope.rawEnvelope else {
+            guard E2eeScopeEnvelopeIdentity.matches(canonicalStoredEnvelope, envelope.rawEnvelope) else {
                 throw E2eeDurableInboxError.duplicateEventPayloadMismatch(eventId: envelope.eventId)
             }
             if existing.rawEnvelope != canonicalStoredEnvelope {

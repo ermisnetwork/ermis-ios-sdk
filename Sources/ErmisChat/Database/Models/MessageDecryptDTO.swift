@@ -110,12 +110,13 @@ extension NSManagedObjectContext: E2eDatabaseSession {
 
         if !payload.attachments.isEmpty ||
             !payload.e2eeAttachments.isEmpty ||
-            payload.authenticatedMetadata != nil {
+            payload.authenticatedMetadata != nil || payload.oldTexts != nil {
             dto.attachmentsData = try JSONEncoder.default.encode(
                 E2eCachedAttachments(
                     legacy: payload.attachments,
                     e2ee: payload.e2eeAttachments,
-                    authenticatedMetadata: payload.authenticatedMetadata
+                    authenticatedMetadata: payload.authenticatedMetadata,
+                    oldTexts: payload.oldTexts
                 )
             )
         } else {
@@ -183,7 +184,8 @@ extension MessageDecryptDTO {
             attachments: cachedAttachments.legacy,
             e2eeAttachments: cachedAttachments.e2ee,
             stickerUrl: stickerUrl,
-            authenticatedMetadata: cachedAttachments.authenticatedMetadata
+            authenticatedMetadata: cachedAttachments.authenticatedMetadata,
+            oldTexts: cachedAttachments.oldTexts
         )
     }
 }
@@ -198,17 +200,20 @@ struct E2eCachedAttachments: Codable, Equatable {
     let legacy: [MessageAttachmentPayload]
     let e2ee: [E2eeAttachmentManifestV1]
     let authenticatedMetadata: E2eeAuthenticatedMessageMetadata?
+    let oldTexts: [MessageEditHistoryPayload]?
 
     init(
         version: Int = currentVersion,
         legacy: [MessageAttachmentPayload] = [],
         e2ee: [E2eeAttachmentManifestV1] = [],
-        authenticatedMetadata: E2eeAuthenticatedMessageMetadata? = nil
+        authenticatedMetadata: E2eeAuthenticatedMessageMetadata? = nil,
+        oldTexts: [MessageEditHistoryPayload]? = nil
     ) {
         self.version = version
         self.legacy = legacy
         self.e2ee = e2ee
         self.authenticatedMetadata = authenticatedMetadata
+        self.oldTexts = oldTexts
     }
 
     static func decodeCompatible(from data: Data) throws -> Self {

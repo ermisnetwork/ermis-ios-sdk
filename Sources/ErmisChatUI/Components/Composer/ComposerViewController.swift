@@ -789,7 +789,8 @@ open class ComposerViewController: _ViewController,
     open func setupAttachmentsView() {
         addChildViewController(attachmentsVC, embedIn: composerView.inputMessageView.attachmentsViewContainer)
         attachmentsVC.didTapRemoveItemButton = { [weak self] index in
-            self?.content.attachments.remove(at: index)
+            guard let self, self.content.state != .edit, self.content.attachments.indices.contains(index) else { return }
+            self.content.attachments.remove(at: index)
         }
     }
 
@@ -891,7 +892,7 @@ open class ComposerViewController: _ViewController,
             let isLeadingActionsVisible = leadingViews
                 .filter { isNotShrinkInputButton($0) && self.composerView.composerMenuButton.isHidden }
                 .filter(\.isHidden).isEmpty
-            self.composerView.composerMenuButton.isHidden = self.content.isVoiceRecording //textView.text.isEmpty || self.content .hasCommand || !isLeadingActionsVisible
+            self.composerView.composerMenuButton.isHidden = self.content.isVoiceRecording || self.content.state == .edit
         }
     }
 
@@ -954,6 +955,7 @@ open class ComposerViewController: _ViewController,
         composerView.sendButton.isEnabled = (!content.isEmpty) &&
         !self.inputContainsFilterKeyword &&
         (self.canSendLinks || !self.inputContainsLinks) && isSendMessageEnabled
+        traceComposerSubmit("controls_updated")
     }
 
     open func updateConfirmButtonEnabled() {
@@ -1012,6 +1014,7 @@ open class ComposerViewController: _ViewController,
     }
 
     open func updateInputAttachmentsView() {
+        attachmentsVC.isAttachmentRemovalEnabled = content.state != .edit
         attachmentsVC.content = content.attachments.map {
             if let provider = $0.payload as? AttachmentPreviewProvider {
                 return provider
@@ -1160,7 +1163,20 @@ open class ComposerViewController: _ViewController,
         self.mentionTokens = mentionTokens
     }
 
+    /// Fixed metadata for distinguishing a missed UI action from local draft persistence or transport.
+    /// No channel IDs, text, lengths, UUIDs, credentials or error descriptions are admitted.
+    private func traceComposerSubmit(_ stage: String) {
+        guard channelController?.isE2eeEnabled == true else { return }
+        log.info(
+            "mls_composer_submit stage=\(stage) nonempty=\(!content.isEmpty) " +
+                "send_enabled=\(composerView.sendButton.isEnabled) send_hidden=\(composerView.sendButton.isHidden) " +
+                "draft_pending=\(draftPersistenceGate.submittedRevision != nil)",
+            subsystems: .mls
+        )
+    }
+
     @objc open func publishMessage() {
+        traceComposerSubmit("tap_received")
         if !canSendLinks, inputContainsLinks {
             presentAlert(title: L10n.Composer.LinksDisabled.title,
                          message: L10n.Composer.LinksDisabled.subtitle)
@@ -1204,7 +1220,11 @@ open class ComposerViewController: _ViewController,
             // Do not clear the composer until the optimistic message and its stable ID/plaintext
             // are durable. The revision also prevents a delayed completion from erasing text the
             // user entered while Core Data was finishing the previous draft write.
-            guard draftPersistenceGate.begin(revision: contentRevision) else { return }
+            guard draftPersistenceGate.begin(revision: contentRevision) else {
+                traceComposerSubmit("draft_busy")
+                return
+            }
+            traceComposerSubmit("draft_started")
             pendingDraftCooldownDuration = content.hasCommand ? nil : channelController?.channel?.cooldownDuration
             createNewMessage(text: text)
         }
@@ -1250,13 +1270,13 @@ open class ComposerViewController: _ViewController,
     }
 
     open func onMenuButtonDidSelected(item: ComposerMenuItemType) {
+        guard content.state != .edit else { return }
         switch item {
         case .location:
             presentAlert(message: "Feature under develop")
         case .file:
             showFilePicker()
         case .poll:
-            guard components.isPollsEnabled else { return }
             guard let channelController else { return }
             if channelController.isE2eeEnabled {
                 presentAlert(message: PollStrings.text("Polls are not supported in secure chats yet.", "Chưa hỗ trợ bình chọn trong cuộc trò chuyện bảo mật."))
@@ -1401,6 +1421,7 @@ open class ComposerViewController: _ViewController,
             return
         }
 
+        traceComposerSubmit(succeeded ? "draft_saved" : "draft_failed")
         let shouldClear = draftPersistenceGate.complete(
             succeeded: succeeded,
             currentRevision: contentRevision

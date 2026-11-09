@@ -12,6 +12,7 @@ open class AttachmentPreviewContainer: _View, ThemeProvider {
 
     /// A button to remove the attachment from the collection of attachments.
     open private(set) lazy var discardButton: UIButton = UIButton()
+        .withAccessibilityIdentifier(identifier: "attachmentDiscardButton")
         .withoutAutoresizingMaskConstraints
 
     override open func setUp() {

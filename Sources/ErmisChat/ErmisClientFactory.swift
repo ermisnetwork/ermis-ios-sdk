@@ -89,7 +89,7 @@ class ErmisClientFactory {
     func makeDatabaseContainer() -> DatabaseContainer {
         do {
             if config.isLocalStorageEnabled, config.localStorageScope != .inMemory {
-                guard let storeURL = config.localStorageFolderURL else {
+                guard let storeURL = config.resolvedLocalStorageFolderURL else {
                     throw ClientError.MissingLocalStorageURL()
                 }
 

@@ -996,6 +996,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
     public func uploadAttachment(
         localFileURL: URL,
         type: AttachmentType,
+        purpose: AttachmentUploadPurpose? = nil,
         progress: ((Double) -> Void)? = nil,
         completion: @escaping ((Result<UploadedAttachment, Error>) -> Void)
     ) {
@@ -1006,7 +1007,7 @@ public class ChannelController: DataController, DelegateCallable, DataStoreProvi
             return
         }
         
-        updater.uploadFile(type: type, localFileURL: localFileURL, cid: cid, progress: progress) { [weak self] result in
+        updater.uploadFile(type: type, localFileURL: localFileURL, cid: cid, purpose: purpose, progress: progress) { [weak self] result in
             self?.callback {
                 completion(result)
             }

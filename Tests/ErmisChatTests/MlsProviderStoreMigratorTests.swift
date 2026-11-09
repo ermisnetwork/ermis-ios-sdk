@@ -285,6 +285,54 @@ final class MlsProviderStoreMigratorTests: XCTestCase {
         XCTAssertEqual(try client.getStoredGroupIdList(), [])
     }
 
+    func testMissingPreferenceMarkerCannotReplaceDifferentValidDestination() throws {
+        try withTemporaryMigration { legacyURL, destinationURL, defaults, markerKey in
+            try makeOpenMlsStore(at: legacyURL, userId: "same-user", groupIds: ["team:legacy"])
+            try makeOpenMlsStore(at: destinationURL, userId: "same-user", groupIds: ["team:advanced"])
+            let verifier = OpenMlsProviderStoreVerifier()
+            let source = try verifier.snapshot(databaseURL: legacyURL)
+            let destination = try verifier.snapshot(databaseURL: destinationURL)
+            XCTAssertNotEqual(source.identity, destination.identity)
+            XCTAssertThrowsError(try MlsProviderStoreMigrator(defaults: defaults).resolveDatabaseURL(
+                legacyCandidates: [legacyURL], destinationURL: destinationURL, markerKey: markerKey))
+            XCTAssertEqual(try verifier.snapshot(databaseURL: legacyURL), source)
+            XCTAssertEqual(try verifier.snapshot(databaseURL: destinationURL), destination,
+                "Lost preferences cannot authorize replacing an existing private scope with a stale legacy provider")
+            XCTAssertFalse(defaults.bool(forKey: markerKey))
+        }
+    }
+
+    func testOldRawPathMarkerKeepsDestinationAuthoritativeAfterFileCreation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("marker-compat-" + UUID().uuidString)
+        let target = root.appendingPathComponent("Application Support")
+        let legacy = root.appendingPathComponent("Documents")
+        let user = "marker-compat-" + UUID().uuidString
+        let hash: (String) -> String = { SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined() }
+        let namespace = hash(user), name = "ermis_mls_" + namespace + ".db"
+        let destination = target.appendingPathComponent("mls").appendingPathComponent(name)
+        let oldMarker = "ermis_mls_provider_migration_v1_" + namespace + "_" + hash(destination.path)
+        let suite = "marker-compat-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try makeOpenMlsStore(at: destination, userId: user, groupIds: ["team:current"])
+        let source = legacy.appendingPathComponent("mls").appendingPathComponent(name)
+        try makeOpenMlsStore(at: source, userId: user, groupIds: ["team:stale"])
+        defaults.set(true, forKey: oldMarker)
+        let verifier = OpenMlsProviderStoreVerifier()
+        let before = try verifier.snapshot(databaseURL: destination)
+        let legacyBefore = try verifier.snapshot(databaseURL: source)
+        let devices = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: DeviceIdSecureStore())
+        let client = MlsClient(storageFolderURL: target, legacyStorageFolderURLs: [legacy], deviceIdStore: devices, userDefaults: defaults)
+        try client.setup(with: user)
+        XCTAssertEqual(try client.getStoredGroupIdList(), ["team:current"])
+        XCTAssertEqual(try verifier.snapshot(databaseURL: destination), before)
+        XCTAssertEqual(try verifier.snapshot(databaseURL: source), legacyBefore)
+        try client.reset()
+        try client.setup(with: user)
+        XCTAssertEqual(try client.getStoredGroupIdList(), ["team:current"])
+        // Retain this native fixture for readback; never touch the installed app's scope.
+    }
+
     func testDefaultMlsRootUsesApplicationSupport() throws {
         let url = try XCTUnwrap(ErmisClientConfig.initMlsStorageFolderURL(groupIdentifier: nil))
         XCTAssertTrue(url.path.contains("Application Support"))

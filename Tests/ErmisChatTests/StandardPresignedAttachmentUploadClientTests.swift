@@ -68,6 +68,8 @@ final class StandardPresignedAttachmentUploadClientTests: XCTestCase {
             sourceURL.lastPathComponent
         )
         XCTAssertEqual(jsonBody(presign)["content_type"] as? String, "video/mp4")
+        XCTAssertNil(jsonBody(presign)["purpose"])
+        XCTAssertNil(jsonBody(confirm)["purpose"])
         XCTAssertEqual(storage.httpMethod, "PUT")
         XCTAssertEqual(storage.value(forHTTPHeaderField: "Content-Type"), "video/mp4")
         XCTAssertNil(storage.value(forHTTPHeaderField: "Authorization"))
@@ -80,6 +82,68 @@ final class StandardPresignedAttachmentUploadClientTests: XCTestCase {
             jsonBody(confirm)["attachment_id"] as? String,
             "11111111-1111-1111-1111-111111111111"
         )
+    }
+
+    func testAvatarPurposeSurvivesStorageRenewalAndConfirmRetry() async throws {
+        let recorder = PresignedRequestRecorder()
+        let state = PresignedScenarioState()
+        StandardPresignedUploadURLProtocol.installHandler { request in
+            if request.url?.host == "storage.example.test" {
+                recorder.record(request)
+                return .empty(statusCode: request.url?.path == "/expired" ? 403 : 200)
+            }
+            if request.url?.path.hasSuffix("/file/presign") == true {
+                let attempt = state.nextPresignAttempt()
+                return .json(statusCode: 200, object: [
+                    "attachment_id": "11111111-1111-1111-1111-111111111111",
+                    "upload_url": "https://storage.example.test/\(attempt == 1 ? "expired" : "fresh")",
+                    "expires_in_secs": 300
+                ])
+            }
+            let attempt = state.nextConfirmAttempt()
+            if attempt == 1 { return .failure(URLError(.networkConnectionLost)) }
+            return .json(statusCode: 200, object: ["file": "https://cdn.example.test/avatar.jpg"])
+        }
+        let result = await upload(
+            makeAttachment(sourceURL: try makeSourceFile(named: "avatar.jpg"), purpose: .channelAvatar),
+            using: makeClient(recorder: recorder)
+        )
+        XCTAssertEqual(try result.get().fileURL.absoluteString, "https://cdn.example.test/avatar.jpg")
+        let requests = recorder.snapshot()
+        let control = requests.filter { $0.url?.host == "api.example.test" }
+        XCTAssertEqual(control.filter { $0.url?.path.hasSuffix("/presign") == true }.count, 2)
+        XCTAssertEqual(control.filter { $0.url?.path.hasSuffix("/confirm") == true }.count, 2)
+        for request in control { XCTAssertEqual(jsonBody(request)["purpose"] as? String, "channel_avatar") }
+        for request in requests where request.url?.host == "storage.example.test" {
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertNil(request.url?.query)
+        }
+    }
+
+    func testNormalUploaderOptsIntoAvatarPurposeAndLeavesLegacyRequestsUnchanged() async throws {
+        for purpose: AttachmentUploadPurpose? in [nil, .channelAvatar] {
+            let recorder = PresignedRequestRecorder()
+            StandardPresignedUploadURLProtocol.installHandler { _ in
+                .json(statusCode: 200, object: ["file": "https://cdn.example.test/avatar.jpg"])
+            }
+            let baseURL = try XCTUnwrap(URL(string: "https://api.example.test"))
+            let client = ErmisUploadClient(
+                encoder: makeEncoder(baseURL: baseURL, recorder: recorder),
+                decoder: DefaultRequestDecoder(),
+                sessionConfiguration: makeSessionConfiguration(),
+                isStandardPresignedUploadEnabled: false
+            )
+            let result = await upload(
+                makeAttachment(sourceURL: try makeSourceFile(named: "avatar.jpg"), purpose: purpose),
+                using: client
+            )
+            XCTAssertEqual(try result.get().fileURL.absoluteString, "https://cdn.example.test/avatar.jpg")
+            let request = try XCTUnwrap(recorder.snapshot().first)
+            XCTAssertEqual(recorder.snapshot().count, 1)
+            XCTAssertTrue(request.url?.path.hasSuffix("/file") == true)
+            let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems
+            XCTAssertEqual(query?.first { $0.name == "purpose" }?.value, purpose?.rawValue)
+        }
     }
 
     func testStorage403RenewsPresignExactlyOnceThenConfirmsFreshAttachment() async throws {
@@ -414,7 +478,7 @@ final class StandardPresignedAttachmentUploadClientTests: XCTestCase {
         return url
     }
 
-    private func makeAttachment(sourceURL: URL) -> AnyMessageAttachment {
+    private func makeAttachment(sourceURL: URL, purpose: AttachmentUploadPurpose? = nil) -> AnyMessageAttachment {
         let cid = ChannelId(type: .messaging, projectId: "project", id: "channel")
         let file = (try? AttachmentFile(url: sourceURL, fileSize: nil))
             ?? AttachmentFile(
@@ -430,7 +494,8 @@ final class StandardPresignedAttachmentUploadClientTests: XCTestCase {
             uploadingState: AttachmentUploadingState(
                 localFileURL: sourceURL,
                 state: .pendingUpload,
-                file: file
+                file: file,
+                purpose: purpose
             )
         )
     }
@@ -523,6 +588,9 @@ private final class StandardPresignedTestRequestEncoder: RequestEncoder {
             return
         }
         components.queryItems = [URLQueryItem(name: "api_key", value: apiKey.apiKeyString)]
+        if let query = endpoint.query as? [String: String] {
+            components.queryItems?.append(contentsOf: query.map { URLQueryItem(name: $0.key, value: $0.value) })
+        }
         guard let url = components.url else {
             completion(.failure(URLError(.badURL)))
             return
@@ -651,6 +719,14 @@ private final class PresignedRequestRecorder: @unchecked Sendable {
 private final class PresignedScenarioState: @unchecked Sendable {
     private let lock = NSLock()
     private var presignAttempts = 0
+    private var confirmAttempts = 0
+
+    func nextConfirmAttempt() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        confirmAttempts += 1
+        return confirmAttempts
+    }
 
     func nextPresignAttempt() -> Int {
         lock.lock()

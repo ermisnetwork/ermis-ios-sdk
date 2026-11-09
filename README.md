@@ -34,6 +34,15 @@ Generation-aware GroupId, trusted historical processing and archive v2 must
 be verified against the binary actually linked by the app; changing OpenMLS
 source or a package version string alone does not update it.
 
+For an explicitly opted-in retained-tree migration, set
+`config.e2eeAllowExpiredJoinTreeLeaves = true` **before** creating `ErmisClient`.
+The setting is immutable for that MLS owner and is forwarded to Welcome and both
+External Join paths. The SDK default remains `false` (`Verify`). The opt-in selects
+the native checked `AllowExpired` policy for existing join-tree leaves only; it
+keeps not-before, signed lifetime bounds, signatures, tree integrity and new Add
+KeyPackages strict. It does not establish a backend receipt or local Ready by itself.
+
+
 For an MLS upgrade, follow this repository's
 [`MLS_UPGRADE_HANDOFF.md`](MLS_UPGRADE_HANDOFF.md). Do not replace this vendor
 with the old remote tag. If a remote artifact is later published, review its generated
@@ -75,6 +84,13 @@ You can add the ErmisChat SDK to your project IOS using Swift Package Manager.
 4. Swift Package Manager will automatically sets the dependency rule to "Up To Next Major" and install the latest version.
 
 ### Step 3: Create ErmisClient
+
+<details><summary>Change log</summary>
+
+- `2026-10-23`: Optional `ErmisClientConfig.localStorageNamespace` scopes chat/provider/attachment storage and device-ID Keychain/preferences. Nil/empty retains existing paths. An explicit namespace disables legacy provider/defaults import and refuses unavailable scoped storage; it does not change authentication or account/project IDs. Configure it before creating the client and keep it stable for that environment.
+
+</details>
+
 
 ErmisClient is the root object representing a Ermis Chat.
 When starting the app, you need to create an instance of `ErmisClient` first.
@@ -1317,3 +1333,20 @@ Below you can find the complete list of errors that are returned by the API toge
 | 1005           | Jwt Expired       | Return when the JWT has expired                    |
 | 1003           | Unsupported Data | Return when the client send non-text data         |
 | 1000           | Normal Closure   | Return when the client or server closes connection normally |
+
+
+### Historical encrypted edits after joining a group
+
+An encrypted `message_updated` event from an epoch before this installation's
+verified join is retained as encrypted history. It may advance the exact durable
+apply cursor without a plaintext claim only when its generation matches the
+current group and its retained join boundary permits that classification. The
+cursor transaction rechecks the exact envelope and pending order. Edits at the
+join epoch or later, unknown epochs, changed envelopes and generation mismatches
+continue to require normal ciphertext/AAD plaintext proof. This does not enable
+PIN or epoch-archive recovery and does not recover pre-join plaintext.
+
+Debug owner diagnostics can capture bounded public group metadata through
+`captureMlsGroupStateInventory`; it does not bootstrap/join/sync or export private
+provider state. The explicit cloned-host/namespace gate keeps this diagnostic
+outside normal application flows.

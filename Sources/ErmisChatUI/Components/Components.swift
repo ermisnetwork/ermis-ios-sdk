@@ -8,10 +8,6 @@ import UIKit
 /// An object containing types of UI Components that are used through the UI SDK.
 public struct Components {
 
-    /// Hides poll creation/actions and renders existing polls as unsupported messages when false.
-    /// The data SDK and stored poll payloads remain available.
-    public var isPollsEnabled: Bool = true
-
     /// A view that displays the avatar image.
     public var avatarView: AvatarView.Type = AvatarView.self
 

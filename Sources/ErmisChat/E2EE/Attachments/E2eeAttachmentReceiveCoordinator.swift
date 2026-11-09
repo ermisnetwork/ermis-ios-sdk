@@ -389,7 +389,8 @@ final class E2eeAttachmentReceiveCoordinator {
                     self.removeFlightWork(assetId: preview.assetId, flightId: flightId)
                     finished.waiters.forEach { $0.completion(.failure(error)) }
                     log.error(
-                        "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=failed category=\(Self.errorCategory(error))",
+                        "[E2EE_ATTACHMENT_RECEIVE] operation=preview source=\(source.rawValue) state=failed category=\(Self.errorCategory(error)) "
+                            + PrivacySafeLogMetadata.errorFields(error),
                         subsystems: .mls
                     )
                 }

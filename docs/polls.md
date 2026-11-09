@@ -40,3 +40,17 @@ Native card actions are explicit: Vote/Change vote or Results opens the details 
 Message previews keep answer text, up to two small voter avatars plus a +N overflow icon, and percentage on one row. Tapping any preview avatar/overflow opens the same option-specific voter list, including voters omitted from the preview. Only visible preview profiles are resolved at bind; remaining profiles resolve when the list opens. Android poll avatars use a scoped borderless circular style. Closed cards show a small neutral gray pill with a lock icon matching web.
 
 Default native contextual/long-press menus include Close poll for an open, unencrypted poll authored by the current client user or authorized through channel owner/moderator membership. Both the iOS SDK menu and Uhm's menu override use the same capability/action; Android rechecks channel and permission in its message-options handler. This action opens the existing close confirmation directly, never the voting sheet. Closed and unauthorized polls omit the menu item.
+
+
+## External parity 2026-11-09
+
+The External SDK/UI follows internal487d7f8. Poll menus/cards and data are enabled as in internal; the earlier External-only isPollsEnabled SDK capability was removed. PIN/archive disablement belongs to the External app rollout controls; the SDK Vendor/native bindings are the committed internal versions.
+
+<details><summary>Change log</summary>
+
+- `2026-11-09`: Sync committed internal functionality, excluding PIN/vault/epoch archive.
+  - Reason: owner selected matching client-server sequence and MLS behavior.
+  - Integrator action: use updated backend and complete migration/client acceptance before rollout.
+  - Compatibility/default: retain private storage, native bindings and normal MLS flows; no PIN/archive runtime in the External app.
+
+</details>

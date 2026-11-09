@@ -52,6 +52,11 @@ extension MessageAttachment: Equatable where Payload: Equatable {}
 extension MessageAttachment: Hashable where Payload: Hashable {}
 
 /// A type representing the uploading state for attachments that require prior uploading.
+public enum AttachmentUploadPurpose: String, Encodable, Hashable {
+    case messageAttachment = "message_attachment"
+    case channelAvatar = "channel_avatar"
+}
+
 public struct AttachmentUploadingState: Hashable {
     /// The local file URL that is being uploaded.
     public let localFileURL: URL
@@ -61,6 +66,21 @@ public struct AttachmentUploadingState: Hashable {
 
     /// The information about file size/mimeType.
     public let file: AttachmentFile
+
+    /// Nil preserves the legacy message-attachment request. Avatar callers opt in.
+    public let purpose: AttachmentUploadPurpose?
+
+    public init(
+        localFileURL: URL,
+        state: LocalAttachmentState,
+        file: AttachmentFile,
+        purpose: AttachmentUploadPurpose? = nil
+    ) {
+        self.localFileURL = localFileURL
+        self.state = state
+        self.file = file
+        self.purpose = purpose
+    }
 }
 
 // MARK: - Type erasure/recovery

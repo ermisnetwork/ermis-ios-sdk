@@ -1,6 +1,13 @@
 import Foundation
 import CryptoKit
 
+struct MlsRegistrationFailure: Error {
+    let reason: String
+    static let allowedReasons: Set<String> = ["mls_device_project_conflict", "mls_device_inactive",
+        "mls_device_signer_mismatch", "mls_legacy_pool_unverified", "mls_legacy_pool_signer_mismatch",
+        "mls_signer_owned_by_other_device", "mls_device_unauthorized"]
+}
+
 struct MlsRequestProofOwner {
     let userId: String
     let deviceId: String
@@ -40,18 +47,24 @@ final class MlsRequestProofAuthorizer {
             guard request.value(forHTTPHeaderField: "X-Device-ID") == owner.deviceId else {
                 throw ClientError.Unexpected("MLS device authority mismatch")
             }
+            let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
+            let token = try Token(rawValue: authorization.replacingOccurrences(of: "Bearer ", with: ""))
+            guard token.userId == owner.userId else {
+                log.warning("mls_registration_preflight reason=account_mismatch", subsystems: .mls)
+                throw MlsRegistrationFailure(reason: "mls_request_account_mismatch")
+            }
             let segments = url.path.split(separator: "/")
             let projectId: String
             if [1, 2, 6].contains(operation) {
-                let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
-                let token = try Token(rawValue: authorization.replacingOccurrences(of: "Bearer ", with: ""))
-                projectId = token.projectId
-                guard token.userId == owner.userId else { throw ClientError.Unexpected("MLS account changed") }
+                projectId = token.projectId.lowercased()
             } else {
                 guard segments.count > 4, let project = segments[4].split(separator: ":").first else { throw ClientError.Unexpected("Invalid MLS project") }
-                projectId = String(project)
+                projectId = String(project).lowercased()
             }
-            guard UUID(uuidString: projectId) != nil else { throw ClientError.Unexpected("Invalid MLS project") }
+            guard let project = UUID(uuidString: projectId), let tokenProject = UUID(uuidString: token.projectId), project == tokenProject else {
+                log.warning("mls_registration_preflight reason=project_mismatch", subsystems: .mls)
+                throw MlsRegistrationFailure(reason: "mls_request_project_mismatch")
+            }
             let key = [url.scheme ?? "", url.host ?? "", String(url.port ?? 443), owner.userId, owner.deviceId, owner.publicKey.base64EncodedString(), projectId].joined(separator: "|")
             lock.lock(); let cached = registrations[key]; lock.unlock()
             let finish: (String, Int64) throws -> Void = { registrationId, generation in
@@ -96,6 +109,15 @@ final class MlsRequestProofAuthorizer {
                     if let response = response as? HTTPURLResponse {
                         log.warning("mls_join_http stage=registration result=response status=\(response.statusCode)", subsystems: .mls)
                         if response.statusCode == 401 { throw ClientError.ExpiredToken() }
+                        if response.statusCode == 403 {
+                            let root = data.flatMap { $0.count <= 4096 ? try? JSONSerialization.jsonObject(with: $0) as? [String: Any] : nil }
+                            let reason = root?["reason"] as? String ?? "mls_device_unauthorized"
+                            let safeReason = MlsRegistrationFailure.allowedReasons.contains(reason) ? reason : "mls_device_unauthorized"
+                            log.warning("mls_registration_denied reason=\(safeReason)", subsystems: .mls)
+                            // A denial is evidence of a registration conflict, not authority to
+                            // replace the provider-owned device binding for this signer.
+                            throw MlsRegistrationFailure(reason: safeReason)
+                        }
                     }
                     guard let self, let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode),
                         let data, data.count <= 4096,

@@ -28,6 +28,38 @@ final class E2eeArchiveRecoveryTests: XCTestCase {
         XCTAssertEqual(group.epoch(), 0)
         try store.clearUnlock(); XCTAssertNil(try store.loadUnlock())
     }
+    func testNativeCheckpointRecoversSkippedCaptionAfterLaterSenderRatchetWithoutProviderMutation() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("caption-local-" + UUID().uuidString)
+        let cid = "team:project:local-caption", provider = Provider()
+        let sender = try Identity(provider: provider, userId: "android-sender")
+        let group = try Group.createWithCid(provider: provider, founder: sender, cid: cid)
+        let receiverProvider = Provider(), receiver = try Identity(provider: receiverProvider, userId: "ios-receiver")
+        let join = try group.addMembers(provider: provider, sender: sender,
+            newMembers: [receiver.keyPackage(provider: receiverProvider)])
+        try group.mergePendingCommit(provider: provider)
+        let recipient = try Group.joinWithWelcome(provider: receiverProvider, welcome: XCTUnwrap(join.welcome),
+            ratchetTree: group.exportRatchetTree())
+        var current = true
+        let recovery = try E2eeArchiveRecovery(namespace: UUID().uuidString, root: root, userId: "ios-receiver", api: nil,
+            isCurrentAccount: { current }, generation: { _ in 3 }, apply: { _, _, _, _, _ in })
+        // Package tests have no Keychain entitlement. Exercise actual native checkpoint
+        // recovery here; device-protected checkpoint I/O is verified in the signed Uhm app.
+        let checkpoint = try recipient.archiveEpochV2()
+        XCTAssertNil(try recovery.localCheckpoint(cid: cid, generation: 3, epoch: recipient.epoch()))
+        let skipped = try group.createMessage(provider: provider, sender: sender, plaintext: Data("QAATT-old-edit".utf8))
+        for _ in 0..<8 {
+            let later = try group.createMessage(provider: provider, sender: sender, plaintext: Data("QAATT-later".utf8))
+            _ = try recipient.processMessage(provider: receiverProvider, msg: later)
+        }
+        let recovered = try decryptEpochArchiveV2(provider: receiverProvider, archive: checkpoint.archiveBytes,
+            snapshot: checkpoint.snapshotBytes, ciphertext: skipped, allowOwnMessages: false, maxForwardDistance: 0)
+        XCTAssertEqual(recovered.content, Data("QAATT-old-edit".utf8))
+        XCTAssertNil(try recovery.localCheckpoint(cid: cid, generation: 3, epoch: 999))
+        XCTAssertThrowsError(try recovery.localCheckpoint(cid: cid, generation: 4, epoch: recipient.epoch()))
+        current = false
+        XCTAssertThrowsError(try recovery.localCheckpoint(cid: cid, generation: 3, epoch: recipient.epoch()))
+    }
+
     func testJournalReopenPreservesRequestAndCommitsAckAtomically() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("archive-\(UUID().uuidString).db").path
         func row(_ key: String) -> RecoveryJournalEntry { .init(key: key, kind: "upload", cid: "messaging:test", groupGeneration: 3, epoch: 7, scope: "account_owned", payload: Data([1,2,3]), status: "queued", retryCount: 0, createdAt: 1, nextRetryAt: 0, lastError: nil) }

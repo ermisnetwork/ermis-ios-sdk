@@ -674,6 +674,7 @@ class ChannelUpdater: Worker {
         type: AttachmentType,
         localFileURL: URL,
         cid: ChannelId,
+        purpose: AttachmentUploadPurpose? = nil,
         progress: ((Double) -> Void)? = nil,
         completion: @escaping ((Result<UploadedAttachment, Error>) -> Void)
     ) {
@@ -687,7 +688,8 @@ class ChannelUpdater: Worker {
                 uploadingState: .init(
                     localFileURL: localFileURL,
                     state: .pendingUpload, // will not be used
-                    file: attachmentFile
+                    file: attachmentFile,
+                    purpose: purpose
                 )
             )
             apiClient.uploadAttachment(attachment, progress: progress, completion: completion)

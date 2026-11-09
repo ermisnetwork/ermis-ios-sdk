@@ -4,6 +4,7 @@
 
 import Foundation
 import Security
+import CryptoKit
 
 protocol MlsDeviceIdSecureStoring {
     func load(userId: UserId) throws -> String?
@@ -12,7 +13,14 @@ protocol MlsDeviceIdSecureStoring {
 }
 
 struct MlsDeviceIdKeychainStore: MlsDeviceIdSecureStoring {
-    private static let service = "network.ermis.chat.mls-device-id.v1"
+    private let service: String
+
+    init(storageNamespace: String? = nil) {
+        let suffix = storageNamespace.flatMap { $0.isEmpty ? nil : $0 }.map {
+            SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined()
+        }
+        service = "network.ermis.chat.mls-device-id.v1" + (suffix.map { "." + $0 } ?? "")
+    }
 
     func load(userId: UserId) throws -> String? {
         var query = baseQuery(userId: userId)
@@ -60,7 +68,7 @@ struct MlsDeviceIdKeychainStore: MlsDeviceIdSecureStoring {
     private func baseQuery(userId: UserId) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: userId,
             kSecAttrSynchronizable as String: false
         ]
@@ -88,27 +96,34 @@ final class MlsDeviceIdStore {
     private let defaults: UserDefaults
     private let legacyDefaults: UserDefaults
     private let secureStore: MlsDeviceIdSecureStoring
+    private let namespacePrefix: String
     private let lock = NSLock()
 
     init(
         defaults: UserDefaults,
         legacyDefaults: UserDefaults = .standard,
-        secureStore: MlsDeviceIdSecureStoring = MlsDeviceIdKeychainStore()
+        secureStore: MlsDeviceIdSecureStoring? = nil,
+        storageNamespace: String? = nil
     ) {
         self.defaults = defaults
         self.legacyDefaults = legacyDefaults
-        self.secureStore = secureStore
+        self.secureStore = secureStore ?? MlsDeviceIdKeychainStore(storageNamespace: storageNamespace)
+        namespacePrefix = storageNamespace.flatMap { $0.isEmpty ? nil : $0 }.map {
+            "scope:" + SHA256.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined() + ":"
+        } ?? ""
     }
 
-    convenience init(applicationGroupIdentifier: String?) {
+    convenience init(applicationGroupIdentifier: String?, storageNamespace: String? = nil) {
         let scopedDefaults = applicationGroupIdentifier.flatMap(UserDefaults.init(suiteName:)) ?? .standard
-        self.init(defaults: scopedDefaults)
+        self.init(defaults: scopedDefaults, storageNamespace: storageNamespace)
     }
+
+    private func scopedKey(_ key: String) -> String { namespacePrefix + key }
 
     func canonicalDeviceId(for userId: UserId, createIfNeeded: Bool = true) -> String? {
         lock.withLock {
-            let scoped = defaults.dictionary(forKey: Self.deviceIdKey) as? [String: String] ?? [:]
-            let legacy = legacyDefaults.dictionary(forKey: Self.deviceIdKey) as? [String: String] ?? [:]
+            let scoped = defaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String] ?? [:]
+            let legacy = legacyDefaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String] ?? [:]
             let fallbackId = scoped[userId] ?? legacy[userId]
             let migrated = migrationMarkersLocked()[userId] == true
 
@@ -158,9 +173,28 @@ final class MlsDeviceIdStore {
         }
     }
 
+    /// Provider-owned binding is authoritative after successful identity read.
+    /// Never call for an unavailable/corrupt provider or a guessed signer.
+    func restoreProviderDeviceId(_ deviceId: String, for userId: UserId) throws {
+        try lock.withLock {
+            guard !deviceId.isEmpty, deviceId.utf8.count <= 256,
+                  !deviceId.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                throw ClientError.Unexpected("mls_device_binding_invalid")
+            }
+            try secureStore.save(deviceId: deviceId, userId: userId)
+            guard try secureStore.load(userId: userId) == deviceId else {
+                throw ClientError.Unexpected("mls_device_binding_uncertain")
+            }
+            markMigratedLocked(userId: userId)
+            var scoped = defaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String] ?? [:]
+            scoped[userId] = deviceId
+            defaults.set(scoped, forKey: scopedKey(Self.deviceIdKey))
+        }
+    }
+
     func owns(deviceId: String, for userId: UserId) -> Bool {
         lock.withLock {
-            let aliases = defaults.dictionary(forKey: Self.legacyAliasKey) as? [String: [String]]
+            let aliases = defaults.dictionary(forKey: scopedKey(Self.legacyAliasKey)) as? [String: [String]]
             do {
                 if let canonical = try secureStore.load(userId: userId) {
                     return canonical == deviceId || aliases?[userId]?.contains(deviceId) == true
@@ -182,32 +216,32 @@ final class MlsDeviceIdStore {
         lock.withLock {
             try? secureStore.remove(userId: userId)
 
-            var scoped = defaults.dictionary(forKey: Self.deviceIdKey) as? [String: String] ?? [:]
+            var scoped = defaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String] ?? [:]
             scoped.removeValue(forKey: userId)
-            defaults.set(scoped, forKey: Self.deviceIdKey)
+            defaults.set(scoped, forKey: scopedKey(Self.deviceIdKey))
 
-            var aliases = defaults.dictionary(forKey: Self.legacyAliasKey) as? [String: [String]] ?? [:]
+            var aliases = defaults.dictionary(forKey: scopedKey(Self.legacyAliasKey)) as? [String: [String]] ?? [:]
             aliases.removeValue(forKey: userId)
-            defaults.set(aliases, forKey: Self.legacyAliasKey)
+            defaults.set(aliases, forKey: scopedKey(Self.legacyAliasKey))
 
-            var legacy = legacyDefaults.dictionary(forKey: Self.deviceIdKey) as? [String: String] ?? [:]
+            var legacy = legacyDefaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String] ?? [:]
             legacy.removeValue(forKey: userId)
-            legacyDefaults.set(legacy, forKey: Self.deviceIdKey)
+            legacyDefaults.set(legacy, forKey: scopedKey(Self.deviceIdKey))
 
             var markers = migrationMarkersLocked()
             markers.removeValue(forKey: userId)
-            defaults.set(markers, forKey: Self.migrationMarkerKey)
+            defaults.set(markers, forKey: scopedKey(Self.migrationMarkerKey))
         }
     }
 
     private func migrationMarkersLocked() -> [String: Bool] {
-        defaults.dictionary(forKey: Self.migrationMarkerKey) as? [String: Bool] ?? [:]
+        defaults.dictionary(forKey: scopedKey(Self.migrationMarkerKey)) as? [String: Bool] ?? [:]
     }
 
     private func markMigratedLocked(userId: UserId) {
         var markers = migrationMarkersLocked()
         markers[userId] = true
-        defaults.set(markers, forKey: Self.migrationMarkerKey)
+        defaults.set(markers, forKey: scopedKey(Self.migrationMarkerKey))
     }
 
     private func addLegacyAliasesLocked(
@@ -221,39 +255,39 @@ final class MlsDeviceIdStore {
     }
 
     private func legacyDeviceIdsLocked(for userId: UserId) -> [String] {
-        let scoped = (defaults.dictionary(forKey: Self.deviceIdKey) as? [String: String])?[userId]
-        let legacy = (legacyDefaults.dictionary(forKey: Self.deviceIdKey) as? [String: String])?[userId]
+        let scoped = (defaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String])?[userId]
+        let legacy = (legacyDefaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String])?[userId]
         return [scoped, legacy].compactMap { $0 }
     }
 
     private func removeLegacyIdentityLocked(userId: UserId) {
-        var scoped = defaults.dictionary(forKey: Self.deviceIdKey) as? [String: String] ?? [:]
+        var scoped = defaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String] ?? [:]
         scoped.removeValue(forKey: userId)
-        defaults.set(scoped, forKey: Self.deviceIdKey)
+        defaults.set(scoped, forKey: scopedKey(Self.deviceIdKey))
 
-        var legacy = legacyDefaults.dictionary(forKey: Self.deviceIdKey) as? [String: String] ?? [:]
+        var legacy = legacyDefaults.dictionary(forKey: scopedKey(Self.deviceIdKey)) as? [String: String] ?? [:]
         legacy.removeValue(forKey: userId)
-        legacyDefaults.set(legacy, forKey: Self.deviceIdKey)
+        legacyDefaults.set(legacy, forKey: scopedKey(Self.deviceIdKey))
 
-        var aliases = defaults.dictionary(forKey: Self.legacyAliasKey) as? [String: [String]] ?? [:]
+        var aliases = defaults.dictionary(forKey: scopedKey(Self.legacyAliasKey)) as? [String: [String]] ?? [:]
         aliases.removeValue(forKey: userId)
-        defaults.set(aliases, forKey: Self.legacyAliasKey)
+        defaults.set(aliases, forKey: scopedKey(Self.legacyAliasKey))
     }
 
     private func addLegacyAliasLocked(_ deviceId: String, for userId: UserId) {
-        var aliases = defaults.dictionary(forKey: Self.legacyAliasKey) as? [String: [String]] ?? [:]
+        var aliases = defaults.dictionary(forKey: scopedKey(Self.legacyAliasKey)) as? [String: [String]] ?? [:]
         var userAliases = aliases[userId] ?? []
         guard !userAliases.contains(deviceId) else { return }
         userAliases.append(deviceId)
         aliases[userId] = userAliases
-        defaults.set(aliases, forKey: Self.legacyAliasKey)
+        defaults.set(aliases, forKey: scopedKey(Self.legacyAliasKey))
     }
 }
 
 private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
+    func withLock<T>(_ body: () throws -> T) rethrows -> T {
         lock()
         defer { unlock() }
-        return body()
+        return try body()
     }
 }

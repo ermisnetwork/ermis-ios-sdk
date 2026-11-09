@@ -1,0 +1,30 @@
+{
+  "run": "20261102T030130Z-6d4de0c70768",
+  "immutable_producer_head": "2976e664a74d8dcb1d9896977339b25c0f9fce21",
+  "source_archive_sha256": "5275b032923ade458200bf54705c2cbc37df51855bb5c5a6228623c9dff89016",
+  "source_supplements": {
+    "README": "base commit",
+    "migration_sql": "base commit; producer equivalence pending, no shared closure claim"
+  },
+  "device_and_simulator_build": true,
+  "generated_swift_compile": true,
+  "simulator_native_process_crash": true,
+  "physical_native_runtime": true,
+  "current_files": {
+    "OpenMlsUniFFI.xcframework/Info.plist": "07f904017e72c2a7def0b8b1fbfd3bcfd5ea1e38c7ba3b6eeed4480980171db3",
+    "OpenMlsUniFFI.xcframework/ios-arm64/Headers/module.modulemap": "8bda58e38873ff560b608296b22bae35824df0123d685b496b8e1de9bbd34f83",
+    "OpenMlsUniFFI.xcframework/ios-arm64/Headers/openmls_uniffiFFI.h": "956cf0bcb54f00ec777f2438aab055d0556411d8fbf51cbf61dbdeebaad086d1",
+    "OpenMlsUniFFI.xcframework/ios-arm64/libopenmls_uniffi.a": "6ddea89d0a46cb2790d94b0eb035c5dbf2c34d930f1af731a5ec95afd811b199",
+    "OpenMlsUniFFI.xcframework/ios-arm64-simulator/Headers/module.modulemap": "8bda58e38873ff560b608296b22bae35824df0123d685b496b8e1de9bbd34f83",
+    "OpenMlsUniFFI.xcframework/ios-arm64-simulator/Headers/openmls_uniffiFFI.h": "956cf0bcb54f00ec777f2438aab055d0556411d8fbf51cbf61dbdeebaad086d1",
+    "OpenMlsUniFFI.xcframework/ios-arm64-simulator/libopenmls_uniffi.a": "c052446ea1e56dfa5f16f78b21aa40a81f829696034ccdb6fc94dcab2d2eb0e1",
+    "Package.swift": "dc64b58425a6a3f6874c874ac0b680c8e8be76334d46048c7601ca755dee3be3",
+    "RELEASE_METADATA.json": "375550f4b783c2e61465cc36ec9a35081054019552ff2a6c73d25d6d676dbfae",
+    "SOURCE_MANIFEST.sha256": "7ac58730bf1c1ca8cb56d260979ea40c1caa0537ce990a3a74e54874d2c95ef9",
+    "Sources/open-mls-ios/open_mls_ios.swift": "d2aa1d0cb3f085c7538829973f5b3402a0f2dc3eab2cafc58cc3660100cd5b12"
+  },
+  "generated_text_normalization": "trailing whitespace only; native library bytes unchanged",
+  "physical_native_process_crash": true,
+  "physical_evidence": ".task-artifacts/qa/runs/20261102T030130Z-6d4de0c70768/physical-native-process-crash-evidence.json",
+  "uhm_acceptance": "NOT_RUN"
+}
