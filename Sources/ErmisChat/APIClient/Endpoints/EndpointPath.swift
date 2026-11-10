@@ -16,6 +16,7 @@ enum EndpointPath: Codable {
     case getUserInfo(String)
     case getDeleteUserChallange
     case getDeleteUserOtp
+    case deleteUserFirebase
     case deleteUser
     case invite(cid: ChannelId, type: String)
     case updateUsers
@@ -92,6 +93,7 @@ enum EndpointPath: Codable {
 
     case getOtp
     case register
+    case loginFirebasePhone
     case loginWithOTP
     case loginWithGoogle
     case loginWithApple
@@ -164,6 +166,8 @@ enum EndpointPath: Codable {
             return "uss/v1/users/challenge"
         case .getDeleteUserOtp:
             return "uss/v1/users/get_delete_otp"
+        case .deleteUserFirebase:
+            return "uss/v1/users/delete_user_with_firebase"
         case .deleteUser:
             return "uss/v1/users/delete_user_with_otp"
         case .invite(cid: let cid,
@@ -294,6 +298,8 @@ enum EndpointPath: Codable {
             return "uss/v1/auth/get_otp_new"
         case .register:
             return "uss/v1/auth/register"
+        case .loginFirebasePhone:
+            return "uss/v1/auth/firebase/phone"
         case .loginWithOTP:
             return "uss/v1/auth/otp_login"
         case .loginWithGoogle:

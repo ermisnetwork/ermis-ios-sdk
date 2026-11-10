@@ -630,6 +630,11 @@ public class ErmisClient {
                                        completion: completion)
     }
 
+    public func loginFirebasePhone(token: String, apiKey: String,
+                                   completion: @escaping (Result<AuthenticationPayload, Error>) -> Void) {
+        authenticationRepository.loginFirebasePhone(token: token, apiKey: apiKey, completion: completion)
+    }
+
     public func loginGoogle(with googleIdToken: String,
                       apiKey: String,
                       completion: @escaping ((Result<AuthenticationPayload, Error>) -> Void)) {
@@ -1231,6 +1236,11 @@ public class ErmisClient {
 
     public func deleteUser(signature: String) async throws {
         try await apiClient.request(endpoint: .deleteUser(signature: signature))
+    }
+
+    public func deleteUserFirebase(token: String, apiKey: String,
+                                   completion: @escaping (Result<EmptyResponse, Error>) -> Void) {
+        apiClient.request(endpoint: .deleteUserFirebase(token: token, apiKey: apiKey), completion: completion)
     }
 
     public func getDeleteUserOtp(completion: @escaping ((Result<EmptyResponse, Error>) -> Void)) {

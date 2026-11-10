@@ -333,6 +333,11 @@ class AuthenticationRepository {
     ///   - googleIdToken: The google token string.
     ///   - apiKey: App apiKey string.
     ///   - completion: The completion to call with the results.
+    func loginFirebasePhone(token: String, apiKey: String,
+                            completion: @escaping (Result<AuthenticationPayload, Error>) -> Void) {
+        apiClient.unmanagedRequest(endpoint: Endpoint<AuthenticationPayload>.loginFirebasePhone(token: token, apiKey: apiKey), completion: completion)
+    }
+
     func loginGoogle(with googleIdToken: String,
                apiKey: String,
                completion: @escaping ((Result<AuthenticationPayload, Error>) -> Void)) {

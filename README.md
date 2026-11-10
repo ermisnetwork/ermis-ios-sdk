@@ -1333,3 +1333,23 @@ Below you can find the complete list of errors that are returned by the API toge
 | 1005           | Jwt Expired       | Return when the JWT has expired                    |
 | 1003           | Unsupported Data | Return when the client send non-text data         |
 | 1000           | Normal Closure   | Return when the client or server closes connection normally |
+
+## Internal Firebase phone authentication
+
+Apps verify phone SMS with FirebaseAuth,then call `loginFirebasePhone(token:apiKey:completion:)` to obtain the normal Ermis session. `deleteUserFirebase(token:apiKey:completion:)` requires the current Ermis session and a fresh proof for that same account. The SDK retains legacy OTP endpoints; applications decide which phone UI uses Firebase. Firebase ID tokens are never chat tokens. See [internal API/configuration contract](../../ermis_end_user/docs/firebase_phone_auth.md) and [canonical rollout/acceptance plan](../../ermis_end_user/docs/todo/firebase_phone_auth_plan.md). Real APNs/reCAPTCHA/device gates remain separate from compilation.
+
+## Encrypted edits from before this installation joined
+
+The durable MLS inbox retains a pre-join encrypted edit as inaccessible history instead
+of blocking newer events that this installation can decrypt. Classification requires an
+older encrypted message epoch in the current generation and a verified first-decryptable
+join epoch; a retained exact join event must already be applied in that generation,
+and the historical edit must precede that join boundary.
+The cursor transaction repeats those checks and keeps exact-envelope and pending-order
+validation. Current/future/unknown epochs and generation mismatches retain normal
+ciphertext/AAD proof requirements. This path is available in Release and does not depend
+on QA storage flags. It does not reconstruct plaintext, rewrite the MLS provider, or add
+PIN/epoch-archive behavior.
+
+Four `E2eeDurableInboxStoreTests` cover reopen/progress, missing proof, generation mismatch,
+altered envelopes and event ordering. Shared fix ported from External `c11dfe4` on 2026-11-10.

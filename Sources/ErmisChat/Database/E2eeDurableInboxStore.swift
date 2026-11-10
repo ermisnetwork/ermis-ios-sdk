@@ -1303,13 +1303,55 @@ final class E2eeDurableInboxStore {
         }
     }
 
+    /// Historical encrypted edits cannot produce plaintext on an installation that joined
+    /// later. Classify only against its verified join epoch and current MLS generation.
+    /// This read is advisory; markApplied repeats it inside the cursor transaction.
+    func isPreJoinEncryptedUpdate(
+        accountId: String, scopeCid: String, envelope: E2eSyncEventEnvelope, generation: Int
+    ) throws -> Bool {
+        try readAndWait { context in
+            try Self.isPreJoinEncryptedUpdate(accountId: accountId, scopeCid: scopeCid,
+                envelope: envelope, generation: generation, context: context)
+        }
+    }
+
+    private static func isPreJoinEncryptedUpdate(
+        accountId: String, scopeCid: String, envelope: E2eSyncEventEnvelope,
+        generation: Int, context: NSManagedObjectContext
+    ) throws -> Bool {
+        guard generation >= 0,
+              case .messageUpdated(let update) = envelope.event,
+              update.message.encryptedData != nil,
+              update.message.groupGeneration == generation,
+              let epoch = update.message.mlsEpoch, epoch >= 0,
+              let cid = try? ChannelId(cid: scopeCid),
+              let channel = context.channel(cid: cid),
+              let firstEpoch = channel.mlsFirstDecryptableEpoch?.int64Value,
+              firstEpoch > epoch else { return false }
+        // A retained exact boundary fences the fallback epoch-only classification.
+        // Legacy/Welcome stores without that pointer use the same verified epoch
+        // as application-history classification; never guess from the live head.
+        if let boundaryId = channel.mlsFirstDecryptableCursorEventId {
+            guard let boundary = try E2eeInboxEventDTO.load(accountId: accountId,
+                    scopeCid: scopeCid, eventId: boundaryId, context: context),
+                  boundary.appliedAt != nil,
+                  case .protocol(let data) = try JSONDecoder.default.decode(
+                    E2eSyncEventEnvelope.self, from: boundary.rawEnvelope).event,
+                  data.groupGeneration == generation else { return false }
+            let exact = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: boundary.rawEnvelope)
+            return E2eSyncEventEnvelope.canonicalScopeSyncOrder(envelope, exact)
+        }
+        return true
+    }
+
     /// Advances the apply cursor only after complete durable event proof.
     func markApplied(
         accountId: String,
         scopeCid: String,
         envelope: E2eSyncEventEnvelope,
         preservingFailure: Bool = false,
-        installedWelcomeDeviceId: String? = nil
+        installedWelcomeDeviceId: String? = nil,
+        preJoinEncryptedUpdateGeneration: Int? = nil
     ) throws {
         try database.writeAndWait { context in
             guard let context = context as? NSManagedObjectContext else {
@@ -1347,8 +1389,16 @@ final class E2eeDurableInboxStore {
                 event.rawEnvelope = canonicalStoredEnvelope
             }
 
-            if case .messageUpdated(let update) = envelope.event,
-               let bytes = update.message.encryptedData {
+            if let generation = preJoinEncryptedUpdateGeneration {
+                guard try Self.isPreJoinEncryptedUpdate(accountId: accountId, scopeCid: scopeCid,
+                    envelope: envelope, generation: generation, context: context) else {
+                    throw E2eeDurableInboxError.captionUpdateProofMissing(messageId: envelope.eventId)
+                }
+                // Retain the exact encrypted event. No message/cache/provider mutation or
+                // plaintext claim accompanies this terminal history disposition.
+                event.applicationDisposition = E2eeApplicationDisposition.preJoinHistorical.rawValue
+            } else if case .messageUpdated(let update) = envelope.event,
+                      let bytes = update.message.encryptedData {
                 try Self.validateCaptionUpdateProof(update, bytes: bytes, scopeCid: scopeCid, context: context)
             }
 

@@ -259,6 +259,8 @@ enum E2eeApplicationReplayRecovery {
 private enum E2eeSyncApplyDisposition {
     /// The event body is complete, but the caller must atomically advance its durable apply cursor.
     case requiresCursorAdvance
+    /// A verified pre-join edit is retained as encrypted history, without replaying it.
+    case preJoinEncryptedUpdate(generation: Int)
     /// The event and exact apply cursor were already finalized in one durable-store transaction.
     case cursorAdvancedAtomically
     /// The external commit is already in the local provider. Persist cursor, boundary and receipt
@@ -3560,6 +3562,10 @@ class E2eRepository: EventsControllerDelegate {
                 try durableInboxStore.markApplicationDispositionAndApplied(
                     accountId: accountId, scopeCid: cidString, envelope: event, disposition: applicationDisposition
                 )
+            case .preJoinEncryptedUpdate(let generation):
+                try durableInboxStore.markApplied(accountId: accountId, scopeCid: cidString,
+                    envelope: event, preJoinEncryptedUpdateGeneration: generation)
+                log.info("[MLS] application_checkpoint stage=scope_cursor_saved result=committed", subsystems: .mls)
             case .requiresCursorAdvance:
                 try durableInboxStore.markApplied(accountId: accountId, scopeCid: cidString, envelope: event,
                     installedWelcomeDeviceId: mlsClient.currentDeviceId)
@@ -3782,6 +3788,9 @@ class E2eRepository: EventsControllerDelegate {
                             envelope: event,
                             disposition: applicationDisposition
                         )
+                    } else if case .preJoinEncryptedUpdate(let generation) = disposition {
+                        try self.durableInboxStore.markApplied(accountId: accountId, scopeCid: cidString,
+                            envelope: event, preJoinEncryptedUpdateGeneration: generation)
                     } else if case .requiresCursorAdvance = disposition {
                         try self.durableInboxStore.markApplied(
                             accountId: accountId,
@@ -4006,6 +4015,12 @@ class E2eRepository: EventsControllerDelegate {
         case .messageDeleted(let data):
             try handleMessageDeletedSyncEvent(data)
         case .messageUpdated(let data):
+            guard data.cid == nil || data.cid == cid else { throw E2eeArchiveError.invalidData }
+            let generation = Int(mlsClient.loadGenerationMarker(cid: mlsGroupCid(for: cid).rawValue)?.generation ?? 0)
+            if try durableInboxStore.isPreJoinEncryptedUpdate(accountId: accountId, scopeCid: cidString,
+                envelope: envelope, generation: generation) {
+                return .preJoinEncryptedUpdate(generation: generation)
+            }
             try handleMessageUpdatedSyncEvent(data, cid: cid)
         case .messagePin(let data):
             try handleMessagePinSyncEvent(data, cid: cid)

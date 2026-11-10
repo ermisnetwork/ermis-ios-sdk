@@ -5,6 +5,11 @@
 import Foundation
 
 extension Endpoint {
+    static func deleteUserFirebase(token: String, apiKey: String) -> Endpoint<EmptyResponse> {
+        .init(path: .deleteUserFirebase, method: .delete, query: nil,
+              body: ["id_token": token, "apikey": apiKey], needToken: true, urlType: .auth)
+    }
+
     /// Create the endpoint to get user list by user list query.
     ///
     /// - Parameters:

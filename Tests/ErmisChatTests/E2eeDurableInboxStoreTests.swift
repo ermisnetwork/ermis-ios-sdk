@@ -1638,4 +1638,103 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         XCTAssertNil(try store.installedWelcomeBoundary(accountId:"foreign",scopeCid:scopeCid,generation:1,groupId:id,deviceId:"ios-device"))
     }
 
+    private func historicalEdit(epoch: Int? = 5, generation: Int = 0,
+                                ciphertext: String = "BAUG") throws -> E2eSyncEventEnvelope {
+        var message: [String: Any] = ["id": "97008709-cb2f-4f2e-93fa-c566c1b0cae3", "type": "regular",
+            "user": ["id": "sender", "project_id": "project"], "text": "",
+            "mls_ciphertext": ciphertext, "group_generation": generation,
+            "created_at": "2026-08-06T09:00:00Z", "updated_at": "2026-08-06T10:00:00Z"]
+        if let epoch { message["mls_epoch"] = epoch }
+        let raw: [String: Any] = ["event_id": "f22d9bb2-4360-465b-b6aa-ab689b08421d", "cid": scopeCid,
+            "type": "message_updated", "created_at": "2026-08-06T10:00:00Z",
+            "data": ["sender": ["id": "sender", "project_id": "project"],
+                     "created_at": "2026-08-06T10:00:00Z", "message": message]]
+        return try JSONDecoder.default.decode(E2eSyncEventEnvelope.self,
+            from: JSONSerialization.data(withJSONObject: raw))
+    }
+
+    private func seedVerifiedEditJoin(_ database: DatabaseContainer, epoch: Int64?) throws {
+        try database.writeAndWait { session in
+            let context = try XCTUnwrap(session as? NSManagedObjectContext)
+            let channel = ChannelDTO.loadOrCreate(cid: try ChannelId(cid: self.scopeCid), context: context, cache: nil)
+            channel.createdAt = Date().bridgeDate
+            channel.updatedAt = Date().bridgeDate
+            channel.mlsFirstDecryptableEpoch = epoch.map { NSNumber(value: $0) }
+        }
+    }
+
+    func testPreJoinEncryptedEditRetainsHistoryAndLetsLaterEventsProgressAfterReopen() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("HistoricalEdit-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let url = folder.appendingPathComponent("history.sqlite")
+        let database = try makeDatabase(kind: .onDisk(databaseFileURL: url))
+        let store = E2eeDurableInboxStore(database: database)
+        try seedVerifiedEditJoin(database, epoch: 9)
+        let edit = try historicalEdit()
+        let next = try envelope(eventId: "ffffffff-ffff-4fff-8fff-ffffffffffff", createdAt: "2026-08-06T10:00:01Z")
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [edit, next], hasMore: false, nextCursor: nil)
+        XCTAssertTrue(try store.isPreJoinEncryptedUpdate(accountId: accountId, scopeCid: scopeCid, envelope: edit, generation: 0))
+        // The ordinary path still refuses a missing plaintext/ciphertext proof.
+        XCTAssertThrowsError(try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preservingFailure: true))
+        try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preJoinEncryptedUpdateGeneration: 0)
+        try database.writeAndWait { session in
+            let context = try XCTUnwrap(session as? NSManagedObjectContext)
+            let row = try XCTUnwrap(E2eeInboxEventDTO.load(accountId: self.accountId, scopeCid: self.scopeCid,
+                eventId: edit.eventId, context: context))
+            XCTAssertEqual(row.rawEnvelope, edit.rawEnvelope)
+            XCTAssertEqual(row.applicationDisposition, E2eeApplicationDisposition.preJoinHistorical.rawValue)
+            XCTAssertFalse(row.plaintextPersisted)
+            XCTAssertNil(context.message(id: "97008709-cb2f-4f2e-93fa-c566c1b0cae3")?.decryptedMessage)
+        }
+        try close([database])
+        let reopened = try makeDatabase(kind: .onDisk(databaseFileURL: url))
+        let reader = E2eeDurableInboxStore(database: reopened)
+        XCTAssertEqual(try reader.applyCursor(accountId: accountId, scopeCid: scopeCid)?.eventId, edit.eventId)
+        XCTAssertEqual(try reader.loadPendingEvents(accountId: accountId, scopeCid: scopeCid).map(\.eventId), [next.eventId])
+        try reader.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: next)
+        XCTAssertEqual(try reader.applyCursor(accountId: accountId, scopeCid: scopeCid)?.eventId, next.eventId)
+        try close([reopened])
+    }
+
+    func testCurrentFutureAndUnknownEpochEditsKeepTheirPlaintextProofRequirement() throws {
+        for epoch in [Int?.some(9), .some(10), nil] {
+            let database = try makeDatabase(), store = E2eeDurableInboxStore(database: database)
+            try seedVerifiedEditJoin(database, epoch: 9)
+            let edit = try historicalEdit(epoch: epoch)
+            _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [edit], hasMore: false, nextCursor: nil)
+            XCTAssertFalse(try store.isPreJoinEncryptedUpdate(accountId: accountId, scopeCid: scopeCid, envelope: edit, generation: 0))
+            XCTAssertThrowsError(try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preJoinEncryptedUpdateGeneration: 0))
+            XCTAssertThrowsError(try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preservingFailure: true))
+            XCTAssertNil(try store.applyCursor(accountId: accountId, scopeCid: scopeCid))
+        }
+    }
+
+    func testHistoricalEditNeverGuessesAnUnverifiedJoinOrCrossesGeneration() throws {
+        let database = try makeDatabase(), store = E2eeDurableInboxStore(database: database)
+        let edit = try historicalEdit()
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [edit], hasMore: false, nextCursor: nil)
+        try seedVerifiedEditJoin(database, epoch: nil)
+        XCTAssertFalse(try store.isPreJoinEncryptedUpdate(accountId: accountId, scopeCid: scopeCid, envelope: edit, generation: 0))
+        XCTAssertThrowsError(try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preJoinEncryptedUpdateGeneration: 0))
+        try seedVerifiedEditJoin(database, epoch: 9)
+        XCTAssertFalse(try store.isPreJoinEncryptedUpdate(accountId: accountId, scopeCid: scopeCid, envelope: edit, generation: 1))
+        XCTAssertThrowsError(try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preJoinEncryptedUpdateGeneration: 1))
+        XCTAssertNil(try store.applyCursor(accountId: accountId, scopeCid: scopeCid))
+    }
+
+    func testHistoricalEditKeepsExactEnvelopeAndPendingOrderChecks() throws {
+        let database = try makeDatabase(), store = E2eeDurableInboxStore(database: database)
+        try seedVerifiedEditJoin(database, epoch: 9)
+        let first = try envelope(createdAt: "2026-08-06T09:59:59Z")
+        let edit = try historicalEdit()
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [first, edit], hasMore: false, nextCursor: nil)
+        XCTAssertThrowsError(try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preJoinEncryptedUpdateGeneration: 0))
+        try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: first)
+        let changed = try historicalEdit(ciphertext: "BwgJ")
+        XCTAssertThrowsError(try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: changed, preJoinEncryptedUpdateGeneration: 0))
+        XCTAssertEqual(try store.applyCursor(accountId: accountId, scopeCid: scopeCid)?.eventId, first.eventId)
+        try store.markApplied(accountId: accountId, scopeCid: scopeCid, envelope: edit, preJoinEncryptedUpdateGeneration: 0)
+    }
+
 }

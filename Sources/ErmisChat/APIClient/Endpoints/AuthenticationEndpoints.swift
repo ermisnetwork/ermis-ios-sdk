@@ -5,6 +5,11 @@
 import Foundation
 
 extension Endpoint {
+    static func loginFirebasePhone(token: String, apiKey: String) -> Endpoint<AuthenticationPayload> {
+        .init(path: .loginFirebasePhone, method: .post, query: nil,
+              body: ["id_token": token, "apikey": apiKey], needToken: false, urlType: .auth)
+    }
+
     /// Create the endpoint login with email address.
     ///
     /// - Parameters:
