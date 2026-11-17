@@ -364,13 +364,15 @@ class DatabaseContainer: NSPersistentContainer {
 
     /// Tries to load a persistent store.
     ///
-    /// If it fails, for example because of non-matching models, it removes the store, recreates is, and tries to load it again.
+    /// If loading or migration fails, preserve the store and report the failure.
     ///
     private func setupPersistentStore(completion: ((Error?) -> Void)? = nil) {
         loadPersistentStores { _, error in
             if let error = error {
-                log.debug("Persistent store setup failed with \(error). Trying to recreate persistent store")
-                self.recreatePersistentStore(completion: completion)
+                // A schema/load failure is not authority to destroy cached history or
+                // account state. Keep the original disk store for recovery/compatible rollback.
+                log.error("Persistent store setup failed; preserving the disk store")
+                completion?(error)
             } else {
                 completion?(nil)
             }

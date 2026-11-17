@@ -46,6 +46,8 @@ private final class MlsRequestCompletion<Response> {
 class APIClient {
     /// The URL session used for all requests.
     let session: URLSession
+    private let sessionNetworkBudget = SessionNetworkBudget()
+    private let channelMetadataRequests = SessionRequestCoalescer<ChannelListPayload>()
     
     /// The object which encode `Endpoint` objects into `URLRequest`s.
     let encoder: RequestEncoder
@@ -108,6 +110,7 @@ class APIClient {
     private let maximumRequestRetries = 3
 
     deinit {
+        sessionNetworkBudget.invalidate()
         operationQueue.cancelAllOperations()
         recoveryQueue.cancelAllOperations()
         refreshTokenOP.cancelAllOperations()
@@ -236,6 +239,66 @@ class APIClient {
     ///
     /// - Parameters:
     ///   - endpoint: The `Endpoint` used to create the network request.
+    func captureSessionNetworkOwner() -> () throws -> Void { sessionNetworkBudget.captureOwner() }
+
+    func requestChannelMetadata(query: ChannelListQuery, isRecovery: Bool = false, completion: @escaping (Result<ChannelListPayload, Error>) -> Void) {
+        guard query.messagesLimit <= 1 || query.shouldLoadAllChannels else {
+            if isRecovery { recoveryRequest(endpoint: .channels(query: query), completion: completion) }
+            else { request(endpoint: .channels(query: query), completion: completion) }
+            return
+        }
+        do {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            var key = try encoder.encode(query)
+            key.append(query.shouldLoadAllChannels ? 1 : 0)
+            key.append(isRecovery ? 1 : 0)
+            let owner = sessionNetworkBudget.captureOwner(); try owner()
+            let guarded: (Result<ChannelListPayload, Error>) -> Void = { result in
+                do { try owner(); var payload = try result.get(); payload.sessionOwner = owner; completion(.success(payload)) }
+                catch { completion(.failure(error)) }
+            }
+            channelMetadataRequests.request(key: key, owner: owner, completion: guarded) { callback in
+                if query.shouldLoadAllChannels && query.pagination.offset == 0 && query.pagination.cursor == nil {
+                    self.requestAllChannelMetadata(query: query, isRecovery: isRecovery, owner: owner, offset: 0, channels: [], seen: [], completion: callback)
+                } else if isRecovery {
+                    self.recoveryRequest(endpoint: .channels(query: query), completion: callback)
+                } else {
+                    self.request(endpoint: .channels(query: query), completion: callback)
+                }
+            }
+        } catch { completion(.failure(error)) }
+    }
+
+    private func requestAllChannelMetadata(
+        query: ChannelListQuery, isRecovery: Bool, owner: @escaping () throws -> Void, offset: Int,
+        channels: [ChannelPayload], seen: Set<ChannelId>,
+        completion: @escaping (Result<ChannelListPayload, Error>) -> Void
+    ) {
+        do { try owner() } catch { completion(.failure(error)); return }
+        var page = query
+        page.pagination = Pagination(pageSize: query.pagination.pageSize, offset: offset)
+        let receive: (Result<ChannelListPayload, Error>) -> Void = { result in
+            do {
+                try owner()
+                let payload = try result.get()
+                let additions = payload.channels.filter { !seen.contains($0.channel.cid) }
+                let accumulated = channels + additions
+                if payload.channels.count < page.pagination.pageSize {
+                    completion(.success(ChannelListPayload(channels: accumulated)))
+                } else if additions.isEmpty {
+                    completion(.failure(NSError(domain: "ChannelListPagination", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Channel list page made no progress"])))
+                } else {
+                    self.requestAllChannelMetadata(query: query, isRecovery: isRecovery, owner: owner,
+                        offset: offset + payload.channels.count, channels: accumulated,
+                        seen: seen.union(additions.map { $0.channel.cid }), completion: completion)
+                }
+            } catch { completion(.failure(error)) }
+        }
+        if isRecovery { recoveryRequest(endpoint: .channels(query: page), completion: receive) }
+        else { request(endpoint: .channels(query: page), completion: receive) }
+    }
+
     func request<Response: Decodable>(endpoint: Endpoint<Response>) async throws -> Response {
         return try await withCheckedThrowingContinuation { [weak self] continuation in
             self?.request(endpoint: endpoint) { result in
@@ -438,6 +501,7 @@ class APIClient {
         allowAuthRefresh: Bool = true,
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
+        let assertNetworkOwner = sessionNetworkBudget.captureOwner()
         // This gate also releases AsyncOperation when encoding/registration/refresh never calls back.
         let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, timeoutReason: endpoint.localMlsTimeoutReason, completion: completion) }
         let complete: (Result<Response, Error>) -> Void = { result in
@@ -450,7 +514,7 @@ class APIClient {
             if budget?.isFinished == true { return }
             var urlRequest: URLRequest
             do {
-                try endpoint.localMlsGuard?()
+                try assertNetworkOwner(); try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() {
                     throw ClientError.Unexpected(endpoint.localMlsTimeoutReason)
                 }
@@ -484,8 +548,16 @@ class APIClient {
                 return
             }
             
+            self.sessionNetworkBudget.submit({ permit in
+            do {
+                try assertNetworkOwner(); try endpoint.localMlsGuard?()
+                if budget?.isFinished == true { permit.release(); return }
+                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
+            } catch { permit.release(); complete(.failure(error)); return }
             let task = self.session.dataTask(with: urlRequest) { [decoder = self.decoder] (data, response, error) in
+                permit.release()
                 if budget?.isFinished == true { return }
+                do { try assertNetworkOwner() } catch { complete(.failure(error)); return }
                 let path = urlRequest.url?.path ?? ""
                 if path == "/uss/v1/auth/google_login" {
                     print(ErmisAuthenticationDiagnostics.googleResponseMarker(data: data, response: response, error: error))
@@ -543,12 +615,14 @@ class APIClient {
                 urlRequest.privacySafeDiagnosticSummary(state: .resumed),
                 subsystems: .httpRequests
             )
+            permit.attachCancellation { task.cancel() }
             budget?.attach(task)
             do {
-                try endpoint.localMlsGuard?()
+                try assertNetworkOwner(); try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
-                if budget?.isFinished != true { task.resume() }
-            } catch { task.cancel(); complete(.failure(error)) }
+                if budget?.isFinished != true { task.resume() } else { task.cancel(); permit.release() }
+            } catch { task.cancel(); permit.release(); complete(.failure(error)) }
+            }, reject: { complete(.failure(ClientError.Unexpected("network_queue_retired_or_full"))) })
         }
     }
     
@@ -699,6 +773,7 @@ class APIClient {
 //    }
 
     func flushRequestsQueue() {
+        sessionNetworkBudget.invalidate()
         operationQueue.cancelAllOperations()
     }
     

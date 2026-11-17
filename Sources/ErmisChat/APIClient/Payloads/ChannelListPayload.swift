@@ -7,6 +7,7 @@ import Foundation
 struct ChannelListPayload {
     /// A list of channels response (see `ChannelQuery`).
     let channels: [ChannelPayload]
+    var sessionOwner: (() throws -> Void)? = nil
 }
 
 extension ChannelListPayload: Decodable {
@@ -16,12 +17,8 @@ extension ChannelListPayload: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let channels = try container
-            .decodeArrayIgnoringFailures([ChannelPayload].self, forKey: .channels)
-
-        self.init(
-            channels: channels
-        )
+        let channels = try container.decodeArrayIgnoringFailures([ChannelPayload].self, forKey: .channels)
+        self.init(channels: channels)
     }
 }
 

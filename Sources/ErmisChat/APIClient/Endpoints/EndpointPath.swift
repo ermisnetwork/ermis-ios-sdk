@@ -355,7 +355,7 @@ enum EndpointPath: Codable {
         case .externalJoin(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/external_join"
         case .e2eSync:
-            return "v1/e2ee/scope_sync"
+            return "sync"
         case .e2eChannelSync(let channelId):
             return "v1/e2ee/channels/\(channelId.apiPath)/sync"
         case .commitEviction(let channelId):

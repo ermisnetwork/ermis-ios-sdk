@@ -384,6 +384,15 @@ class E2eRepository: EventsControllerDelegate {
     let database: DatabaseContainer
     let eventNotificationCenter: EventNotificationCenter
     var archiveRecovery: E2eeArchiveRecovery?
+    private let historyPageLock = NSLock()
+    private var historyPageSession = UUID()
+    private var lastRequestedHistoryPage: (ChannelId, [E2eeArchiveWire])?
+    // True = active, false = settled for this session; fingerprints only.
+    private var historyPagesInFlight: [String: Bool] = [:]
+    let sessionProgress = SessionSyncProgress()
+    private var syncProgressTicket: SessionSyncProgress.Ticket?
+    private var syncIncludesStandard = false
+    private var standardSyncFinishing = false
     let mlsClient: MlsClient
     let apiClient: APIClient
     var mlsRolloutControls = E2eeMlsRolloutControls()
@@ -632,6 +641,7 @@ class E2eRepository: EventsControllerDelegate {
 
     private let readinessLock = NSLock()
     private var readinessByCid: [String: E2eeChannelReadiness] = [:]
+    private var activeBootstrapCid: String?
     private var readinessCallbacks: [String: [(E2eeChannelReadiness) -> Void]] = [:]
 
     /// Missing-group bootstraps are serialized because every external commit mutates the same
@@ -1146,21 +1156,124 @@ class E2eRepository: EventsControllerDelegate {
         try performMlsMutation(cidString: cid) { self.mlsClient.loadGenerationMarker(cid: cid)?.generation ?? 0 }
     }
 
-    func applyArchivedApplication(scopeCid: String, generation: UInt64, archive: Data, snapshot: Data, envelope: E2eeArchiveWire) throws {
+    func captureHistorySessionOwner() -> () throws -> Void {
+        historyPageLock.lock(); let session = historyPageSession; historyPageLock.unlock()
+        let user = mlsClient.userId, device = mlsClient.currentDeviceId
+        return { [weak self] in
+            guard let self, user != nil, self.mlsClient.userId == user, self.mlsClient.currentDeviceId == device else { throw E2eeArchiveError.sessionEnded }
+            self.historyPageLock.lock(); let current = self.historyPageSession; self.historyPageLock.unlock()
+            guard current == session else { throw E2eeArchiveError.sessionEnded }
+        }
+    }
+
+    func requestHistoryPage(messages: [MessagePayload], cid: ChannelId) {
+        guard messages.count <= 50 else { return }
+        var missing = messages
+        e2eReadContext.performAndWait {
+            missing = messages.filter { message in
+                guard let bytes = message.encryptedData,
+                      let row = MessageDTO.load(id: message.id, context: e2eReadContext),
+                      row.cid == cid.rawValue, row.encryptedData == Data(bytes),
+                      let cached = row.decryptedMessage,
+                      cached.ciphertextHash == Data(SHA256.hash(data: Data(bytes))),
+                      (try? cached.asPayload()) != nil else { return true }
+                return false
+            }
+        }
+        let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let page: [E2eeArchiveWire] = missing.compactMap { message in
+            guard message.hasAuthoritativeGroupGeneration, message.groupGeneration >= 0,
+                  let epoch = message.mlsEpoch, epoch >= 0, let bytes = message.encryptedData, !bytes.isEmpty,
+                  let scope = message.historicalScopeCid ?? (cid.type.rawValue == "topic" ? nil : cid.rawValue) else { return nil }
+            var raw: [String: E2eeArchiveWire] = ["cid": .string(cid.rawValue), "e2ee_group_id": .string(scope), "message_id": .string(message.id),
+                "mls_ciphertext": .bytes(Data(bytes)), "mls_epoch": .uint(UInt64(epoch)), "group_generation": .uint(UInt64(message.groupGeneration)),
+                "created_at": .string(formatter.string(from: message.createdAt)), "updated_at": .string(formatter.string(from: message.updatedAt)),
+                "user_id": .string(message.user.id), "user": .object(["id": .string(message.user.id)]), "type": .string(message.type.rawValue)]
+            if let parent = message.parentId { raw["parent_id"] = .string(parent) }
+            if let quote = message.quotedMessageId { raw["quoted_message_id"] = .string(quote) }
+            return .object(raw)
+        }
+        guard !page.isEmpty else { return }
+        scheduleHistoryPage(cid: cid, page: page)
+    }
+
+    func retryRequestedHistoryPage(afterUnlock: Bool = false) {
+        historyPageLock.lock()
+        if afterUnlock { historyPagesInFlight = historyPagesInFlight.filter { $0.value } }
+        let requested = lastRequestedHistoryPage; historyPageLock.unlock()
+        if let (cid, page) = requested { scheduleHistoryPage(cid: cid, page: page, retry: true) }
+    }
+
+    private func scheduleHistoryPage(cid: ChannelId, page: [E2eeArchiveWire], retry: Bool = false) {
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        guard let encoded = try? encoder.encode(E2eeArchiveWire.array(page)), encoded.count <= 16 * 1024 * 1024 else { return }
+        let key = Data(SHA256.hash(data: encoded)).base64EncodedString()
+        historyPageLock.lock()
+        lastRequestedHistoryPage = (cid, page)
+        if retry, historyPagesInFlight[key] == false { historyPagesInFlight.removeValue(forKey: key) }
+        let admitted = historyPagesInFlight[key] == nil
+        if admitted { historyPagesInFlight[key] = true }
+        let requestSession = historyPageSession
+        historyPageLock.unlock()
+        guard admitted, let recovery = archiveRecovery else {
+            if admitted { historyPageLock.lock(); historyPagesInFlight.removeValue(forKey: key); historyPageLock.unlock() }
+            return
+        }
+        let assertOwner = captureHistorySessionOwner()
+        let progress = sessionProgress.begin("restoring_page")
+        Task {
+            var partial = false
+            defer {
+                self.historyPageLock.lock()
+                if self.historyPageSession == requestSession {
+                    self.historyPagesInFlight[key] = false
+                    if self.historyPagesInFlight.count > 128 {
+                        let retired = self.historyPagesInFlight.filter { !$0.value && $0.key != key }.keys
+                        for old in retired.prefix(self.historyPagesInFlight.count - 128) { self.historyPagesInFlight.removeValue(forKey: old) }
+                    }
+                }
+                self.historyPageLock.unlock()
+                self.sessionProgress.end(progress, partial: partial, retry: { [weak self] in self?.retryRequestedHistoryPage() })
+            }
+            do {
+                try assertOwner()
+                let grouped = Dictionary(grouping: page) { $0["e2ee_group_id"].string ?? cid.rawValue }
+                for (scope, messages) in grouped {
+                    try assertOwner(); let result = try await recovery.restoreHistoryPage(cid: scope, messages: messages)
+                    partial = partial || result.unavailable > 0 || result.requiresPin; try assertOwner()
+                }
+            } catch { partial = true; log.warning("archive_page stage=partial", subsystems: .mls) }
+        }
+    }
+
+    func applyArchivedApplication(scopeCid: String, generation: UInt64, archive: Data, snapshot: Data, envelope: E2eeArchiveWire, historicalPage: Bool = false, pageOwner: (() throws -> Void)? = nil) throws {
         guard let messageId = envelope["message_id"].string, let routeCid = envelope["cid"].string ?? Optional(scopeCid),
               let ciphertext = envelope["mls_ciphertext"].bytes, envelope["group_generation"].number ?? 0 == generation,
               routeCid == scopeCid || envelope["parent_cid"].string == scopeCid || envelope["e2ee_group_id"].string == scopeCid else { throw E2eeArchiveError.invalidData }
+        let assertOwner = pageOwner ?? captureHistorySessionOwner(); try assertOwner()
         let lockStarted=DispatchTime.now().uptimeNanoseconds
-        try performMlsMutation(cidString: scopeCid) {
+        let work = {
             E2eeArchiveCost.record("lock_wait","success",lockStarted)
-            guard UInt64(self.groupGeneration(for: try ChannelId(cid: scopeCid))) == generation else { throw E2eeArchiveError.generationChanged }
-            let recovered = try self.mlsClient.decryptArchivedApplication(cid: scopeCid, generation: generation,
-                archive: archive, snapshot: snapshot, ciphertext: ciphertext, allowOwnMessages: true)
+            try assertOwner()
+            let recovered: MlsArchivedApplicationMessage
+            if historicalPage {
+                let historical = Provider()
+                let decoded = try decryptEpochArchiveV2(provider: historical, archive: archive, snapshot: snapshot,
+                    ciphertext: ciphertext, allowOwnMessages: true, maxForwardDistance: 0)
+                guard decoded.content.count <= 16 * 1024 * 1024 else { throw E2eeArchiveError.invalidData }
+                recovered = MlsArchivedApplicationMessage(plaintext: decoded.content, payload: try JSONDecoder().decode(E2ePayload.self, from: decoded.content),
+                    aad: decoded.aad, epoch: decoded.epoch, senderIndex: decoded.senderIndex, senderGeneration: decoded.generation, ownMessage: decoded.ownMessage)
+            } else {
+                guard UInt64(self.groupGeneration(for: try ChannelId(cid: scopeCid))) == generation else { throw E2eeArchiveError.generationChanged }
+                recovered = try self.mlsClient.decryptArchivedApplication(cid: scopeCid, generation: generation,
+                    archive: archive, snapshot: snapshot, ciphertext: ciphertext, allowOwnMessages: true)
+            }
             guard recovered.epoch == envelope["mls_epoch"].number else { throw E2eeArchiveError.invalidData }
             let members = try JSONDecoder().decode(E2eeArchiveWire.self, from: snapshot)["members"].array
             guard members.contains(where: { $0["leaf_index"].number == UInt64(recovered.senderIndex) && $0["user_id"].string == (envelope["user_id"].string ?? envelope["user"]["id"].string) }) else { throw E2eeArchiveError.invalidData }
             let cid = try ChannelId(cid: routeCid)
-            let payload = try self.validatedPayload(recovered.payload, processedAAD: recovered.aad, messageId: messageId, cid: cid, expectedEnvelope: nil)
+            let payload = try E2eeArchiveMessageValidator.validate(recovered.payload, processedAAD: recovered.aad, messageId: messageId,
+                cid: cid.rawValue, groupCid: scopeCid, expectedEnvelope: nil)
             var raw = envelope.dictionary
             raw["id"] = .string(messageId)
             raw["cid"] = .string(routeCid)
@@ -1171,6 +1284,7 @@ class E2eRepository: EventsControllerDelegate {
             var published = false
             do {
                 try self.database.writeAndWait { session in
+                    try assertOwner()
                     guard session.canPublishArchivedCiphertext(messageId: messageId, ciphertext: ciphertext, cid: cid.rawValue) else { return }
                     if let current = session.message(id: messageId) {
                         if current.deletedAt != nil || current.isHardDeleted || current.type == "deleted" { return }
@@ -1185,9 +1299,11 @@ class E2eRepository: EventsControllerDelegate {
                     published = true
                 }
             } catch { throw E2eeArchiveError.storageFailure }
+            try assertOwner()
             guard published else { throw E2eeArchiveError.safeSkipped }
             self.e2eeAttachmentReceiveCoordinator.hydratePreviews(payload: payload, messageId: messageId, cid: cid, source: .scopeSync)
         }
+        if historicalPage { try work() } else { try performMlsMutation(cidString: scopeCid, work) }
     }
 
     private func performMlsMutation<T>(
@@ -1633,6 +1749,9 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
         isSyncing = true
+        syncProgressTicket = sessionProgress.begin("preparing")
+        syncIncludesStandard = true
+        standardSyncFinishing = false
         syncLock.unlock()
         resumeOutgoingRetirements()
         resumeOutgoingReconciliation?()
@@ -1643,9 +1762,14 @@ class E2eRepository: EventsControllerDelegate {
         // Resolve cursors on a background context — this scans all MLS channels (and may touch
         // MLS storage in `resolveSyncCursor`), which must not run on the main thread.
         let context = database.backgroundReadOnlyContext
+        var candidateCids = Set<String>()
+        context.performAndWait { candidateCids = Set(ChannelDTO.fetchAllJoinedMlsEnabled(context: context).map(\.cid)) }
+        let warm = warmBootstrapCids(candidateCids)
+        prepareLiveScopes(warm) { [weak self] allowed in
+        guard let self else { return }
         context.performAndWait {
             let channels = ChannelDTO.fetchAllJoinedMlsEnabled(context: context)
-            for ch in channels {
+            for ch in channels where allowed.contains(ch.mlsGroupCid) {
                 if let cursor = self.resolveSyncCursor(
                     cidString: ch.cid,
                     mlsJoinedAt: ch.mlsGroupJoinedAt,
@@ -1657,18 +1781,19 @@ class E2eRepository: EventsControllerDelegate {
             }
         }
         guard !cursors.isEmpty else {
-            finishSync()
+            self.finishSync()
             return
         }
-        syncLock.lock()
-        activeSyncCids = Set(cursors.keys)
-        syncLock.unlock()
+        self.syncLock.lock()
+        self.activeSyncCids = Set(cursors.keys)
+        self.syncLock.unlock()
         log.debug(
             "[E2eSync] mode=full state=started trigger=\(trigger) scope_count=\(cursors.count)",
             subsystems: .mls
         )
-        replayDurablePendingEvents(scopeCids: Set(cursors.keys))
-        startSyncPages(cursors: cursors)
+        self.replayDurablePendingEvents(scopeCids: Set(cursors.keys))
+        self.startSyncPages(cursors: cursors)
+        }
     }
     
     /// Called after a channel list API response is saved to the database.
@@ -1678,9 +1803,86 @@ class E2eRepository: EventsControllerDelegate {
     /// ensures `mlsGroupJoinedAt` is set so E2E sync has a valid cursor.
     ///
     /// - Parameter cids: The MLS-enabled channel IDs from the saved channel list payload.
+    /// Rank persisted metadata before any native group load. Topics consume one parent slot.
+    private func warmBootstrapCids(_ candidates: Set<String>) -> Set<String> {
+        readinessLock.lock(); let active = activeBootstrapCid; readinessLock.unlock()
+        let context = database.backgroundReadOnlyContext
+        var rows: [(scope: String, at: Date)] = []
+        context.performAndWait {
+            for raw in candidates {
+                guard let cid = try? ChannelId(cid: raw), let dto = ChannelDTO.load(cid: cid, context: context) else { continue }
+                rows.append((dto.mlsGroupCid, (dto.lastMessageAt ?? dto.updatedAt).bridgeDate))
+            }
+        }
+        rows.sort { $0.at == $1.at ? $0.scope < $1.scope : $0.at > $1.at }
+        var selected: [String] = []
+        if let active, rows.contains(where: { $0.scope == active }) { selected.append(active) }
+        var recent = 0
+        for row in rows where !selected.contains(row.scope) {
+            if recent == 5 { break }; selected.append(row.scope); recent += 1
+        }
+        return Set(selected)
+    }
+
+    private func applyStandardSyncPage(cid: String, events: [E2eeArchiveWire], owner: () throws -> Void) throws {
+        let channelId = try ChannelId(cid: cid), encoder = JSONEncoder(), decoder = JSONDecoder.default
+        try database.writeAndWait { session in
+            try owner()
+            for event in events {
+                guard event["cid"].string == cid, let type = event["type"].string else { throw E2eeArchiveError.invalidData }
+                let data = event["data"]
+                guard let sequence = data["event_seq"].number else { throw E2eeArchiveError.invalidData }
+                if let id = data["message_id"].string, let saved = session.message(id: id),
+                   let previous = saved.standardEventSequence.flatMap(UInt64.init), previous > sequence { continue }
+                switch type {
+                case "message_new", "message_updated", "poll_choice_new", "poll_choice_deleted", "poll_choices_updated":
+                    let message = try decoder.decode(MessagePayload.self, from: encoder.encode(data["message"]))
+                    guard message.encryptedData == nil else { throw E2eeArchiveError.invalidData }
+                    message.canonicalEventSequence = sequence
+                    try session.saveMessage(payload: message, for: channelId, syncOwnReactions: true, cache: nil)
+                case "message_deleted":
+                    guard let id = data["message_id"].string else { throw E2eeArchiveError.invalidData }
+                    if let message = session.message(id: id) {
+                        guard message.channel?.cid == cid, message.encryptedData == nil else { throw E2eeArchiveError.invalidData }
+                        let at = try decoder.decode(Date.self, from: encoder.encode(event["created_at"]))
+                        message.deletedAt = at.bridgeDate
+                        message.standardEventSequence = String(sequence)
+                    }
+                case "reaction":
+                    guard let id = data["message_id"].string else { throw E2eeArchiveError.invalidData }
+                    if let message = session.message(id: id) {
+                        guard message.channel?.cid == cid, message.encryptedData == nil else { throw E2eeArchiveError.invalidData }
+                        let counts = try decoder.decode([String: Int].self, from: encoder.encode(data["reaction_counts"]))
+                        let reactions = try decoder.decode([MessageReactionPayload].self, from: encoder.encode(data["latest_reactions"]))
+                        message.standardEventSequence = String(sequence)
+                        message.reactionCounts = counts
+                        message.latestReactions = try reactions.map { try session.saveReaction(payload: $0, cache: nil).id }
+                    }
+                default: throw E2eeSyncApplyError.unsupportedEvent(type: type)
+                }
+                try owner()
+            }
+        }
+    }
+
+    private func prepareLiveScopes(_ scopes: Set<String>, completion: @escaping (Set<String>) -> Void) {
+        // Baseline combined scope transport owns protocol/application ordering and cursors.
+        completion(scopes)
+    }
+
     func handleNewEncryptedChannels(_ cids: [ChannelId]) {
-        let resolved = Dictionary(grouping: cids.map(mlsGroupCid(for:)), by: \.rawValue)
+        let discovered = Set(cids.map { mlsGroupCid(for: $0).rawValue })
+        let warm = discovered.count <= 1 ? discovered : warmBootstrapCids(discovered)
+        prepareLiveScopes(warm) { [weak self] allowed in
+            self?.handlePreparedEncryptedChannels(allowed.compactMap { try? ChannelId(cid: $0) })
+        }
+    }
+
+    private func handlePreparedEncryptedChannels(_ cids: [ChannelId]) {
+        let discovered = Dictionary(grouping: cids.map(mlsGroupCid(for:)), by: \.rawValue)
             .compactMap { $0.value.first }
+        let warm = discovered.count <= 1 ? Set(discovered.map(\.rawValue)) : warmBootstrapCids(Set(discovered.map(\.rawValue)))
+        let resolved = discovered.filter { warm.contains($0.rawValue) }
         // List hydration discovers scopes; it is not retry authority. In particular,
         // another page/realtime list refresh must not restart a failed scope's entire
         // generation/sync/GroupInfo budget. Explicit scope demand and authoritative
@@ -1761,6 +1963,7 @@ class E2eRepository: EventsControllerDelegate {
         completion: @escaping (E2eeChannelReadiness) -> Void
     ) {
         let groupCid = mlsGroupCid(for: cid)
+        readinessLock.lock(); activeBootstrapCid = groupCid.rawValue; readinessLock.unlock()
         let current = readiness(for: groupCid)
         if current == .ready || current == .recovered || current == .historyIncomplete {
             completion(current)
@@ -2651,7 +2854,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func finishBootstrap(cid: ChannelId, state: E2eeChannelReadiness) {
-        if state == .historyIncomplete, let recovery = archiveRecovery { Task { await recovery.enqueueRestore(cid: cid.rawValue) } }
+        // Historical recovery belongs to an explicitly queried page, never a broad live-gap epoch scan.
         let trace = E2eeJoinTrace.Context(cid: cid.rawValue)
         setReadiness(state, for: cid.rawValue)
         let needsCatchUp = bootstrapQueue.finish(cid)
@@ -2952,6 +3155,7 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
         isSyncing = true
+        syncProgressTicket = sessionProgress.begin("preparing")
         activeSyncCids = cidStrings
         if let completion { activeSyncCompletions = [completion] }
         syncLock.unlock()
@@ -2959,8 +3163,11 @@ class E2eRepository: EventsControllerDelegate {
         var cursors: [String: ScopeSyncCursorPayload] = [:]
         let deviceLoginTime = loginTime
         let context = database.backgroundReadOnlyContext
+        let selected = cidStrings.count <= 6 ? cidStrings : warmBootstrapCids(cidStrings)
+        prepareLiveScopes(selected) { [weak self] allowed in
+        guard let self else { return }
         context.performAndWait {
-            for cidString in cidStrings {
+            for cidString in allowed {
                 guard let cid = try? ChannelId(cid: cidString),
                       let dto = ChannelDTO.load(cid: cid, context: context) else { continue }
                 if let cursor = self.resolveSyncCursor(
@@ -2975,7 +3182,7 @@ class E2eRepository: EventsControllerDelegate {
         }
 
         guard !cursors.isEmpty else {
-            finishSync()
+            self.finishSync()
             log.debug(
                 "[E2eSync] mode=scoped state=skipped reason=group_not_joined scope_count=\(cidStrings.count)",
                 subsystems: .mls
@@ -2983,13 +3190,15 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
         log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
-        replayDurablePendingEvents(scopeCids: Set(cursors.keys))
-        startSyncPages(cursors: cursors)
+        self.replayDurablePendingEvents(scopeCids: Set(cursors.keys))
+        self.startSyncPages(cursors: cursors)
+        }
     }
 
     /// The backend returns at most 100 events per request. Keeping each request to at most 20
     /// scopes also bounds request/response dictionaries and durable-inbox memory on large users.
     private func startSyncPages(cursors: [String: ScopeSyncCursorPayload]) {
+        sessionProgress.phase("syncing")
         let sortedCids = cursors.keys.sorted()
         var batches: [[String: ScopeSyncCursorPayload]] = []
         for startIndex in stride(from: 0, to: sortedCids.count, by: 20) {
@@ -3036,6 +3245,7 @@ class E2eRepository: EventsControllerDelegate {
                     "[E2eSync] state=request_failed \(PrivacySafeLogMetadata.errorFields(error))",
                     subsystems: .mls
                 )
+                self.sessionProgress.markPartial()
                 self.finishSync()
             case .success(let payload):
                 guard let accountId = self.mlsClient.userId else {
@@ -3050,6 +3260,7 @@ class E2eRepository: EventsControllerDelegate {
 
                 for (cidString, channelPayload) in payload.channels {
                     guard let cid = try? ChannelId(cid: cidString) else {
+                        self.sessionProgress.markPartial()
                         failedScopes.insert(cidString)
                         log.error("[E2eSync] state=invalid_scope_cid", subsystems: .mls)
                         continue
@@ -3080,6 +3291,7 @@ class E2eRepository: EventsControllerDelegate {
                             cidString: cidString
                         )
                     } catch {
+                        self.sessionProgress.markPartial()
                         failedScopes.insert(cidString)
                         let diagnosticId: String?
                         if case E2eeDurableInboxError.duplicateEventPayloadMismatch(let eventId) = error {
@@ -3329,23 +3541,36 @@ class E2eRepository: EventsControllerDelegate {
         syncLock.unlock()
 
         guard !cids.isEmpty else {
-            completeSyncRun()
+            finishSessionDelta()
             return
         }
 
         // API pagination is complete, but MLS/Core Data apply operations are asynchronous.
         // The barrier makes pre/post-join completion observe fully persisted state.
         let barrier = BlockOperation { [weak self] in
-            self?.completeSyncRun()
+            self?.finishSessionDelta()
         }
         barrier.queuePriority = .low
         enqueueGroupOperation(barrier, cidStrings: cids)
     }
 
+    private func finishSessionDelta() {
+        syncLock.lock()
+        let include = syncIncludesStandard
+        if include && standardSyncFinishing { syncLock.unlock(); return }
+        if include { standardSyncFinishing = true }
+        syncLock.unlock()
+        completeSyncRun()
+    }
+
     private func completeSyncRun() {
         syncLock.lock()
         let completedCids = activeSyncCids
+        let progressTicket = syncProgressTicket
+        syncProgressTicket = nil
         isSyncing = false
+        syncIncludesStandard = false
+        standardSyncFinishing = false
         activeSyncCids.removeAll()
         let completions = activeSyncCompletions
         activeSyncCompletions.removeAll()
@@ -3356,6 +3581,7 @@ class E2eRepository: EventsControllerDelegate {
         pendingSyncCompletions.removeAll()
         syncLock.unlock()
 
+        if let progressTicket { sessionProgress.end(progressTicket, retry: { [weak self] in self?.performE2eSync(trigger: "progress_retry") }) }
         completions.forEach { $0() }
         for cidString in completedCids {
             if let cid = try? ChannelId(cid: cidString) { recoverSkippedCaptionUpdates(in: cid) }
@@ -3776,12 +4002,7 @@ class E2eRepository: EventsControllerDelegate {
                         )
                     }
                     if case .application(let applicationDisposition) = disposition {
-                        if applicationDisposition == .preJoinHistorical,
-                           case .application(let application) = event.event,
-                           let epoch = application.mlsEpoch, epoch >= 0,
-                           let recovery = self.archiveRecovery {
-                            Task { await recovery.enqueueRestore(cid: cidString, fromEpoch: UInt64(epoch), toEpoch: UInt64(epoch)) }
-                        }
+                        // Historical recovery is scheduled only for an explicitly queried page.
                         try self.durableInboxStore.markApplicationDispositionAndApplied(
                             accountId: accountId,
                             scopeCid: cidString,
@@ -3856,10 +4077,7 @@ class E2eRepository: EventsControllerDelegate {
                                 envelope: event,
                                 preservingFailure: true
                             )
-                            if let epoch = application.mlsEpoch, epoch >= 0,
-                               let recovery = self.archiveRecovery {
-                                Task { await recovery.enqueueRestore(cid: cidString, fromEpoch: UInt64(epoch), toEpoch: UInt64(epoch)) }
-                            }
+                            // Retain the placeholder; a queried page owns archive demand.
                             log.error(
                                 "[E2eSync] state=application_repair_persisted action=continue "
                                     + PrivacySafeLogMetadata.errorFields(error),
@@ -7030,6 +7248,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func stopRuntimeOperations() {
+        historyPageLock.lock(); historyPageSession = UUID(); sessionProgress.invalidate(); lastRequestedHistoryPage = nil; historyPagesInFlight.removeAll(); historyPageLock.unlock()
         do { try archiveRecovery?.stop() } catch { log.error("archive_recovery stage=logout_clear_failed", subsystems: .mls) }
         archiveRecovery = nil
         abortSync()

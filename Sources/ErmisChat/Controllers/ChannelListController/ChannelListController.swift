@@ -255,7 +255,7 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
         ) { [weak self] result in
             switch result {
             case let .success((newChannels, unwantedCids)):
-                self?.hasLoadedAllPreviousChannels = newChannels.count < pageSize
+                self?.hasLoadedAllPreviousChannels = self?.query.shouldLoadAllChannels == true || newChannels.count < pageSize
                 completion(.success((newChannels, unwantedCids)))
             case let .failure(error):
                 completion(.failure(error))
@@ -278,7 +278,7 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
                 self?.channelListObserver.refreshItems { [weak self] in
                     self?.state = .remoteDataFetched
                 }
-                self?.hasLoadedAllPreviousChannels = channels.count < limit
+                self?.hasLoadedAllPreviousChannels = self?.query.shouldLoadAllChannels == true || channels.count < limit
                 self?.callback { completion?(nil) }
             case let .failure(error):
                 self?.state = .remoteDataFetchFailed(ClientError(with: error))

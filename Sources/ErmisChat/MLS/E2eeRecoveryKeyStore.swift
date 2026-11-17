@@ -4,7 +4,7 @@ import Security
 
 enum E2eeArchiveError: Error { case invalidData, sessionEnded, generationChanged, cursorRejected, discoveryBudget, pinRequired, vaultConflict, protectedDataUnavailable, storageFailure, safeSkipped }
 
-/// Device-only stash key protects pending epochs; recovery unlock is a separate logout-scoped item.
+/// Device-only stash key protects pending epochs; recovery unlock persists as an account-scoped protected item.
 final class E2eeRecoveryKeyStore: @unchecked Sendable {
     private let service: String
     private let lock = NSRecursiveLock()
@@ -25,8 +25,9 @@ final class E2eeRecoveryKeyStore: @unchecked Sendable {
             guard SecItemAdd(add as CFDictionary, nil) == errSecSuccess else { throw E2eeArchiveError.protectedDataUnavailable }
         } else if status != errSecSuccess { throw E2eeArchiveError.protectedDataUnavailable }
     }
-    private func stashKey() throws -> SymmetricKey {
+    private func stashKey(create: Bool = true) throws -> SymmetricKey {
         if let saved = try read("stash") { guard saved.count == 32 else { throw E2eeArchiveError.invalidData }; return SymmetricKey(data: saved) }
+        guard create else { throw E2eeArchiveError.protectedDataUnavailable }
         let key = SymmetricKey(size: .bits256)
         try save(key.withUnsafeBytes { Data($0) }, account: "stash")
         return key
@@ -38,10 +39,11 @@ final class E2eeRecoveryKeyStore: @unchecked Sendable {
     }
     func open(_ data: Data, purpose: String) throws -> Data {
         lock.lock(); defer { lock.unlock() }
-        return try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: stashKey(), authenticating: Data("\(service):\(purpose)".utf8))
+        return try AES.GCM.open(AES.GCM.SealedBox(combined: data), using: stashKey(create: false), authenticating: Data("\(service):\(purpose)".utf8))
     }
     func loadUnlock() throws -> Data? { lock.lock(); defer { lock.unlock() }; return try read("unlock") }
-    func saveUnlock(_ data: Data) throws { lock.lock(); defer { lock.unlock() }; try save(data, account: "unlock") }
+    func saveUnlock(_ data: Data) throws { lock.lock(); defer { lock.unlock() }; try save(data, account: "unlock"); try save(Data([1]), account: "unlock-present") }
+    func hadUnlock() throws -> Bool { lock.lock(); defer { lock.unlock() }; return try read("unlock-present") != nil || read("unlock") != nil }
     func clearUnlock() throws {
         lock.lock(); defer { lock.unlock() }
         let result = SecItemDelete([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: "unlock"] as CFDictionary)

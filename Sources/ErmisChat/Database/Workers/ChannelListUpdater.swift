@@ -9,6 +9,7 @@ import ErmisShared
 class ChannelListUpdater: Worker {
     private weak var e2eRepository: E2eRepository?
 
+
     init(database: DatabaseContainer, apiClient: APIClient, e2eRepository: E2eRepository?) {
         self.e2eRepository = e2eRepository
         super.init(database: database, apiClient: apiClient)
@@ -61,10 +62,13 @@ class ChannelListUpdater: Worker {
         updatedQuery.pagination = .init(pageSize: pageSize, offset: 0)
 
         var unwantedCids = Set<ChannelId>()
+        let snapshotOwner = apiClient.captureSessionNetworkOwner()
         // Fetches the channels matching the query, and stores them in the database.
-        apiClient.recoveryRequest(endpoint: .channels(query: query)) { [weak self] result in
+        apiClient.requestChannelMetadata(query: updatedQuery, isRecovery: true) { [weak self] result in
             switch result {
-            case let .success(channelListPayload):
+            case .success(var channelListPayload):
+                do { try snapshotOwner() } catch { completion(.failure(error)); return }
+                channelListPayload.sessionOwner = snapshotOwner
                 self?.writeChannelListPayload(
                     payload: channelListPayload,
                     query: updatedQuery,
@@ -181,10 +185,7 @@ class ChannelListUpdater: Worker {
         channelListQuery: ChannelListQuery,
         completion: @escaping (Result<ChannelListPayload, Error>) -> Void
     ) {
-        apiClient.request(
-            endpoint: .channels(query: channelListQuery),
-            completion: completion
-        )
+        apiClient.requestChannelMetadata(query: channelListQuery, completion: completion)
     }
 
     /// Fetches the given query from the API and returns results via completion.
@@ -254,6 +255,7 @@ private extension ChannelListUpdater {
     ) {
         var channels: [Channel] = []
         database.write { session in
+            try payload.sessionOwner?()
             initialActions?(session)
             channels = session.saveChannelList(payload: payload, query: query).compactMap { try? $0.asModel() }
         } completion: { [weak self] error in
@@ -261,6 +263,7 @@ private extension ChannelListUpdater {
                 log.error("Failed to save `ChannelListPayload` to the database. Error: \(error)")
                 completion?(.failure(error))
             } else {
+                do { try payload.sessionOwner?() } catch { completion?(.failure(error)); return }
                 // Query results are now the bootstrap trigger, matching Web: restored groups
                 // catch up in bounded batches; missing groups pre-sync for a Welcome and only
                 // then fall back to serialized external join + post-sync.

@@ -8,7 +8,7 @@ public extension Int {
     /// A default channels page size.
     static let channelsPageSize = 20
     /// A default messages page size.
-    static let messagesPageSize = 35
+    static let messagesPageSize = 50
     /// A default users page size.
     static let usersPageSize = 25
     /// A default channel members page size.

@@ -47,6 +47,8 @@ public class ErmisClient {
     #endif
 
     private let archiveOwnerLock = NSLock()
+    public var sessionSyncProgress: SessionSyncProgress { e2eRepository.sessionProgress }
+
     public var archiveRecovery: E2eeArchiveRecovery? {
         archiveOwnerLock.lock(); defer { archiveOwnerLock.unlock() }
         guard config.e2eeMlsRolloutControls.epochArchiveEnabled, let userId = currentUserId, let root = config.resolvedLocalStorageFolderURL else { return nil }
@@ -54,13 +56,18 @@ public class ErmisClient {
         let namespaceInput = "\(config.endpointEnviroment.baseURL.absoluteString)|\(config.apiKey.apiKeyString)|\(projectId)|\(userId)|\(mlsClient.currentDeviceId ?? "")"
         let namespace = Data(CryptoKit.SHA256.hash(data: Data(namespaceInput.utf8))).map { String(format: "%02x", $0) }.joined()
         do {
+            let historyOwner = e2eRepository.captureHistorySessionOwner()
             let owner = try E2eeArchiveRecovery(namespace: namespace, root: root, userId: userId, api: apiClient,
                 isCurrentAccount: { [weak self] in self?.currentUserId == userId },
                 generation: { [weak e2eRepository] cid in guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }; return try repository.archiveGeneration(for: cid) },
                 apply: { [weak e2eRepository] cid, generation, archive, snapshot, message in
                     guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }
                     try repository.applyArchivedApplication(scopeCid: cid, generation: generation, archive: archive, snapshot: snapshot, envelope: message)
-                })
+                }, applyPage: { [weak e2eRepository] cid, generation, archive, snapshot, message in
+                    guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }; try historyOwner()
+                    try repository.applyArchivedApplication(scopeCid: cid, generation: generation, archive: archive, snapshot: snapshot, envelope: message,
+                        historicalPage: true, pageOwner: historyOwner)
+                }, onUnlocked: { [weak e2eRepository] in e2eRepository?.retryRequestedHistoryPage(afterUnlock: true) })
             e2eRepository.archiveRecovery = owner
             Task { await owner.resume() }
             return owner

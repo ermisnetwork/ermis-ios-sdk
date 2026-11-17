@@ -622,7 +622,7 @@ extension ChannelDTO {
         }
 
         request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
-        request.fetchLimit = query.pagination.pageSize
+        request.fetchLimit = query.shouldLoadAllChannels ? 0 : query.pagination.pageSize
         request.fetchBatchSize = query.pagination.pageSize
         return request
     }
@@ -645,7 +645,7 @@ extension ChannelDTO {
         ]
         
         request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
-        request.fetchLimit = query.pagination.pageSize
+        request.fetchLimit = query.shouldLoadAllChannels ? 0 : query.pagination.pageSize
         request.fetchBatchSize = query.pagination.pageSize
         return request
     }
