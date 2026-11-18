@@ -126,5 +126,53 @@
 			<string>Đang ghi âm(%d)</string>
 		</dict>
 	</dict>
+	<key>poll.voter-count</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld người bình chọn</string>
+			<key>other</key>
+			<string>%ld người bình chọn</string>
+		</dict>
+	</dict>
+	<key>poll.more-options</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>+ %ld lựa chọn</string>
+			<key>other</key>
+			<string>+ %ld lựa chọn</string>
+		</dict>
+	</dict>
+	<key>poll.choice-votes</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$@ · %2$#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld phiếu</string>
+			<key>other</key>
+			<string>%ld phiếu</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

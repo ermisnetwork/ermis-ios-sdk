@@ -714,17 +714,17 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
                 let controller = owner.client.channelController(for: channel.cid)
                 guard !controller.isE2eeEnabled, message.poll?.closed == false,
                     message.author.userId == owner.client.currentUserId || controller.channel?.membership?.isModerator == true else { return }
-                let alert = UIAlertController(title: PollStrings.text("Close poll?", "Đóng bình chọn?"),
-                    message: PollStrings.text("No one can vote after closing. This cannot be undone.", "Sau khi đóng, mọi người không thể bình chọn. Không thể hoàn tác."), preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: PollStrings.text("Cancel", "Hủy"), style: .cancel))
-                alert.addAction(UIAlertAction(title: PollStrings.text("Close poll", "Đóng bình chọn"), style: .destructive) { [weak owner, weak button] _ in
+                let alert = UIAlertController(title: L10n.ui("ui.close-poll_8bfe27"),
+                    message: L10n.ui("ui.no-one-can-vote-after-closing-this-cannot-be-undone"), preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: L10n.ui("alert.actions.cancel"), style: .cancel))
+                alert.addAction(UIAlertAction(title: L10n.ui("ui.close-poll"), style: .destructive) { [weak owner, weak button] _ in
                     button?.isEnabled = false
                     controller.closePoll(messageId: message.id) { result in
                         DispatchQueue.main.async {
                             button?.isEnabled = true
                             if case .failure(let error) = result, let owner {
-                                let failure = UIAlertController(title: PollStrings.text("Could not close poll", "Không thể đóng bình chọn"), message: error.localizedDescription, preferredStyle: .alert)
-                                failure.addAction(UIAlertAction(title: "OK", style: .default));owner.present(failure, animated: true)
+                                let failure = UIAlertController(title: L10n.ui("ui.could-not-close-poll"), message: error.localizedDescription, preferredStyle: .alert)
+                                failure.addAction(UIAlertAction(title: L10n.Alert.Actions.ok, style: .default));owner.present(failure, animated: true)
                             }
                         }
                     }

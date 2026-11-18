@@ -15,6 +15,7 @@ public class ErmisRefreshTokenHelper {
     private var revision = 0
     private var refreshCycle = 0
     private var refreshResponseClaimed = false
+    private var didNotifySessionExpired = false
 
     var token: Token {
         stateQueue.sync { storedToken }
@@ -50,6 +51,7 @@ public class ErmisRefreshTokenHelper {
         stateQueue.sync {
             revision += 1
             storedToken = token
+            didNotifySessionExpired = false
             if let refreshToken {
                 storedRefreshToken = refreshToken
             }
@@ -80,6 +82,7 @@ public class ErmisRefreshTokenHelper {
             }
             guard ownsResponse else { return }
             var acceptedPayload: AuthenticationPayload?
+            var notifySessionExpired = false
             let result: Result<Token, Error> = response.flatMap { payload in
                 Result { try payload.validatedToken(matching: previous) }
             }
@@ -93,8 +96,17 @@ public class ErmisRefreshTokenHelper {
                     self.revision += 1
                     acceptedPayload = payload
                 }
+                if self.revision == expectedRevision, case let .failure(error) = result,
+                   Self.requiresSignInAfterRefresh(error) {
+                    if !self.didNotifySessionExpired {
+                        self.didNotifySessionExpired = true
+                        notifySessionExpired = true
+                    }
+                    finalResult = .failure(error is ClientError.MissingRefreshToken ? error : ClientError.RefreshTokenExpired())
+                }
                 return finalResult
             }
+            if notifySessionExpired { self.onRefreshTokenExpired?() }
             if let acceptedPayload { self.onAuthorizationChanged?(acceptedPayload) }
             let callbacks = self.stateQueue.sync {
                 let callbacks = self.refreshCompletions
@@ -107,4 +119,14 @@ public class ErmisRefreshTokenHelper {
         guard !refresh.isEmpty else { finish(.failure(ClientError.MissingRefreshToken())); return }
         request(previous, refresh, finish)
     }
+    // Only called for the anonymous refresh request, never an ordinary 403.
+    private static func requiresSignInAfterRefresh(_ error: Error) -> Bool {
+        if error is ClientError.MissingRefreshToken || error is ClientError.RefreshTokenExpired || error is ClientError.ExpiredToken { return true }
+        if let api = error as? ErmisApiError { return api.httpStatusCode == 401 || api.httpStatusCode == 403 }
+        if let client = error as? ClientError, let underlying = client.underlyingError {
+            return requiresSignInAfterRefresh(underlying)
+        }
+        return false
+    }
+
 }

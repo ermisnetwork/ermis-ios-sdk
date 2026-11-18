@@ -304,6 +304,10 @@ class DefaultRequestEncoder: RequestEncoder {
     }
     
     private func encodeRequestBody<T: Decodable>(request: inout URLRequest, endpoint: Endpoint<T>) throws {
+        if let body = endpoint.localRetainedRequestBody {
+            request.httpBody = body
+            return
+        }
         switch endpoint.method {
         case .get:
             guard let body = endpoint.body else { return }

@@ -4,11 +4,6 @@ import Combine
 import ErmisChat
 import ErmisSharedUI
 
-internal enum PollStrings {
-    static func text(_ en: String, _ vi: String) -> String {
-        Locale.preferredLanguages.first?.hasPrefix("vi") == true ? vi : en
-    }
-}
 
 /// Keyboard-aware, scrollable native poll sheet. API responses remain authoritative.
 public final class PollViewController: UIViewController {
@@ -22,9 +17,9 @@ public final class PollViewController: UIViewController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     public override func viewDidLoad() {
         super.viewDidLoad()
-        navigationItem.title = PollStrings.text(model.message == nil ? "New poll" : "Poll", model.message == nil ? "Bình chọn mới" : "Bình chọn")
+        navigationItem.title = L10n.ui(model.message == nil ? "ui.new-poll" : "ui.poll")
         navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(systemName: "xmark"), primaryAction: UIAction { [weak self] _ in self?.model.dismiss?() })
-        navigationItem.leftBarButtonItem?.accessibilityLabel = PollStrings.text("Close", "Đóng")
+        navigationItem.leftBarButtonItem?.accessibilityLabel = L10n.ui("ui.close")
         navigationController?.navigationBar.tintColor = Theme.default.colors.primary
         view.backgroundColor = .systemGroupedBackground
         navigationController?.view.backgroundColor = .systemGroupedBackground
@@ -34,7 +29,7 @@ public final class PollViewController: UIViewController {
         navigationItem.standardAppearance = appearance
         navigationItem.scrollEdgeAppearance = appearance
         if model.message == nil {
-            let submit = UIBarButtonItem(title: PollStrings.text("Create", "Tạo"), primaryAction: UIAction { [weak self] _ in self?.model.create() })
+            let submit = UIBarButtonItem(title: L10n.ui("ui.create"), primaryAction: UIAction { [weak self] _ in self?.model.create() })
             submit.style = .done;navigationItem.rightBarButtonItem = submit
             model.$busy.combineLatest(model.$question,model.$choices).receive(on: DispatchQueue.main).sink { busy,question,choices in
                 submit.isEnabled = !busy && !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && choices.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.count >= 2
@@ -175,7 +170,6 @@ private struct PollScreen: View {
     var didMeasureContent: (CGFloat) -> Void
     @State private var confirmation: PollConfirmation?
     private var accent: SwiftUI.Color { SwiftUI.Color(Theme.default.colors.primary) }
-    private func t(_ en: String, _ vi: String) -> String { PollStrings.text(en, vi) }
     private func heading(_ text: String) -> some View {
         Text(text.uppercased()).font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
             .padding(.leading, 14).padding(.top, 18).padding(.bottom, 4)
@@ -205,51 +199,51 @@ private struct PollScreen: View {
         .tint(accent)
         .interactiveDismissDisabled(model.busy)
         .alert(item: $confirmation) { kind in
-            return Alert(title: Text(t("Confirm vote", "Xác nhận bình chọn")),
-                message: Text(t("You cannot change your vote after submitting.", "Bạn không thể đổi phiếu sau khi gửi.")),
-                primaryButton: .default(Text(t("Vote", "Bình chọn")), action: model.vote), secondaryButton: .cancel(Text(t("Cancel", "Hủy"))))
+            return Alert(title: Text(L10n.ui("ui.confirm-vote")),
+                message: Text(L10n.ui("ui.you-cannot-change-your-vote-after-submitting")),
+                primaryButton: .default(Text(L10n.ui("ui.vote")), action: model.vote), secondaryButton: .cancel(Text(L10n.ui("alert.actions.cancel"))))
         }
     }
 
     private var draft: some View {
         Group {
-            heading(t("Question", "Câu hỏi"))
+            heading(L10n.ui("ui.question"))
             TextEditor(text: $model.question).font(.system(size: 16)).frame(minHeight: 88)
                 .padding(10).background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground)).clipShape(RoundedRectangle(cornerRadius: 20))
                 .overlay(alignment: .topLeading) {
-                    if model.question.isEmpty { Text(t("Ask a question…", "Nhập câu hỏi…")).foregroundColor(.secondary).padding(.horizontal, 15).padding(.vertical, 18).allowsHitTesting(false) }
+                    if model.question.isEmpty { Text(L10n.ui("ui.ask-a-question")).foregroundColor(.secondary).padding(.horizontal, 15).padding(.vertical, 18).allowsHitTesting(false) }
                 }.accessibilityIdentifier("poll_question")
             Text("\(model.question.utf16.count)/2000").font(.system(size: 11)).foregroundColor(.secondary).frame(maxWidth: .infinity, alignment: .trailing)
-            heading(t("Answers", "Trả lời"))
+            heading(L10n.ui("ui.answers"))
             VStack(spacing: 0) {
                 ForEach(model.choices.indices, id: \.self) { index in
                     HStack(spacing: 12) {
                         Text("\(index + 1)").font(.system(size: 12)).foregroundColor(.secondary).frame(width: 18)
-                        TextField(t("Option", "Lựa chọn") + " \(index + 1)", text: $model.choices[index])
+                        TextField(L10n.ui("ui.option") + " \(index + 1)", text: $model.choices[index])
                              .font(.system(size: 16)).accessibilityIdentifier("poll_option_\(index + 1)")
                             .submitLabel(.done).onSubmit {
                                 UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                             }
                         if model.choices.count > 2 {
                             Button { model.choices.remove(at: index) } label: { Image(systemName: "minus.circle.fill").foregroundColor(.red) }
-                                .buttonStyle(.plain).accessibilityLabel(t("Remove option", "Xóa lựa chọn"))
+                                .buttonStyle(.plain).accessibilityLabel(L10n.ui("ui.remove-option"))
                         }
                     }.padding(.horizontal, 16).frame(minHeight: 52)
                     Divider().padding(.leading, 46)
                 }
                 if model.choices.count < 10 {
                     Button { model.choices.append("") } label: {
-                        HStack(spacing: 12) { Image(systemName: "plus").frame(width: 18); Text(t("Add option", "Thêm lựa chọn")); Spacer() }
+                        HStack(spacing: 12) { Image(systemName: "plus").frame(width: 18); Text(L10n.ui("ui.add-option")); Spacer() }
                             .font(.system(size: 16)).padding(.horizontal, 16).frame(minHeight: 52).contentShape(Rectangle())
                     }.buttonStyle(.plain).foregroundColor(accent)
                 }
             }.background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground)).clipShape(RoundedRectangle(cornerRadius: 20))
-            Text(t("Up to 10 options", "Tối đa 10 lựa chọn")).font(.system(size: 12)).foregroundColor(.secondary).padding(.leading, 14)
-            heading(t("Settings", "Cài đặt"))
+            Text(L10n.ui("ui.up-to-10-options")).font(.system(size: 12)).foregroundColor(.secondary).padding(.leading, 14)
+            heading(L10n.ui("ui.settings"))
             VStack(spacing: 0) {
-                setting("checkmark.square.fill", color: .orange, title: t("Allow multiple choices", "Cho phép chọn nhiều đáp án"), subtitle: t("Choose more than one answer", "Có thể chọn nhiều hơn một đáp án"), value: $model.multiple)
+                setting("checkmark.square.fill", color: .orange, title: L10n.ui("ui.allow-multiple-choices"), subtitle: L10n.ui("ui.choose-more-than-one-answer"), value: $model.multiple)
                 Divider().padding(.leading, 58)
-                setting("arrow.triangle.2.circlepath", color: accent, title: t("Allow changing votes", "Cho phép thay đổi bình chọn"), subtitle: t("Update or remove your vote", "Có thể đổi hoặc hủy phiếu đã gửi"), value: $model.allowChange)
+                setting("arrow.triangle.2.circlepath", color: accent, title: L10n.ui("ui.allow-changing-votes"), subtitle: L10n.ui("ui.update-or-remove-your-vote"), value: $model.allowChange)
             }.background(SwiftUI.Color(UIColor.secondarySystemGroupedBackground)).clipShape(RoundedRectangle(cornerRadius: 20))
         }
     }
@@ -266,7 +260,7 @@ private struct PollScreen: View {
 
     private func options(_ poll: Poll) -> some View {
         Group {
-            Text(poll.closed ? t("Closed", "Đã đóng") : poll.multiple ? t("Select one or more options", "Chọn một hoặc nhiều đáp án") : t("Select one option", "Chọn một đáp án"))
+            Text(poll.closed ? L10n.ui("ui.closed") : poll.multiple ? L10n.ui("ui.select-one-or-more-options") : L10n.ui("ui.select-one-option"))
                 .font(.system(size: 13)).foregroundColor(.secondary).padding(.bottom, 6)
             ForEach(poll.choices, id: \.self) { choice in
                 VStack(spacing: 4) {
@@ -291,7 +285,7 @@ private struct PollScreen: View {
                     voterAvatars(choice, poll)
                 }
             }
-            Label("\(poll.totalVoters) " + t("voters", "người bình chọn"), systemImage: "person.2").font(.system(size: 12)).foregroundColor(.secondary).padding(.top, 6)
+            Label(L10n.ui("poll.voter-count", poll.totalVoters), systemImage: "person.2").font(.system(size: 12)).foregroundColor(.secondary).padding(.top, 6)
         }
     }
     private func voterAvatars(_ option: String, _ poll: Poll) -> some View {
@@ -321,7 +315,7 @@ private struct PollScreen: View {
             if let poll = model.message?.poll {
                 if model.editable {
                     let unchanged = model.selected == poll.selected(by: model.userId)
-                    Button(model.selected.isEmpty && !poll.selected(by: model.userId).isEmpty ? t("Remove vote", "Hủy bình chọn") : t("Confirm vote", "Xác nhận")) {
+                    Button(model.selected.isEmpty && !poll.selected(by: model.userId).isEmpty ? L10n.ui("ui.remove-vote") : L10n.ui("ui.confirm-vote")) {
                         if !poll.allowChange { confirmation = .vote } else { model.vote() }
                     }.font(.system(size: 15, weight: .semibold)).frame(maxWidth: .infinity, minHeight: 48)
                         .foregroundColor(unchanged ? SwiftUI.Color(UIColor.secondaryLabel) : .white)
@@ -350,7 +344,7 @@ private final class PollVoterListViewController: UIViewController, UIPopoverPres
     override func viewDidLoad() {
         super.viewDidLoad();view.backgroundColor = .secondarySystemGroupedBackground
         view.accessibilityIdentifier="poll_voters_list"
-        let title=UILabel();title.text="\(option) · \(ids.count) " + PollStrings.text("votes","phiếu");title.font = .systemFont(ofSize:13,weight:.semibold);title.numberOfLines=2
+        let title=UILabel();title.text=L10n.ui("poll.choice-votes", option, ids.count);title.font = .systemFont(ofSize:13,weight:.semibold);title.numberOfLines=2
         title.accessibilityIdentifier="poll_voters_title"
         let scroll=UIScrollView();rows.axis = .vertical;rows.spacing=0
         view.addSubview(title);view.addSubview(scroll);scroll.addSubview(rows)
@@ -364,9 +358,9 @@ private final class PollVoterListViewController: UIViewController, UIPopoverPres
         for id in ids {
             let user=users[id];let avatar=UserAvatarView();avatar.content = .init(imageURL:user?.imageURL,placeholderString:user?.name ?? "?",isOnline:false)
             avatar.widthAnchor.constraint(equalToConstant:30).isActive=true;avatar.heightAnchor.constraint(equalToConstant:30).isActive=true
-            let name=UILabel();name.text=user?.name?.isEmpty==false ? user?.name : PollStrings.text("Loading name…","Đang tải tên…");name.font = .systemFont(ofSize:13);name.numberOfLines=2
+            let name=UILabel();name.text=user?.name?.isEmpty==false ? user?.name : L10n.ui("ui.loading-name");name.font = .systemFont(ofSize:13);name.numberOfLines=2
             let text=UIStackView(arrangedSubviews:[name]);text.axis = .vertical;text.spacing=2
-            if id==client.currentUserId { let you=UILabel();you.text=PollStrings.text("You","Bạn");you.font = .systemFont(ofSize:10);you.textColor = .secondaryLabel;text.addArrangedSubview(you) }
+            if id==client.currentUserId { let you=UILabel();you.text=L10n.ui("you");you.font = .systemFont(ofSize:10);you.textColor = .secondaryLabel;text.addArrangedSubview(you) }
             let row=UIStackView(arrangedSubviews:[avatar,text]);row.spacing=10;row.alignment = .center;row.heightAnchor.constraint(greaterThanOrEqualToConstant:48).isActive=true
             rows.addArrangedSubview(row)
         }
@@ -380,7 +374,7 @@ private final class PollVoterListViewController: UIViewController, UIPopoverPres
                     switch result {
                     case .success(let users): for user in users { self.users[user.userId]=user };self.render()
                     case .failure:
-                        let retry=UIButton(type:.system);retry.setTitle(PollStrings.text("Retry","Thử lại"),for:.normal)
+                        let retry=UIButton(type:.system);retry.setTitle(L10n.ui("ui.retry"),for:.normal)
                         retry.addAction(UIAction { [weak self,weak retry] _ in retry?.removeFromSuperview();self?.resolve() },for:.touchUpInside);self.rows.addArrangedSubview(retry)
                     }
                 }
@@ -411,8 +405,8 @@ private struct PollVoterPopupAnchor: UIViewRepresentable {
         context.coordinator.model = model; context.coordinator.userId = userId; context.coordinator.option = option
         button.accessibilityIdentifier = "poll_voter_avatar_" + option + "_" + userId
         let name = model.voterUsers[userId]?.name
-        button.accessibilityLabel = name?.isEmpty == false ? name : PollStrings.text("Voter", "Người bình chọn")
-        button.accessibilityHint = PollStrings.text("Show name", "Hiển thị tên")
+        button.accessibilityLabel = name?.isEmpty == false ? name : L10n.ui("ui.voter")
+        button.accessibilityHint = L10n.ui("ui.show-name")
     }
     final class Coordinator: NSObject, UIPopoverPresentationControllerDelegate {
         var model: PollViewModel?
@@ -477,7 +471,7 @@ internal final class PollCardView: UIStackView {
         if poll.closed {
             let badge=UIButton(type:.custom)
             var configuration=UIButton.Configuration.plain()
-            configuration.title=PollStrings.text("Closed","Đã đóng")
+            configuration.title=L10n.ui("ui.closed")
             configuration.image=UIImage(systemName:"lock.fill",withConfiguration:UIImage.SymbolConfiguration(pointSize:10,weight:.semibold))
             configuration.imagePadding=4;configuration.contentInsets = .init(top:3,leading:8,bottom:3,trailing:8)
             configuration.baseForegroundColor = .secondaryLabel
@@ -523,16 +517,16 @@ internal final class PollCardView: UIStackView {
                 }
             }
         }
-        if poll.choices.count > 3 { addArrangedSubview(label("+ \(poll.choices.count - 3) " + PollStrings.text("options", "lựa chọn"), size: 11)) }
+        if poll.choices.count > 3 { addArrangedSubview(label(L10n.ui("poll.more-options", poll.choices.count - 3), size: 11)) }
         if !poll.closed && poll.canVote(userId: uid) {
-            addArrangedSubview(button(poll.selected(by: uid).isEmpty ? PollStrings.text("Vote", "Bình chọn") : PollStrings.text("Change vote", "Đổi bình chọn"), primary: true))
+            addArrangedSubview(button(poll.selected(by: uid).isEmpty ? L10n.ui("ui.vote") : L10n.ui("ui.change-vote"), primary: true))
         }
-        if poll.closed || !poll.canVote(userId: uid) { addArrangedSubview(button(PollStrings.text("Results", "Kết quả"), primary: true)) }
+        if poll.closed || !poll.canVote(userId: uid) { addArrangedSubview(button(L10n.ui("ui.results"), primary: true)) }
         let divider = UIView(); divider.backgroundColor = .separator; divider.alpha = 0.35; divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true; addArrangedSubview(divider)
-        let count = label("\(poll.totalVoters) " + PollStrings.text("voters", "người bình chọn"), size: 11); count.textColor = .secondaryLabel
+        let count = label(L10n.ui("poll.voter-count", poll.totalVoters), size: 11); count.textColor = .secondaryLabel
         let footer = UIStackView(arrangedSubviews: [count]); footer.alignment = .center; footer.spacing = 12
         if canClose {
-            let close = button(PollStrings.text("Close poll", "Đóng bình chọn"), closing: true)
+            let close = button(L10n.ui("ui.close-poll"), closing: true)
             close.setTitleColor(.systemRed, for: .normal);close.setContentHuggingPriority(.required, for: .horizontal)
             footer.addArrangedSubview(close)
         } else { footer.heightAnchor.constraint(greaterThanOrEqualToConstant: 36).isActive = true }
@@ -570,7 +564,7 @@ private final class PollPreviewOptionView: UIView {
         let strip=UIStackView();strip.alignment = .center;strip.spacing=2
         for id in ids.prefix(2) {
             let user=users[id];let button=UIButton(type:.custom)
-            button.accessibilityIdentifier="poll_preview_voter_"+id;button.accessibilityLabel=PollStrings.text("Show voters","Xem người bình chọn")
+            button.accessibilityIdentifier="poll_preview_voter_"+id;button.accessibilityLabel=L10n.ui("ui.show-voters")
             let avatar=UserAvatarView();avatar.content = .init(imageURL:user?.imageURL,placeholderString:user?.name ?? "?",isOnline:false)
             avatar.isUserInteractionEnabled=false;avatar.translatesAutoresizingMaskIntoConstraints=false;button.addSubview(avatar)
             NSLayoutConstraint.activate([button.widthAnchor.constraint(equalToConstant:24),button.heightAnchor.constraint(equalToConstant:28),avatar.widthAnchor.constraint(equalToConstant:20),avatar.heightAnchor.constraint(equalToConstant:20),avatar.centerXAnchor.constraint(equalTo:button.centerXAnchor),avatar.centerYAnchor.constraint(equalTo:button.centerYAnchor)])
@@ -578,7 +572,7 @@ private final class PollPreviewOptionView: UIView {
         }
         if ids.count>2 {
             let more=UIButton(type:.system);more.setTitle("+\(ids.count-2)",for:.normal);more.titleLabel?.font = .systemFont(ofSize:10,weight:.medium);more.backgroundColor = .tertiarySystemFill;more.layer.cornerRadius=14
-            more.accessibilityIdentifier="poll_preview_more_voters";more.accessibilityLabel=PollStrings.text("All voters","Tất cả người bình chọn")
+            more.accessibilityIdentifier="poll_preview_more_voters";more.accessibilityLabel=L10n.ui("ui.all-voters")
             more.widthAnchor.constraint(equalToConstant:28).isActive=true;more.heightAnchor.constraint(equalToConstant:28).isActive=true
             more.addAction(UIAction { [weak more] _ in if let more { show(more) } },for:.touchUpInside);strip.addArrangedSubview(more)
         }

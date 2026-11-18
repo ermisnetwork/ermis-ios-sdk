@@ -386,6 +386,7 @@ class E2eRepository: EventsControllerDelegate {
     var archiveRecovery: E2eeArchiveRecovery?
     private let historyPageLock = NSLock()
     private var historyPageSession = UUID()
+    private var channelListPreviews: [String: (ChannelId, MessagePayload)] = [:]
     private var lastRequestedHistoryPage: (ChannelId, [E2eeArchiveWire])?
     // True = active, false = settled for this session; fingerprints only.
     private var historyPagesInFlight: [String: Bool] = [:]
@@ -1166,7 +1167,38 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
-    func requestHistoryPage(messages: [MessagePayload], cid: ChannelId) {
+    /// Metadata owns this demand. Rendering stays cache-only and never calls bootstrap.
+    func requestChannelListPreviews(_ channels: [ChannelPayload]) {
+        historyPageLock.lock(); let session = historyPageSession; historyPageLock.unlock()
+        let owner = captureHistorySessionOwner()
+        guard (try? owner()) != nil else { return }
+        historyPageLock.lock()
+        guard historyPageSession == session else { historyPageLock.unlock(); return }
+        let previews = E2eeChannelListPreview.select(channels,
+            retaining: channelListPreviews.values.map { (cid: $0.0, message: $0.1) })
+        // Retain only five recent heads across metadata pages; disposable on logout.
+        channelListPreviews = Dictionary(uniqueKeysWithValues: previews.map { ($0.cid.rawValue, ($0.cid, $0.message)) })
+        historyPageLock.unlock()
+        // Membership in this authoritative payload permits an exact archive page.
+        // Its independent provider does not depend on the live MLS Ready barrier.
+        // A fresh metadata observation may retry a settled partial head; in-flight
+        // admission still coalesces the same envelope.
+        for preview in previews {
+            requestHistoryPage(messages: [preview.message], cid: preview.cid, pageOwner: owner, retry: true)
+        }
+    }
+
+    private func restoreChannelListPreviews(scope: String? = nil) {
+        let owner = captureHistorySessionOwner()
+        historyPageLock.lock()
+        let snapshot = Array(channelListPreviews.values)
+        historyPageLock.unlock()
+        let pending = snapshot.filter { scope == nil || mlsGroupCid(for: $0.0).rawValue == scope }
+        for (cid, message) in pending { requestHistoryPage(messages: [message], cid: cid, pageOwner: owner) }
+    }
+
+    func requestHistoryPage(messages: [MessagePayload], cid: ChannelId, pageOwner: (() throws -> Void)? = nil, retry: Bool = false) {
+        do { try pageOwner?() } catch { return }
         guard messages.count <= 50 else { return }
         var missing = messages
         e2eReadContext.performAndWait {
@@ -1194,7 +1226,7 @@ class E2eRepository: EventsControllerDelegate {
             return .object(raw)
         }
         guard !page.isEmpty else { return }
-        scheduleHistoryPage(cid: cid, page: page)
+        scheduleHistoryPage(cid: cid, page: page, retry: retry, pageOwner: pageOwner)
     }
 
     func retryRequestedHistoryPage(afterUnlock: Bool = false) {
@@ -1202,9 +1234,11 @@ class E2eRepository: EventsControllerDelegate {
         if afterUnlock { historyPagesInFlight = historyPagesInFlight.filter { $0.value } }
         let requested = lastRequestedHistoryPage; historyPageLock.unlock()
         if let (cid, page) = requested { scheduleHistoryPage(cid: cid, page: page, retry: true) }
+        if afterUnlock { restoreChannelListPreviews() }
     }
 
-    private func scheduleHistoryPage(cid: ChannelId, page: [E2eeArchiveWire], retry: Bool = false) {
+    private func scheduleHistoryPage(cid: ChannelId, page: [E2eeArchiveWire], retry: Bool = false, pageOwner: (() throws -> Void)? = nil) {
+        do { try pageOwner?() } catch { return }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         guard let encoded = try? encoder.encode(E2eeArchiveWire.array(page)), encoded.count <= 16 * 1024 * 1024 else { return }
         let key = Data(SHA256.hash(data: encoded)).base64EncodedString()
@@ -1219,7 +1253,8 @@ class E2eRepository: EventsControllerDelegate {
             if admitted { historyPageLock.lock(); historyPagesInFlight.removeValue(forKey: key); historyPageLock.unlock() }
             return
         }
-        let assertOwner = captureHistorySessionOwner()
+        let sessionOwner = captureHistorySessionOwner()
+        let assertOwner = { try sessionOwner(); try pageOwner?() }
         let progress = sessionProgress.begin("restoring_page")
         Task {
             var partial = false
@@ -7248,7 +7283,7 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func stopRuntimeOperations() {
-        historyPageLock.lock(); historyPageSession = UUID(); sessionProgress.invalidate(); lastRequestedHistoryPage = nil; historyPagesInFlight.removeAll(); historyPageLock.unlock()
+        historyPageLock.lock(); historyPageSession = UUID(); sessionProgress.invalidate(); lastRequestedHistoryPage = nil; historyPagesInFlight.removeAll(); channelListPreviews.removeAll(); historyPageLock.unlock()
         do { try archiveRecovery?.stop() } catch { log.error("archive_recovery stage=logout_clear_failed", subsystems: .mls) }
         archiveRecovery = nil
         abortSync()

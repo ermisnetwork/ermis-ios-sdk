@@ -142,7 +142,7 @@ class URLSessionWebSocketEngine: NSObject, WebSocketEngine {
             var error: WebSocketEngineError?
             var reasonString: String?
             // Token expired
-            if (closeCode.rawValue == 1005) {
+            if closeCode.rawValue == 4001 || closeCode.rawValue == 1005 {
                 reasonString = "Token expired"
             }
 

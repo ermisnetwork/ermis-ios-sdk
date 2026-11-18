@@ -377,8 +377,12 @@ class APIClient {
         isRecoveryOperation: Bool,
         completion: @escaping (Result<Response, Error>) -> Void
     ) -> AsyncOperation {
-        // Scoped MLS retries only one authentication refresh, never ambiguous transport.
-        AsyncOperation(maxRetries: endpoint.localMlsGuard == nil ? maximumRequestRetries : 1) { [weak self] operation, done in
+        // Share the refreshed credential with HTTP and socket consumers. Auth gets
+        // one retry independently of the existing bounded transport retry budget.
+        var didRefreshAuthentication = false
+        var endpoint = endpoint
+        var didRetainBody = false
+        return AsyncOperation(maxRetries: endpoint.localMlsGuard == nil ? maximumRequestRetries : 1) { [weak self] operation, done in
             guard let self = self else {
                 done(.continue)
                 return
@@ -387,6 +391,14 @@ class APIClient {
             do {
                 try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
+                if !didRetainBody && endpoint.method != .get {
+                    if let data = endpoint.body as? Data {
+                        endpoint.localRetainedRequestBody = try E2eeLegacyRequestBodyNormalizer.normalizeIfNeeded(data, path: endpoint.path)
+                    } else {
+                        endpoint.localRetainedRequestBody = try JSONEncoder.ermis.encode(AnyEncodable(endpoint.body ?? EmptyBody()))
+                    }
+                    didRetainBody = true
+                }
             } catch { completion(.failure(error)); done(.continue); return }
 
             log.debug(
@@ -402,13 +414,14 @@ class APIClient {
                 return
             }
             
-            self.executeRequest(endpoint: endpoint, allowAuthRefresh: endpoint.localMlsGuard == nil || operation.canRetry) { [weak self] result in
+            self.executeRequest(endpoint: endpoint, allowAuthRefresh: !didRefreshAuthentication && (endpoint.localMlsGuard == nil || operation.canRetry)) { [weak self] result in
                 switch result {
                 case .failure(_ as ClientError.RefreshingToken):
                     // Requeue request
                     self?.request(endpoint: endpoint, completion: completion)
                     done(.continue)
                 case .failure(_ as ClientError.TokenRefreshed):
+                    didRefreshAuthentication = true
                     // A server can reject a locally-valid JWT (revocation, environment mismatch,
                     // or claim policy). Keep this retry finite instead of resetting the budget and
                     // entering an unbounded refresh -> retry callback loop.
@@ -642,6 +655,8 @@ class APIClient {
         tokenRefresher { error in
             if let error = error as? ClientError {
                 completion(error)
+            } else if let error {
+                completion(ClientError(with: error))
             } else {
                 completion(ClientError.TokenRefreshed())
             }

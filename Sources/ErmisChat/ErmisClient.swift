@@ -1160,13 +1160,6 @@ public class ErmisClient {
                 return
             }
 
-            guard let refreshToken = refreshTokenHelper.refreshToken, !refreshToken.isEmpty else {
-                log.info("mls_auth_checkpoint stage=refresh_token result=missing", subsystems: .mls)
-                let error = ClientError.MissingRefreshToken()
-                completion(.failure(error))
-                return
-            }
-
             log.info("mls_auth_checkpoint stage=refresh_token result=started", subsystems: .mls)
             refreshTokenHelper.loadRefreshedToken(request: { previous, refresh, callback in
                 self.ermisRefreshToken(previous, refreshToken: refresh, completion: callback)
@@ -1178,12 +1171,7 @@ public class ErmisClient {
                 case .failure(let error):
                     log.info("mls_auth_checkpoint stage=refresh_token result=rejected", subsystems: .mls)
                     log.info(ErmisAuthenticationDiagnostics.marker(for: error), subsystems: .mls)
-                    if error is ClientError.ExpiredToken {
-                        refreshTokenHelper.onRefreshTokenExpired?()
-                        completion(.failure(ClientError.RefreshTokenExpired()))
-                    } else {
-                        completion(.failure(error))
-                    }
+                    completion(.failure(error))
                 }
             }
         }
@@ -1416,10 +1404,13 @@ extension ErmisClient: ConnectionStateDelegate {
     func webSocketClient(_ client: WebSocketClient, didUpdateConnectionState state: WebSocketConnectionState) {
         connectionRepository.handleConnectionUpdate(
             state: state,
-            onExpiredToken: { [weak repository = authenticationRepository] in
-                repository?.refreshToken { _ in
-                    // The connection recovery path observes the resulting connection state.
-                    // It does not need to forward this completion through `ErmisClient`.
+            onExpiredToken: { [weak repository = authenticationRepository, weak client] in
+                let account = repository?.currentUserId
+                repository?.refreshToken { [weak repository, weak client] error in
+                    guard let error, repository?.currentUserId == account,
+                          !(error is ClientError.MissingRefreshToken), !(error is ClientError.RefreshTokenExpired),
+                          !(error is ClientError.MissingTokenProvider) else { return }
+                    client?.resumeAfterTransientTokenRefreshFailure(error)
                 }
             }
         )

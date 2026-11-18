@@ -250,6 +250,11 @@ open class ChannelListViewController: _ViewController,
         // no-op
     }
 
+    override open func contentDidChanged() {
+        super.contentDidChanged()
+        navigationItem.searchController?.searchBar.placeholder = L10n.ChannelList.search
+    }
+
     override open func setUpUI() {
         super.setUpUI()
         view.embed(collectionView)

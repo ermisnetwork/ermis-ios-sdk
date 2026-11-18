@@ -272,6 +272,8 @@ private extension ChannelListUpdater {
                 let mlsCids = payload.channels
                     .filter { $0.channel.mlsEnabled }
                     .map { $0.channel.cid }
+                // Register exact latest-message demand before bootstrap can finish.
+                self?.e2eRepository?.requestChannelListPreviews(payload.channels)
                 if !mlsCids.isEmpty {
                     self?.e2eRepository?.handleNewEncryptedChannels(mlsCids)
                 }

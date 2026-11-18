@@ -21,6 +21,7 @@ struct Endpoint<ResponseType: Decodable>: Codable {
     let body: Encodable?
     let headers: [String: String]
     // In-memory-only operation fences; never serialized into the offline queue.
+    var localRetainedRequestBody: Data? = nil
     var localMlsGuard: (() throws -> Void)? = nil
     var localMlsDeadline: Date? = nil
     var localMlsTimeoutReason: String = "key_package_operation_expired"

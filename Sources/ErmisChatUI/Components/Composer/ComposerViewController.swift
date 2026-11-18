@@ -1279,7 +1279,7 @@ open class ComposerViewController: _ViewController,
         case .poll:
             guard let channelController else { return }
             if channelController.isE2eeEnabled {
-                presentAlert(message: PollStrings.text("Polls are not supported in secure chats yet.", "Chưa hỗ trợ bình chọn trong cuộc trò chuyện bảo mật."))
+                presentAlert(message: L10n.ui("ui.polls-are-not-supported-in-secure-chats-yet"))
                 return
             }
             present(UINavigationController(rootViewController: PollViewController(channelController: channelController)), animated: true)

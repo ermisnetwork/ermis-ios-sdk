@@ -10,7 +10,7 @@ class ComposerBannedView: _View, UIProvider {
     private lazy var titleLabel = {
         let label = UILabel()
         label.numberOfLines = 0
-        label.text = "You have been banned from interacting in this channel by Channel Admin"
+        label.text = L10n.ui("ui.you-have-been-banned-from-interacting-in-this-channe")
         label.withoutAutoresizingMaskConstraints
         return label
     }()

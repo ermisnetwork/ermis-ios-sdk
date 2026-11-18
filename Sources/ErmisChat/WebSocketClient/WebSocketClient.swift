@@ -163,6 +163,14 @@ class WebSocketClient {
         }
     }
 
+    /// Keep transient renewal failures eligible for the existing network/backoff recovery.
+    /// A late auth completion cannot replace an already-connected or replaced socket state.
+    func resumeAfterTransientTokenRefreshFailure(_ error: Error) {
+        guard case let .disconnected(source) = connectionState,
+              source.serverError?.isExpiredTokenError == true else { return }
+        connectionState = .disconnected(source: .serverInitiated(error: ClientError(with: error)))
+    }
+
     /// Disconnects the web socket.
     ///
     /// Calling this function has no effect, if the connection is in an inactive state.
