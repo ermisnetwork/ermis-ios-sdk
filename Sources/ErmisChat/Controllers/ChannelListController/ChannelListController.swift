@@ -154,6 +154,23 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     /// Without this, each new message in such a channel triggers a redundant "get channel" API call.
     @Atomic private var watchedLinkedCids: Set<ChannelId> = []
 
+    // Metadata recovery is independent of MLS replay: replay only knows already
+    // persisted channels and cannot discover an invitation missed while offline.
+    private let listUpdateQueue = DispatchQueue(label: "network.ermis.channel-list-update")
+    private var listUpdateInFlight = false
+    private var listUpdateCompletions: [(Error?) -> Void] = []
+    private var pendingReconnectRefresh = false
+    private var isListConnectionConnected = false
+    private var listSessionOwner: (() throws -> Void)?
+    private let listTraceId = UUID().uuidString.lowercased()
+    private let listTraceStarted = ProcessInfo.processInfo.systemUptime
+
+    private func traceTopicList(_ stage: String, count: Int = -1) {
+        guard parentCid != nil else { return }
+        let elapsed = Int((ProcessInfo.processInfo.systemUptime - listTraceStarted) * 1000)
+        log.info("channel_list_load stage=\(stage) request_id=\(listTraceId) count=\(count) elapsed_ms=\(elapsed)", subsystems: .mls)
+    }
+
     /// Creates a new `ChannelListController`.
     ///
     /// - Parameters:
@@ -255,7 +272,7 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
         ) { [weak self] result in
             switch result {
             case let .success((newChannels, unwantedCids)):
-                self?.hasLoadedAllPreviousChannels = newChannels.count < pageSize
+                self?.hasLoadedAllPreviousChannels = self?.query.shouldLoadAllChannels == true || newChannels.count < pageSize
                 completion(.success((newChannels, unwantedCids)))
             case let .failure(error):
                 completion(.failure(error))
@@ -268,21 +285,109 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     private func updateChannelList(
         _ completion: ((_ error: Error?) -> Void)? = nil
     ) {
+        listUpdateQueue.async { [weak self] in
+            guard let self else { return }
+            if let completion { self.listUpdateCompletions.append(completion) }
+            guard !self.listUpdateInFlight else { return }
+            self.startChannelListUpdate()
+        }
+    }
+
+    private func refreshAfterConnectionUpdate(_ event: ConnectionStatusUpdated) {
+        listUpdateQueue.async { [weak self] in
+            guard let self else { return }
+            guard case .connected = event.webSocketConnectionState else {
+                self.isListConnectionConnected = false
+                return
+            }
+            guard !self.isListConnectionConnected else { return }
+            self.isListConnectionConnected = true
+            // Leave an unused controller alone. An in-flight initial query may
+            // predate this connection, so it needs a fresh follow-up as well.
+            guard self.canBeRecovered || self.listUpdateInFlight else { return }
+            if self.listUpdateInFlight {
+                self.pendingReconnectRefresh = true
+            } else {
+                self.startChannelListUpdate()
+            }
+        }
+    }
+
+    // Called only on listUpdateQueue. At most one query and one reconnect follow-up.
+    private func startChannelListUpdate() {
+        if listSessionOwner == nil {
+            let account = client.currentUserId
+            listSessionOwner = { [weak self] in
+                guard let self, self.client.currentUserId == account,
+                      self.client.activeChannelListControllers.contains(self) else {
+                    throw ClientError.Unexpected("channel_list_owner_replaced")
+                }
+            }
+        }
+        let sessionOwner = listSessionOwner!
+        // A normal disconnect cancels HTTP but does not retire the controller.
+        // Capture the transport generation for this request, not its whole lifetime.
+        let networkOwner = client.apiClient.captureSessionNetworkOwner()
+        let owner = { try sessionOwner(); try networkOwner() }
+        do { try owner() } catch {
+            if (try? sessionOwner()) != nil {
+                state = .remoteDataFetchFailed(ClientError(with: error))
+            }
+            pendingReconnectRefresh = false
+            let completions = listUpdateCompletions
+            listUpdateCompletions.removeAll()
+            callback { completions.forEach { $0(error) } }
+            return
+        }
+        listUpdateInFlight = true
+        traceTopicList("controller_started")
         let limit = query.pagination.pageSize
         worker.update(
             channelListQuery: query,
             userId: client.currentUserId
         ) { [weak self] result in
-            switch result {
-            case let .success(channels):
-                self?.channelListObserver.refreshItems { [weak self] in
-                    self?.state = .remoteDataFetched
+            self?.listUpdateQueue.async { [weak self] in
+                guard let self else { return }
+                self.listUpdateInFlight = false
+                let completions = self.listUpdateCompletions
+                self.listUpdateCompletions.removeAll()
+                do { try owner() } catch {
+                    let refreshAgain = self.pendingReconnectRefresh && self.isListConnectionConnected
+                        && (try? sessionOwner()) != nil
+                    self.pendingReconnectRefresh = false
+                    // Transport cancellation is terminal for this request, even on
+                    // first entry. A retired account/controller must stay silent.
+                    if (try? sessionOwner()) != nil {
+                        self.traceTopicList("controller_cancelled")
+                        self.state = .remoteDataFetchFailed(ClientError(with: error))
+                    }
+                    self.callback { completions.forEach { $0(error) } }
+                    if refreshAgain { self.startChannelListUpdate() }
+                    return
                 }
-                self?.hasLoadedAllPreviousChannels = channels.count < limit
-                self?.callback { completion?(nil) }
-            case let .failure(error):
-                self?.state = .remoteDataFetchFailed(ClientError(with: error))
-                self?.callback { completion?(error) }
+                switch result {
+                case let .success(channels):
+                    self.channelListObserver.refreshItems { [weak self] in
+                        do {
+                            try owner()
+                            self?.traceTopicList("controller_loaded", count: channels.count)
+                            self?.state = .remoteDataFetched
+                        } catch {
+                            if (try? sessionOwner()) != nil {
+                                self?.state = .remoteDataFetchFailed(ClientError(with: error))
+                            }
+                        }
+                    }
+                    self.hasLoadedAllPreviousChannels = self.query.shouldLoadAllChannels || channels.count < limit
+                    self.callback { completions.forEach { $0(nil) } }
+                case let .failure(error):
+                    self.traceTopicList("controller_failed")
+                    self.state = .remoteDataFetchFailed(ClientError(with: error))
+                    self.callback { completions.forEach { $0(error) } }
+                }
+                let refreshAgain = self.pendingReconnectRefresh && self.isListConnectionConnected
+                self.pendingReconnectRefresh = false
+                if refreshAgain { self.startChannelListUpdate() }
             }
         }
     }
@@ -327,7 +432,9 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
 ///   We don't try to add it to the current query to not mess with pagination.
 extension ChannelListController: EventsControllerDelegate {
     public func eventsController(_ controller: EventsController, didReceiveEvent event: Event) {
-        if let channelAddedEvent = event as? NotificationAddedToChannelEvent {
+        if let connectionEvent = event as? ConnectionStatusUpdated {
+            refreshAfterConnectionUpdate(connectionEvent)
+        } else if let channelAddedEvent = event as? NotificationAddedToChannelEvent {
             linkChannelIfNeeded(channelAddedEvent.channel)
         } else if let membershipEvent = event as? ChannelMembershipRefreshedEvent {
             linkChannelIfNeeded(membershipEvent.channel)

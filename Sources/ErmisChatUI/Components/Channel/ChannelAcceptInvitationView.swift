@@ -48,14 +48,14 @@ open class ChannelAcceptInvitationView: _View, UIProvider {
     /// The `UIButton` accept button
     open private(set) lazy var acceptButton: UIButton = {
         let button = UIButton()
-        button.setTitle("Accept", for: .normal)
+        button.setTitle(L10n.ui("ui.accept"), for: .normal)
         return button.withoutAutoresizingMaskConstraints
     }()
 
     /// The `UIButton` reject button
     open private(set) lazy var rejectButton: UIButton = {
         let button = UIButton()
-        button.setTitle("Reject", for: .normal)
+        button.setTitle(L10n.ui("ui.reject"), for: .normal)
         return button.withoutAutoresizingMaskConstraints
     }()
 
@@ -197,7 +197,7 @@ open class ChannelAcceptInvitationView: _View, UIProvider {
         titleLabel.text = titleText
         messageLabel.text = messageText
         avatarView.content = .init(from: content.channel)
-        rejectButton.setTitle(content.channel?.isDirectMessageChannel == true ? "Skip" : "Decline" , for: .normal)
+        rejectButton.setTitle(content.channel?.isDirectMessageChannel == true ? L10n.ui("ui.skip") : L10n.ui("ui.decline") , for: .normal)
     }
 
     /// The default channel title text.

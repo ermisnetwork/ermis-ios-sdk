@@ -43,7 +43,7 @@ open class PinnedMessagesViewController: _ViewController, UIProvider {
     // MARK: - Setup
     open override func setUp() {
         tableView.reloadData()
-        self.title = "Pinned Messages"
+        self.title = L10n.ui("ui.pinned-messages")
     }
 
     open override func setUpUI() {

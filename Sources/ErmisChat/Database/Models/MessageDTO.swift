@@ -27,6 +27,7 @@ class MessageDTO: NSManagedObject {
     @NSManaged var encryptedData: Data?
     @NSManaged var mlsEpoch: Int64
     @NSManaged var mlsGroupGeneration: Int64
+    @NSManaged var standardEventSequence: String?
     @NSManaged var pollData: Data?
     @NSManaged var e2eeCaptionEditData: Data?
     @NSManaged var type: String
@@ -749,6 +750,10 @@ extension NSManagedObjectContext: MessageDatabaseSession {
     ) throws -> MessageDTO {
         let cid = try ChannelId(cid: channelDTO.cid)
         let dto = MessageDTO.loadOrCreate(id: payload.id, context: self, cache: cache)
+        if payload.encryptedData == nil, dto.encryptedData == nil,
+           let incoming = payload.canonicalEventSequence, let previous = dto.standardEventSequence.flatMap(UInt64.init), previous > incoming {
+            return dto // A later authoritative realtime version already owns this row.
+        }
         let currentProjectUserId = currentUser?.user(of: cid.projectId)?.userId
         let isKnownForeignMessage = currentProjectUserId.map { $0 != payload.user.id } ?? false
 
@@ -767,6 +772,7 @@ extension NSManagedObjectContext: MessageDatabaseSession {
 
         dto.cid = payload.cid?.rawValue
         dto.text = payload.text
+        if payload.encryptedData == nil, let sequence = payload.canonicalEventSequence { dto.standardEventSequence = String(sequence) }
         if let encryptedData = payload.encryptedData {
             dto.encryptedData = Data(encryptedData)
         }
@@ -1264,6 +1270,11 @@ private extension ChatMessage {
         cid = try? dto.cid.map { try ChannelId(cid: $0) }
         text = dto.text
         encryptedData = dto.encryptedData
+        if let ciphertext = dto.encryptedData, let routeCid = dto.cid,
+           let coordinator = dto.managedObjectContext?.persistentStoreCoordinator {
+            encryptedMessageStateStore = coordinator.encryptedMessageStates
+            encryptedMessageStateKey = .init(cid: routeCid, id: dto.id, ciphertext: ciphertext)
+        }
         mlsEpoch = Int(dto.mlsEpoch)
         mlsGroupGeneration = Int(dto.mlsGroupGeneration)
         type = MessageType(rawValue: dto.type) ?? .regular

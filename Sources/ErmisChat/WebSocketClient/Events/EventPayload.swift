@@ -107,6 +107,7 @@ class EventPayload: Decodable {
     let requestedDelta: Int?
     let generation: Int?
     let mlsProtocol: MLSProtocolMessagePayload?
+    var mlsSyncEnvelope: E2eSyncEventEnvelope?
     let mlsEnabled: Bool?
     let selfRemove: Bool?
     let requestId: String?
@@ -272,6 +273,9 @@ class EventPayload: Decodable {
         requestedDelta = try container.decodeIfPresent(Int.self, forKey: .requestedDelta)
         generation = try container.decodeIfPresent(Int.self, forKey: .generation)
         mlsProtocol = try container.decodeIfPresent(MLSProtocolMessagePayload.self, forKey: .mlsProtocol)
+        if mlsProtocol != nil {
+            mlsSyncEnvelope = try? E2eSyncEventEnvelope.realtimeProtocol(from: RawJSON(from: decoder))
+        }
         mlsEnabled = try container.decodeIfPresent(Bool.self, forKey: .mlsEnabled)
         selfRemove = try container.decodeIfPresent(Bool.self, forKey: .selfRemove)
         requestId = try container.decodeIfPresent(String.self, forKey: .requestId)

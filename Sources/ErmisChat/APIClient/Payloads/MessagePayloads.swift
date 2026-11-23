@@ -20,6 +20,7 @@ enum MessagePayloadsCodingKeys: String, CodingKey, CaseIterable {
     case mlsEpoch = "mls_epoch"
     case groupGeneration = "group_generation"
     case canonicalMessageSequence = "msg_seq"
+    case canonicalEventSequence = "last_event_seq"
     case sendingDeviceId = "device_id"
     case createdAt = "created_at"
     case updatedAt = "updated_at"
@@ -91,7 +92,10 @@ class MessagePayload: Decodable {
     let encryptedData: [UInt8]?
     let mlsEpoch: Int?
     let groupGeneration: Int
+    var hasAuthoritativeGroupGeneration = false
+    var historicalScopeCid: String? = nil
     var canonicalMessageSequence: UInt64? = nil
+    var canonicalEventSequence: UInt64? = nil
     var sendingDeviceId: String? = nil
     let oldTexts: [MessageEditHistoryPayload]?
     let command: String?
@@ -155,8 +159,14 @@ class MessagePayload: Decodable {
         text = try container.decodeIfPresent(String.self, forKey: .text)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         encryptedData = try container.decodeE2eeBytesIfPresent(forKey: .encryptedData)
         mlsEpoch = try container.decodeIfPresent(Int.self, forKey: .mlsEpoch)
-        groupGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration) ?? 0
+        // Baseline MessageContent omits generation zero on the wire. Absence is
+        // authoritative legacy zero; never substitute the live group's generation.
+        let wireGeneration = try container.decodeIfPresent(Int.self, forKey: .groupGeneration)
+        hasAuthoritativeGroupGeneration = !container.contains(.groupGeneration) || wireGeneration != nil
+        historicalScopeCid = try container.decodeIfPresent(String.self, forKey: .e2eeGroupId)
+        groupGeneration = wireGeneration ?? 0
         canonicalMessageSequence = try container.decodeIfPresent(UInt64.self, forKey: .canonicalMessageSequence)
+        canonicalEventSequence = try container.decodeIfPresent(UInt64.self, forKey: .canonicalEventSequence)
         sendingDeviceId = try container.decodeIfPresent(String.self, forKey: .sendingDeviceId)
         oldTexts = try container.decodeIfPresent([MessageEditHistoryPayload].self, forKey: .oldTexts)
         isSilent = try container.decodeIfPresent(Bool.self, forKey: .isSilent) ?? false

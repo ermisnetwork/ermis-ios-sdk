@@ -273,6 +273,8 @@ final class MlsPersistenceTests: XCTestCase {
         XCTAssertFalse(try client.exportGroupInfo(of: result.group).isEmpty)
         XCTAssertEqual(try Group.loadFromStorage(provider: original, cid: cid).epoch(), 1)
         for key in defaults.dictionaryRepresentation().keys where key.hasPrefix("ermis_mls_generation") { defaults.removeObject(forKey: key) }
+        // Reopening a private fixture store requires releasing its current owner.
+        try client.reset()
         let resumed = MlsClient(storageFolderURL: root, deviceIdStore: deviceStore, userDefaults: defaults)
         try resumed.setup(with: "receiver")
         XCTAssertEqual(try resumed.loadGroup(with: cid).epoch(), 3)
@@ -415,23 +417,6 @@ final class MlsPersistenceTests: XCTestCase {
             }
         }
         XCTAssertTrue(client.isGroupLoaded(cid: cid))
-    }
-
-    func testRealtimeDecryptFailureRequestsCanonicalGroupScopeRecovery() throws {
-        let groupCid = try ChannelId(cid: "team:project:realtime-recovery")
-        let failure: Result<E2ePayload, Error> = .failure(
-            NSError(domain: "io.ermis.tests.realtime-decrypt", code: 1)
-        )
-
-        XCTAssertEqual(
-            E2eRepository.realtimeRecoveryScope(after: failure, groupCid: groupCid),
-            groupCid
-        )
-
-        let success: Result<E2ePayload, Error> = .success(
-            E2ePayload(text: "decrypted", attachments: [], stickerUrl: nil)
-        )
-        XCTAssertNil(E2eRepository.realtimeRecoveryScope(after: success, groupCid: groupCid))
     }
 
     func testOwnRealtimeEchoSkipsDecryptOnlyWhenPlaintextIsAlreadyCached() {

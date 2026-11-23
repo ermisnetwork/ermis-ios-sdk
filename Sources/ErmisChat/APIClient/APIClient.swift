@@ -46,6 +46,8 @@ private final class MlsRequestCompletion<Response> {
 class APIClient {
     /// The URL session used for all requests.
     let session: URLSession
+    private let sessionNetworkBudget = SessionNetworkBudget()
+    private let channelMetadataRequests = SessionRequestCoalescer<ChannelListPayload>()
     
     /// The object which encode `Endpoint` objects into `URLRequest`s.
     let encoder: RequestEncoder
@@ -108,6 +110,7 @@ class APIClient {
     private let maximumRequestRetries = 3
 
     deinit {
+        sessionNetworkBudget.invalidate()
         operationQueue.cancelAllOperations()
         recoveryQueue.cancelAllOperations()
         refreshTokenOP.cancelAllOperations()
@@ -236,6 +239,70 @@ class APIClient {
     ///
     /// - Parameters:
     ///   - endpoint: The `Endpoint` used to create the network request.
+    func captureSessionNetworkOwner() -> () throws -> Void { sessionNetworkBudget.captureOwner() }
+
+    func requestChannelMetadata(query: ChannelListQuery, isRecovery: Bool = false, completion: @escaping (Result<ChannelListPayload, Error>) -> Void) {
+        guard query.messagesLimit <= 1 || query.shouldLoadAllChannels else {
+            if isRecovery { recoveryRequest(endpoint: .channels(query: query), completion: completion) }
+            else { request(endpoint: .channels(query: query), completion: completion) }
+            return
+        }
+        do {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            var key = try encoder.encode(query)
+            key.append(query.shouldLoadAllChannels ? 1 : 0)
+            key.append(isRecovery ? 1 : 0)
+            let owner = sessionNetworkBudget.captureOwner(); try owner()
+            let guarded: (Result<ChannelListPayload, Error>) -> Void = { result in
+                do { try owner(); var payload = try result.get(); payload.sessionOwner = owner; completion(.success(payload)) }
+                catch { completion(.failure(error)) }
+            }
+            channelMetadataRequests.request(key: key, owner: owner, completion: guarded) { callback in
+                if query.shouldLoadAllChannels && query.pagination.offset == 0 && query.pagination.cursor == nil {
+                    self.requestAllChannelMetadata(query: query, isRecovery: isRecovery, owner: owner, offset: 0, channels: [], seen: [], completion: callback)
+                } else if isRecovery {
+                    self.recoveryRequest(endpoint: .channels(query: query), completion: callback)
+                } else {
+                    self.request(endpoint: .channels(query: query), completion: callback)
+                }
+            }
+        } catch { completion(.failure(error)) }
+    }
+
+    private func requestAllChannelMetadata(
+        query: ChannelListQuery, isRecovery: Bool, owner: @escaping () throws -> Void, offset: Int,
+        channels: [ChannelPayload], seen: Set<ChannelId>,
+        completion: @escaping (Result<ChannelListPayload, Error>) -> Void
+    ) {
+        do { try owner() } catch { completion(.failure(error)); return }
+        var page = query
+        page.pagination = Pagination(pageSize: query.pagination.pageSize, offset: offset)
+        let receive: (Result<ChannelListPayload, Error>) -> Void = { result in
+            do {
+                try owner()
+                let payload = try result.get()
+                guard payload.metadataComplete else {
+                    throw NSError(domain: "ChannelListPagination", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Channel metadata could not be completely decoded"])
+                }
+                let additions = payload.channels.filter { !seen.contains($0.channel.cid) }
+                let accumulated = channels + additions
+                if payload.channels.count < page.pagination.pageSize {
+                    completion(.success(ChannelListPayload(channels: accumulated)))
+                } else if additions.isEmpty {
+                    completion(.failure(NSError(domain: "ChannelListPagination", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "Channel list page made no progress"])))
+                } else {
+                    self.requestAllChannelMetadata(query: query, isRecovery: isRecovery, owner: owner,
+                        offset: offset + payload.channels.count, channels: accumulated,
+                        seen: seen.union(additions.map { $0.channel.cid }), completion: completion)
+                }
+            } catch { completion(.failure(error)) }
+        }
+        if isRecovery { recoveryRequest(endpoint: .channels(query: page), completion: receive) }
+        else { request(endpoint: .channels(query: page), completion: receive) }
+    }
+
     func request<Response: Decodable>(endpoint: Endpoint<Response>) async throws -> Response {
         return try await withCheckedThrowingContinuation { [weak self] continuation in
             self?.request(endpoint: endpoint) { result in
@@ -314,8 +381,12 @@ class APIClient {
         isRecoveryOperation: Bool,
         completion: @escaping (Result<Response, Error>) -> Void
     ) -> AsyncOperation {
-        // Scoped MLS retries only one authentication refresh, never ambiguous transport.
-        AsyncOperation(maxRetries: endpoint.localMlsGuard == nil ? maximumRequestRetries : 1) { [weak self] operation, done in
+        // Share the refreshed credential with HTTP and socket consumers. Auth gets
+        // one retry independently of the existing bounded transport retry budget.
+        var didRefreshAuthentication = false
+        var endpoint = endpoint
+        var didRetainBody = false
+        return AsyncOperation(maxRetries: endpoint.localMlsGuard == nil ? maximumRequestRetries : 1) { [weak self] operation, done in
             guard let self = self else {
                 done(.continue)
                 return
@@ -324,6 +395,14 @@ class APIClient {
             do {
                 try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
+                if !didRetainBody && endpoint.method != .get {
+                    if let data = endpoint.body as? Data {
+                        endpoint.localRetainedRequestBody = try E2eeLegacyRequestBodyNormalizer.normalizeIfNeeded(data, path: endpoint.path)
+                    } else {
+                        endpoint.localRetainedRequestBody = try JSONEncoder.ermis.encode(AnyEncodable(endpoint.body ?? EmptyBody()))
+                    }
+                    didRetainBody = true
+                }
             } catch { completion(.failure(error)); done(.continue); return }
 
             log.debug(
@@ -339,13 +418,14 @@ class APIClient {
                 return
             }
             
-            self.executeRequest(endpoint: endpoint, allowAuthRefresh: endpoint.localMlsGuard == nil || operation.canRetry) { [weak self] result in
+            self.executeRequest(endpoint: endpoint, allowAuthRefresh: !didRefreshAuthentication && (endpoint.localMlsGuard == nil || operation.canRetry)) { [weak self] result in
                 switch result {
                 case .failure(_ as ClientError.RefreshingToken):
                     // Requeue request
                     self?.request(endpoint: endpoint, completion: completion)
                     done(.continue)
                 case .failure(_ as ClientError.TokenRefreshed):
+                    didRefreshAuthentication = true
                     // A server can reject a locally-valid JWT (revocation, environment mismatch,
                     // or claim policy). Keep this retry finite instead of resetting the budget and
                     // entering an unbounded refresh -> retry callback loop.
@@ -438,6 +518,35 @@ class APIClient {
         allowAuthRefresh: Bool = true,
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
+        let listRequestId = UUID().uuidString.lowercased()
+        let listRequestStarted = ProcessInfo.processInfo.systemUptime
+        let isListRequest: Bool = { if case .channels = endpoint.path { return true }; return false }()
+        let isProfileRequest: Bool = { if case .userBatch = endpoint.path { return true }; return false }()
+        // Closed categories only: never log paths, headers, users or request/response bodies.
+        let costCategory: String? = {
+            if isListRequest { return "metadata" }; if isProfileRequest { return "profile" }
+            switch endpoint.path {
+            case .e2eSync, .e2eChannelSync: return "sync"
+            case .mlsGeneration: return "generation"
+            case .externalJoin: return "join_submit"
+            case .getGroupInfo, .getGroupInfoRefresh, .uploadGroupInfo, .claimGroupInfoRefresh, .reportGroupInfoFailure: return "group_info"
+            case .mlsControl(let path): return path.contains("/external_join/operations/") ? "join_receipt" : "control"
+            default: return endpoint.path.value.contains("key_packages") ? "keypackage" : nil
+            }
+        }()
+        func traceListHttp(_ stage: String, status: Int = 0, bytes: Int = 0) {
+            guard costCategory != nil else { return }
+            let elapsed = Int((ProcessInfo.processInfo.systemUptime - listRequestStarted) * 1000)
+            if isListRequest || isProfileRequest {
+                let marker = isListRequest ? "channel_list_http" : "user_profile_http"
+                log.info("\(marker) stage=\(stage) request_id=\(listRequestId) status=\(status) bytes=\(bytes) elapsed_ms=\(elapsed)", subsystems: .mls)
+            }
+            if let costCategory, ["network_queued", "network_admitted", "response_received", "network_failed", "decode_succeeded", "decode_failed"].contains(stage) {
+                log.info("session_http category=\(costCategory) stage=\(stage) request_id=\(listRequestId) status=\(status) bytes=\(bytes) elapsed_ms=\(elapsed)", subsystems: .mls)
+            }
+        }
+        traceListHttp("encoding_started")
+        let assertNetworkOwner = sessionNetworkBudget.captureOwner()
         // This gate also releases AsyncOperation when encoding/registration/refresh never calls back.
         let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, timeoutReason: endpoint.localMlsTimeoutReason, completion: completion) }
         let complete: (Result<Response, Error>) -> Void = { result in
@@ -450,7 +559,7 @@ class APIClient {
             if budget?.isFinished == true { return }
             var urlRequest: URLRequest
             do {
-                try endpoint.localMlsGuard?()
+                try assertNetworkOwner(); try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() {
                     throw ClientError.Unexpected(endpoint.localMlsTimeoutReason)
                 }
@@ -460,6 +569,7 @@ class APIClient {
                     urlRequest.timeoutInterval = min(5, deadline.timeIntervalSinceNow)
                 }
             } catch {
+                traceListHttp("encoding_failed")
                 log.error("[API_REQUEST] state=encoding_failed", subsystems: .httpRequests)
                 // Proof registration happens during encoding and can receive the same bare
                 // HTTP401 as the final request. Join the existing refresh queue in that case.
@@ -473,6 +583,7 @@ class APIClient {
                 return
             }
 
+            traceListHttp("encoding_finished")
             log.debug(
                 urlRequest.privacySafeDiagnosticSummary(state: .started),
                 subsystems: .httpRequests
@@ -484,8 +595,20 @@ class APIClient {
                 return
             }
             
+            traceListHttp("network_queued")
+            self.sessionNetworkBudget.submit({ permit in
+            traceListHttp("network_admitted")
+            do {
+                try assertNetworkOwner(); try endpoint.localMlsGuard?()
+                if budget?.isFinished == true { permit.release(); return }
+                if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
+            } catch { permit.release(); complete(.failure(error)); return }
             let task = self.session.dataTask(with: urlRequest) { [decoder = self.decoder] (data, response, error) in
+                traceListHttp(error == nil ? "response_received" : "network_failed",
+                              status: (response as? HTTPURLResponse)?.statusCode ?? 0, bytes: data?.count ?? 0)
+                permit.release()
                 if budget?.isFinished == true { return }
+                do { try assertNetworkOwner() } catch { complete(.failure(error)); return }
                 let path = urlRequest.url?.path ?? ""
                 if path == "/uss/v1/auth/google_login" {
                     print(ErmisAuthenticationDiagnostics.googleResponseMarker(data: data, response: response, error: error))
@@ -508,8 +631,10 @@ class APIClient {
                         urlRequest.privacySafeDiagnosticSummary(state: .succeeded),
                         subsystems: .httpRequests
                     )
+                    traceListHttp("decode_succeeded", status: (response as? HTTPURLResponse)?.statusCode ?? 0, bytes: data?.count ?? 0)
                     complete(.success(decodedResponse))
                 } catch {
+                    traceListHttp("decode_failed", status: (response as? HTTPURLResponse)?.statusCode ?? 0, bytes: data?.count ?? 0)
                     log.debug(
                         urlRequest.privacySafeDiagnosticSummary(state: .failed),
                         subsystems: .httpRequests
@@ -543,12 +668,18 @@ class APIClient {
                 urlRequest.privacySafeDiagnosticSummary(state: .resumed),
                 subsystems: .httpRequests
             )
+            permit.attachCancellation { task.cancel() }
             budget?.attach(task)
             do {
-                try endpoint.localMlsGuard?()
+                try assertNetworkOwner(); try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
-                if budget?.isFinished != true { task.resume() }
-            } catch { task.cancel(); complete(.failure(error)) }
+                if budget?.isFinished != true {
+                    traceListHttp("network_resumed")
+                    task.resume()
+                } else { task.cancel(); permit.release() }
+            } catch { task.cancel(); permit.release(); complete(.failure(error)) }
+            }, priority: isListRequest ? .metadata : .normal,
+               reject: { complete(.failure(ClientError.Unexpected("network_queue_retired_or_full"))) })
         }
     }
     
@@ -568,6 +699,8 @@ class APIClient {
         tokenRefresher { error in
             if let error = error as? ClientError {
                 completion(error)
+            } else if let error {
+                completion(ClientError(with: error))
             } else {
                 completion(ClientError.TokenRefreshed())
             }
@@ -699,6 +832,7 @@ class APIClient {
 //    }
 
     func flushRequestsQueue() {
+        sessionNetworkBudget.invalidate()
         operationQueue.cancelAllOperations()
     }
     

@@ -1359,6 +1359,46 @@ final class E2eeDurableInboxStoreTests: XCTestCase {
         }
     }
 
+    func testSupersededExternalJoinReceiptRequiresExactInstalledWitnessWithoutMovingCursors() throws {
+        let database = try makeDatabase(), store = E2eeDurableInboxStore(database: database)
+        let hash = Data(SHA256.hash(data: Data([0])))
+        try database.writeAndWait { session in
+            let context = try XCTUnwrap(session as? NSManagedObjectContext)
+            let channel = ChannelDTO.loadOrCreate(cid: try ChannelId(cid: self.scopeCid), context: context, cache: nil)
+            channel.createdAt = Date().bridgeDate; channel.updatedAt = Date().bridgeDate
+        }
+        try store.prepareLocalJoinReceipt(accountId: accountId, scopeCid: scopeCid, epoch: 12,
+            commitHash: hash, requestDeviceId: "installed-device")
+        try store.markLocalJoinServerAccepted(accountId: accountId, scopeCid: scopeCid)
+        try store.markLocalJoinMerged(accountId: accountId, scopeCid: scopeCid, firstDecryptableEpoch: 12)
+        let event = try protocolEnvelope(eventId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            createdAt: "2026-08-06T10:00:01.123456Z", epoch: 12, type: "external_commit",
+            userId: accountId, deviceId: "installed-device")
+        _ = try store.persistPage(accountId: accountId, scopeCid: scopeCid, events: [event], hasMore: false,
+            nextCursor: .init(createdAt: event.createdAtRaw, eventId: event.eventId))
+        try store.markCommitSuperseded(accountId: accountId, scopeCid: scopeCid, envelope: event,
+            ciphertextHash: hash, targetEpoch: 12)
+        let fetch = try store.fetchCursor(accountId: accountId, scopeCid: scopeCid)
+        let apply = try store.applyCursor(accountId: accountId, scopeCid: scopeCid)
+        let receipt = try XCTUnwrap(store.localJoinReceiptProof(accountId: accountId, scopeCid: scopeCid))
+        XCTAssertFalse(try store.finalizeAppliedLocalJoinReceiptIfPossible(accountId: accountId, scopeCid: scopeCid))
+        let mismatched = E2eeDurableInboxStore.LocalJoinReceiptProof(commitHash: Data(repeating: 1, count: 32),
+            epoch: 12, requestDeviceId: "installed-device", status: .merged)
+        XCTAssertFalse(try store.finalizeAppliedLocalJoinReceiptIfPossible(accountId: accountId, scopeCid: scopeCid,
+            installedWitness: .init(receipt: mismatched, generation: 0, groupId: nil)))
+        XCTAssertFalse(try store.finalizeAppliedLocalJoinReceiptIfPossible(accountId: accountId, scopeCid: scopeCid,
+            installedWitness: .init(receipt: receipt, generation: 1, groupId: Data([1]))))
+        XCTAssertEqual(try store.commitPersistenceProof(accountId: accountId, scopeCid: scopeCid, eventId: event.eventId)?.mlsStatePersisted, false)
+        XCTAssertTrue(try store.finalizeAppliedLocalJoinReceiptIfPossible(accountId: accountId, scopeCid: scopeCid,
+            installedWitness: .init(receipt: receipt, generation: 0, groupId: nil)))
+        XCTAssertNil(try store.localJoinReceiptProof(accountId: accountId, scopeCid: scopeCid))
+        XCTAssertEqual(try store.commitPersistenceProof(accountId: accountId, scopeCid: scopeCid, eventId: event.eventId)?.mlsStatePersisted, true)
+        XCTAssertEqual(try store.localJoinBoundary(accountId: accountId, scopeCid: scopeCid)?.eventId, event.eventId)
+        XCTAssertEqual(try store.fetchCursor(accountId: accountId, scopeCid: scopeCid), fetch)
+        XCTAssertEqual(try store.applyCursor(accountId: accountId, scopeCid: scopeCid), apply)
+        XCTAssertFalse(try store.finalizeAppliedLocalJoinReceiptIfPossible(accountId: accountId, scopeCid: scopeCid))
+    }
+
     func testHistoricalApplicationRunAdvancesCursorInOneBatch() throws {
         let database = try makeDatabase()
         let store = E2eeDurableInboxStore(database: database)

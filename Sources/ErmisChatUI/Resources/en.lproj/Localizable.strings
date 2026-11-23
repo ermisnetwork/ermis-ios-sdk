@@ -242,6 +242,9 @@
 
 // Encryption
 "message.encrypted-message" = "Encrypted message";
+"message.encrypted-message-decrypting" = "Decrypting encrypted message...";
+"message.encrypted-message-failed" = "Encrypted message could not be decrypted";
+"message.encrypted-message-unavailable" = "Encrypted message unavailable";
 "encryption.forward-downgrade-alert.title" = "Remove E2EE Protection?";
 "encryption.forward-downgrade-alert.message" = "The destination is a standard channel. Forwarded content will no longer have end-to-end encryption.";
 /// Shown above an inline reply when the quoted message was authored by the current user.
@@ -526,3 +529,58 @@
 "message.system.poll-created" = "%@ created a poll: %@";
 
 "message.system.poll-closed" = "%@ closed the poll: %@";
+
+"ui.polls-are-not-supported-in-secure-chats-yet" = "Polls are not supported in secure chats yet.";
+"ui.close" = "Close";
+"ui.create" = "Create";
+"ui.confirm-vote" = "Confirm vote";
+"ui.you-cannot-change-your-vote-after-submitting" = "You cannot change your vote after submitting.";
+"ui.vote" = "Vote";
+"ui.question" = "Question";
+"ui.ask-a-question" = "Ask a question…";
+"ui.answers" = "Answers";
+"ui.option" = "Option";
+"ui.remove-option" = "Remove option";
+"ui.add-option" = "Add option";
+"ui.up-to-10-options" = "Up to 10 options";
+"ui.settings" = "Settings";
+"ui.allow-multiple-choices" = "Allow multiple choices";
+"ui.choose-more-than-one-answer" = "Choose more than one answer";
+"ui.allow-changing-votes" = "Allow changing votes";
+"ui.update-or-remove-your-vote" = "Update or remove your vote";
+"ui.closed" = "Closed";
+"ui.select-one-or-more-options" = "Select one or more options";
+"ui.select-one-option" = "Select one option";
+"ui.voters" = "voters";
+"ui.remove-vote" = "Remove vote";
+"ui.votes" = "votes";
+"ui.loading-name" = "Loading name…";
+"ui.retry" = "Retry";
+"ui.voter" = "Voter";
+"ui.show-name" = "Show name";
+"ui.options" = "options";
+"ui.change-vote" = "Change vote";
+"ui.results" = "Results";
+"ui.close-poll" = "Close poll";
+"ui.show-voters" = "Show voters";
+"ui.all-voters" = "All voters";
+"ui.close-poll_8bfe27" = "Close poll?";
+"ui.no-one-can-vote-after-closing-this-cannot-be-undone" = "No one can vote after closing. This cannot be undone.";
+"ui.could-not-close-poll" = "Could not close poll";
+"ui.pinned-messages" = "Pinned Messages";
+"ui.you-have-been-banned-from-interacting-in-this-channe" = "You have been banned from interacting in this channel by Channel Admin";
+"ui.accept" = "Accept";
+"ui.reject" = "Reject";
+"ui.skip" = "Skip";
+"ui.decline" = "Decline";
+
+"ui.new-poll" = "New poll";
+
+"channel-attachments.download.queued" = "Waiting to download";
+"channel-attachments.download.verifying" = "Verifying file";
+"channel-attachments.download.waiting-for-unlock" = "Waiting for device unlock";
+"channel-attachments.download.decrypting" = "Decrypting file";
+"channel-attachments.download.progress-with-percentage" = "Downloaded %@ / %@ · %d%%";
+"message.edit-history" = "Edit history";
+
+"ui.unsupported-message-type" = "Unsupported message type";

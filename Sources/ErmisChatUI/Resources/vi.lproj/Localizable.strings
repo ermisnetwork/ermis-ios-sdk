@@ -241,7 +241,10 @@
 "message.unsupported-attachment" = "Tệp tin không được hỗ trợ";
 
 // Encryption
-"message.encrypted-message" = "Tin nhắn được mã hóa";
+"message.encrypted-message" = "Tin nhắn được mã hoá";
+"message.encrypted-message-decrypting" = "Đang giải mã tin nhắn...";
+"message.encrypted-message-failed" = "Không thể giải mã tin nhắn";
+"message.encrypted-message-unavailable" = "Tin nhắn mã hoá không khả dụng";
 "encryption.forward-downgrade-alert.title" = "Bỏ bảo vệ E2EE?";
 "encryption.forward-downgrade-alert.message" = "Kênh đích là kênh tiêu chuẩn. Nội dung được chuyển tiếp sẽ không còn được mã hóa đầu cuối.";
 /// Hiển thị phía trên trả lời trích dẫn khi tin nhắn gốc là của người dùng hiện tại.
@@ -526,3 +529,58 @@
 "message.system.poll-created" = "%@ đã tạo bình chọn: %@";
 
 "message.system.poll-closed" = "%@ đã đóng bình chọn: %@";
+
+"ui.polls-are-not-supported-in-secure-chats-yet" = "Chưa hỗ trợ bình chọn trong cuộc trò chuyện bảo mật.";
+"ui.close" = "Đóng";
+"ui.create" = "Tạo";
+"ui.confirm-vote" = "Xác nhận";
+"ui.you-cannot-change-your-vote-after-submitting" = "Bạn không thể đổi phiếu sau khi gửi.";
+"ui.vote" = "Bình chọn";
+"ui.question" = "Câu hỏi";
+"ui.ask-a-question" = "Nhập câu hỏi…";
+"ui.answers" = "Trả lời";
+"ui.option" = "Lựa chọn";
+"ui.remove-option" = "Xóa lựa chọn";
+"ui.add-option" = "Thêm lựa chọn";
+"ui.up-to-10-options" = "Tối đa 10 lựa chọn";
+"ui.settings" = "Cài đặt";
+"ui.allow-multiple-choices" = "Cho phép chọn nhiều đáp án";
+"ui.choose-more-than-one-answer" = "Có thể chọn nhiều hơn một đáp án";
+"ui.allow-changing-votes" = "Cho phép thay đổi bình chọn";
+"ui.update-or-remove-your-vote" = "Có thể đổi hoặc hủy phiếu đã gửi";
+"ui.closed" = "Đã đóng";
+"ui.select-one-or-more-options" = "Chọn một hoặc nhiều đáp án";
+"ui.select-one-option" = "Chọn một đáp án";
+"ui.voters" = "người bình chọn";
+"ui.remove-vote" = "Hủy bình chọn";
+"ui.votes" = "phiếu";
+"ui.loading-name" = "Đang tải tên…";
+"ui.retry" = "Thử lại";
+"ui.voter" = "Người bình chọn";
+"ui.show-name" = "Hiển thị tên";
+"ui.options" = "lựa chọn";
+"ui.change-vote" = "Đổi bình chọn";
+"ui.results" = "Kết quả";
+"ui.close-poll" = "Đóng bình chọn";
+"ui.show-voters" = "Xem người bình chọn";
+"ui.all-voters" = "Tất cả người bình chọn";
+"ui.close-poll_8bfe27" = "Đóng bình chọn?";
+"ui.no-one-can-vote-after-closing-this-cannot-be-undone" = "Sau khi đóng, mọi người không thể bình chọn. Không thể hoàn tác.";
+"ui.could-not-close-poll" = "Không thể đóng bình chọn";
+"ui.pinned-messages" = "Tin nhắn đã ghim";
+"ui.you-have-been-banned-from-interacting-in-this-channe" = "Quản trị viên đã chặn bạn tương tác trong kênh này";
+"ui.accept" = "Chấp nhận";
+"ui.reject" = "Từ chối";
+"ui.skip" = "Bỏ qua";
+"ui.decline" = "Từ chối";
+
+"ui.new-poll" = "Bình chọn mới";
+
+"channel-attachments.download.queued" = "Đang chờ tải";
+"channel-attachments.download.verifying" = "Đang kiểm tra tệp";
+"channel-attachments.download.waiting-for-unlock" = "Đang chờ mở khóa thiết bị";
+"channel-attachments.download.decrypting" = "Đang giải mã tệp";
+"channel-attachments.download.progress-with-percentage" = "Đã tải %@ / %@ · %d%%";
+"message.edit-history" = "Lịch sử chỉnh sửa";
+
+"ui.unsupported-message-type" = "Loại tin nhắn chưa được hỗ trợ";

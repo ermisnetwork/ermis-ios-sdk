@@ -21,7 +21,7 @@ open class EditedMessageListViewController: _ViewController, UIProvider, UITable
     // MARK: - Setup
     open override func setUp() {
         tableView.reloadData()
-        self.title = "Edited Messages History"
+        self.title = L10n.ui("message.edit-history")
     }
 
     open override func setUpUI() {
@@ -37,6 +37,7 @@ open class EditedMessageListViewController: _ViewController, UIProvider, UITable
     }
 
     open override func contentDidChanged() {
+        title = L10n.ui("message.edit-history")
         tableView.reloadData()
     }
 

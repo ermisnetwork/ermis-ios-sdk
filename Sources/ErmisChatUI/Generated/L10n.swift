@@ -6,6 +6,12 @@ import Foundation
 // MARK: - Strings
 
 public enum L10n {
+  public static func ui(_ key: String, _ args: CVarArg...) -> String {
+    let provided = Theme.default.localizationProvider(key, "Localizable")
+    let format = provided == key ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: "Localizable") : provided
+    return String(format: format, locale: Theme.default.localizationLocale, arguments: args)
+  }
+
   /// %d of %d
   public static func currentSelection(_ p1: Int, _ p2: Int) -> String {
     return L10n.tr("Localizable", "current-selection", p1, p2)
@@ -411,6 +417,9 @@ public enum L10n {
     public static var edited: String { L10n.tr("Localizable", "message.edited") }
     /// Encrypted message
     public static var encryptedMessage: String { L10n.tr("Localizable", "message.encrypted-message") }
+    public static var encryptedMessageDecrypting: String { L10n.tr("Localizable", "message.encrypted-message-decrypting") }
+    public static var encryptedMessageFailed: String { L10n.tr("Localizable", "message.encrypted-message-failed") }
+    public static var encryptedMessageUnavailable: String { L10n.tr("Localizable", "message.encrypted-message-unavailable") }
     /// Forwarded from %@
     public static func forwardedFromOther(_ p1: Any) -> String {
       return L10n.tr("Localizable", "message.forwarded-from-other", String(describing: p1))
@@ -825,7 +834,7 @@ extension L10n {
      let format = providedFormat == key
        ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: table)
        : providedFormat
-     return String(format: format, locale: Locale.current, arguments: args)
+     return String(format: format, locale: Theme.default.localizationLocale, arguments: args)
   }
 }
 

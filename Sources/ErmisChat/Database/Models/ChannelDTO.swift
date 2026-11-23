@@ -75,6 +75,8 @@ class ChannelDTO: NSManagedObject {
     @NSManaged var mlsEnabled: Bool
     @NSManaged var mlsEnabledAt: DBDate?
     @NSManaged var mlsEpoch: Int
+    @NSManaged var e2eeGroupId: String?
+    @NSManaged var gate: NSNumber?
     /// The `created_at` of the last successfully processed E2EE sync event for this channel.
     /// Used as a cursor for POST /v1/e2ee/sync. Falls back to `mlsGroupJoinedAt` when nil.
     @NSManaged var e2eSyncCursor: DBDate?
@@ -213,7 +215,7 @@ class ChannelDTO: NSManagedObject {
             MemberRole.member.rawValue
         ]
         request.predicate = NSPredicate(
-            format: "mlsEnabled == YES AND membership != nil AND membership.channelRoleRaw IN %@",
+            format: "mlsEnabled == YES AND deletedAt == nil AND membership != nil AND membership.channelRoleRaw IN %@ AND membership.isBanned == NO AND membership.isBlocked == NO",
             joinedRoles
         )
         return (try? context.fetch(request)) ?? []
@@ -250,9 +252,11 @@ extension ChannelDTO: EphemeralValuesContainer {
 extension ChannelDTO {
     /// The cid of the channel whose MLS group encrypts/decrypts this channel's messages.
     ///
-    /// Topics do not own an MLS group — they inherit their parent channel's group. So a
-    /// topic resolves to its `parentcid`; every other channel resolves to its own `cid`.
+    /// Canonical metadata distinguishes isolated/gated topics from topics sharing their
+    /// parent. Old stores without this metadata retain the parent/self fallback.
     var mlsGroupCid: String {
+        if gate?.boolValue == true { return cid }
+        if let e2eeGroupId, e2eeGroupId == cid || e2eeGroupId == parentcid { return e2eeGroupId }
         if let parentcid, !parentcid.isEmpty {
             return parentcid
         }
@@ -261,13 +265,13 @@ extension ChannelDTO {
 
     /// Whether messages in this channel are end-to-end encrypted.
     ///
-    /// A topic shares its parent channel's MLS group, so a topic is E2EE exactly when its
-    /// parent channel has MLS enabled — even if the topic row itself doesn't carry the flag.
+    /// A non-gated topic can inherit its parent's encryption flag. An isolated topic
+    /// follows its own flag and must never inherit encryption from an unrelated scope.
     var isE2eeEnabled: Bool {
         if mlsEnabled {
             return true
         }
-        guard let parentcid, !parentcid.isEmpty else {
+        guard let parentcid, !parentcid.isEmpty, mlsGroupCid == parentcid else {
             return false
         }
         if let parent {
@@ -356,6 +360,9 @@ extension NSManagedObjectContext {
         if let saveMessage = payload.saveMessage {
             dto.saveMessage = saveMessage
         }
+
+        if let scope = payload.e2eeGroupId { dto.e2eeGroupId = scope.rawValue }
+        if let gate = payload.gate { dto.gate = NSNumber(value: gate) }
 
         dto.createdAt = payload.createdAt.bridgeDate
         dto.deletedAt = payload.deletedAt?.bridgeDate
@@ -622,7 +629,7 @@ extension ChannelDTO {
         }
 
         request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
-        request.fetchLimit = query.pagination.pageSize
+        request.fetchLimit = query.shouldLoadAllChannels ? 0 : query.pagination.pageSize
         request.fetchBatchSize = query.pagination.pageSize
         return request
     }
@@ -645,7 +652,7 @@ extension ChannelDTO {
         ]
         
         request.predicate = NSCompoundPredicate(type: .and, subpredicates: subpredicates)
-        request.fetchLimit = query.pagination.pageSize
+        request.fetchLimit = query.shouldLoadAllChannels ? 0 : query.pagination.pageSize
         request.fetchBatchSize = query.pagination.pageSize
         return request
     }

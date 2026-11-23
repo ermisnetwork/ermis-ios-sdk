@@ -271,6 +271,36 @@ final class E2eeMlsRolloutControlsTests: XCTestCase {
         XCTAssertFalse(active.isValidExternalJoinIdentity(installedGeneration: 2))
     }
 
+    func testOpenedScopePriorityCoalescesAndTwoPromotionsYieldToBackground() throws {
+        let queue = E2eeBootstrapQueue()
+        let ids = try (0..<6).map { try ChannelId(cid: "team:project:priority-\($0)") }
+        XCTAssertTrue(queue.enqueue(ids))
+        XCTAssertEqual(queue.dequeue(), ids[0])
+        for _ in 0..<20 { XCTAssertFalse(queue.enqueuePriority(ids[5])) }
+        XCTAssertFalse(queue.enqueuePriority(ids[4]))
+        XCTAssertFalse(queue.enqueuePriority(ids[3]))
+        _ = queue.finish(ids[0])
+        for expected in [ids[5], ids[4], ids[1], ids[3], ids[2]] {
+            XCTAssertEqual(queue.dequeue(), expected)
+            _ = queue.finish(expected)
+        }
+        XCTAssertNil(queue.dequeue())
+    }
+
+    func testPromotedSlotCannotReplayAfterScopeIsReenqueued() throws {
+        let queue = E2eeBootstrapQueue()
+        let ids = try (0..<3).map { try ChannelId(cid: "team:project:priority-\($0)") }
+        XCTAssertTrue(queue.enqueue(ids))
+        XCTAssertEqual(queue.dequeue(), ids[0])
+        XCTAssertFalse(queue.enqueuePriority(ids[2]))
+        _ = queue.finish(ids[0])
+        XCTAssertEqual(queue.dequeue(), ids[2]); _ = queue.finish(ids[2])
+        XCTAssertFalse(queue.enqueue(ids[2]))
+        XCTAssertEqual(queue.dequeue(), ids[1]); _ = queue.finish(ids[1])
+        XCTAssertEqual(queue.dequeue(), ids[2]); _ = queue.finish(ids[2])
+        XCTAssertNil(queue.dequeue())
+    }
+
     func testConcurrentBootstrapAdmissionCreatesOneJoinCandidatePerScope() throws {
         let queue = E2eeBootstrapQueue()
         let cid = try ChannelId(cid: "messaging:project:rollout-bootstrap")

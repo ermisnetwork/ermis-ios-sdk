@@ -179,6 +179,8 @@ extension E2eeArchiveRecoveryTests {
         await recovery.enqueueRestore(cid: cid, fromEpoch: 0, toEpoch: 0)
         try await waitUntil { try journal.get(key: "restore:\(cid):3")?.status == "requires_pin" }
         try await recovery.unlockRecoveryVault("12345678")
+        XCTAssertEqual(applied.count, 0, "Unlock opens capability, never resumes an epoch-wide restore")
+        try await recovery.enqueueRestoreDurably(cid: cid, fromEpoch: 0, toEpoch: 0, requestId: "manual-first") // Explicit bounded legacy demand.
         try await waitUntil { try journal.get(key: "restore:\(cid):3")?.status == "done" }
         XCTAssertEqual(applied.count, 1)
         await recovery.enqueueRestore(cid: cid, fromEpoch: 0, toEpoch: 0)

@@ -346,6 +346,10 @@ public struct ChannelListQuery: Encodable {
     public let filter: Filter<ChannelListFilterScope>
     /// A sorting for the query (see `Sorting`).
     public let sort: [Sorting<ChannelListSortingKey>]
+    /// Load the complete list through baseline pages; local only, never sent to the server.
+    public var shouldLoadAllChannels: Bool = false
+    /// Only the unfiltered session root list owns the initial readiness inventory. Local-only.
+    public var sessionReadinessProjectId: String? = nil
     /// A pagination.
     public var pagination: Pagination
     /// A number of messages inside each channel.
@@ -363,7 +367,7 @@ public struct ChannelListQuery: Encodable {
         filter: Filter<ChannelListFilterScope>,
         sort: [Sorting<ChannelListSortingKey>] = [],
         pageSize: Int = .channelsPageSize,
-        messagesLimit: Int = .messagesPageSize,
+        messagesLimit: Int = 0,
         membersLimit: Int = .channelMembersPageSize
     ) {
         self.filter = filter
@@ -375,7 +379,11 @@ public struct ChannelListQuery: Encodable {
 
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(filter, forKey: .filter)
+        // Bellboy reads list pagination from filter_conditions. Keep the original
+        // filter encoder so project, membership, roles and type remain intact.
+        let filterEncoder = container.superEncoder(forKey: .filter)
+        try filter.encode(to: filterEncoder)
+        try pagination.encode(to: filterEncoder)
 
         if !sort.isEmpty {
             try container.encode(sort, forKey: .sort)

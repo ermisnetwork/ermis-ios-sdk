@@ -34,6 +34,9 @@ class EventNotificationCenter: NotificationCenter {
     }
 
     func process(_ events: [Event], postNotifications: Bool = true, completion: (() -> Void)? = nil) {
+        let transportOperation = UUID()
+        MlsTransportTrace.record(.batchQueued, operation: transportOperation, count: events.count)
+        events.forEach { MlsTransportTrace.message($0, stage: .eventQueued) }
         let processingEventsDebugMessage: () -> String = {
             let eventNames = events.map(\.name)
             return "Processing Events: \(eventNames)"
@@ -55,7 +58,9 @@ class EventNotificationCenter: NotificationCenter {
             }
 
             self.newMessageIds = []
-        }, completion: { _ in
+        }, completion: { error in
+            MlsTransportTrace.record(.batchFinished, operation: transportOperation, count: eventsToPost.count, code: (error as NSError?)?.code ?? 0)
+            if error == nil { events.forEach { MlsTransportTrace.message($0, stage: .eventPersisted) } }
             guard postNotifications else {
                 completion?()
                 return
@@ -63,8 +68,10 @@ class EventNotificationCenter: NotificationCenter {
 
             self.eventPostingQueue.async {
                 eventsToPost.forEach {
+                    MlsTransportTrace.message($0, stage: .eventPosted)
                     self.post(Notification(newEventReceived: $0, sender: self))
                 }
+                MlsTransportTrace.record(.batchPosted, operation: transportOperation, count: eventsToPost.count)
                 completion?()
             }
         })

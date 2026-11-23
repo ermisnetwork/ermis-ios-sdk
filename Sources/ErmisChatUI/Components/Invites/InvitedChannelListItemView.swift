@@ -133,7 +133,7 @@ class InvitedChannelListItemView: _View, UIProvider, SwiftUIRepresentable {
     open
     private(set) lazy var acceptButton: UIButton = {
         let button = UIButton()
-        button.setTitle("Accept", for: .normal)
+        button.setTitle(L10n.ui("ui.accept"), for: .normal)
         button.pin(anchors: [.height], to: 44)
         button.layer.cornerRadius = 15
         button.addTarget(self, action: #selector(onAcceptButtonSelected), for: .touchUpInside)
@@ -145,7 +145,7 @@ class InvitedChannelListItemView: _View, UIProvider, SwiftUIRepresentable {
     open
     private(set) lazy var rejectButton: UIButton = {
         let button = UIButton()
-        button.setTitle("Skip", for: .normal)
+        button.setTitle(L10n.ui("ui.skip"), for: .normal)
         button.pin(anchors: [.height], to: 44)
         button.addTarget(self, action: #selector(onRejectButtonSelected), for: .touchUpInside)
         return button.withoutAutoresizingMaskConstraints
@@ -268,7 +268,7 @@ class InvitedChannelListItemView: _View, UIProvider, SwiftUIRepresentable {
         timestampLabel.text = timestampText
         avatarView.content = .init(from: content?.channel)
 
-        rejectButton.setTitle(content?.channel.isDirectMessageChannel == true ? "Skip" : "Decline", for: .normal)
+        rejectButton.setTitle(content?.channel.isDirectMessageChannel == true ? L10n.ui("ui.skip") : L10n.ui("ui.decline"), for: .normal)
     }
 
     // MARK: - Channel title rendering

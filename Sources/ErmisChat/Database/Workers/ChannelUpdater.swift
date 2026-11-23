@@ -133,6 +133,7 @@ class ChannelUpdater: Worker {
                         messageIds: payload.messages.map(\.id),
                         cid: payload.channel.cid
                     )
+                    self.e2eRepository.requestHistoryPage(messages: payload.messages, cid: payload.channel.cid)
                     completion?(.success(payload))
                 }
             } catch {

@@ -389,7 +389,7 @@ public struct ClosePollActionItem: MessageActionItem {
     public let isDestructive = true
     public let action: (MessageActionItem) -> Void
     public init(action: @escaping (MessageActionItem) -> Void) {
-        title=PollStrings.text("Close poll","Đóng bình chọn")
+        title=L10n.ui("ui.close-poll")
         icon=UIImage(systemName:"chart.bar.xaxis") ?? UIImage()
         self.action=action
     }

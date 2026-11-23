@@ -163,6 +163,10 @@ final class MlsRecoveryControlRepositoryTests: XCTestCase {
             downloader: ErmisDownloader(client: ErmisDownloadClient(sessionConfiguration: config)))
         let repository = E2eRepository(database: database, eventNotificationCenter: EventNotificationCenter(database: database), mlsClient: client, apiClient: api)
         repository.handleNewEncryptedChannels([missing])
+        let first = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            repository.readiness(for: missing) == .infrastructureRetryable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [first], timeout: 5), .completed)
         XCTAssertEqual(api.discoveries, 1)
         XCTAssertEqual(repository.readiness(for: missing), .infrastructureRetryable)
         for _ in 0..<12 { repository.handleNewEncryptedChannels([missing, missing]) }
@@ -260,7 +264,13 @@ final class MlsRecoveryControlRepositoryTests: XCTestCase {
                 return try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: data)
             }
             let original = try event(id, "2026-11-03T05:57:19.940474Z")
-            let conflict = try event(id, "2026-11-03T05:57:19.940481Z")
+            // Timestamp-only application aliases are intentionally accepted by the durable
+            // transport contract. A real conflict changes the canonical encrypted payload.
+            let alias = try event(id, "2026-11-03T05:57:19.940481Z")
+            var conflictBody = try XCTUnwrap(JSONSerialization.jsonObject(with: alias.rawEnvelope) as? [String: Any])
+            var conflictData = try XCTUnwrap(conflictBody["data"] as? [String: Any])
+            conflictData["mls_ciphertext"] = "BAUG"; conflictBody["data"] = conflictData
+            let conflict = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: JSONSerialization.data(withJSONObject: conflictBody))
             let tail = try event("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "2026-11-03T08:26:39.211290Z")
             let cursor = ScopeSyncCursorPayload(createdAt: original.createdAtRaw, eventId: original.eventId)
             _ = try store.persistPage(accountId: "control-fixture", scopeCid: cid.rawValue,
@@ -280,4 +290,72 @@ final class MlsRecoveryControlRepositoryTests: XCTestCase {
         }
     }
 
+}
+
+
+extension MlsRecoveryControlRepositoryTests {
+    func testBoundHistoryCacheReopenDoesNotCreateProgressOrRequestArchive() throws {
+        try withFixture { client, repository, cid in
+            let id = UUID().uuidString.lowercased(), cipher = Data([1, 2, 3])
+            let wire: [String: Any] = ["id": id, "cid": cid.rawValue, "type": "regular", "text": "",
+                "user": ["id": "sender", "project_id": "project"], "mls_ciphertext": cipher.base64EncodedString(),
+                "mls_epoch": 0, "group_generation": 0, "e2ee_group_id": cid.rawValue,
+                "created_at": "2026-11-17T00:00:00Z", "updated_at": "2026-11-17T00:00:00Z"]
+            let channel: [String: Any] = ["cid": cid.rawValue, "type": "team", "mls_enabled": true,
+                "created_at": "2026-11-17T00:00:00Z", "updated_at": "2026-11-17T00:00:00Z", "member_count": 2]
+            let payload = try JSONDecoder.ermis.decode(ChannelPayload.self,
+                from: JSONSerialization.data(withJSONObject: ["channel": channel, "messages": [wire], "members": []]))
+            try repository.database.writeAndWait { session in
+                try session.saveChannel(payload: payload, query: nil, cache: nil)
+                try session.saveMessageDecrypt(payload: E2ePayload(text: "already authenticated", attachments: [], stickerUrl: nil),
+                    messageId: id, ciphertextHash: Data(SHA256.hash(data: cipher)))
+            }
+            let recovery = try E2eeArchiveRecovery(namespace: "quiet-" + UUID().uuidString,
+                root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), userId: "control-fixture", api: nil,
+                isCurrentAccount: { true }, generation: { _ in 0 }, apply: { _, _, _, _, _ in XCTFail("Cached page must not apply archive") },
+                requestOverride: { _ in XCTFail("Cached page must not fetch archive"); throw E2eeArchiveError.invalidData })
+            defer { try? recovery.stop(clearUnlock: true) }
+            repository.archiveRecovery = recovery
+            repository.requestHistoryPage(messages: payload.messages, cid: cid)
+            XCTAssertNil(repository.sessionProgress.snapshot, "Cached page must not create a new cycle")
+            for _ in 0..<3 { repository.requestHistoryPage(messages: payload.messages, cid: cid) }
+            XCTAssertNil(repository.sessionProgress.snapshot)
+        }
+    }
+}
+
+
+extension MlsRecoveryControlRepositoryTests {
+    func testPartialHistoryPageReopenIsQuietUntilExplicitRetry() throws {
+        try withFixture { _, repository, cid in
+            final class Requests {
+                private let lock = NSLock(); private var count = 0
+                func increment() { lock.lock(); count += 1; lock.unlock() }
+                func value() -> Int { lock.lock(); defer { lock.unlock() }; return count }
+            }
+            let requests = Requests()
+            let wire: [String: Any] = ["id": UUID().uuidString.lowercased(), "cid": cid.rawValue, "type": "regular", "text": "",
+                "user": ["id": "sender", "project_id": "project"], "mls_ciphertext": "AQID", "mls_epoch": 0,
+                "group_generation": 0, "e2ee_group_id": cid.rawValue, "created_at": "2026-11-17T00:00:00Z", "updated_at": "2026-11-17T00:00:00Z"]
+            let message = try JSONDecoder.ermis.decode(MessagePayload.self, from: JSONSerialization.data(withJSONObject: wire))
+            let recovery = try E2eeArchiveRecovery(namespace: "quiet-partial-" + UUID().uuidString,
+                root: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), userId: "control-fixture", api: nil,
+                isCurrentAccount: { true }, generation: { _ in 0 }, apply: { _, _, _, _, _ in XCTFail("No material supplied") },
+                requestOverride: { _ in requests.increment(); throw E2eeArchiveError.invalidData })
+            defer { try? recovery.stop(clearUnlock: true) }
+            repository.archiveRecovery = recovery
+            repository.requestHistoryPage(messages: [message], cid: cid)
+            let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in repository.sessionProgress.snapshot?.status == "partial" }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 3), .completed)
+            let first = repository.sessionProgress.snapshot?.cycleId, reads = requests.value()
+            XCTAssertGreaterThan(reads, 0)
+            for _ in 0..<3 { repository.requestHistoryPage(messages: [message], cid: cid) }
+            XCTAssertEqual(repository.sessionProgress.snapshot?.cycleId, first)
+            XCTAssertEqual(requests.value(), reads)
+            repository.retryRequestedHistoryPage()
+            XCTAssertNotEqual(repository.sessionProgress.snapshot?.cycleId, first)
+            let retried = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in repository.sessionProgress.snapshot?.status == "partial" && requests.value() > reads }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [retried], timeout: 3), .completed)
+        }
+    }
 }

@@ -96,6 +96,8 @@ final class AuthenticationRefreshSessionTests: XCTestCase {
     func testTransportFailureRetainsCredentialsAndNextAttemptCanRefresh() throws {
         let old = try fixtureToken(expired: true), fresh = try fixtureToken()
         let helper = ErmisRefreshTokenHelper(token: old, refreshToken: "old-fixture")
+        var loginRequests=0
+        helper.onRefreshTokenExpired = { loginRequests += 1 }
         let failed = expectation(description: "offline"), retried = expectation(description: "retry")
         helper.loadRefreshedToken(request: { _, _, done in done(.failure(URLError(.notConnectedToInternet))) }) { result in
             if case .success = result { XCTFail("offline must reject") }; failed.fulfill()
@@ -107,6 +109,7 @@ final class AuthenticationRefreshSessionTests: XCTestCase {
         }
         wait(for: [failed, retried], timeout: 2)
         XCTAssertEqual(helper.refreshToken, "old-fixture")
+        XCTAssertEqual(loginRequests,0)
     }
 
     func testRefreshResponseCannotOverwriteChangedHelperSession() throws {
@@ -146,6 +149,8 @@ final class AuthenticationRefreshSessionTests: XCTestCase {
 
     func testMissingRefreshNeverStartsHttpRequest() throws {
         let helper = ErmisRefreshTokenHelper(token: try fixtureToken(expired: true))
+        var loginRequests=0
+        helper.onRefreshTokenExpired = { loginRequests += 1 }
         let failed = expectation(description: "missing refresh")
         helper.loadRefreshedToken(request: { _, _, _ in XCTFail("HTTP must not start") }) { result in
             if case .failure(let error) = result { XCTAssertTrue(error is ClientError.MissingRefreshToken) }
@@ -153,6 +158,7 @@ final class AuthenticationRefreshSessionTests: XCTestCase {
             failed.fulfill()
         }
         wait(for: [failed], timeout: 2)
+        XCTAssertEqual(loginRequests,1)
     }
 
     func testWrappedApiFailureProjectsOnlyCategoryAndCodes() {
@@ -184,4 +190,104 @@ final class AuthenticationRefreshSessionTests: XCTestCase {
         XCTAssertNil(MlsFieldMarkerProjector.project("mls_membership_validation role=secret banned=false blocked=false"))
         XCTAssertNil(MlsFieldMarkerProjector.project("mls_auth_failure category=api http_status=401 code=1234567"))
     }
+    func testBellboy4001CloseIsExpiryAndWaitsForAuthOwnedReconnect() {
+        let error = ClientError(with: WebSocketEngineError(reason: "JWT Expire", code: 4001, engineError: nil))
+        XCTAssertTrue(error.isExpiredTokenError)
+        XCTAssertTrue(error.isInvalidTokenError)
+        let state = WebSocketConnectionState.disconnected(source: .serverInitiated(error: error))
+        XCTAssertEqual(ConnectionStatus(webSocketConnectionState: state), .connecting)
+        XCTAssertFalse(state.isAutomaticReconnectionEnabled, "Auth owner must refresh before reconnecting")
+        let ordinary = ClientError(with: WebSocketEngineError(reason: "network", code: 1006, engineError: nil))
+        XCTAssertFalse(ordinary.isExpiredTokenError)
+    }
+
+    func testRejectedRefreshNotifiesOnceForJoinedWaitersAndUsesSafeError() throws {
+        let helper = ErmisRefreshTokenHelper(token: try fixtureToken(), refreshToken: "fixture-refresh")
+        var notifications=0, completions=0
+        helper.onRefreshTokenExpired = { notifications += 1 }
+        var deliver: ((Result<AuthenticationPayload, Error>) -> Void)?
+        let request: (Token,String,@escaping (Result<AuthenticationPayload,Error>)->Void)->Void = { _,_,done in deliver=done }
+        for _ in 0..<2 { helper.loadRefreshedToken(request: request) { result in
+            if case .failure(let error) = result { XCTAssertTrue(error is ClientError.RefreshTokenExpired) }
+            else { XCTFail("Rejected refresh must require login") }
+            completions += 1
+        } }
+        deliver?(.failure(ClientError(with: ErmisApiError(type: .unAuthorized,statusCode:403,message:"private server detail"))))
+        XCTAssertEqual(notifications,1); XCTAssertEqual(completions,2)
+    }
+
+    private final class HttpProvider: ConnectionProviderDelegate {
+        var token: Token
+        init(_ token: Token) { self.token=token }
+        func provideToken(timeout: TimeInterval, completion: @escaping (Result<Token,Error>)->Void) { completion(.success(token)) }
+        func provideConnectionId(timeout: TimeInterval, completion: @escaping (Result<ConnectionId,Error>)->Void) { completion(.success("fixture")) }
+    }
+    private final class HttpProtocol: URLProtocol {
+        static var handler: ((URLRequest)->(Int,Data))?
+        override class func canInit(with request: URLRequest)->Bool { request.url?.host=="auth-refresh.invalid" }
+        override class func canonicalRequest(for request: URLRequest)->URLRequest { request }
+        override func startLoading() {
+            let (status,data)=Self.handler?(request) ?? (500,Data())
+            guard let url=request.url, let response=HTTPURLResponse(url:url,statusCode:status,httpVersion:nil,headerFields:nil) else { return }
+            client?.urlProtocol(self,didReceive:response,cacheStoragePolicy:.notAllowed)
+            client?.urlProtocol(self,didLoad:data); client?.urlProtocolDidFinishLoading(self)
+        }
+        override func stopLoading() {}
+    }
+    func testHttp401UsesNewSharedTokenForRetryAndNextRequestWithSameBody() throws {
+        try runHttpRefresh(alwaysUnauthorized:false)
+    }
+    func testRepeatedHttp401RefreshesOnlyOnce() throws {
+        try runHttpRefresh(alwaysUnauthorized:true)
+    }
+    private func runHttpRefresh(alwaysUnauthorized: Bool) throws {
+        let old=try fixtureToken(expired:true), fresh=try fixtureToken()
+        let provider=HttpProvider(old), base=try XCTUnwrap(URL(string:"https://auth-refresh.invalid"))
+        let encoder=DefaultRequestEncoder(baseURL:base,authURL:base,stickerURL:base,apiKey:APIKey("fixture"))
+        encoder.connectionProviderDelegate=provider
+        let config=URLSessionConfiguration.ephemeral; config.protocolClasses=[HttpProtocol.self]
+        let decoder=DefaultRequestDecoder()
+        let api=APIClient(sessionConfiguration:config,requestEncoder:encoder,requestDecoder:decoder,
+            uploader:ErmisUploader(uploadClient:ErmisUploadClient(encoder:encoder,decoder:decoder,sessionConfiguration:config)),
+            downloader:ErmisDownloader(client:ErmisDownloadClient(sessionConfiguration:config)))
+        var requests:[URLRequest]=[],bodies:[Data]=[],refreshes=0
+        HttpProtocol.handler = { request in
+            requests.append(request)
+            var data=request.httpBody ?? Data()
+            if let stream=request.httpBodyStream {
+                stream.open(); defer { stream.close() }
+                var buffer=[UInt8](repeating:0,count:1024)
+                while true { let count=stream.read(&buffer,maxLength:buffer.count); if count<=0 { break }; data.append(buffer,count:count) }
+            }
+            bodies.append(data)
+            return (alwaysUnauthorized || requests.count==1 ? 401:200,Data("{}".utf8))
+        }
+        defer { HttpProtocol.handler=nil }
+        api.tokenRefresher = { done in refreshes += 1; provider.token=fresh; done(nil) }
+        let endpoint=Endpoint<EmptyResponse>(path:.mlsControl("auth-fixture"),method:.post,
+            body:["id":"unchanged-uuid","ciphertext":"unchanged-fixture"],headers:["X-Client-Request-ID":"unchanged-uuid"])
+        let completed=expectation(description:"HTTP renewal")
+        api.request(endpoint:endpoint) { result in
+            if alwaysUnauthorized {
+                if case .failure(let error)=result { XCTAssertTrue(error is ClientError.TokenRefreshRetryLimitExceeded) }
+                else { XCTFail("second401 must fail") }
+            } else if case .failure(let error)=result { XCTFail("\(type(of:error))") }
+            completed.fulfill()
+        }
+        wait(for:[completed],timeout:5)
+        XCTAssertEqual(refreshes,1); XCTAssertEqual(requests.count,2)
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField:"Authorization"),"Bearer "+old.rawValue)
+        XCTAssertEqual(requests.last?.value(forHTTPHeaderField:"Authorization"),"Bearer "+fresh.rawValue)
+        XCTAssertEqual(requests.first?.value(forHTTPHeaderField:"X-Client-Request-ID"),requests.last?.value(forHTTPHeaderField:"X-Client-Request-ID"))
+        XCTAssertEqual(bodies.count,2); XCTAssertFalse(bodies[0].isEmpty); XCTAssertEqual(bodies[0],bodies[1])
+        if !alwaysUnauthorized {
+            let next=expectation(description:"next HTTP request")
+            api.request(endpoint:endpoint) { _ in next.fulfill() }
+            wait(for:[next],timeout:5)
+            XCTAssertEqual(requests.count,3); XCTAssertEqual(refreshes,1)
+            XCTAssertEqual(requests.last?.value(forHTTPHeaderField:"Authorization"),"Bearer "+fresh.rawValue)
+        }
+        withExtendedLifetime(provider) {}; withExtendedLifetime(api) {}
+    }
+
 }

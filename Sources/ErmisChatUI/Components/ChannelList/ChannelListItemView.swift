@@ -188,7 +188,7 @@ open class ChannelListItemView: _View, UIProvider, PreviewMessageProvider, Swift
 
         if let previewMessage = content.channel.topicsPreviewMessage {
             if previewMessage.isEncrypted {
-                return L10n.Message.encryptedMessage
+                return previewMessage.encryptedMessageLabel
             }
 
             if isLastMessageVoiceRecording {

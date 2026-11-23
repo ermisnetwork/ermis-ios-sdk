@@ -28,7 +28,7 @@ let package = Package(
         .package(url: "https://github.com/daltoniam/Starscream.git", from: "3.1.2"),
         .package(url: "https://github.com/airbnb/lottie-spm.git", from: "4.5.2"),
 //        .package(url: "https://github.com/ermisnetwork/ermis-shared-ios", exact: "1.0.0"),
-        .package(path: "../ermis-shared-ios"),
+        .package(path: "../../../ios/ermis-shared-ios"),
         .package(path: "Vendor/open-mls-ios")
     ],
     targets: [

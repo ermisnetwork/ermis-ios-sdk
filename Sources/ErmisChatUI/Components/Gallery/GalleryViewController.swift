@@ -710,7 +710,7 @@ open class GalleryViewController: _ViewController,
         let text: String
         switch progress.phase {
         case .queued:
-            text = "Đang chờ tải"
+            text = L10n.ui("channel-attachments.download.queued")
         case .downloading:
             let completed = ByteCountFormatter.string(
                 fromByteCount: Int64(progress.completedCiphertextBytes),
@@ -721,13 +721,13 @@ open class GalleryViewController: _ViewController,
                 countStyle: .file
             )
             let percentage = Int((progress.fractionCompleted ?? 0) * 100)
-            text = "Đang tải \(completed) / \(total) · \(percentage)%"
+            text = L10n.ui("channel-attachments.download.progress-with-percentage", completed, total, percentage)
         case .verifying:
-            text = "Đang kiểm tra tệp"
+            text = L10n.ui("channel-attachments.download.verifying")
         case .waitingForUnlock:
-            text = "Mở khóa thiết bị để tiếp tục"
+            text = L10n.ui("channel-attachments.download.waiting-for-unlock")
         case .decrypting:
-            text = "Đang giải mã tệp"
+            text = L10n.ui("channel-attachments.download.decrypting")
         }
         originalDownloadProgressLabel.text = text
         originalDownloadProgressLabel.accessibilityLabel = text

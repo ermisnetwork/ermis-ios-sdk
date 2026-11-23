@@ -247,7 +247,13 @@ final class MlsKeyPackageWorkTests: XCTestCase {
         let decoded = try JSONDecoder().decode(Endpoint<MlsOwnershipInventory>.self, from: bytes)
         XCTAssertNil(decoded.localMlsGuard); XCTAssertNil(decoded.localMlsDeadline)
     }
+    func testLostAckLiveOwnerRetriesExactBatchWithoutRestartOrAnotherHealthEvent() throws {
+        try lostAckRetriesExactBatch(reopen: false)
+    }
     func testLostAckReopenRetriesExactBatchBeforeChangedCount() throws {
+        try lostAckRetriesExactBatch(reopen: true)
+    }
+    private func lostAckRetriesExactBatch(reopen: Bool) throws {
         try fixture { client, store in
             let api = try fixtureAPI(); defer { api.session.invalidateAndCancel(); FixtureProtocol.handler = nil }
             var uploads: [Data] = [], ids: [String] = [], lost = true, countCalls = 0, generated = 0
@@ -269,11 +275,22 @@ final class MlsKeyPackageWorkTests: XCTestCase {
             first.start(reason:"manual");wait(for:[firstDone],timeout:5)
             let retained = try XCTUnwrap(store.read().upload); XCTAssertEqual(retained.status,"ready"); XCTAssertEqual(retained.attempts,1)
             let root = store.url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            // Reopen models a stopped process; the old private-scope owner must release first.
-            try client.reset()
-            let reopened = MlsClient(storageFolderURL:root,deviceIdStore:client.deviceIdStore,userDefaults:client.userDefaults)
-            try reopened.setup(with:"local-key-package-work")
-            clock = clock.addingTimeInterval(31)
+            var reopened = client
+            if reopen {
+                // Only this isolated fixture is reopened, never an app's provider.
+                try client.reset()
+                reopened = MlsClient(storageFolderURL:root,deviceIdStore:client.deviceIdStore,userDefaults:client.userDefaults)
+                try reopened.setup(with:"local-key-package-work")
+                clock = clock.addingTimeInterval(31)
+            } else {
+                var schedule = MlsKeyPackageRefillSchedule()
+                XCTAssertTrue(schedule.begin(at: 100))
+                schedule.complete(at: 100.1)
+                let delay = schedule.wakeDelay(requestedAt: clock.timeIntervalSince1970 + 30,
+                    wallTime: clock.timeIntervalSince1970, uptime: 100.1)
+                XCTAssertTrue(schedule.begin(at: 100.1 + delay))
+                clock = clock.addingTimeInterval(delay)
+            }
             let nextDone = expectation(description:"same batch after reopen")
             let next = try MlsKeyPackagePipeline(api:api,store:store,assertOwner:{},probe:{try reopened.probeKeyPackageOwnership($0)},
                 providerId:{try reopened.keyPackageUploadProviderId()},generate:{id,pid,count in generated += 1;return try reopened.prepareKeyPackageUpload(id:id,scope:store.scope,nativeProviderId:pid,count:count)},now:{clock},completion:{_ in nextDone.fulfill()})

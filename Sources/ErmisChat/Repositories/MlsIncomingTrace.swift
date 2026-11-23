@@ -30,6 +30,10 @@ public enum MlsIncomingTrace {
         }
     }
     public enum Stage: String {
+        case socketDecoded = "socket_decoded"
+        case eventQueued = "event_queued"
+        case eventPersisted = "event_persisted"
+        case eventPosted = "event_posted"
         case decryptStarted = "decrypt_started"
         case decryptSucceeded = "decrypt_succeeded"
         case decryptFailed = "decrypt_failed"

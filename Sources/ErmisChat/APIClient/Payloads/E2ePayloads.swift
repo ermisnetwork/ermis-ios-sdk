@@ -770,6 +770,23 @@ struct E2eSyncEventEnvelope: Decodable {
 }
 
 extension E2eSyncEventEnvelope {
+    /// Preserve the server identity and protocol bytes in the same shape as scope_sync.
+    /// This conversion neither invents an event ID nor acknowledges offline delivery.
+    static func realtimeProtocol(from raw: RawJSON) throws -> E2eSyncEventEnvelope? {
+        guard case .dictionary(let root) = raw,
+              case .dictionary(var data) = root["protocol_data"],
+              let id = root["event_id"]?.stringValue, UUID(uuidString: id) != nil,
+              let createdAt = root["created_at"] else { return nil }
+        data["event_id"] = .string(id)
+        data["created_at"] = createdAt
+        data["acceptance_context"] = root["acceptance_context"]
+        var envelope: [String: RawJSON] = ["type": .string("protocol"), "event_id": .string(id),
+            "created_at": createdAt, "data": .dictionary(data)]
+        envelope["cid"] = root["cid"]
+        envelope["parent_cid"] = root["parent_cid"]
+        return try JSONDecoder.default.decode(Self.self, from: JSONEncoder().encode(RawJSON.dictionary(envelope)))
+    }
+
     /// Bellboy's `/scope_sync` canonical ordering is
     /// `(created_at, protocol/application/metadata rank, event_id)`.
     ///

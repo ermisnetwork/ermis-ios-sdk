@@ -4,6 +4,91 @@ import ErmisShared
 @testable import ErmisChat
 
 final class MlsFieldLogDestinationTests: XCTestCase {
+    func testReadinessProgressContainsOnlyCycleCountsStatusAndDuration() {
+        let marker = "session_readiness cycle=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa status=partial total=10 ready=8 blocked=1 failed=1 settled=10 scopes=10 elapsed_ms=123"
+        XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+        XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture plaintext=private-fixture"), marker)
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "status=partial", with: "status=private-fixture")))
+    }
+    func testBootstrapCostMarkersExcludeIdentityBodiesAndUnboundedDimensions() {
+        let id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        let markers = ["session_http category=join_receipt stage=response_received request_id=\(id) status=200 bytes=128 elapsed_ms=15",
+            "session_native request_id=\(id) stage=finished scopes=1 elapsed_ms=14",
+            "session_bootstrap scope_sha256=" + String(repeating: "a", count: 64) + " stage=settled result=blocked elapsed_ms=100",
+            "session_join operation_id=\(id) stage=accepted"]
+        for marker in markers {
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture provider=private-fixture plaintext=private-fixture"), marker)
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project("session_http category=private-fixture stage=response_received request_id=\(id) status=200 bytes=128 elapsed_ms=15"))
+    }
+    func testReadinessGuardMarkerKeepsOnlyScopeAliasAndFixedReason() {
+        let prefix = "session_readiness_guard scope_sha256=" + String(repeating: "a", count: 64) + " reason="
+        for reason in ["membership", "live_sync", "protocol", "membership_mutation", "group_missing", "group_nonoperational", "join_receipt"] {
+            XCTAssertEqual(MlsFieldMarkerProjector.project(prefix + reason + " token=private-fixture"), prefix + reason)
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project(prefix + "private-fixture"))
+    }
+    func testProfileTimingMarkersProjectOnlyCountsAndDurations() {
+        let id = "00000000-0000-4000-8000-000000000001"
+        let markers = [
+            "user_profile_load stage=store_finished request_id=\(id) count=7 elapsed_ms=123",
+            "user_profile_http stage=network_admitted request_id=\(id) status=0 bytes=0 elapsed_ms=42",
+            "user_profile_view scope=channels stage=bound request_id=\(id) count=7 loaded=7 elapsed_ms=125"
+        ]
+        for marker in markers {
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " name=private-fixture token=private-fixture"), marker)
+            XCTAssertFalse(MlsFieldMarkerProjector.isCanonical(marker + " name=private-fixture"))
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project("user_profile_load stage=raw_profile name=private-fixture"))
+    }
+    func testRootChannelListViewMarkersKeepOnlyCountsAndTiming() {
+        let marker = "channel_list_view scope=channels stage=bound request_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa count=94 elapsed_ms=143"
+        XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " plaintext=private-fixture"), marker)
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "scope=channels", with: "scope=private-fixture")))
+    }
+
+    func testChannelListHttpMarkersKeepOnlyStatusSizeAndTiming() {
+        let marker = "channel_list_http stage=response_received request_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa status=200 bytes=5428 elapsed_ms=63"
+        XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " Authorization=private-fixture body=private-fixture"), marker)
+        XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "response_received", with: "private-fixture")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "status=200", with: "status=private-fixture")))
+    }
+
+    func testChannelListTimingMarkersExcludePayloadAndUnboundedDimensions() {
+        let marker = "channel_list_load stage=query_received request_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa count=3 elapsed_ms=182"
+        XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture plaintext=private-fixture"), marker)
+        XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "query_received", with: "private-fixture")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "elapsed_ms=182", with: "elapsed_ms=1234567890123")))
+    }
+
+    func testKeyPackageContinuationMarkersKeepOnlyPublicMetadata() {
+        let prefix = "keypackage_work operation=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa scope_sha256=" + String(repeating: "a", count: 64)
+        let markers = ["keypackage_refill phase=started trigger=connection",
+            "keypackage_refill phase=deferred delay_ms=60000",
+            prefix + " phase=count remaining=0 target=100 delta=100 generation=1",
+            prefix + " phase=upload batch_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb count=100 attempt=1",
+            prefix + " phase=ack batch_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb stored=100",
+            prefix + " phase=finished pending_batch=false"]
+        for marker in markers {
+            XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture plaintext=private-fixture"), marker)
+            XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+        }
+        XCTAssertNil(MlsFieldMarkerProjector.project("keypackage_refill phase=started trigger=private-fixture"))
+        XCTAssertNil(MlsFieldMarkerProjector.project(prefix.replacingOccurrences(of: String(repeating: "a", count: 64), with: "private-fixture") + " phase=finished pending_batch=false"))
+    }
+    func testTransportStagesKeepOnlyClosedMetadataAndBoundedCounters() {
+        let marker = "mls_transport stage=read_failed operation_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa count=32 code=-1005"
+        XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " token=private-fixture url=private-fixture"), marker)
+        XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "read_failed", with: "private-fixture")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "count=32", with: "count=1234567890")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "code=-1005", with: "code=-1234567")))
+        XCTAssertNil(MlsFieldMarkerProjector.project(marker.replacingOccurrences(of: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", with: "private-fixture")))
+    }
     private let marker = "mls_application_checkpoint stage=provider_saved result=stored"
     private let date = Date(timeIntervalSince1970: 1_791_184_000)
 
@@ -14,7 +99,7 @@ final class MlsFieldLogDestinationTests: XCTestCase {
     }
 
     func testIncomingStagesRemainCorrelatedAndExcludePrivateErrors() {
-        for stage in ["decrypt_started", "decrypt_succeeded", "decrypt_failed", "decoded_cache_saved", "ui_rendered", "ui_encrypted", "scope_blocked", "scope_page_failed"] {
+        for stage in ["socket_decoded", "event_queued", "event_persisted", "event_posted", "decrypt_started", "decrypt_succeeded", "decrypt_failed", "decoded_cache_saved", "ui_rendered", "ui_encrypted", "scope_blocked", "scope_page_failed"] {
             let marker = "mls_incoming stage=\(stage) uuid=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa cipher_sha256=" + String(repeating: "a", count: 64) + " error=crypto"
             XCTAssertEqual(MlsFieldMarkerProjector.project(marker + " plaintext=private-fixture token=private-fixture"), marker)
             XCTAssertTrue(MlsFieldMarkerProjector.isCanonical(marker))

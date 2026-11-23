@@ -1350,3 +1350,14 @@ Debug owner diagnostics can capture bounded public group metadata through
 `captureMlsGroupStateInventory`; it does not bootstrap/join/sync or export private
 provider state. The explicit cloned-host/namespace gate keeps this diagnostic
 outside normal application flows.
+
+
+### External source and shared dependencies — 2026-11-23
+
+SDK runtime follows committed develop `9b1b230fa1fca4900b22ca0a65e8efe56e723251`. Full authorized application-channel inventory uses the existing serial bootstrap/admission/receipt owner; truthful per-channel readiness waits successful final sync page and durable apply. Root/topic lists can present persisted metadata before completion; current-session cancellation/errors remain visible without claiming empty/Ready. SessionProgressPresenter is shared by list/topic/chat hosts; dismissal does not cancel work. KP first-connection binding/monotonic cooldown and exact unknown batch continuation are retained. Realtime applies locally without starting offline sync. Local epoch is a diagnostic read, not a readiness/history proof.
+
+Additive CoreData Model9 stores optional canonical e2ee_group_id/gate metadata; old models are retained. Rollback requires a Model9-capable reader: never downgrade/reset a migrated private store. Native Vendor/open-mls-ios binary/wrapper is unchanged and retained with its checksums, not rebuilt merely to hide UI. External app disables archive through every client configuration; SDK APIs/data remain for compatible consumers, and Poll defaults stay available to other consumers while external app disables them.
+
+Owner chose common `ios/ermis-shared-ios` and `ios/ermis-call-ios` develop branches for localization. This workspace SDK's local package path points to `../../../ios/ermis-shared-ios`; the external app references common call directly. Common call uses the same shared source and unchanged ErmisCallNode dependency. Capture the actual shared/call SHA and claim them during future builds; a mutable branch name alone is not artifact provenance. These relative paths require the Ermis workspace layout; this is local owner-approved dependency wiring, not an independent external package release. Existing detached external shared/call worktrees are preserved but unused.
+
+Swift grammar/source/static graph checks do not establish a signed build, migration runtime or physical peer acceptance. Builds/tests/Docker stay paused, no App Store/native promotion. Reuse workspace canonical `docs/todo/internal_external_sync_plan.md`; newly added focused regression tests remain unverified until owner resumes.

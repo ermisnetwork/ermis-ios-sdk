@@ -126,5 +126,53 @@
 			<string>Recording(%d)</string>
 		</dict>
 	</dict>
+	<key>poll.voter-count</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld voter</string>
+			<key>other</key>
+			<string>%ld voters</string>
+		</dict>
+	</dict>
+	<key>poll.more-options</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>+ %ld option</string>
+			<key>other</key>
+			<string>+ %ld options</string>
+		</dict>
+	</dict>
+	<key>poll.choice-votes</key>
+	<dict>
+		<key>NSStringLocalizedFormatKey</key>
+		<string>%1$@ · %2$#@count@</string>
+		<key>count</key>
+		<dict>
+			<key>NSStringFormatSpecTypeKey</key>
+			<string>NSStringPluralRuleType</string>
+			<key>NSStringFormatValueTypeKey</key>
+			<string>ld</string>
+			<key>one</key>
+			<string>%ld vote</string>
+			<key>other</key>
+			<string>%ld votes</string>
+		</dict>
+	</dict>
 </dict>
 </plist>

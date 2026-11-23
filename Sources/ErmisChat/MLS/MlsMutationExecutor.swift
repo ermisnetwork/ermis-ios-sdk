@@ -53,7 +53,16 @@ final class MlsMutationExecutor {
         priority: Operation.QueuePriority = .normal,
         work: @escaping () -> Void
     ) -> Operation {
-        let operation = MutationOperation(owner: self, work: work)
+        let requestId = UUID().uuidString.lowercased(), started = ProcessInfo.processInfo.systemUptime
+        let count = scopeIds.count
+        func trace(_ stage: String) {
+            let elapsed = max(0, Int((ProcessInfo.processInfo.systemUptime - started) * 1000))
+            log.info("session_native request_id=\(requestId) stage=\(stage) scopes=\(count) elapsed_ms=\(elapsed)", subsystems: .mls)
+        }
+        trace("queued")
+        let operation = MutationOperation(owner: self) {
+            trace("started"); defer { trace("finished") }; work()
+        }
         operation.queuePriority = priority
 
         stateLock.lock()

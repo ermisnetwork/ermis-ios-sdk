@@ -63,7 +63,13 @@ bundle = plugins / 'ErmisChatTests.xctest'
 shutil.copytree(args.products / 'Debug-iphoneos/ErmisChatTests.xctest', bundle)
 subprocess.run(['codesign','--force','--sign',identity,str(bundle)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 subprocess.run(['codesign','--force','--sign',identity,'--entitlements',str(entitlements),str(host)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-original = next(args.products.glob('ErmisChat-Package*.xctestrun'))
+run_candidates = [path for path in args.products.glob('*.xctestrun')
+    if any(target.get('BlueprintName') == 'ErmisChatTests'
+        for configuration in plistlib.loads(path.read_bytes()).get('TestConfigurations', [])
+        for target in configuration.get('TestTargets', []))]
+if len(run_candidates) != 1:
+    raise RuntimeError('Expected exactly one package xctestrun product')
+original = run_candidates[0]
 run = plistlib.loads(original.read_bytes())
 run.pop('CodeCoverageBuildableInfos',None)
 target = run['TestConfigurations'][0]['TestTargets'][0]

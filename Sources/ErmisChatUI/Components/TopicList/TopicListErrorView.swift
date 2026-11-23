@@ -15,6 +15,7 @@ open class TopicListErrorView: _View, UIProvider {
     open private(set) lazy var spacer: UIView = UIView().withoutAutoresizingMaskConstraints
 
     open var refreshButtonAction: (() -> Void)?
+    private var shouldBeVisible = false
 
     /// Value of `topicListErrorView` height constraint.
     open var topicListErrorViewHeight: CGFloat { 88 }
@@ -53,6 +54,8 @@ open class TopicListErrorView: _View, UIProvider {
 
     /// Shows the error view.
     open func show() {
+        guard !shouldBeVisible else { return }
+        shouldBeVisible = true
         center = .init(x: center.x, y: center.y + topicListErrorViewHeight)
         isHidden = false
 
@@ -64,11 +67,15 @@ open class TopicListErrorView: _View, UIProvider {
 
     /// Hides the error view.
     open func hide() {
+        guard shouldBeVisible else { return }
+        shouldBeVisible = false
         if isHidden { return }
         UIView.animate(withDuration: 0.5) {
             self.center = .init(x: self.center.x, y: self.center.y + self.topicListErrorViewHeight)
             self.layoutSubviews()
         } completion: { _ in
+            // A fast retry may have published a new error during this animation.
+            guard !self.shouldBeVisible else { return }
             self.isHidden = true
         }
     }

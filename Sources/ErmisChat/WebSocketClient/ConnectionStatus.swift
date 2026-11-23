@@ -116,6 +116,9 @@ enum WebSocketConnectionState: Equatable {
 
         switch source {
         case let .serverInitiated(clientError):
+            // The authentication owner renews the shared HTTP/socket token and
+            // reconnects. Generic recovery must not race it using the rejected JWT.
+            if clientError?.isExpiredTokenError == true { return false }
             if let wsEngineError = clientError?.underlyingError as? WebSocketEngineError,
                wsEngineError.code == WebSocketEngineError.stopErrorCode {
                 // Don't reconnect on `stop` errors

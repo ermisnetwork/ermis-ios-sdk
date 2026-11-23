@@ -218,7 +218,7 @@ open class QuotedMessageView: _View, UIProvider, SwiftUIRepresentable, RemoteIma
             setDeletedText()
             hideAttachmentPreview()
         } else if message?.isEncrypted == true {
-            setText(L10n.Message.encryptedMessage)
+            setText(message?.encryptedMessageLabel ?? L10n.Message.encryptedMessage)
             hideAttachmentPreview()
         } else if let message = message {
             if !message.text.isEmpty {

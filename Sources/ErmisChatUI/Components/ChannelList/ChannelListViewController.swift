@@ -103,8 +103,22 @@ open class ChannelListViewController: _ViewController,
     private var userIdsHasFetchedInfo: Set<String> = []
     ///
     private var isFetchingMissingUserInfo: Bool = false
+    private weak var userInfoController: ChannelListController?
 
     private lazy var cancelBags: Set<AnyCancellable> = []
+    private let listViewTraceId = UUID().uuidString.lowercased()
+    private let listViewTraceStarted = ProcessInfo.processInfo.systemUptime
+
+    private func traceListView(_ stage: String) {
+        let elapsed = Int((ProcessInfo.processInfo.systemUptime - listViewTraceStarted) * 1000)
+        log.info("channel_list_view scope=channels stage=\(stage) request_id=\(listViewTraceId) count=\(channels.count) elapsed_ms=\(elapsed)", subsystems: .mls)
+        if stage == "bound" {
+            let members = channels.flatMap { $0.lastActiveMembers }.filter { $0.userId != controller.client.currentUserId }
+            let total = Set(members.map { $0.userId }).count
+            let named = Set(members.filter { !($0.name?.isEmpty ?? true) }.map { $0.userId }).count
+            log.info("user_profile_view scope=channels stage=bound request_id=\(listViewTraceId) count=\(total) loaded=\(named) elapsed_ms=\(elapsed)", subsystems: .mls)
+        }
+    }
 
     /// A component responsible to handle when to load new channels.
     private lazy var viewPaginationHandler: ViewPaginationHandling = {
@@ -224,6 +238,7 @@ open class ChannelListViewController: _ViewController,
     override open func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         skipChannelUpdates = false
+        traceListView("appeared")
 
         if skippedRendering {
             UIView.performWithoutAnimation {
@@ -236,6 +251,7 @@ open class ChannelListViewController: _ViewController,
     override open func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         skipChannelUpdates = true
+        traceListView("disappeared")
     }
 
     open override func viewDidLayoutSubviews() {
@@ -248,6 +264,11 @@ open class ChannelListViewController: _ViewController,
         forItemAt indexPath: IndexPath
     ) {
         // no-op
+    }
+
+    override open func contentDidChanged() {
+        super.contentDidChanged()
+        navigationItem.searchController?.searchBar.placeholder = L10n.ChannelList.search
     }
 
     override open func setUpUI() {
@@ -323,6 +344,7 @@ open class ChannelListViewController: _ViewController,
             }
             
             self.isReloadingChannelList = false
+            self.traceListView("bound")
 
             if hasPendingReloadChannels {
                 hasPendingReloadChannels = false
@@ -397,22 +419,33 @@ open class ChannelListViewController: _ViewController,
     }
 
     private func updateUserMissingInfo(of channels: [Channel]) {
-        let ids = getMissingUserIds(of: channels)
-        guard !ids.isEmpty, !isFetchingMissingUserInfo else {
-            return
+        if userInfoController !== controller {
+            userInfoController = controller
+            userIdsHasFetchedInfo.removeAll()
+            isFetchingMissingUserInfo = false
         }
+        let ids = getMissingUserIds(of: channels)
+        guard !ids.isEmpty, !isFetchingMissingUserInfo else { return }
         isFetchingMissingUserInfo = true
-        controller.fetchUsers(with: ids) { [weak self] result in
-            switch result {
-            case .success:
-                self?.userIdsHasFetchedInfo.formUnion(ids)
-                DispatchQueue.main.async {
-                    self?.reloadChannels()
+        let expectedController = controller!, expectedUser = controller.client.currentUserId
+        controller.client.fetchUsers(with: ids) { [weak self] result in
+            // The SDK callback follows the durable save and runs on its database queue.
+            DispatchQueue.main.async {
+                guard let self, self.controller === expectedController,
+                      self.controller.client.currentUserId == expectedUser else { return }
+                self.isFetchingMissingUserInfo = false
+                switch result {
+                case .success:
+                    self.userIdsHasFetchedInfo.formUnion(ids)
+                    self.reloadChannels()
+                    // Rows from later metadata batches may have arrived during this request.
+                    self.updateUserMissingInfo(of: Array(self.controller.channels))
+                case .failure:
+                    // Keep valid rows and do not turn a profile failure into empty/success
+                    // or recursively retry the same failed request.
+                    break
                 }
-            case .failure(let error):
-                break
             }
-            self?.isFetchingMissingUserInfo = false
         }
     }
 
@@ -610,20 +643,23 @@ open class ChannelListViewController: _ViewController,
                 shouldHideEmptyView = !shouldShowEmptyView()
                 isLoading = shouldShowEmptyView()
             case .localDataFetched:
-                isLoading = false
+                // Unknown zero-row cache is not an authoritative empty result.
+                isLoading = controller.channels.isEmpty
                 reloadChannels()
-                shouldHideEmptyView = !shouldShowEmptyView()
+                updateUserMissingInfo(of: Array(controller.channels))
+                shouldHideEmptyView = true
             case .remoteDataFetched:
                 isLoading = false
                 shouldHideEmptyView = !shouldShowEmptyView()
                 reloadChannels()
-                updateUserMissingInfo(of: channels)
+                updateUserMissingInfo(of: Array(controller.channels))
             case .localDataFetchFailed, .remoteDataFetchFailed:
                 shouldHideEmptyView = !shouldShowEmptyView()
                 isLoading = false
                 shouldHideErrorView = isChannelListStatesEnabled ? false : true
                 channelListErrorView.show()
             }
+            traceListView(isLoading ? "loading" : (!shouldHideErrorView ? "error" : (shouldHideEmptyView ? "loaded" : "empty")))
             emptyView.isHidden = shouldHideEmptyView
             if isLoading, channelListLoadingView.isHidden {
                 channelListLoadingView.isHidden = false
@@ -645,10 +681,11 @@ open class ChannelListViewController: _ViewController,
                 }
             case .localDataFetched:
                 reloadChannels()
+                updateUserMissingInfo(of: Array(controller.channels))
                 loadingIndicator.stopAnimating()
             case .remoteDataFetched:
                 reloadChannels()
-                updateUserMissingInfo(of: channels)
+                updateUserMissingInfo(of: Array(controller.channels))
                 loadingIndicator.stopAnimating()
             default:
                 loadingIndicator.stopAnimating()

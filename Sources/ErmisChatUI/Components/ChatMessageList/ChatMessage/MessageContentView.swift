@@ -56,6 +56,11 @@ public extension MessageContentViewDelegate {
 
 /// A view that displays the message content.
 open class MessageContentView: _View, UIProvider, UITextViewDelegate {
+    private var encryptedMessageStateObserver: NSObjectProtocol?
+
+    deinit {
+        if let observer = encryptedMessageStateObserver { NotificationCenter.default.removeObserver(observer) }
+    }
     /// The current layout options of the view.
     /// When this value is set the subviews are instantiated and laid out just once based on
     /// the received options.
@@ -640,6 +645,15 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
     override open func setUpUI() {
         super.setUpUI()
 
+        if encryptedMessageStateObserver == nil {
+            encryptedMessageStateObserver = NotificationCenter.default.addObserver(
+                forName: EncryptedMessageState.didChange, object: nil, queue: .main
+            ) { [weak self] notification in
+                guard let self, self.content?.matchesEncryptedMessageStateChange(notification) == true else { return }
+                self.updateContentIfNeeded()
+            }
+        }
+
         guard let options = layoutOptions else {
             log.assertionFailure("Layout options are missing")
             return
@@ -680,7 +694,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
             setNeedsLayout()
         }
 
-        if let message = content, message.poll != nil, message.deletedAt == nil {
+        if components.isPollsEnabled, let message = content, message.poll != nil, message.deletedAt == nil {
             if pollCard == nil {
                 let card = PollCardView()
                 pollCard = card
@@ -700,17 +714,17 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
                 let controller = owner.client.channelController(for: channel.cid)
                 guard !controller.isE2eeEnabled, message.poll?.closed == false,
                     message.author.userId == owner.client.currentUserId || controller.channel?.membership?.isModerator == true else { return }
-                let alert = UIAlertController(title: PollStrings.text("Close poll?", "Đóng bình chọn?"),
-                    message: PollStrings.text("No one can vote after closing. This cannot be undone.", "Sau khi đóng, mọi người không thể bình chọn. Không thể hoàn tác."), preferredStyle: .alert)
-                alert.addAction(UIAlertAction(title: PollStrings.text("Cancel", "Hủy"), style: .cancel))
-                alert.addAction(UIAlertAction(title: PollStrings.text("Close poll", "Đóng bình chọn"), style: .destructive) { [weak owner, weak button] _ in
+                let alert = UIAlertController(title: L10n.ui("ui.close-poll_8bfe27"),
+                    message: L10n.ui("ui.no-one-can-vote-after-closing-this-cannot-be-undone"), preferredStyle: .alert)
+                alert.addAction(UIAlertAction(title: L10n.ui("alert.actions.cancel"), style: .cancel))
+                alert.addAction(UIAlertAction(title: L10n.ui("ui.close-poll"), style: .destructive) { [weak owner, weak button] _ in
                     button?.isEnabled = false
                     controller.closePoll(messageId: message.id) { result in
                         DispatchQueue.main.async {
                             button?.isEnabled = true
                             if case .failure(let error) = result, let owner {
-                                let failure = UIAlertController(title: PollStrings.text("Could not close poll", "Không thể đóng bình chọn"), message: error.localizedDescription, preferredStyle: .alert)
-                                failure.addAction(UIAlertAction(title: "OK", style: .default));owner.present(failure, animated: true)
+                                let failure = UIAlertController(title: L10n.ui("ui.could-not-close-poll"), message: error.localizedDescription, preferredStyle: .alert)
+                                failure.addAction(UIAlertAction(title: L10n.Alert.Actions.ok, style: .default));owner.present(failure, animated: true)
                             }
                         }
                     }
@@ -755,6 +769,9 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
                 MlsIncomingTrace.record(message.isEncrypted ? .uiEncrypted : .uiRendered,
                     uuid: message.id, ciphertext: bytes)
             }
+        }
+        if !components.isPollsEnabled, content?.poll != nil, content?.deletedAt == nil {
+            text = L10n.ui("ui.unsupported-message-type")
         }
         if textView?.text != text {
             let attributedText = NSAttributedString(
@@ -816,7 +833,7 @@ open class MessageContentView: _View, UIProvider, UITextViewDelegate {
         }
 
         // PollCard owns the complete surface; avoid nesting it inside the text bubble border/insets.
-        let showsPoll = content?.poll != nil && content?.deletedAt == nil
+        let showsPoll = components.isPollsEnabled && content?.poll != nil && content?.deletedAt == nil
         bubbleContentContainer.layoutMargins = showsPoll ? .zero : .init(top: 8, left: 16, bottom: 8, right: 16)
         bubbleContentContainer.backgroundColor = showsPoll ? .clear : bubbleContentContainer.backgroundColor
         bubbleView?.layer.borderWidth = showsPoll ? 0 : 1

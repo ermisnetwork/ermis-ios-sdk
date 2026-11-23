@@ -52,15 +52,19 @@ final class PollContractTests: XCTestCase {
         } else { XCTFail("Poll-close system message lost") }
     }
     @MainActor
-    func testPollMenuKeepsFilesAndLeavesPayloadIntact() throws {
+    func testDisabledPollMenuKeepsFilesAndLeavesPayloadIntact() throws {
+        let previous = Components.default.isPollsEnabled
+        defer { Components.default.isPollsEnabled = previous }
+        Components.default.isPollsEnabled = false
         let button = ComposerMenuButton()
         let actions = button.menuItems().compactMap { $0 as? UIAction }
-        XCTAssertEqual(actions.count, 2)
-        XCTAssertTrue(actions.contains { $0.title == button.title(for: .file) })
-        XCTAssertTrue(actions.contains { $0.title == button.title(for: .poll) })
+        XCTAssertEqual(actions.count, 1)
+        XCTAssertEqual(actions.first?.title, button.title(for: .file))
         let message = try payload()
         XCTAssertEqual(message.type, .poll)
         XCTAssertEqual(message.poll?.totalVoters, 2)
+        Components.default.isPollsEnabled = true
+        XCTAssertEqual(button.menuItems().count, 2)
     }
 
     private func renderedLabels(in view: UIView) -> [String] {
@@ -101,6 +105,16 @@ final class PollContractTests: XCTestCase {
                 view.content = model
                 view.contentDidChanged()
                 XCTAssertTrue(self.renderedLabels(in: view).contains("Lunch?"))
+                let previous = Components.default.isPollsEnabled
+                defer { Components.default.isPollsEnabled = previous }
+                Components.default.isPollsEnabled = false
+                view.contentDidChanged()
+                XCTAssertEqual(view.textView?.text, L10n.ui("ui.unsupported-message-type"))
+                view.content = nil
+                view.contentDidChanged()
+                view.content = model
+                view.contentDidChanged()
+                XCTAssertEqual(view.textView?.text, L10n.ui("ui.unsupported-message-type"))
                 XCTAssertEqual(model.poll?.totalVoters, 2)
             } else {
                 XCTFail("Persisted poll fixture missing")

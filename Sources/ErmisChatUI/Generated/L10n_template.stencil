@@ -54,6 +54,12 @@ import Foundation
 {% endmacro %}
 {% set enumName %}{{param.enumName|default:"L10n"}}{% endset %}
 {{accessModifier}} enum {{enumName}} {
+  public static func ui(_ key: String, _ args: CVarArg...) -> String {
+    let provided = Theme.default.localizationProvider(key, "Localizable")
+    let format = provided == key ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: "Localizable") : provided
+    return String(format: format, locale: Theme.default.localizationLocale, arguments: args)
+  }
+
   {% if tables.count > 1 or param.forceFileNameEnum %}
   {% for table in tables %}
   {{accessModifier}} enum {{table.name|swiftIdentifier:"pretty"|escapeReservedKeywords}} {
@@ -74,7 +80,7 @@ extension {{enumName}} {
      let format = providedFormat == key
        ? Bundle.ermisChatUI.localizedString(forKey: key, value: nil, table: table)
        : providedFormat
-     return String(format: format, locale: Locale.current, arguments: args)
+     return String(format: format, locale: Theme.default.localizationLocale, arguments: args)
   }
 }
 {% if not param.bundle and not param.lookupFunction %}

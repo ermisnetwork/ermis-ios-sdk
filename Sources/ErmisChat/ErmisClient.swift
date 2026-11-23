@@ -69,6 +69,8 @@ public class ErmisClient {
     #endif
 
     private let archiveOwnerLock = NSLock()
+    public var sessionSyncProgress: SessionSyncProgress { e2eRepository.sessionProgress }
+
     public var archiveRecovery: E2eeArchiveRecovery? {
         archiveOwnerLock.lock(); defer { archiveOwnerLock.unlock() }
         guard config.e2eeMlsRolloutControls.epochArchiveEnabled, let userId = currentUserId, let root = config.resolvedLocalStorageFolderURL else { return nil }
@@ -76,13 +78,18 @@ public class ErmisClient {
         let namespaceInput = "\(config.endpointEnviroment.baseURL.absoluteString)|\(config.apiKey.apiKeyString)|\(projectId)|\(userId)|\(mlsClient.currentDeviceId ?? "")"
         let namespace = Data(CryptoKit.SHA256.hash(data: Data(namespaceInput.utf8))).map { String(format: "%02x", $0) }.joined()
         do {
+            let historyOwner = e2eRepository.captureHistorySessionOwner()
             let owner = try E2eeArchiveRecovery(namespace: namespace, root: root, userId: userId, api: apiClient,
                 isCurrentAccount: { [weak self] in self?.currentUserId == userId },
                 generation: { [weak e2eRepository] cid in guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }; return try repository.archiveGeneration(for: cid) },
                 apply: { [weak e2eRepository] cid, generation, archive, snapshot, message in
                     guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }
                     try repository.applyArchivedApplication(scopeCid: cid, generation: generation, archive: archive, snapshot: snapshot, envelope: message)
-                })
+                }, applyPage: { [weak e2eRepository] cid, generation, archive, snapshot, message in
+                    guard let repository = e2eRepository else { throw E2eeArchiveError.sessionEnded }; try historyOwner()
+                    try repository.applyArchivedApplication(scopeCid: cid, generation: generation, archive: archive, snapshot: snapshot, envelope: message,
+                        historicalPage: true, pageOwner: historyOwner)
+                }, onUnlocked: { [weak e2eRepository] in e2eRepository?.retryRequestedHistoryPage(afterUnlock: true) })
             e2eRepository.archiveRecovery = owner
             Task { await owner.resume() }
             return owner
@@ -530,13 +537,15 @@ public class ErmisClient {
         self.setRootProjectId(token.projectId)
         self.chainId = token.chainId
         self.setProjecId(token.projectId)
+        // First-connection delegates and queued token waiters can start work immediately.
+        // Bind the native installation first so HTTP/WS use its canonical device ID.
+        do {
+            try mlsClient.setup(with: token.userId)
+            authenticationRepository.configureDeviceIdStore(mlsClient.deviceIdStore)
+        } catch {
+            log.error("Failed to initialize MLS: \(error)")
+        }
         authenticationRepository.update(token: token, userInfo: userInfo)
-            do {
-                try mlsClient.setup(with: token.userId)
-                authenticationRepository.configureDeviceIdStore(mlsClient.deviceIdStore)
-            } catch {
-                log.error("Failed to initialize MLS: \(error)")
-            }
     }
 
     public func setProjecId(_ projectId: String) {
@@ -650,6 +659,11 @@ public class ErmisClient {
                                                    method: method,
                                                    apiKey: apiKey),
                                        completion: completion)
+    }
+
+    public func loginFirebasePhone(token: String, apiKey: String,
+                                   completion: @escaping (Result<AuthenticationPayload, Error>) -> Void) {
+        authenticationRepository.loginFirebasePhone(token: token, apiKey: apiKey, completion: completion)
     }
 
     public func loginGoogle(with googleIdToken: String,
@@ -1006,6 +1020,17 @@ public class ErmisClient {
         e2eRepository.readiness(for: cid)
     }
 
+    /// Reads the installed local epoch asynchronously. This does not sync, join, or restore history.
+    /// Completion is delivered on the main queue; nil means no readable current local group.
+    public func localMlsEpoch(for cid: ChannelId, completion: @escaping (UInt64?) -> Void) {
+        let user = currentUserId
+        e2eRepository.localGroupEpoch(for: cid) { [weak self] epoch in
+            DispatchQueue.main.async {
+                completion(self?.currentUserId == user ? epoch : nil)
+            }
+        }
+    }
+
     /// Runs the Welcome-first bootstrap flow and completes when the channel reaches a terminal state.
     public func ensureE2eeReady(
         for cid: ChannelId,
@@ -1101,16 +1126,40 @@ public class ErmisClient {
     ///   - completion: A block to be executed when the process is completed. Contains Result of `ChatUser` list or `Error`
     public func fetchUsers(with ids: [String],
                            completion: @escaping (Result<[ChatUser], Error>) -> Void) {
-        apiClient.request(endpoint: .users(with: ids, projectId: projectId)) { [weak self] result in
+        let owner = apiClient.captureSessionNetworkOwner()
+        let projectId = self.projectId, database = databaseContainer
+        let requestId = UUID().uuidString.lowercased(), started = ProcessInfo.processInfo.systemUptime
+        func trace(_ stage: String, count: Int) {
+            let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+            log.info("user_profile_load stage=\(stage) request_id=\(requestId) count=\(count) elapsed_ms=\(elapsed)", subsystems: .mls)
+        }
+        trace("query_started", count: ids.count)
+        apiClient.request(endpoint: .users(with: ids, projectId: projectId)) { result in
+            do { try owner() } catch {
+                trace("retired", count: 0); completion(.failure(error)); return
+            }
             switch result {
             case .success(let userListPayload):
-                self?.databaseContainer.write { session in
+                trace("query_received", count: userListPayload.users.count)
+                var models: [ChatUser] = []
+                database.write { session in
+                    try owner()
                     let users = session.saveUsers(payload: userListPayload,
-                                                  projectId: self?.projectId ?? "",
+                                                  projectId: projectId,
                                                   query: nil)
-                    completion(.success(users.compactMap({ try? $0.asModel() })))
+                    models = users.compactMap { try? $0.asModel() }
+                } completion: { error in
+                    if let error {
+                        trace("store_failed", count: 0); completion(.failure(error)); return
+                    }
+                    do { try owner() } catch {
+                        trace("retired", count: 0); completion(.failure(error)); return
+                    }
+                    trace("store_finished", count: models.count)
+                    completion(.success(models))
                 }
             case .failure(let error):
+                trace("query_failed", count: 0)
                 completion(.failure(error))
             }
         }
@@ -1170,13 +1219,6 @@ public class ErmisClient {
                 return
             }
 
-            guard let refreshToken = refreshTokenHelper.refreshToken, !refreshToken.isEmpty else {
-                log.info("mls_auth_checkpoint stage=refresh_token result=missing", subsystems: .mls)
-                let error = ClientError.MissingRefreshToken()
-                completion(.failure(error))
-                return
-            }
-
             log.info("mls_auth_checkpoint stage=refresh_token result=started", subsystems: .mls)
             refreshTokenHelper.loadRefreshedToken(request: { previous, refresh, callback in
                 self.ermisRefreshToken(previous, refreshToken: refresh, completion: callback)
@@ -1188,12 +1230,7 @@ public class ErmisClient {
                 case .failure(let error):
                     log.info("mls_auth_checkpoint stage=refresh_token result=rejected", subsystems: .mls)
                     log.info(ErmisAuthenticationDiagnostics.marker(for: error), subsystems: .mls)
-                    if error is ClientError.ExpiredToken {
-                        refreshTokenHelper.onRefreshTokenExpired?()
-                        completion(.failure(ClientError.RefreshTokenExpired()))
-                    } else {
-                        completion(.failure(error))
-                    }
+                    completion(.failure(error))
                 }
             }
         }
@@ -1253,6 +1290,11 @@ public class ErmisClient {
 
     public func deleteUser(signature: String) async throws {
         try await apiClient.request(endpoint: .deleteUser(signature: signature))
+    }
+
+    public func deleteUserFirebase(token: String, apiKey: String,
+                                   completion: @escaping (Result<EmptyResponse, Error>) -> Void) {
+        apiClient.request(endpoint: .deleteUserFirebase(token: token, apiKey: apiKey), completion: completion)
     }
 
     public func getDeleteUserOtp(completion: @escaping ((Result<EmptyResponse, Error>) -> Void)) {
@@ -1421,10 +1463,13 @@ extension ErmisClient: ConnectionStateDelegate {
     func webSocketClient(_ client: WebSocketClient, didUpdateConnectionState state: WebSocketConnectionState) {
         connectionRepository.handleConnectionUpdate(
             state: state,
-            onExpiredToken: { [weak repository = authenticationRepository] in
-                repository?.refreshToken { _ in
-                    // The connection recovery path observes the resulting connection state.
-                    // It does not need to forward this completion through `ErmisClient`.
+            onExpiredToken: { [weak repository = authenticationRepository, weak client] in
+                let account = repository?.currentUserId
+                repository?.refreshToken { [weak repository, weak client] error in
+                    guard let error, repository?.currentUserId == account,
+                          !(error is ClientError.MissingRefreshToken), !(error is ClientError.RefreshTokenExpired),
+                          !(error is ClientError.MissingTokenProvider) else { return }
+                    client?.resumeAfterTransientTokenRefreshFailure(error)
                 }
             }
         )

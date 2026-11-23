@@ -23,7 +23,7 @@ public extension ErmisClient {
         messageOrdering: MessageOrdering = .topToBottom
     ) -> ChannelController {
         .init(
-            channelQuery: .init(cid: cid, parentCid: parentId),
+            channelQuery: .init(cid: cid, parentCid: parentId, pageSize: 25),
             channelListQuery: channelListQuery,
             client: self,
             messageOrdering: messageOrdering
