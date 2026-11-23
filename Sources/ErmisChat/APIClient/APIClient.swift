@@ -281,6 +281,10 @@ class APIClient {
             do {
                 try owner()
                 let payload = try result.get()
+                guard payload.metadataComplete else {
+                    throw NSError(domain: "ChannelListPagination", code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "Channel metadata could not be completely decoded"])
+                }
                 let additions = payload.channels.filter { !seen.contains($0.channel.cid) }
                 let accumulated = channels + additions
                 if payload.channels.count < page.pagination.pageSize {
@@ -514,6 +518,34 @@ class APIClient {
         allowAuthRefresh: Bool = true,
         completion: @escaping (Result<Response, Error>) -> Void
     ) {
+        let listRequestId = UUID().uuidString.lowercased()
+        let listRequestStarted = ProcessInfo.processInfo.systemUptime
+        let isListRequest: Bool = { if case .channels = endpoint.path { return true }; return false }()
+        let isProfileRequest: Bool = { if case .userBatch = endpoint.path { return true }; return false }()
+        // Closed categories only: never log paths, headers, users or request/response bodies.
+        let costCategory: String? = {
+            if isListRequest { return "metadata" }; if isProfileRequest { return "profile" }
+            switch endpoint.path {
+            case .e2eSync, .e2eChannelSync: return "sync"
+            case .mlsGeneration: return "generation"
+            case .externalJoin: return "join_submit"
+            case .getGroupInfo, .getGroupInfoRefresh, .uploadGroupInfo, .claimGroupInfoRefresh, .reportGroupInfoFailure: return "group_info"
+            case .mlsControl(let path): return path.contains("/external_join/operations/") ? "join_receipt" : "control"
+            default: return endpoint.path.value.contains("key_packages") ? "keypackage" : nil
+            }
+        }()
+        func traceListHttp(_ stage: String, status: Int = 0, bytes: Int = 0) {
+            guard costCategory != nil else { return }
+            let elapsed = Int((ProcessInfo.processInfo.systemUptime - listRequestStarted) * 1000)
+            if isListRequest || isProfileRequest {
+                let marker = isListRequest ? "channel_list_http" : "user_profile_http"
+                log.info("\(marker) stage=\(stage) request_id=\(listRequestId) status=\(status) bytes=\(bytes) elapsed_ms=\(elapsed)", subsystems: .mls)
+            }
+            if let costCategory, ["network_queued", "network_admitted", "response_received", "network_failed", "decode_succeeded", "decode_failed"].contains(stage) {
+                log.info("session_http category=\(costCategory) stage=\(stage) request_id=\(listRequestId) status=\(status) bytes=\(bytes) elapsed_ms=\(elapsed)", subsystems: .mls)
+            }
+        }
+        traceListHttp("encoding_started")
         let assertNetworkOwner = sessionNetworkBudget.captureOwner()
         // This gate also releases AsyncOperation when encoding/registration/refresh never calls back.
         let budget = endpoint.localMlsDeadline.map { MlsRequestCompletion<Response>(deadline: $0, timeoutReason: endpoint.localMlsTimeoutReason, completion: completion) }
@@ -537,6 +569,7 @@ class APIClient {
                     urlRequest.timeoutInterval = min(5, deadline.timeIntervalSinceNow)
                 }
             } catch {
+                traceListHttp("encoding_failed")
                 log.error("[API_REQUEST] state=encoding_failed", subsystems: .httpRequests)
                 // Proof registration happens during encoding and can receive the same bare
                 // HTTP401 as the final request. Join the existing refresh queue in that case.
@@ -550,6 +583,7 @@ class APIClient {
                 return
             }
 
+            traceListHttp("encoding_finished")
             log.debug(
                 urlRequest.privacySafeDiagnosticSummary(state: .started),
                 subsystems: .httpRequests
@@ -561,13 +595,17 @@ class APIClient {
                 return
             }
             
+            traceListHttp("network_queued")
             self.sessionNetworkBudget.submit({ permit in
+            traceListHttp("network_admitted")
             do {
                 try assertNetworkOwner(); try endpoint.localMlsGuard?()
                 if budget?.isFinished == true { permit.release(); return }
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
             } catch { permit.release(); complete(.failure(error)); return }
             let task = self.session.dataTask(with: urlRequest) { [decoder = self.decoder] (data, response, error) in
+                traceListHttp(error == nil ? "response_received" : "network_failed",
+                              status: (response as? HTTPURLResponse)?.statusCode ?? 0, bytes: data?.count ?? 0)
                 permit.release()
                 if budget?.isFinished == true { return }
                 do { try assertNetworkOwner() } catch { complete(.failure(error)); return }
@@ -593,8 +631,10 @@ class APIClient {
                         urlRequest.privacySafeDiagnosticSummary(state: .succeeded),
                         subsystems: .httpRequests
                     )
+                    traceListHttp("decode_succeeded", status: (response as? HTTPURLResponse)?.statusCode ?? 0, bytes: data?.count ?? 0)
                     complete(.success(decodedResponse))
                 } catch {
+                    traceListHttp("decode_failed", status: (response as? HTTPURLResponse)?.statusCode ?? 0, bytes: data?.count ?? 0)
                     log.debug(
                         urlRequest.privacySafeDiagnosticSummary(state: .failed),
                         subsystems: .httpRequests
@@ -633,9 +673,13 @@ class APIClient {
             do {
                 try assertNetworkOwner(); try endpoint.localMlsGuard?()
                 if let deadline = endpoint.localMlsDeadline, deadline <= Date() { throw ClientError.Unexpected(endpoint.localMlsTimeoutReason) }
-                if budget?.isFinished != true { task.resume() } else { task.cancel(); permit.release() }
+                if budget?.isFinished != true {
+                    traceListHttp("network_resumed")
+                    task.resume()
+                } else { task.cancel(); permit.release() }
             } catch { task.cancel(); permit.release(); complete(.failure(error)) }
-            }, reject: { complete(.failure(ClientError.Unexpected("network_queue_retired_or_full"))) })
+            }, priority: isListRequest ? .metadata : .normal,
+               reject: { complete(.failure(ClientError.Unexpected("network_queue_retired_or_full"))) })
         }
     }
     

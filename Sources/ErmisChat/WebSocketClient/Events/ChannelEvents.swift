@@ -608,6 +608,8 @@ public struct MLSEvent: ChannelSpecificEvent {
     /// The message which updated the channel.
     public let mlsProtocol: MLSProtocolMessagePayload
 
+    var protocolEnvelope: E2eSyncEventEnvelope? = nil
+
     /// The event timestamp.
     public let createdAt: Date
 }
@@ -634,7 +636,7 @@ class MLSEventDTO: EventDTO {
     func toDomainEvent(session: DatabaseSession) -> Event? {
         let userDTO = user.flatMap { session.user(id: $0.id, projectId: cid.projectId) }
 
-        return MLSEvent(
+        var event = MLSEvent(
             cid: cid,
             parentCid: parentCid,
             topicCids: topicCids,
@@ -642,5 +644,7 @@ class MLSEventDTO: EventDTO {
             mlsProtocol: mlsProtocol,
             createdAt: createdAt
         )
+        event.protocolEnvelope = payload.mlsSyncEnvelope
+        return event
     }
 }

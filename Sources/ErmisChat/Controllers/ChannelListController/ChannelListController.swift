@@ -162,6 +162,14 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
     private var pendingReconnectRefresh = false
     private var isListConnectionConnected = false
     private var listSessionOwner: (() throws -> Void)?
+    private let listTraceId = UUID().uuidString.lowercased()
+    private let listTraceStarted = ProcessInfo.processInfo.systemUptime
+
+    private func traceTopicList(_ stage: String, count: Int = -1) {
+        guard parentCid != nil else { return }
+        let elapsed = Int((ProcessInfo.processInfo.systemUptime - listTraceStarted) * 1000)
+        log.info("channel_list_load stage=\(stage) request_id=\(listTraceId) count=\(count) elapsed_ms=\(elapsed)", subsystems: .mls)
+    }
 
     /// Creates a new `ChannelListController`.
     ///
@@ -322,6 +330,9 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
         let networkOwner = client.apiClient.captureSessionNetworkOwner()
         let owner = { try sessionOwner(); try networkOwner() }
         do { try owner() } catch {
+            if (try? sessionOwner()) != nil {
+                state = .remoteDataFetchFailed(ClientError(with: error))
+            }
             pendingReconnectRefresh = false
             let completions = listUpdateCompletions
             listUpdateCompletions.removeAll()
@@ -329,6 +340,7 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
             return
         }
         listUpdateInFlight = true
+        traceTopicList("controller_started")
         let limit = query.pagination.pageSize
         worker.update(
             channelListQuery: query,
@@ -343,6 +355,12 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
                     let refreshAgain = self.pendingReconnectRefresh && self.isListConnectionConnected
                         && (try? sessionOwner()) != nil
                     self.pendingReconnectRefresh = false
+                    // Transport cancellation is terminal for this request, even on
+                    // first entry. A retired account/controller must stay silent.
+                    if (try? sessionOwner()) != nil {
+                        self.traceTopicList("controller_cancelled")
+                        self.state = .remoteDataFetchFailed(ClientError(with: error))
+                    }
                     self.callback { completions.forEach { $0(error) } }
                     if refreshAgain { self.startChannelListUpdate() }
                     return
@@ -350,12 +368,20 @@ public class ChannelListController: DataController, DelegateCallable, DataStoreP
                 switch result {
                 case let .success(channels):
                     self.channelListObserver.refreshItems { [weak self] in
-                        guard (try? owner()) != nil else { return }
-                        self?.state = .remoteDataFetched
+                        do {
+                            try owner()
+                            self?.traceTopicList("controller_loaded", count: channels.count)
+                            self?.state = .remoteDataFetched
+                        } catch {
+                            if (try? sessionOwner()) != nil {
+                                self?.state = .remoteDataFetchFailed(ClientError(with: error))
+                            }
+                        }
                     }
                     self.hasLoadedAllPreviousChannels = self.query.shouldLoadAllChannels || channels.count < limit
                     self.callback { completions.forEach { $0(nil) } }
                 case let .failure(error):
+                    self.traceTopicList("controller_failed")
                     self.state = .remoteDataFetchFailed(ClientError(with: error))
                     self.callback { completions.forEach { $0(error) } }
                 }

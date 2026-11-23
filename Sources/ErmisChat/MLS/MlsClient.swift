@@ -873,6 +873,12 @@ public class MlsClient {
         guard try Data(contentsOf: url) == data else { throw ClientError("Recovery checkpoint readback failed") }
     }
 
+    func removeRecoveryCheckpoint(key: String) throws {
+        recoveryCheckpointLock.lock(); defer { recoveryCheckpointLock.unlock() }
+        let url = try recoveryCheckpointURL(key: key)
+        if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+    }
+
     private func corruptGenerationCheckpoint(cid: String) -> GroupGenerationMarker {
         var marker = GroupGenerationMarker(cid: cid, generation: 0, groupId: nil, epoch: 0,
             status: "checkpoint_corrupt", operationId: nil)
@@ -954,6 +960,26 @@ public class MlsClient {
             + cid
             + ":"
             + String(generation)
+    }
+
+    /// Presentation-only read of an already open provider, without candidate activation or hydration.
+    func localGroupEpoch(cid: String) -> UInt64? {
+        let marker = loadGenerationMarker(cid: cid)
+        if let marker, marker.status != "active" { return nil }
+        let installedProvider: Provider?
+        if let path = marker?.providerPath {
+            installedProvider = generationProviders[path]
+        } else {
+            installedProvider = provider
+        }
+        guard let installedProvider else { return nil }
+        let group: Group?
+        if let marker, marker.generation > 0, let groupId = marker.groupId {
+            group = try? Group.loadFromStorageWithGroupId(provider: installedProvider, groupId: groupId)
+        } else {
+            group = try? Group.loadFromStorage(provider: installedProvider, cid: cid)
+        }
+        return group?.epoch()
     }
 
     func isGroupLoaded(cid: String) -> Bool {

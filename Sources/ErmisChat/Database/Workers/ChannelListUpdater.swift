@@ -26,9 +26,23 @@ class ChannelListUpdater: Worker {
         userId: String?,
         completion: ((Result<[Channel], Error>) -> Void)? = nil
     ) {
+        let inventory = channelListQuery.shouldLoadAllChannels && channelListQuery.sessionReadinessProjectId != nil
+            && channelListQuery.pagination.offset == 0 && channelListQuery.pagination.cursor == nil
+            ? e2eRepository?.beginSessionInventory() : nil
+        let retry: () -> Void = { [weak self] in
+            self?.update(channelListQuery: channelListQuery, userId: userId)
+        }
+        let requestId = UUID().uuidString.lowercased()
+        let started = ProcessInfo.processInfo.systemUptime
+        func trace(_ stage: String, count: Int) {
+            let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+            log.info("channel_list_load stage=\(stage) request_id=\(requestId) count=\(count) elapsed_ms=\(elapsed)", subsystems: .mls)
+        }
+        trace("query_started", count: 0)
         fetch(channelListQuery: channelListQuery) { [weak self] in
             switch $0 {
             case let .success(channelListPayload):
+                trace("query_received", count: channelListPayload.channels.count)
                 let isInitialFetch = channelListQuery.pagination.cursor == nil && channelListQuery.pagination.offset == 0
                 var initialActions: ((DatabaseSession) -> Void)?
                 if isInitialFetch {
@@ -39,14 +53,34 @@ class ChannelListUpdater: Worker {
                     }
                 }
 
+                let finish: (Result<[Channel], Error>) -> Void = { result in
+                    switch result {
+                    case .success(let channels): trace("store_finished", count: channels.count)
+                    case .failure: trace("store_failed", count: 0)
+                    }
+                    completion?(result)
+                    if let inventory, let repository = self?.e2eRepository {
+                        if case .success = result, let userId, let projectId = channelListQuery.sessionReadinessProjectId {
+                            repository.completeSessionInventory(inventory, roots: channelListPayload,
+                                userId: userId, projectId: projectId, retry: retry)
+                        } else { repository.failSessionInventory(inventory, retry: retry) }
+                    }
+                }
+                if channelListQuery.shouldLoadAllChannels,
+                   channelListPayload.channels.count > max(1, channelListQuery.pagination.pageSize) {
+                    self?.writeWholeListInBatches(payload: channelListPayload, query: channelListQuery, completion: finish)
+                    return
+                }
                 self?.writeChannelListPayload(
                     payload: channelListPayload,
                     query: channelListQuery,
                     initialActions: initialActions,
-                    completion: completion
+                    completion: finish
                 )
             case let .failure(error):
+                trace("query_failed", count: 0)
                 completion?(.failure(error))
+                if let inventory { self?.e2eRepository?.failSessionInventory(inventory, retry: retry) }
             }
         }
     }
@@ -247,6 +281,59 @@ private extension DatabaseSession {
 }
 
 private extension ChannelListUpdater {
+    /// Publish complete metadata batches only for an empty query (cold start).
+    /// A refresh with existing rows retains the original atomic replacement.
+    func writeWholeListInBatches(payload: ChannelListPayload, query: ChannelListQuery,
+                                 completion: @escaping (Result<[Channel], Error>) -> Void) {
+        let size = max(1, query.pagination.pageSize)
+        let batches = stride(from: 0, to: payload.channels.count, by: size).map {
+            Array(payload.channels[$0..<min($0 + size, payload.channels.count)])
+        }
+        var channels: [Channel] = []
+        var usedAtomicRefresh = false
+        let traceId = UUID().uuidString.lowercased()
+        let started = ProcessInfo.processInfo.systemUptime
+        WatchedChannelPageWriter.save(Array(batches.enumerated()), persist: { [database] batch, acknowledge in
+            if usedAtomicRefresh { acknowledge(nil); return }
+            database.write({ session in
+                try payload.sessionOwner?()
+                if batch.offset == 0, let queryDTO = session.channelListQuery(filterHash: query.filter.filterHash),
+                   !queryDTO.channels.isEmpty {
+                    // Existing rows are already usable: preserve refresh atomicity,
+                    // including the ordering of queued live membership changes.
+                    usedAtomicRefresh = true
+                    queryDTO.channels.removeAll()
+                    channels = session.saveChannelList(payload: payload, query: query).compactMap { try? $0.asModel() }
+                } else {
+                    let part = ChannelListPayload(channels: batch.element)
+                    channels += session.saveChannelList(payload: part, query: query).compactMap { try? $0.asModel() }
+                }
+            }, completion: { error in
+                if error == nil {
+                    let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+                    log.info("channel_list_load stage=store_batch request_id=\(traceId) count=\(channels.count) elapsed_ms=\(elapsed)", subsystems: .mls)
+                }
+                acknowledge(error)
+            })
+        }, completion: { [weak self] error in
+            if let error { completion(.failure(error)); return }
+            do { try payload.sessionOwner?() } catch { completion(.failure(error)); return }
+            self?.notifyPersistedMetadata(payload)
+            completion(.success(channels))
+        })
+    }
+
+    func notifyPersistedMetadata(_ payload: ChannelListPayload) {
+        // Query results are now the bootstrap trigger, matching Web: restored groups
+        // catch up in bounded batches; missing groups pre-sync for a Welcome and only
+        // then fall back to serialized external join + post-sync.
+        e2eRepository?.cleanupOrphanedMlsGroups()
+
+        // Register exact latest-message demand before bootstrap can finish.
+        e2eRepository?.requestChannelListPreviews(payload.channels)
+        e2eRepository?.handlePersistedEncryptedChannels(payload)
+    }
+
     func writeChannelListPayload(
         payload: ChannelListPayload,
         query: ChannelListQuery,
@@ -264,19 +351,7 @@ private extension ChannelListUpdater {
                 completion?(.failure(error))
             } else {
                 do { try payload.sessionOwner?() } catch { completion?(.failure(error)); return }
-                // Query results are now the bootstrap trigger, matching Web: restored groups
-                // catch up in bounded batches; missing groups pre-sync for a Welcome and only
-                // then fall back to serialized external join + post-sync.
-                self?.e2eRepository?.cleanupOrphanedMlsGroups()
-
-                let mlsCids = payload.channels
-                    .filter { $0.channel.mlsEnabled }
-                    .map { $0.channel.cid }
-                // Register exact latest-message demand before bootstrap can finish.
-                self?.e2eRepository?.requestChannelListPreviews(payload.channels)
-                if !mlsCids.isEmpty {
-                    self?.e2eRepository?.handleNewEncryptedChannels(mlsCids)
-                }
+                self?.notifyPersistedMetadata(payload)
                 completion?(.success(channels))
             }
         }

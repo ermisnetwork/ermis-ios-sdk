@@ -8,6 +8,7 @@ struct ChannelListPayload {
     /// A list of channels response (see `ChannelQuery`).
     let channels: [ChannelPayload]
     var sessionOwner: (() throws -> Void)? = nil
+    var metadataComplete = true
 }
 
 extension ChannelListPayload: Decodable {
@@ -19,6 +20,8 @@ extension ChannelListPayload: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let channels = try container.decodeArrayIgnoringFailures([ChannelPayload].self, forKey: .channels)
         self.init(channels: channels)
+        let count = try container.nestedUnkeyedContainer(forKey: .channels).count
+        metadataComplete = count == channels.count && channels.allSatisfy(\.metadataComplete)
     }
 }
 
@@ -42,6 +45,7 @@ struct ChannelPayload {
     let isPinned: Bool?
     
     let topics: [ChannelPayload]?
+    var metadataComplete = true
 }
 
 extension ChannelPayload {
@@ -70,6 +74,7 @@ extension ChannelPayload: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let topics = try container.decodeArrayIfPresentIgnoringFailures([ChannelPayload].self, forKey: .topics)
 
         self.init(
             channel: try container.decode(ChannelDetailPayload.self, forKey: .channel),
@@ -81,8 +86,12 @@ extension ChannelPayload: Decodable {
             channelReads: try container.decodeArrayIfPresentIgnoringFailures([ChannelReadPayload].self, forKey: .channelReads) ?? [],
             isHidden: try container.decodeIfPresent(Bool.self, forKey: .hidden),
             isPinned: try container.decodeIfPresent(Bool.self, forKey: .isPinned),
-            topics: try container.decodeArrayIfPresentIgnoringFailures([ChannelPayload].self, forKey: .topics)
+            topics: topics
         )
+        if container.contains(.topics), try !container.decodeNil(forKey: .topics) {
+            metadataComplete = try container.nestedUnkeyedContainer(forKey: .topics).count == topics?.count
+                && (topics ?? []).allSatisfy(\.metadataComplete)
+        }
     }
 }
 
@@ -153,6 +162,8 @@ struct ChannelDetailPayload {
     let mlsEnabled: Bool
     let mlsEnabledAt: Date?
     let mlsEpoch: Int?
+    var e2eeGroupId: ChannelId? = nil
+    var gate: Bool? = nil
 
     public var isDirectMessageChannel: Bool {
         cid.type == .messaging
@@ -196,8 +207,18 @@ extension ChannelDetailPayload: Decodable {
             isClosedTopic: try container.decodeIfPresent(Bool.self, forKey: .isClosedTopic),
             mlsEnabled: try container.decode(Bool.self, forKey: .mlsEnabled),
             mlsEnabledAt: try container.decodeIfPresent(Date.self, forKey: .mlsEnabledAt),
-            mlsEpoch: try container.decodeIfPresent(Int.self, forKey: .mlsEpoch)
+            mlsEpoch: try container.decodeIfPresent(Int.self, forKey: .mlsEpoch),
+            e2eeGroupId: try container.decodeIfPresent(ChannelId.self, forKey: .e2eeGroupId),
+            gate: try container.decodeIfPresent(Bool.self, forKey: .gate)
         )
+        if let e2eeGroupId, e2eeGroupId != cid, e2eeGroupId != parentcid {
+            throw DecodingError.dataCorruptedError(forKey: .e2eeGroupId, in: container,
+                debugDescription: "Encrypted channel scope must be the channel or its parent")
+        }
+        if gate == true, let e2eeGroupId, e2eeGroupId != cid {
+            throw DecodingError.dataCorruptedError(forKey: .e2eeGroupId, in: container,
+                debugDescription: "Isolated channel scope must be the channel")
+        }
     }
 }
 

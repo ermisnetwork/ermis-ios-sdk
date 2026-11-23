@@ -163,6 +163,10 @@ final class MlsRecoveryControlRepositoryTests: XCTestCase {
             downloader: ErmisDownloader(client: ErmisDownloadClient(sessionConfiguration: config)))
         let repository = E2eRepository(database: database, eventNotificationCenter: EventNotificationCenter(database: database), mlsClient: client, apiClient: api)
         repository.handleNewEncryptedChannels([missing])
+        let first = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            repository.readiness(for: missing) == .infrastructureRetryable
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [first], timeout: 5), .completed)
         XCTAssertEqual(api.discoveries, 1)
         XCTAssertEqual(repository.readiness(for: missing), .infrastructureRetryable)
         for _ in 0..<12 { repository.handleNewEncryptedChannels([missing, missing]) }
@@ -260,7 +264,13 @@ final class MlsRecoveryControlRepositoryTests: XCTestCase {
                 return try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: data)
             }
             let original = try event(id, "2026-11-03T05:57:19.940474Z")
-            let conflict = try event(id, "2026-11-03T05:57:19.940481Z")
+            // Timestamp-only application aliases are intentionally accepted by the durable
+            // transport contract. A real conflict changes the canonical encrypted payload.
+            let alias = try event(id, "2026-11-03T05:57:19.940481Z")
+            var conflictBody = try XCTUnwrap(JSONSerialization.jsonObject(with: alias.rawEnvelope) as? [String: Any])
+            var conflictData = try XCTUnwrap(conflictBody["data"] as? [String: Any])
+            conflictData["mls_ciphertext"] = "BAUG"; conflictBody["data"] = conflictData
+            let conflict = try JSONDecoder.default.decode(E2eSyncEventEnvelope.self, from: JSONSerialization.data(withJSONObject: conflictBody))
             let tail = try event("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "2026-11-03T08:26:39.211290Z")
             let cursor = ScopeSyncCursorPayload(createdAt: original.createdAtRaw, eventId: original.eventId)
             _ = try store.persistPage(accountId: "control-fixture", scopeCid: cid.rawValue,

@@ -67,6 +67,8 @@ public enum ChannelCodingKeys: String, CodingKey, CaseIterable {
     case mlsEnabled = "mls_enabled"
     case mlsEnabledAt = "mls_enabled_at"
     case mlsEpoch = "mls_epoch"
+    case e2eeGroupId = "e2ee_group_id"
+    case gate
     case commit
     case welcome
     case epoch

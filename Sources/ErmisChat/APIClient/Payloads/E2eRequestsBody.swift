@@ -265,7 +265,7 @@ public struct E2eSyncRequestBody: Encodable {
     /// For a parent channel scope this one cursor covers the parent channel, its non-gated
     /// topics, metadata, and the parent MLS protocol stream.
     public let cursors: [String: ScopeSyncCursorPayload]
-    /// Maximum number of events to return across all scopes.
+    /// Maximum number of events per scope (the terminal equal-timestamp bucket may exceed it).
     public let limit: Int
     /// Cursor for the user-scoped `removed_channels` stream. Only removals after this
     /// `{removed_at, event_id}` are returned. `nil` on the first sync.

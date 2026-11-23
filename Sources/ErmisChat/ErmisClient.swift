@@ -515,13 +515,15 @@ public class ErmisClient {
         self.setRootProjectId(token.projectId)
         self.chainId = token.chainId
         self.setProjecId(token.projectId)
+        // First-connection delegates and queued token waiters can start work immediately.
+        // Bind the native installation first so HTTP/WS use its canonical device ID.
+        do {
+            try mlsClient.setup(with: token.userId)
+            authenticationRepository.configureDeviceIdStore(mlsClient.deviceIdStore)
+        } catch {
+            log.error("Failed to initialize MLS: \(error)")
+        }
         authenticationRepository.update(token: token, userInfo: userInfo)
-            do {
-                try mlsClient.setup(with: token.userId)
-                authenticationRepository.configureDeviceIdStore(mlsClient.deviceIdStore)
-            } catch {
-                log.error("Failed to initialize MLS: \(error)")
-            }
     }
 
     public func setProjecId(_ projectId: String) {
@@ -996,6 +998,17 @@ public class ErmisClient {
         e2eRepository.readiness(for: cid)
     }
 
+    /// Reads the installed local epoch asynchronously. This does not sync, join, or restore history.
+    /// Completion is delivered on the main queue; nil means no readable current local group.
+    public func localMlsEpoch(for cid: ChannelId, completion: @escaping (UInt64?) -> Void) {
+        let user = currentUserId
+        e2eRepository.localGroupEpoch(for: cid) { [weak self] epoch in
+            DispatchQueue.main.async {
+                completion(self?.currentUserId == user ? epoch : nil)
+            }
+        }
+    }
+
     /// Runs the Welcome-first bootstrap flow and completes when the channel reaches a terminal state.
     public func ensureE2eeReady(
         for cid: ChannelId,
@@ -1091,16 +1104,40 @@ public class ErmisClient {
     ///   - completion: A block to be executed when the process is completed. Contains Result of `ChatUser` list or `Error`
     public func fetchUsers(with ids: [String],
                            completion: @escaping (Result<[ChatUser], Error>) -> Void) {
-        apiClient.request(endpoint: .users(with: ids, projectId: projectId)) { [weak self] result in
+        let owner = apiClient.captureSessionNetworkOwner()
+        let projectId = self.projectId, database = databaseContainer
+        let requestId = UUID().uuidString.lowercased(), started = ProcessInfo.processInfo.systemUptime
+        func trace(_ stage: String, count: Int) {
+            let elapsed = Int((ProcessInfo.processInfo.systemUptime - started) * 1000)
+            log.info("user_profile_load stage=\(stage) request_id=\(requestId) count=\(count) elapsed_ms=\(elapsed)", subsystems: .mls)
+        }
+        trace("query_started", count: ids.count)
+        apiClient.request(endpoint: .users(with: ids, projectId: projectId)) { result in
+            do { try owner() } catch {
+                trace("retired", count: 0); completion(.failure(error)); return
+            }
             switch result {
             case .success(let userListPayload):
-                self?.databaseContainer.write { session in
+                trace("query_received", count: userListPayload.users.count)
+                var models: [ChatUser] = []
+                database.write { session in
+                    try owner()
                     let users = session.saveUsers(payload: userListPayload,
-                                                  projectId: self?.projectId ?? "",
+                                                  projectId: projectId,
                                                   query: nil)
-                    completion(.success(users.compactMap({ try? $0.asModel() })))
+                    models = users.compactMap { try? $0.asModel() }
+                } completion: { error in
+                    if let error {
+                        trace("store_failed", count: 0); completion(.failure(error)); return
+                    }
+                    do { try owner() } catch {
+                        trace("retired", count: 0); completion(.failure(error)); return
+                    }
+                    trace("store_finished", count: models.count)
+                    completion(.success(models))
                 }
             case .failure(let error):
+                trace("query_failed", count: 0)
                 completion(.failure(error))
             }
         }

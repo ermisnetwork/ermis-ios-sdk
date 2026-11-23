@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import open_mls_ios
 
 /// One bounded owner for inventory → read-only probe → retirement → durable batch → count.
@@ -19,6 +20,10 @@ final class MlsKeyPackagePipeline {
     private let operationId = UUID().uuidString
     private var finished = false
     private var deadline: Date { started.addingTimeInterval(30) }
+    private var tracePrefix: String {
+        let scopeHash = SHA256.hash(data: Data(store.scope.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "keypackage_work operation=\(operationId) scope_sha256=\(scopeHash)"
+    }
     init(api: APIClient, store: MlsKeyPackageWorkStore, assertOwner: @escaping () throws -> Void,
          probe: @escaping ([Data]) throws -> [Bool], providerId: @escaping () throws -> String,
          generate: @escaping (String, String, Int) throws -> [(Data, Data)],
@@ -141,6 +146,7 @@ final class MlsKeyPackagePipeline {
                     guard let normalSize = E2eeKeyPackageRefillPolicy.batchSize(remaining: count.remaining, target: count.target, lowWatermark: count.lowWatermark,
                         requestedDelta: count.requestedDelta, refillGeneration: count.refillGeneration) else { throw ClientError.Unexpected("key_package_count_invalid") }
                     let size = count.signerRecoveryRequired == true ? 1 : normalSize
+                    log.info("\(self.tracePrefix) phase=count remaining=\(count.remaining) target=\(count.target) delta=\(normalSize) generation=\(count.refillGeneration ?? 0)", subsystems: .mls)
                     guard size > 0, remaining > 0 else { self.finish(); return }
                     var next = self.state; next.upload = .init(id: UUID().uuidString, status: "preparing", createdAt: self.now().timeIntervalSince1970)
                     next.upload?.generationVersion = 1; next.upload?.batchSize = size; next.upload?.nativeProviderId = try self.providerId()
@@ -200,11 +206,13 @@ final class MlsKeyPackagePipeline {
             }
             job.attempts = min(1_000_000, job.attempts + 1); job.retryAt = MlsKeyPackageWorkStore.retryAt(now: now().timeIntervalSince1970, attempts: job.attempts)
             var next = state; next.upload = job; try save(next)
+            log.info("\(tracePrefix) phase=upload batch_id=\(job.id) count=\(job.bytes.count) attempt=\(job.attempts)", subsystems: .mls)
             request(.uploadKeyPackages(keyPackages: job.bytes.map { Array($0) }, operationId: job.id)) { result in
                 do {
                     let ack = try result.get()
                     guard ack.validationVersion == 1, UUID(uuidString: ack.batchId) == UUID(uuidString: job.id), (0...job.bytes.count).contains(ack.stored) else { throw ClientError.Unexpected("key_package_ack_invalid") }
                     var next = self.state; next.upload = nil; try self.save(next)
+                    log.info("\(self.tracePrefix) phase=ack batch_id=\(job.id) stored=\(ack.stored)", subsystems: .mls)
                     self.refill(reason: reason, remaining: remaining - 1)
                 } catch {
                     if let rejection = error as? MlsKeyPackageUploadRejection, UUID(uuidString: rejection.batchId) == UUID(uuidString: job.id) {
@@ -221,6 +229,7 @@ final class MlsKeyPackagePipeline {
             do { try current(); if state.leaseId == operationId { var next = state; next.leaseId = nil; next.leaseUntil = 0; try save(next) } } catch { }
         }
         finished = true
+        log.info("\(tracePrefix) phase=finished pending_batch=\(state.upload != nil)", subsystems: .mls)
         let nextDue = min(state.retryAt > 0 ? state.retryAt : started.timeIntervalSince1970,
                           state.retries.map { $0.retryAt }.min() ?? .greatestFiniteMagnitude,
                           state.upload?.retryAt ?? .greatestFiniteMagnitude)

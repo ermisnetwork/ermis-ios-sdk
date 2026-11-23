@@ -59,6 +59,14 @@ final class E2eeDurableInboxStore {
         let status: E2eeLocalJoinReceiptStatus
     }
 
+    /// Supplied only by the serialized native owner after verifying that this exact merged
+    /// receipt still belongs to its operational installation, with no candidate in flight.
+    struct InstalledJoinReceiptWitness {
+        let receipt: LocalJoinReceiptProof
+        let generation: UInt64
+        let groupId: Data?
+    }
+
     private let database: DatabaseContainer
     private let limits: Limits
 
@@ -701,7 +709,11 @@ final class E2eeDurableInboxStore {
     /// The event proof was written and validated before `markApplied`; therefore an applied row
     /// with the receipt's exact hash/epoch is sufficient to finish the already-proven transition.
     @discardableResult
-    func finalizeAppliedLocalJoinReceiptIfPossible(accountId: String, scopeCid: String) throws -> Bool {
+    func finalizeAppliedLocalJoinReceiptIfPossible(
+        accountId: String,
+        scopeCid: String,
+        installedWitness: InstalledJoinReceiptWitness? = nil
+    ) throws -> Bool {
         var finalized = false
         try database.writeAndWait { context in
             guard let context = context as? NSManagedObjectContext else {
@@ -711,14 +723,22 @@ final class E2eeDurableInboxStore {
                 accountId: accountId,
                 scopeCid: scopeCid,
                 context: context
-            ), receipt.status == E2eeLocalJoinReceiptStatus.merged.rawValue else { return }
+            ), receipt.status == E2eeLocalJoinReceiptStatus.merged.rawValue,
+               receipt.epoch >= 0 else { return }
+            let witnessMatches = installedWitness.map {
+                $0.receipt.status == .merged && $0.receipt.commitHash == receipt.commitHash &&
+                    $0.receipt.epoch == UInt64(receipt.epoch) &&
+                    $0.receipt.requestDeviceId == receipt.requestDeviceId
+            } ?? false
             let request = NSFetchRequest<E2eeInboxEventDTO>(entityName: E2eeInboxEventDTO.entityName)
             request.predicate = NSPredicate(
-                format: "accountId == %@ AND scopeCid == %@ AND protocolCiphertextHash == %@ AND protocolTargetEpoch == %lld AND mlsStatePersisted == YES AND appliedAt != nil",
+                format: "accountId == %@ AND scopeCid == %@ AND protocolCiphertextHash == %@ AND protocolTargetEpoch == %lld AND appliedAt != nil AND (mlsStatePersisted == YES OR (failureCategory == %@ AND %@ == YES))",
                 accountId,
                 scopeCid,
                 receipt.commitHash as NSData,
-                receipt.epoch
+                receipt.epoch,
+                Self.supersededCommitCategory,
+                NSNumber(value: witnessMatches)
             )
             request.fetchLimit = 1
             guard let event = try context.fetch(request).first,
@@ -730,8 +750,22 @@ final class E2eeDurableInboxStore {
                   protocolData.type == .externalCommit,
                   protocolData.user.id == accountId,
                   protocolData.deviceId == receipt.requestDeviceId,
+                  protocolData.epoch >= 0, UInt64(protocolData.epoch) == UInt64(receipt.epoch),
+                  let commit = protocolData.commit,
+                  Data(SHA256.hash(data: Data(commit))) == receipt.commitHash,
                   let cid = try? ChannelId(cid: scopeCid),
                   let channel = context.channel(cid: cid) else { return }
+            if !event.mlsStatePersisted {
+                guard witnessMatches, let witness = installedWitness,
+                      protocolData.groupGeneration >= 0, UInt64(protocolData.groupGeneration) == witness.generation,
+                      witness.generation == 0 || (witness.groupId != nil && protocolData.groupId.map({ Data($0) }) == witness.groupId),
+                      event.failureCategory == Self.supersededCommitCategory else { return }
+                // Older versions marked an already-installed own Commit historical once a
+                // peer advanced the group. Recover its exact installation proof, without
+                // replaying native state or changing either offline cursor.
+                event.mlsStatePersisted = true
+                event.failureCategory = nil
+            }
             receipt.status = E2eeLocalJoinReceiptStatus.finalized.rawValue
             channel.mlsFirstDecryptableEpoch = NSNumber(value: receipt.epoch)
             channel.mlsFirstDecryptableCursorCreatedAt = envelope.createdAt.bridgeDate

@@ -132,54 +132,175 @@ enum E2eeCommitEpochAction: Equatable {
 /// until its active bootstrap completes, so concurrent lifecycle callbacks cannot start a second
 /// external join for the same channel.
 final class E2eeBootstrapQueue {
+    private struct Entry { let cid: ChannelId; let ticket: UUID }
     private let lock = NSLock()
-    private var pending: [ChannelId] = []
-    private var admitted: Set<String> = []
-    private var deferredSync: Set<String> = []
+    private var pending: [Entry] = [], urgent: [Entry] = []
+    private var head = 0, urgentHead = 0, priorityStreak = 0
+    private var admitted: [String: UUID] = [:]
+    private var promoted = Set<UUID>()
+    private var deferredSync = Set<String>()
+    private var active: Entry?
     private var isRunning = false
+    private var prepared: [Entry] = []
+    private var preparedHead = 0
+    private var preparedIds = Set<String>()
+    private var pointReads = Set<String>()
+    private var preparedPoints: [Entry] = []
+    private var preparedPointHead = 0
+    private var syncing = Set<String>()
+    private var fullSyncRequested = false
 
-    func enqueue(_ cid: ChannelId) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard admitted.insert(cid.rawValue).inserted else { return false }
-        pending.append(cid)
-        guard !isRunning else { return false }
-        isRunning = true
-        return true
+    func enqueue(_ cid: ChannelId) -> Bool { enqueue([cid]) }
+
+    func enqueue(_ cids: [ChannelId]) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        for cid in cids where admitted[cid.rawValue] == nil {
+            let entry = Entry(cid: cid, ticket: UUID())
+            admitted[cid.rawValue] = entry.ticket; pending.append(entry)
+        }
+        return startIfNeeded()
+    }
+
+    /// Promote queued scope admission, never the active operation. Duplicate opens coalesce.
+    func enqueuePriority(_ cid: ChannelId) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let added = pointReads.insert(cid.rawValue).inserted
+        if preparedIds.contains(cid.rawValue) || syncing.contains(cid.rawValue) {
+            if added, preparedIds.contains(cid.rawValue), let ticket = admitted[cid.rawValue] {
+                preparedPoints.append(Entry(cid: cid, ticket: ticket))
+            }
+            return startIfNeeded()
+        }
+        if admitted[cid.rawValue] == nil {
+            let entry = Entry(cid: cid, ticket: UUID())
+            admitted[cid.rawValue] = entry.ticket; pending.append(entry)
+        }
+        if active?.cid != cid, let ticket = admitted[cid.rawValue], promoted.insert(ticket).inserted {
+            urgent.append(Entry(cid: cid, ticket: ticket))
+        }
+        return startIfNeeded()
+    }
+
+    private func startIfNeeded() -> Bool {
+        guard !isRunning, head < pending.count || urgentHead < urgent.count || preparedHead < prepared.count else { return false }
+        isRunning = true; return true
     }
 
     func dequeue() -> ChannelId? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !pending.isEmpty else {
-            isRunning = false
+        lock.lock(); defer { lock.unlock() }
+        guard active == nil, syncing.isEmpty else { return nil }
+        // Every entry is skipped/dequeued once. Ticket identity fences old promoted slots
+        // if the same scope is legitimately re-enqueued after an earlier completion.
+        while head < pending.count {
+            let entry = pending[head]
+            if admitted[entry.cid.rawValue] == entry.ticket && !promoted.contains(entry.ticket) { break }
+            head += 1
+        }
+        while urgentHead < urgent.count {
+            let entry = urgent[urgentHead]
+            if admitted[entry.cid.rawValue] == entry.ticket && promoted.contains(entry.ticket) { break }
+            urgentHead += 1
+        }
+        let next: Entry
+        if urgentHead < urgent.count && (priorityStreak < 2 || head == pending.count) {
+            next = urgent[urgentHead]; urgentHead += 1; promoted.remove(next.ticket); priorityStreak += 1
+        } else if head < pending.count {
+            next = pending[head]; head += 1; priorityStreak = 0
+        } else {
+            pending.removeAll(keepingCapacity: true); urgent.removeAll(keepingCapacity: true)
+            head = 0; urgentHead = 0; priorityStreak = 0; active = nil; isRunning = preparedHead < prepared.count
             return nil
         }
-        return pending.removeFirst()
+        active = next; return next.cid
     }
 
     func finish(_ cid: ChannelId) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        admitted.remove(cid.rawValue)
+        lock.lock(); defer { lock.unlock() }
+        if active?.cid == cid { admitted.removeValue(forKey: cid.rawValue); active = nil }
+        pointReads.remove(cid.rawValue)
         return deferredSync.remove(cid.rawValue) != nil
     }
 
+    /// A completed join is not messaging Ready. Keep the scope admitted until batch catch-up.
+    func prepareForBatchSync(_ cid: ChannelId) {
+        lock.lock(); defer { lock.unlock() }
+        guard let entry = active, entry.cid == cid else { return }
+        active = nil
+        if preparedIds.insert(cid.rawValue).inserted {
+            prepared.append(entry)
+            if pointReads.contains(cid.rawValue) { preparedPoints.append(entry) }
+        }
+    }
+
+    /// The normal path drains joins first; an explicit open may request one point read.
+    func takeSyncBatch(limit: Int = Int.max, pointOnly: Bool = false) -> [ChannelId] {
+        lock.lock(); defer { lock.unlock() }
+        guard active == nil, syncing.isEmpty else { return [] }
+        var result: [ChannelId] = []
+        if pointOnly {
+            guard priorityStreak < 2 else { return [] }
+            while preparedPointHead < preparedPoints.count {
+                let entry = preparedPoints[preparedPointHead]; preparedPointHead += 1
+                if admitted[entry.cid.rawValue] == entry.ticket && pointReads.contains(entry.cid.rawValue) &&
+                    preparedIds.remove(entry.cid.rawValue) != nil {
+                    result = [entry.cid]; priorityStreak += 1; break
+                }
+            }
+            if preparedPointHead == preparedPoints.count { preparedPoints.removeAll(keepingCapacity: true); preparedPointHead = 0 }
+        } else {
+            while preparedHead < prepared.count && result.count < limit {
+                let entry = prepared[preparedHead]; preparedHead += 1
+                if preparedIds.remove(entry.cid.rawValue) != nil { result.append(entry.cid) }
+            }
+            if preparedHead == prepared.count { prepared.removeAll(keepingCapacity: true); preparedHead = 0 }
+        }
+        syncing.formUnion(result.map(\.rawValue))
+        for cid in result { deferredSync.remove(cid.rawValue) }
+        return result
+    }
+
+    func finishSyncBatch(_ cids: [ChannelId]) {
+        lock.lock(); defer { lock.unlock() }
+        for cid in cids {
+            syncing.remove(cid.rawValue); pointReads.remove(cid.rawValue)
+            if deferredSync.remove(cid.rawValue) != nil, let ticket = admitted[cid.rawValue] {
+                if preparedIds.insert(cid.rawValue).inserted { prepared.append(Entry(cid: cid, ticket: ticket)) }
+            } else { admitted.removeValue(forKey: cid.rawValue) }
+        }
+    }
+
     func deferSyncIfAdmitted(_ cid: ChannelId) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard admitted.contains(cid.rawValue) else { return false }
-        deferredSync.insert(cid.rawValue)
+        lock.lock(); defer { lock.unlock() }
+        guard admitted[cid.rawValue] != nil else { return false }
+        deferredSync.insert(cid.rawValue); return true
+    }
+
+    func contains(_ cid: ChannelId) -> Bool {
+        lock.lock(); defer { lock.unlock() }; return admitted[cid.rawValue] != nil
+    }
+
+    func deferFullSyncIfAdmitted(inventoryLoading: Bool) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard inventoryLoading || !admitted.isEmpty else { return false }
+        fullSyncRequested = true
+        return true
+    }
+
+    /// Called only after dequeue has drained join preparation, before claiming transport.
+    func takeFullSyncRequest() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard active == nil, syncing.isEmpty, fullSyncRequested else { return false }
+        fullSyncRequested = false
         return true
     }
 
     func reset() {
-        lock.lock()
-        pending.removeAll()
-        admitted.removeAll()
-        deferredSync.removeAll()
-        isRunning = false
-        lock.unlock()
+        lock.lock(); defer { lock.unlock() }
+        pending.removeAll(); urgent.removeAll(); head = 0; urgentHead = 0; priorityStreak = 0
+        admitted.removeAll(); promoted.removeAll(); deferredSync.removeAll(); active = nil; isRunning = false
+        prepared.removeAll(); preparedHead = 0; preparedIds.removeAll(); pointReads.removeAll(); syncing.removeAll()
+        preparedPoints.removeAll(); preparedPointHead = 0
+        fullSyncRequested = false
     }
 }
 
@@ -191,6 +312,38 @@ enum E2eePartialWelcomeFallbackEligibility: Equatable {
     static func resolve(hasTypedPrerequisite: Bool, controlEnabled: Bool) -> Self {
         guard hasTypedPrerequisite else { return .missingTypedPrerequisite }
         return controlEnabled ? .eligible : .disabled
+    }
+}
+
+/// A value snapshot, not a second scheduler. Nested non-gated topics inherit membership;
+/// isolated topics need the independently authorized, fully paged topic query.
+enum E2eeSessionInventory {
+    static func channels(roots: [ChannelPayload], topics: [ChannelPayload], userId: String, includingStandard: Bool = false) -> [String: String] {
+        func eligible(_ row: ChannelPayload) -> Bool {
+            guard row.channel.deletedAt == nil, row.channel.isClosedTopic != true,
+                  let membership = row.membership, membership.userId == userId,
+                  membership.isBanned != true, membership.isBlocked != true,
+                  let role = membership.role else { return false }
+            return [.owner, .admin, .moderator, .member].contains(role)
+        }
+        func scope(_ row: ChannelPayload) -> String {
+            (row.channel.e2eeGroupId ?? (row.channel.gate == true ? row.channel.cid : row.channel.parentcid ?? row.channel.cid)).rawValue
+        }
+        var result: [String: String] = [:]
+        for root in roots where eligible(root) {
+            if includingStandard || root.channel.mlsEnabled { result[root.channel.cid.rawValue] = scope(root) }
+            for topic in root.topics ?? [] where topic.channel.deletedAt == nil && topic.channel.isClosedTopic != true {
+                // The full root payload contains all nested topics, but a parent's role
+                // cannot grant admission to a topic with its own MLS scope.
+                guard (includingStandard || root.channel.mlsEnabled), scope(topic) == scope(root) else { continue }
+                if topic.membership != nil && !eligible(topic) { continue }
+                result[topic.channel.cid.rawValue] = scope(topic)
+            }
+        }
+        for topic in topics where eligible(topic) && (includingStandard || topic.channel.mlsEnabled) {
+            result[topic.channel.cid.rawValue] = scope(topic)
+        }
+        return result
     }
 }
 
@@ -420,12 +573,11 @@ class E2eRepository: EventsControllerDelegate {
     private let keyPackageRefillStateQueue = DispatchQueue(
         label: "io.ermis.e2e.key-package-refill-state"
     )
-    private var keyPackageRefillInFlight = false
+    private var keyPackageRefillSchedule = MlsKeyPackageRefillSchedule()
     private var keyPackageRefillToken: UUID?
     private var keyPackagePipeline: MlsKeyPackagePipeline?
     private var keyPackageWake: DispatchWorkItem?
     private var welcomeBoundaryWakes = Set<String>() // protected by durableApplyLock
-    private var keyPackageRefillCompletedAtUptime: TimeInterval = 0
     
     private static let loginTimeKey = "ermis_mls_login_time"
     
@@ -610,6 +762,26 @@ class E2eRepository: EventsControllerDelegate {
     private let syncLock = NSLock()
     private var isSyncing = false
     private var activeSyncCids: Set<String> = []
+    // HTTP/job completion is not proof of a successful live catch-up. Protected by syncLock.
+    private var unverifiedLiveSyncScopes: Set<String> = []
+    private struct LiveSyncCoverage {
+        let completedAt: TimeInterval
+        let demand: UUID
+        let marker: MlsClient.GroupGenerationMarker?
+        let membershipDate: Date?
+    }
+    private struct ScopeSyncDemand {
+        let id: UUID
+        let protocolDigest: String?
+    }
+    // Causal indexes for HTTP coalescing only; never runtime messaging permission.
+    // All three maps are protected by syncLock and retired with the session.
+    private var liveSyncCoverage: [String: LiveSyncCoverage] = [:]
+    private var scopeSyncDemand: [String: ScopeSyncDemand] = [:]
+    private var successfulSyncDemand: [String: UUID] = [:]
+    private var activeSyncMembershipDates: [String: Date] = [:]
+    private var successfulSyncScopes: Set<String> = []
+    private var pendingSyncReadinessScopes: Set<String> = []
     private var activeSyncCompletions: [() -> Void] = []
     private let retainedReplayLock = NSLock()
     private var retainedReplayBlockedCids: Set<String> = []
@@ -642,6 +814,9 @@ class E2eRepository: EventsControllerDelegate {
 
     private let readinessLock = NSLock()
     private var readinessByCid: [String: E2eeChannelReadiness] = [:]
+    private var dormantBootstrapScopes = Set<String>()
+    private var bootstrapStartedAt: [String: TimeInterval] = [:]
+    private var lastBootstrapConnectionId: String?
     private var activeBootstrapCid: String?
     private var readinessCallbacks: [String: [(E2eeChannelReadiness) -> Void]] = [:]
 
@@ -725,7 +900,11 @@ class E2eRepository: EventsControllerDelegate {
                 guard let self else { return }
                 switch result {
                 case .success: self.enqueueBootstrap(for: cid)
-                case .failure: self.setReadiness(.needsRetry, for: cid.rawValue)
+                case .failure:
+                    if self.observedScopeMembership(cid.rawValue) == false {
+                        self.sessionProgress.excludeScope(cid.rawValue, owner: self.sessionProgress.owner)
+                    }
+                    self.setReadiness(.needsRetry, for: cid.rawValue)
                 }
             }
         )
@@ -764,11 +943,15 @@ class E2eRepository: EventsControllerDelegate {
         }) == true { return }
         if E2eeFullSyncTriggerPolicy.shouldRunFullSync(for: event) {
             performE2eSync(trigger: "connection_established")
-            reconcileKeyPackageInventory(reason: "manual")
+            if let connection = event as? ConnectionStatusUpdated,
+               case .connected(let id) = connection.webSocketConnectionState {
+                resumeBootstrapAfterConnection(id)
+            }
+            reconcileKeyPackageInventory(reason: "manual", trigger: "connection")
         } else if let event = event as? HealthCheckEvent {
             handleHealthCheckEvent(event)
         } else if event is KeyPackageRefillEvent {
-            reconcileKeyPackageInventory(reason: "manual")
+            reconcileKeyPackageInventory(reason: "manual", trigger: "demand")
         } else if let event = event as? MessageNewEvent {
             decryptNewMessageEventIfNeeded(message: event.message, cid: event.cid)
         } else if let event = event as? NotificationMessageNewEvent {
@@ -785,6 +968,8 @@ class E2eRepository: EventsControllerDelegate {
             handleGroupInfoUploaded(event)
         } else if let event = event as? MemberRemovedEvent {
             handleNotificationMemberRemoveEvent(event)
+        } else if let event = event as? ChannelDeletedEvent {
+            retireInventoryChannel(event.cid, topics: event.topicCids)
         } else if let event = event as? NotificationInviteRespondBackEvent {
             switch event.respondBackType {
             case .accept:
@@ -813,19 +998,17 @@ class E2eRepository: EventsControllerDelegate {
         // invitation was still pending; no timer or generic-error fallback.
         if event.member.userId == mlsClient.userId {
             reconcileAcceptedMembership(in: event.cid)
-        } else {
-            enqueueBootstrap(for: event.cid)
         }
     }
     
     private func handleNotificationInviteRejectedEvent(_ event: NotificationInviteRespondBackEvent) {
-        guard event.mlsEnabled else { return }
-        performE2eChannelSync(cid: event.cid)
+        // No protocol catch-up for another user's invitation response.
+        // New membership admission is handled only by the acceptance path.
     }
     
     private func handleNotificationInviteSkippedEvent(_ event: NotificationInviteRespondBackEvent) {
-        guard event.mlsEnabled else { return }
-        performE2eChannelSync(cid: event.cid)
+        // No protocol catch-up for another user's invitation response.
+        // New membership admission is handled only by the acceptance path.
     }
     
     private func handleNotificationMemberRemoveEvent(_ event: MemberRemovedEvent) {
@@ -838,6 +1021,7 @@ class E2eRepository: EventsControllerDelegate {
 
         // Current user was removed (or self-left) → delete local MLS group.
         if targetUserId == mlsClient.userId {
+            retireInventoryChannel(event.cid, topics: event.topicCids)
             membershipRefresh?.invalidate(event.cid)
             if let scope = groupInfoRepairScope {
                 groupInfoRepairCoordinator.clearRemoved(scope: scope, cid: cidString)
@@ -915,76 +1099,73 @@ class E2eRepository: EventsControllerDelegate {
             targetedAtCurrentUser: targetedAtCurrentUser,
             eventEpoch: mlsProtocol.epoch
         )
-        if let deviceId = mlsProtocol.deviceId, let currentDeviceId = mlsClient.currentDeviceId, deviceId == currentDeviceId {
-            trace.info(
-                stage: "protocol_ignored",
-                source: "websocket",
-                protocolType: mlsProtocol.type.rawValue,
-                result: "ignored",
-                reason: "current_device",
-                groupLoaded: mlsClient.isGroupLoaded(cid: cid),
-                eventEpoch: mlsProtocol.epoch
-            )
-            log.debug("[MLS] ignored event from self", subsystems: .mls)
-            return
-        }
-        if mlsProtocol.type == .welcome,
-           !mlsClient.isGroupLoaded(cid: cid),
-           targetedAtCurrentUser == true,
-           mlsProtocol.targetDeviceIds.map({ ids in
-               mlsClient.currentDeviceId.map(ids.contains) ?? false
-           }) != false {
-            // Another device may accept while this device is no longer watching the
-            // normal room. A targeted MLS notification still arrives. Refresh rights
-            // and list metadata first; only durable replay may consume the Welcome or
-            // record the typed prerequisite needed by external-join fallback.
-            reconcileAcceptedMembership(in: mlsEvent.cid)
-            return
-        }
+        let assertOwner = captureHistorySessionOwner()
+        let groupCid = mlsGroupCid(for: mlsEvent.cid)
         let op = BlockOperation { [weak self] in
-            guard let self else { return }
+            guard let self, (try? assertOwner()) != nil else { return }
+            if mlsProtocol.user.id == mlsClient.userId,
+               let deviceId = mlsProtocol.deviceId, deviceId == mlsClient.currentDeviceId,
+               mlsClient.loadPendingGenerationJoin(cid: groupCid.rawValue) == nil,
+               (try? self.hasNoPendingMembershipMutation(groupCid)) == true,
+               let marker = mlsClient.loadGenerationMarker(cid: groupCid.rawValue), marker.status == "active",
+               marker.generation == UInt64(exactly: mlsProtocol.groupGeneration),
+               (marker.generation == 0 || marker.groupId == mlsProtocol.groupId.map { Data($0) }),
+               let epoch = try? self.mlsClient.loadGroup(with: groupCid.rawValue).epoch(),
+               let eventEpoch = UInt64(exactly: mlsProtocol.epoch), epoch >= eventEpoch {
+                trace.info(
+                    stage: "protocol_ignored",
+                    source: "websocket",
+                    protocolType: mlsProtocol.type.rawValue,
+                    result: "ignored",
+                    reason: "current_device",
+                    groupLoaded: mlsClient.isGroupLoaded(cid: cid),
+                    eventEpoch: mlsProtocol.epoch
+                )
+                log.debug("[MLS] ignored event from self", subsystems: .mls)
+                return
+            }
             self.durableApplyLock.lock()
             let isBlocked = self.blockedDurableScopes.contains(cid)
             self.durableApplyLock.unlock()
             guard !isBlocked else {
+                // A newly delivered canonical predecessor can unblock a local gap. Retry
+                // the same durable ordered prefix once for new input, never HTTP polling.
+                if let envelope = mlsEvent.protocolEnvelope, let account = self.mlsClient.userId {
+                    do {
+                        _ = try self.durableInboxStore.persistPage(accountId: account, scopeCid: groupCid.rawValue,
+                            events: [envelope], hasMore: false, nextCursor: nil)
+                        self.scheduleDurableDrain(cid: groupCid, cidString: groupCid.rawValue, resetProtocolBlock: true)
+                    } catch { self.blockDurableScope(groupCid.rawValue, eventId: envelope.eventId, error: error) }
+                }
                 trace.info(
                     stage: "protocol_deferred",
                     source: "websocket",
                     protocolType: mlsProtocol.type.rawValue,
-                    result: "scope_sync_requested",
+                    result: "pending",
                     reason: "durable_repair",
                     groupLoaded: self.mlsClient.isGroupLoaded(cid: cid),
                     eventEpoch: mlsProtocol.epoch
                 )
                 log.error("[MLS] state=realtime_protocol_blocked reason=durable_repair", subsystems: .mls)
-                self.performE2eChannelSync(cid: mlsEvent.cid)
                 return
             }
             do {
                 switch mlsEvent.mlsProtocol.type {
                 case .commit, .externalCommit:
-                    // Commits need a durable raw envelope and exact ciphertext/epoch proof before
-                    // OpenMLS advances the group. Realtime delivery only triggers scope sync.
-                    trace.info(
-                        stage: "protocol_deferred",
-                        source: "websocket",
-                        protocolType: mlsProtocol.type.rawValue,
-                        result: "scope_sync_requested",
-                        reason: "durable_apply_required",
-                        receipt: self.joinReceiptTraceStatus(for: cid),
-                        groupLoaded: self.mlsClient.isGroupLoaded(cid: cid),
-                        eventEpoch: mlsProtocol.epoch
-                    )
-                    self.performE2eChannelSync(cid: mlsEvent.cid)
+                    // Legacy unbound notifications are hints only. They must not poison
+                    // the canonical outbox envelope that can arrive from the other room.
+                    guard mlsEvent.protocolEnvelope != nil else { return }
+                    try self.applyRealtimeCommit(mlsEvent, scope: groupCid)
                 case .welcome:
                     if mlsProtocol.groupGeneration > 0 {
-                        // Generation activation is installed only from the durable scope-sync
-                        // envelope, after the exact event has been persisted. Realtime is only
-                        // a wake-up signal for that ordered path.
-                        self.performE2eChannelSync(cid: mlsEvent.cid)
+                        guard let envelope = mlsEvent.protocolEnvelope, let account = self.mlsClient.userId else {
+                            throw E2eeSyncApplyError.invalidCommit(reason: "canonical realtime Welcome envelope missing")
+                        }
+                        _ = try self.durableInboxStore.persistPage(accountId: account, scopeCid: groupCid.rawValue,
+                            events: [envelope], hasMore: false, nextCursor: nil)
+                        self.scheduleDurableDrain(cid: groupCid, cidString: groupCid.rawValue)
                         return
                     }
-                    //                    break
                     guard !self.shouldSkipWelcome(
                         cid: cid,
                         incomingGeneration: mlsProtocol.groupGeneration
@@ -1093,20 +1274,9 @@ class E2eRepository: EventsControllerDelegate {
                         self.reDecryptPendingMessages(in: mlsEvent.cid)
                     }
                 case .proposal:
-                    // Bellboy has no active standalone-proposal producer. Sync the durable event
-                    // so the reserved wire value becomes an explicit repair issue, never an MLS
-                    // mutation or silently advanced cursor.
-                    trace.info(
-                        stage: "protocol_deferred",
-                        source: "websocket",
-                        protocolType: mlsProtocol.type.rawValue,
-                        result: "scope_sync_requested",
-                        reason: "proposal_reserved",
-                        groupLoaded: self.mlsClient.isGroupLoaded(cid: cid),
-                        eventEpoch: mlsProtocol.epoch
-                    )
-                    self.performE2eChannelSync(cid: mlsEvent.cid)
+                    throw E2eeSyncApplyError.invalidCommit(reason: "standalone proposal is reserved")
                 }
+
             } catch {
                 trace.failure(
                     stage: "protocol_processing_failed",
@@ -1121,18 +1291,54 @@ class E2eRepository: EventsControllerDelegate {
                     "[MLS] state=realtime_event_process_failed \(PrivacySafeLogMetadata.errorFields(error))",
                     subsystems: .mls
                 )
-                if mlsProtocol.type == .welcome, self.isMissingKeyPackageError(error) {
-                    // Only the durable lane records the typed prerequisite and admits
-                    // fallback. Realtime failures alone do not authorize external join.
-                    self.performE2eChannelSync(cid: mlsEvent.cid)
-                }
+                self.blockDurableScope(groupCid.rawValue, eventId: mlsEvent.protocolEnvelope?.eventId, error: error)
+
             }
         }
         // Realtime protocol messages unblock decryption — prioritise them over bulk sync.
         // Chained per channel so commits/welcomes advance the epoch in arrival order and never
         // overtake an in-flight sync op for the same group (see `enqueueGroupOperation`).
         op.queuePriority = .high
-        enqueueGroupOperation(op, cidString: cid)
+        enqueueGroupOperation(op, cidString: groupCid.rawValue)
+    }
+
+    private func hasNoPendingMembershipMutation(_ cid: ChannelId) throws -> Bool {
+        try mlsClient.membershipMutationStore().load(cid: cid.rawValue) == nil
+    }
+
+    private func applyRealtimeCommit(_ event: MLSEvent, scope: ChannelId) throws {
+        guard let account = mlsClient.userId, let envelope = event.protocolEnvelope,
+              case .protocol(let data) = envelope.event,
+              let targetEpoch = UInt64(exactly: data.epoch), targetEpoch > 0 else {
+            throw E2eeSyncApplyError.invalidCommit(reason: "canonical realtime Commit envelope missing")
+        }
+        guard let generation = UInt64(exactly: data.groupGeneration) else {
+            throw E2eeSyncApplyError.invalidCommit(reason: "realtime Commit generation invalid")
+        }
+        let marker = mlsClient.loadGenerationMarker(cid: scope.rawValue)
+        let localGeneration = marker?.generation ?? 0
+        if generation < localGeneration { return }
+        let group = generation == localGeneration ? try? mlsClient.loadGroup(with: scope.rawValue) : nil
+        // Ignore an older notification without making a history/cursor claim or adding work.
+        if let group, group.epoch() > targetEpoch { return }
+        _ = try durableInboxStore.persistPage(accountId: account, scopeCid: scope.rawValue,
+            events: [envelope], hasMore: false, nextCursor: nil)
+        // First-login admission and retained candidates already have an owner. Preserve the
+        // event while that owner obtains/activates a group; no second join or sync starts here.
+        guard generation == localGeneration, group != nil,
+              mlsClient.loadPendingGenerationJoin(cid: scope.rawValue) == nil else { return }
+        guard generation == 0 || marker?.groupId == data.groupId.map({ Data($0) }) else {
+            throw E2eeSyncApplyError.invalidCommit(reason: "realtime Commit generation identity mismatch")
+        }
+        if let first = try durableInboxStore.loadPendingPrefix(accountId: account, scopeCid: scope.rawValue, limit: 1).first,
+           first.eventId != envelope.eventId {
+            scheduleDurableDrain(cid: scope, cidString: scope.rawValue)
+            return
+        }
+        _ = try processSingleE2eSyncEvent(envelope, accountId: account, cid: scope, cidString: scope.rawValue)
+        try durableInboxStore.markRecoveredCommitApplied(accountId: account, scopeCid: scope.rawValue,
+            eventId: envelope.eventId)
+        reDecryptPendingMessages(in: scope)
     }
 
     /// Enqueues a group-state mutation on the shared executor. The existing `Operation` wrapper
@@ -1384,44 +1590,56 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
 
-        let groupCid = mlsGroupCid(for: cid)
-        decryptMessagePayload(
-            messageId: message.id,
-            encryptedData: encryptedData,
-            cid: cid,
-            receiveSource: .websocket
-        ) { [weak self] result in
-            guard let recoveryCid = Self.realtimeRecoveryScope(
-                after: result,
-                groupCid: groupCid
-            ), case .failure(let error) = result else { return }
-
-            // Realtime application and protocol events travel through different rooms, so the
-            // application event can arrive before the commit that advances this device to the
-            // required epoch. Keep the encrypted MessageDTO as the durable retry source and ask
-            // scope sync to merge protocol/application events in Bellboy's canonical order.
-            //
-            // Do not retry MLS directly or process the raw realtime commit here: both would race
-            // the durable inbox/provider persistence path. `runSync` coalesces this scope when a
-            // sync is already active, and a successful commit re-attempts pending ciphertexts.
-            log.error(
-                "[MLS] state=realtime_decrypt_failed action=request_scope_recovery "
-                    + PrivacySafeLogMetadata.errorFields(error),
-                subsystems: .mls
-            )
-            self?.performE2eChannelSync(cid: recoveryCid)
+        let assertOwner = captureRetainedHistoryOwner()
+        let scope = mlsGroupCid(for: cid).rawValue
+        let op = BlockOperation { [weak self] in
+            guard let self else { return }
+            do {
+                try assertOwner()
+                try self.receiveStoredRealtimeApplication(messageId: message.id, encryptedData: encryptedData,
+                    cid: cid, assertOwner: assertOwner)
+            } catch {
+                // The intake transaction already retained exact ciphertext. A later Commit or
+                // admission retries it locally; cache-only display never owns an offline read.
+                log.error("[MLS] state=realtime_decrypt_failed action=retain_ciphertext "
+                    + PrivacySafeLogMetadata.errorFields(error), subsystems: .mls)
+            }
         }
+        op.queuePriority = .high
+        enqueueGroupOperation(op, cidString: scope)
     }
 
-    /// Keeps the realtime fast path local, but converts a failed decrypt into a durable scope-sync
-    /// recovery request. Internal so the failure/success routing remains covered by regression
-    /// tests without exposing it as SDK API.
-    static func realtimeRecoveryScope(
-        after result: Result<E2ePayload, Error>,
-        groupCid: ChannelId
-    ) -> ChannelId? {
-        guard case .failure = result else { return nil }
-        return groupCid
+    /// Global WS receive owner, after MessageDTO commit, running on the serialized MLS writer.
+    /// Does not manufacture a scope event/cursor or fetch offline history on a cache miss.
+    private func receiveStoredRealtimeApplication(messageId: MessageId, encryptedData: Data,
+        cid: ChannelId, assertOwner: () throws -> Void) throws {
+        try assertOwner()
+        let scope = mlsGroupCid(for: cid)
+        guard !isScopeBlocked(scope.rawValue),
+              mlsClient.loadPendingGenerationJoin(cid: scope.rawValue) == nil,
+              !mlsClient.hasNonOperationalGroup(cid: scope.rawValue) else { return }
+        var generation: Int64?, epoch: Int64?, createdAt: Date?
+        e2eReadContext.performAndWait {
+            guard let row = MessageDTO.load(id: messageId, context: e2eReadContext),
+                  row.cid == cid.rawValue, row.encryptedData == encryptedData,
+                  row.deletedAt == nil, !row.isHardDeleted, row.type != "deleted" else { return }
+            generation = row.mlsGroupGeneration; epoch = row.mlsEpoch; createdAt = row.createdAt.bridgeDate
+        }
+        guard let generation, generation >= 0, UInt64(generation) == (mlsClient.loadGenerationMarker(cid: scope.rawValue)?.generation ?? 0),
+              let epoch, epoch >= 0, let createdAt,
+              let group = try? mlsClient.loadGroup(with: scope.rawValue), UInt64(epoch) <= group.epoch() else { return }
+        let firstEpoch = firstDecryptableEpoch(for: scope)
+        if let firstEpoch, epoch < firstEpoch { return }
+        if let account = mlsClient.userId,
+           let boundary = try durableInboxStore.localJoinBoundary(accountId: account, scopeCid: scope.rawValue),
+           createdAt < boundary.createdAt { return }
+        guard !hasLocalJoinReceipt(for: scope.rawValue) else { return }
+        try assertOwner()
+        // The plaintext-first native receive helper also closes a crash between decoded DB
+        // persistence and provider save. A display cache alone must not skip that proof step.
+        _ = try decryptMessagePayloadSyncThrowing(messageId: messageId, encryptedData: encryptedData,
+            cid: cid, receiveSource: .websocket)
+        try assertOwner()
     }
 
     static func shouldSkipRealtimeDecrypt(
@@ -1591,20 +1809,27 @@ class E2eRepository: EventsControllerDelegate {
         else {
             return
         }
-        reconcileKeyPackageInventory(reason: "manual")
+        reconcileKeyPackageInventory(reason: "manual", trigger: "health")
     }
 
-    private func reconcileKeyPackageInventory(reason: String) {
-        guard beginKeyPackageRefill() else { return }
-        let token = UUID()
-        keyPackageRefillStateQueue.sync { keyPackageRefillToken = token }
+    private func reconcileKeyPackageInventory(reason: String, trigger: String) {
+        guard let token = beginKeyPackageRefill() else { return }
+        log.info("keypackage_refill phase=started trigger=\(trigger)", subsystems: .mls)
+        let user = mlsClient.userId, device = mlsClient.currentDeviceId, origin = apiClient.encoder.baseURL
+        // Preflight can fail before a private snapshot exists. Retry only for this same
+        // semantic session; a later successful attempt still acquires the full owner fence.
+        let sessionCurrent: () throws -> Void = { [weak self] in
+            guard let self, self.mlsClient.userId == user, self.mlsClient.currentDeviceId == device,
+                self.apiClient.encoder.baseURL == origin,
+                self.keyPackageRefillStateQueue.sync(execute: { self.keyPackageRefillToken == token })
+            else { throw ClientError.Unexpected("key_package_scope_changed") }
+        }
         do {
             let snapshot = try performMlsMutation(cidString: "__identity__") { () -> (String, String, Identity, Provider, MlsKeyPackageWorkStore) in
                 guard let user = self.mlsClient.userId, let device = self.mlsClient.currentDeviceId,
                     let identity = self.mlsClient.identity, let provider = self.mlsClient.provider else { throw ClientError.MlsNoIdentityError() }
                 return (user, device, identity, provider, try self.mlsClient.keyPackageWorkStore(origin: self.apiClient.encoder.baseURL.absoluteString))
             }
-            let origin = apiClient.encoder.baseURL
             let current: () throws -> Void = { [weak self] in
                 guard let self, self.mlsClient.userId == snapshot.0, self.mlsClient.currentDeviceId == snapshot.1,
                     self.mlsClient.identity === snapshot.2, self.mlsClient.provider === snapshot.3,
@@ -1625,46 +1850,43 @@ class E2eRepository: EventsControllerDelegate {
                     guard let self else { throw ClientError.MlsNoProviderError() }
                     return try self.performMlsMutation(cidString: "__identity__") { try current(); return try self.mlsClient.recoverKeyPackageUpload(id: id, scope: snapshot.4.scope) }
                 }, completion: { [weak self] at in
-                    guard let self else { return }
-                    self.keyPackageRefillStateQueue.async {
-                        guard self.keyPackageRefillToken == token else { return }
-                        self.keyPackageRefillInFlight = false
-                        self.keyPackageRefillCompletedAtUptime = ProcessInfo.processInfo.systemUptime
-                        self.keyPackagePipeline = nil
-                        self.keyPackageWake?.cancel()
-                        let wake = DispatchWorkItem { [weak self] in
-                            do { try current(); self?.reconcileKeyPackageInventory(reason: reason) } catch { }
-                        }
-                        self.keyPackageWake = wake
-                        DispatchQueue.global().asyncAfter(deadline: .now() + max(30, at - Date().timeIntervalSince1970), execute: wake)
-                    }
+                    self?.completeKeyPackageRefill(token: token, at: at, reason: reason, assertOwner: current)
                 })
             keyPackageRefillStateQueue.sync { keyPackagePipeline = pipeline }
             pipeline.start(reason: reason)
         } catch {
-            completeKeyPackageRefill()
+            completeKeyPackageRefill(token: token, at: Date().timeIntervalSince1970 + 30,
+                reason: reason, assertOwner: sessionCurrent)
             log.warning("[MLS] state=keypackage_refill_pending reason=private_or_storage_uncertain", subsystems: .mls)
         }
     }
 
-    private func beginKeyPackageRefill() -> Bool {
+    private func beginKeyPackageRefill() -> UUID? {
         keyPackageRefillStateQueue.sync {
-            let now = ProcessInfo.processInfo.systemUptime
-            guard !keyPackageRefillInFlight,
-                  keyPackageRefillCompletedAtUptime == 0
-                    || now - keyPackageRefillCompletedAtUptime >= E2eeKeyPackageRefillPolicy.cooldown
-            else {
-                return false
-            }
-            keyPackageRefillInFlight = true
-            return true
+            guard keyPackageRefillSchedule.begin(at: ProcessInfo.processInfo.systemUptime) else { return nil }
+            keyPackageWake?.cancel()
+            keyPackageWake = nil
+            let token = UUID()
+            keyPackageRefillToken = token
+            return token
         }
     }
 
-    private func completeKeyPackageRefill() {
-        keyPackageRefillStateQueue.sync {
-            keyPackageRefillInFlight = false
-            keyPackageRefillCompletedAtUptime = ProcessInfo.processInfo.systemUptime
+    private func completeKeyPackageRefill(token: UUID, at: TimeInterval, reason: String, assertOwner: @escaping () throws -> Void) {
+        keyPackageRefillStateQueue.async {
+            guard self.keyPackageRefillToken == token else { return }
+            let uptime = ProcessInfo.processInfo.systemUptime
+            self.keyPackageRefillSchedule.complete(at: uptime)
+            self.keyPackagePipeline = nil
+            self.keyPackageWake?.cancel()
+            let delay = self.keyPackageRefillSchedule.wakeDelay(requestedAt: at,
+                wallTime: Date().timeIntervalSince1970, uptime: uptime)
+            let wake = DispatchWorkItem { [weak self] in
+                do { try assertOwner(); self?.reconcileKeyPackageInventory(reason: reason, trigger: "continuation") } catch { }
+            }
+            self.keyPackageWake = wake
+            log.info("keypackage_refill phase=deferred delay_ms=\(Int(delay * 1000))", subsystems: .mls)
+            DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: wake)
         }
     }
     
@@ -1684,6 +1906,8 @@ class E2eRepository: EventsControllerDelegate {
     ///
     /// Returns `nil` when no cursor can be determined (e.g. the device hasn't joined the MLS group yet).
     private func resolveSyncCursor(cidString: String, mlsJoinedAt: NSDate?, memberCreatedAt: NSDate?, deviceLoginTime: Date?) -> ScopeSyncCursorPayload? {
+        var pendingJoinReceipt = false
+        var joinProof: E2eeDurableInboxStore.LocalJoinReceiptProof?
         if let accountId = mlsClient.userId {
             do {
                 if let durableCursor = try durableInboxStore.fetchCursor(
@@ -1692,6 +1916,10 @@ class E2eRepository: EventsControllerDelegate {
                 ) {
                     return durableCursor
                 }
+                joinProof = try durableInboxStore.localJoinReceiptProof(
+                    accountId: accountId, scopeCid: cidString
+                )
+                pendingJoinReceipt = joinProof != nil
             } catch {
                 log.error(
                     "[E2eSync] state=fetch_cursor_read_failed \(PrivacySafeLogMetadata.errorFields(error))",
@@ -1725,7 +1953,28 @@ class E2eRepository: EventsControllerDelegate {
             }
             return savedCursor
         }
-        //        // 2. Fall back to memberCreatedAt from Core Data.
+        // An optional canonical receipt anchor selects the FIRST fetch only.
+        // It never advances a durable cursor or authorizes protocol application.
+        if let proof = joinProof, proof.status == .merged,
+           let owner = bootstrapOwnerStamp(),
+           let bytes = try? mlsClient.readRecoveryCheckpoint(key: initialJoinSyncKey(cidString, owner: owner)),
+           let hint = try? JSONDecoder.default.decode(InitialJoinSyncAnchor.self, from: bytes),
+           hint.owner == owner, hint.cid == cidString, hint.commitHash == proof.commitHash,
+           hint.epoch == proof.epoch, hint.deviceId == proof.requestDeviceId,
+           hint.deviceId == mlsClient.currentDeviceId,
+           hint.marker == mlsClient.loadGenerationMarker(cid: cidString),
+           hint.cursor.eventId == Self.zeroEventId,
+           let start = Self.parseRemovedAt(hint.cursor.createdAt)?.timeIntervalSince1970,
+           start > 0, start <= Date().timeIntervalSince1970 + 300, start.rounded(.towardZero) == start {
+            return hint.cursor
+        }
+        // A locally merged join still needs its exact canonical commit boundary.
+        // The device join timestamp is written AFTER acceptance and can skip that
+        // commit on a first sync. Use the already-authoritative membership anchor
+        // only while that receipt remains; never rewind a durable/legacy cursor.
+        if pendingJoinReceipt, let memberCreatedAt {
+            return Self.cursor(fromMilliseconds: Int64(memberCreatedAt.timeIntervalSince1970 * 1000))
+        }
         if let anchor = mlsJoinedAt {
             return Self.cursor(fromMilliseconds: Int64(anchor.timeIntervalSince1970 * 1000))
         }
@@ -1746,9 +1995,13 @@ class E2eRepository: EventsControllerDelegate {
     /// follow-up triggers (pagination pages, repeated foreground/reconnect resyncs) into a
     /// single trailing run, instead of starting a full sync per trigger.
     func performE2eSync(trigger: String = "explicit") {
+        if bootstrapQueue.deferFullSyncIfAdmitted(inventoryLoading: sessionProgress.isInventoryBootstrapDeferred) {
+            return
+        }
         reconcilePendingGroupInfoRepairs()
+        let owner = sessionProgress.owner
         syncThrottleQueue.async { [weak self] in
-            guard let self else { return }
+            guard let self, self.sessionProgress.owns(owner) else { return }
             let now = Date()
             if let last = self.lastSyncTriggeredAt {
                 let elapsed = now.timeIntervalSince(last)
@@ -1756,7 +2009,7 @@ class E2eRepository: EventsControllerDelegate {
                     // Within the throttle window — schedule one trailing run (coalesce).
                     guard self.pendingSyncWorkItem == nil else { return }
                     let item = DispatchWorkItem { [weak self] in
-                        guard let self else { return }
+                        guard let self, self.sessionProgress.owns(owner) else { return }
                         self.pendingSyncWorkItem = nil
                         self.lastSyncTriggeredAt = Date()
                         self.performE2eSyncNow(trigger: trigger)
@@ -1776,9 +2029,10 @@ class E2eRepository: EventsControllerDelegate {
 
     /// Fetches all missed E2EE events for every MLS-enabled channel since the last known cursor,
     /// applying protocol messages and decrypting application messages in order.
-    private func performE2eSyncNow(trigger: String) {
+    private func performE2eSyncNow(trigger: String, completion: (() -> Void)? = nil) {
         syncLock.lock()
         guard !isSyncing else {
+            if let completion { pendingSyncCompletions.append(completion) }
             syncLock.unlock()
             log.debug("[E2eSync] mode=full state=coalesced trigger=\(trigger)", subsystems: .mls)
             return
@@ -1787,31 +2041,34 @@ class E2eRepository: EventsControllerDelegate {
         syncProgressTicket = sessionProgress.begin("preparing")
         syncIncludesStandard = true
         standardSyncFinishing = false
+        if let completion { activeSyncCompletions.append(completion) }
         syncLock.unlock()
         resumeOutgoingRetirements()
         resumeOutgoingReconciliation?()
         auditRetainedMembershipIfRequested()
         
         var cursors: [String: ScopeSyncCursorPayload] = [:]
+        var membershipDates: [String: Date] = [:]
         let deviceLoginTime = loginTime
         // Resolve cursors on a background context — this scans all MLS channels (and may touch
         // MLS storage in `resolveSyncCursor`), which must not run on the main thread.
         let context = database.backgroundReadOnlyContext
         var candidateCids = Set<String>()
         context.performAndWait { candidateCids = Set(ChannelDTO.fetchAllJoinedMlsEnabled(context: context).map(\.cid)) }
-        let warm = warmBootstrapCids(candidateCids)
-        prepareLiveScopes(warm) { [weak self] allowed in
+        let scopes = Set(candidateCids.compactMap { try? ChannelId(cid: $0) }.map { mlsGroupCid(for: $0).rawValue })
+        prepareLiveScopes(scopes) { [weak self] allowed in
         guard let self else { return }
         context.performAndWait {
             let channels = ChannelDTO.fetchAllJoinedMlsEnabled(context: context)
-            for ch in channels where allowed.contains(ch.mlsGroupCid) {
+            for ch in channels where allowed.contains(ch.cid) {
                 if let cursor = self.resolveSyncCursor(
                     cidString: ch.cid,
                     mlsJoinedAt: ch.mlsGroupJoinedAt,
                     memberCreatedAt: ch.membership?.memberCreatedAt,
                     deviceLoginTime: deviceLoginTime
                 ) {
-                    cursors[ch.cid] = cursor
+                    cursors[ch.mlsGroupCid] = cursor
+                    membershipDates[ch.mlsGroupCid] = ch.membership?.memberCreatedAt?.bridgeDate
                 }
             }
         }
@@ -1821,6 +2078,10 @@ class E2eRepository: EventsControllerDelegate {
         }
         self.syncLock.lock()
         self.activeSyncCids = Set(cursors.keys)
+        self.activeSyncMembershipDates = membershipDates
+        self.unverifiedLiveSyncScopes.formUnion(cursors.keys)
+        self.successfulSyncScopes.removeAll()
+        self.pendingSyncReadinessScopes.removeAll()
         self.syncLock.unlock()
         log.debug(
             "[E2eSync] mode=full state=started trigger=\(trigger) scope_count=\(cursors.count)",
@@ -1838,25 +2099,24 @@ class E2eRepository: EventsControllerDelegate {
     /// ensures `mlsGroupJoinedAt` is set so E2E sync has a valid cursor.
     ///
     /// - Parameter cids: The MLS-enabled channel IDs from the saved channel list payload.
-    /// Rank persisted metadata before any native group load. Topics consume one parent slot.
-    private func warmBootstrapCids(_ candidates: Set<String>) -> Set<String> {
+    /// Rank every persisted scope before native work. Recency changes ordering, never coverage.
+    private func orderedBootstrapCids(_ candidates: Set<String>) -> [ChannelId] {
         readinessLock.lock(); let active = activeBootstrapCid; readinessLock.unlock()
         let context = database.backgroundReadOnlyContext
-        var rows: [(scope: String, at: Date)] = []
+        var dates: [String: Date] = [:]
         context.performAndWait {
             for raw in candidates {
-                guard let cid = try? ChannelId(cid: raw), let dto = ChannelDTO.load(cid: cid, context: context) else { continue }
-                rows.append((dto.mlsGroupCid, (dto.lastMessageAt ?? dto.updatedAt).bridgeDate))
+                guard let cid = try? ChannelId(cid: raw) else { continue }
+                let dto = ChannelDTO.load(cid: cid, context: context)
+                let scope = dto?.mlsGroupCid ?? raw
+                let date = (dto?.lastMessageAt ?? dto?.updatedAt)?.bridgeDate ?? .distantPast
+                dates[scope] = max(dates[scope] ?? .distantPast, date)
             }
         }
-        rows.sort { $0.at == $1.at ? $0.scope < $1.scope : $0.at > $1.at }
-        var selected: [String] = []
-        if let active, rows.contains(where: { $0.scope == active }) { selected.append(active) }
-        var recent = 0
-        for row in rows where !selected.contains(row.scope) {
-            if recent == 5 { break }; selected.append(row.scope); recent += 1
-        }
-        return Set(selected)
+        return dates.keys.sorted {
+            if $0 == active { return true }; if $1 == active { return false }
+            return dates[$0] == dates[$1] ? $0 < $1 : (dates[$0] ?? .distantPast) > (dates[$1] ?? .distantPast)
+        }.compactMap { try? ChannelId(cid: $0) }
     }
 
     private func applyStandardSyncPage(cid: String, events: [E2eeArchiveWire], owner: () throws -> Void) throws {
@@ -1906,68 +2166,289 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     func handleNewEncryptedChannels(_ cids: [ChannelId]) {
-        let discovered = Set(cids.map { mlsGroupCid(for: $0).rawValue })
-        let warm = discovered.count <= 1 ? discovered : warmBootstrapCids(discovered)
-        prepareLiveScopes(warm) { [weak self] allowed in
-            self?.handlePreparedEncryptedChannels(allowed.compactMap { try? ChannelId(cid: $0) })
+        let owner = sessionProgress.owner
+        syncThrottleQueue.async { [weak self] in
+            guard let self, self.sessionProgress.owns(owner) else { return }
+            let scopes = Set(cids.map { self.mlsGroupCid(for: $0).rawValue })
+            self.prepareLiveScopes(scopes) { [weak self] allowed in
+                guard let self, self.sessionProgress.owns(owner) else { return }
+                self.handlePreparedEncryptedChannels(allowed.compactMap { try? ChannelId(cid: $0) })
+            }
+        }
+    }
+
+    func handlePersistedEncryptedChannels(_ payload: ChannelListPayload) {
+        guard let user = mlsClient.userId else { return }
+        // Metadata pages publish rows/profiles early; the full session inventory owns bootstrap.
+        if sessionProgress.isInventoryBootstrapDeferred { return }
+        let eligible = E2eeSessionInventory.channels(roots: payload.channels, topics: [], userId: user)
+        handleNewEncryptedChannels(Set(eligible.values).compactMap { try? ChannelId(cid: $0) })
+    }
+
+    func beginSessionInventory() -> SessionSyncProgress.InventoryTicket? {
+        if let owner = bootstrapOwnerStamp(),
+           (try? mlsClient.readRecoveryCheckpoint(key: "session_bootstrap_manifest_v1")) == owner {
+            sessionProgress.deferRestoredBootstrapPresentation()
+        }
+        return sessionProgress.beginInventory()
+    }
+
+    // A durable bootstrap milestone is a work index, never a send/readiness permission.
+    private func bootstrapOwnerStamp() -> Data? {
+        guard let (user, device, signer, _) = try? recoveryControlOwner() else { return nil }
+        return try? JSONEncoder().encode([user, device, signer, apiClient.encoder.baseURL.absoluteString])
+    }
+
+    private func bootstrapStamp(_ cid: String, membershipDate: Date? = nil) -> Data? {
+        guard let owner = bootstrapOwnerStamp(), mlsClient.loadPendingGenerationJoin(cid: cid) == nil,
+              let id = try? ChannelId(cid: cid) else { return nil }
+        let marker = mlsClient.loadGenerationMarker(cid: cid)
+        guard marker == nil || marker?.status == "active" else { return nil }
+        var membership = membershipDate
+        if membership == nil {
+            e2eReadContext.performAndWait {
+                membership = ChannelDTO.load(cid: id, context: self.e2eReadContext)?.membership?.memberCreatedAt?.bridgeDate
+            }
+        }
+        guard let membership else { return nil }
+        return try? JSONEncoder().encode([owner.base64EncodedString(), cid,
+            String(membership.timeIntervalSince1970), String(marker?.generation ?? 0),
+            marker?.groupId?.base64EncodedString() ?? "", marker?.providerPath ?? ""])
+    }
+
+    private func hasCompletedBootstrap(_ cid: String, membershipDate: Date?) -> Bool {
+        guard let account = mlsClient.userId, let stamp = bootstrapStamp(cid, membershipDate: membershipDate),
+              recoveryControlAllowsReady(cid: cid) else { return false }
+        do {
+            let store = try mlsClient.membershipMutationStore()
+            guard !store.hasIntent(cid: cid), try store.load(cid: cid) == nil,
+                  try durableInboxStore.localJoinReceiptProof(accountId: account, scopeCid: cid) == nil else { return false }
+            return try mlsClient.readRecoveryCheckpoint(key: "session_bootstrap_v1:" + cid) == stamp
+        } catch { return false }
+    }
+
+    private func checkpointBootstrap(_ cid: String, owner: UUID) {
+        do {
+            try performMlsMutation(cidString: cid) {
+                guard self.sessionProgress.owns(owner), let stamp = self.bootstrapStamp(cid),
+                      let binding = self.bootstrapOwnerStamp() else { return }
+                let key = "session_bootstrap_v1:" + cid
+                if try self.mlsClient.readRecoveryCheckpoint(key: key) != stamp {
+                    try self.mlsClient.writeRecoveryCheckpoint(stamp, key: key)
+                }
+                if try self.mlsClient.readRecoveryCheckpoint(key: "session_bootstrap_manifest_v1") != binding {
+                    try self.mlsClient.writeRecoveryCheckpoint(binding, key: "session_bootstrap_manifest_v1")
+                }
+            }
+        } catch {
+            log.error("[MLS] bootstrap_checkpoint result=failed " + PrivacySafeLogMetadata.errorFields(error), subsystems: .mls)
+        }
+    }
+
+    func failSessionInventory(_ ticket: SessionSyncProgress.InventoryTicket, retry: @escaping () -> Void) {
+        sessionProgress.failInventory(ticket, retry: retry)
+    }
+
+    /// Runs after the complete root query is durable. It never delays root/profile publication.
+    func completeSessionInventory(_ ticket: SessionSyncProgress.InventoryTicket, roots: ChannelListPayload,
+                                  userId: String, projectId: String, retry: @escaping () -> Void) {
+        guard sessionProgress.owns(ticket) else { return }
+        var query = ChannelListQuery(filter: .and([
+            .in(.members, values: [.init(userId: userId, projectId: projectId)]),
+            .in(.channelRoles, values: ["owner", "moder", "member"]),
+            .in(.channelType, values: [ChannelType.topic.rawValue]),
+            .equal(.projectId, to: projectId), .equal(.isBlocked, to: false),
+            .equal(.init(rawValue: "banned"), to: false),
+            .equal(.init(rawValue: "include_parent"), to: true)
+        ]), messagesLimit: 0)
+        query.shouldLoadAllChannels = true
+        apiClient.requestChannelMetadata(query: query) { [weak self] result in
+            guard let self, self.sessionProgress.owns(ticket) else { return }
+            switch result {
+            case .failure:
+                self.sessionProgress.failInventory(ticket, retry: retry)
+            case .success(let topics):
+                let size = max(1, query.pagination.pageSize)
+                let batches = stride(from: 0, to: topics.channels.count, by: size).map {
+                    Array(topics.channels[$0..<min($0 + size, topics.channels.count)])
+                }
+                WatchedChannelPageWriter.save(batches, persist: { batch, acknowledge in
+                    self.database.write({ session in
+                        guard self.sessionProgress.owns(ticket) else { throw E2eeMessageEpochRecoveryError.ownerReleased }
+                        try roots.sessionOwner?(); try topics.sessionOwner?()
+                        for row in batch { _ = try session.saveChannel(payload: row, query: nil, cache: nil) }
+                    }, completion: acknowledge)
+                }, completion: { [weak self] error in
+                    guard let self, self.sessionProgress.owns(ticket) else { return }
+                    guard error == nil else { self.sessionProgress.failInventory(ticket, retry: retry); return }
+                    self.syncThrottleQueue.async { [weak self] in
+                        guard let self, self.sessionProgress.owns(ticket) else { return }
+                        do { try roots.sessionOwner?(); try topics.sessionOwner?() }
+                        catch { self.sessionProgress.failInventory(ticket, retry: retry); return }
+                        let inventory: (channels: [String: String], standard: [String: Bool])
+                        do {
+                            inventory = try self.currentEligibleInventory(E2eeSessionInventory.channels(
+                                roots: roots.channels, topics: topics.channels, userId: userId, includingStandard: true), userId: userId)
+                        } catch { self.sessionProgress.failInventory(ticket, retry: retry); return }
+                        let owner = ticket.session
+                        for (key, ready) in inventory.standard {
+                            self.sessionProgress.record(scope: key, result: ready ? .ready : .blocked, owner: owner)
+                        }
+                        let scopes = Set(inventory.channels.values).filter { !$0.hasPrefix(Self.standardProgressPrefix) }
+                        var joinedDates: [String: Date] = [:]
+                        let context = self.database.backgroundReadOnlyContext
+                        context.performAndWait {
+                            let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+                            request.predicate = NSPredicate(format: "cid IN %@", Array(scopes))
+                            request.relationshipKeyPathsForPrefetching = ["membership"]
+                            for row in (try? context.fetch(request)) ?? [] {
+                                joinedDates[row.cid] = row.membership?.memberCreatedAt?.bridgeDate
+                            }
+                        }
+                        let restored = scopes.filter { joinedDates[$0] != nil && self.hasCompletedBootstrap($0, membershipDate: joinedDates[$0]) }
+                        self.readinessLock.lock(); self.dormantBootstrapScopes.formUnion(restored); self.readinessLock.unlock()
+                        self.sessionProgress.restoreBootstrapMilestones(Set(restored), owner: owner)
+                        self.sessionProgress.finishInventory(ticket, channels: inventory.channels, retry: { [weak self] in
+                            self?.retrySessionReadiness(owner: owner)
+                        })
+                        let encrypted = Set(inventory.channels.values).filter { !$0.hasPrefix(Self.standardProgressPrefix) }
+                        if encrypted.isEmpty, let stamp = self.bootstrapOwnerStamp() {
+                            try? self.mlsClient.writeRecoveryCheckpoint(stamp, key: "session_bootstrap_manifest_v1")
+                        }
+                        self.handlePreparedEncryptedChannels(encrypted.compactMap { try? ChannelId(cid: $0) })
+                    }
+                })
+            }
+        }
+    }
+
+    /// Recheck membership after asynchronous pages/writes, without per-channel SQL or model mapping.
+    /// A removal that arrived during inventory must not be resurrected by its earlier snapshot.
+    private static let standardProgressPrefix = "standard|"
+
+    private func currentEligibleInventory(_ inventory: [String: String], userId: String) throws -> (channels: [String: String], standard: [String: Bool]) {
+        let context = database.backgroundReadOnlyContext
+        return try context.performAndWait {
+            var result: [String: String] = [:], standard: [String: Bool] = [:]
+            let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+            request.predicate = NSPredicate(format: "cid IN %@", Array(Set(inventory.keys).union(inventory.values)))
+            request.relationshipKeyPathsForPrefetching = ["membership", "membership.user"]
+            let fetched = try context.fetch(request)
+            var rows = Dictionary(uniqueKeysWithValues: fetched.map { ($0.cid, $0) })
+            let parents = Set(fetched.compactMap(\.parentcid)).subtracting(rows.keys)
+            if !parents.isEmpty {
+                let parentRequest = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+                parentRequest.predicate = NSPredicate(format: "cid IN %@", Array(parents))
+                parentRequest.relationshipKeyPathsForPrefetching = ["membership", "membership.user"]
+                for row in try context.fetch(parentRequest) { rows[row.cid] = row }
+            }
+            for cid in inventory.keys {
+                guard let row = rows[cid], row.deletedAt == nil, !row.isClosedTopic else { continue }
+                let scope = row.mlsGroupCid
+                let membership = row.membership ?? (scope != cid ? rows[scope]?.membership : nil)
+                guard let member = membership, member.user.userId == userId, member.isJoined,
+                      !member.isBanned, !member.isBlocked else { continue }
+                let encrypted = row.mlsEnabled || (row.gate?.boolValue != true && scope != cid && rows[scope]?.mlsEnabled == true)
+                if encrypted { result[cid] = scope }
+                else {
+                    let key = Self.standardProgressPrefix + cid
+                    result[cid] = key
+                    // Equivalent to Channel.canSendMessage, without eager relationship/model mapping.
+                    standard[key] = row.memberCapabilities?.contains(ChannelCapability.sendMessage.rawValue) == true
+                        || row.membership?.channelRoleRaw != MemberRole.member.rawValue
+                }
+            }
+            return (result, standard)
+        }
+    }
+
+    private func retireInventoryChannel(_ cid: ChannelId, topics: [ChannelId] = []) {
+        let owner = sessionProgress.owner
+        var removed = Set(topics.map(\.rawValue)); removed.insert(cid.rawValue)
+        if cid.type != .topic {
+            e2eReadContext.performAndWait {
+                let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+                request.predicate = NSPredicate(format: "parentcid == %@", cid.rawValue)
+                if let children = try? self.e2eReadContext.fetch(request) { removed.formUnion(children.map(\.cid)) }
+            }
+            sessionProgress.excludeScope(cid.rawValue, owner: owner)
+        }
+        sessionProgress.excludeChannels(removed, owner: owner)
+        if mlsGroupCid(for: cid) == cid { setReadiness(.needsRetry, for: cid.rawValue) }
+    }
+
+    private func observedScopeMembership(_ cid: String) -> Bool? {
+        var allowed: Bool?
+        e2eReadContext.performAndWait {
+            guard let channelId = try? ChannelId(cid: cid), let dto = ChannelDTO.load(cid: channelId, context: self.e2eReadContext) else { return }
+            allowed = dto.deletedAt == nil && dto.membership?.isJoined == true
+                && dto.membership?.isBanned != true && dto.membership?.isBlocked != true
+                && dto.membership?.user.userId == self.mlsClient.userId
+        }
+        return allowed
+    }
+
+    private func retrySessionReadiness(owner: UUID) {
+        syncThrottleQueue.async { [weak self] in
+            guard let self, self.sessionProgress.owns(owner) else { return }
+            let incomplete = self.sessionProgress.incompleteScopes
+            let standardIds = incomplete.filter { $0.hasPrefix(Self.standardProgressPrefix) }.map { String($0.dropFirst(Self.standardProgressPrefix.count)) }
+            if let user = self.mlsClient.userId, !standardIds.isEmpty {
+                do {
+                    let current = try self.currentEligibleInventory(Dictionary(uniqueKeysWithValues: standardIds.map { ($0, $0) }), userId: user)
+                    for cid in standardIds where current.channels[cid] == nil { self.sessionProgress.excludeChannel(cid, owner: owner) }
+                    for (key, ready) in current.standard { self.sessionProgress.record(scope: key, result: ready ? .ready : .blocked, owner: owner) }
+                } catch { /* Keep truthful partial; a store failure is never Ready. */ }
+            }
+            let cids = self.orderedBootstrapCids(incomplete.filter { !$0.hasPrefix(Self.standardProgressPrefix) })
+            for cid in cids { self.setReadiness(.restoring, for: cid.rawValue) }
+            self.sessionProgress.installInventoryRetry(owner: owner) { [weak self] in self?.retrySessionReadiness(owner: owner) }
+            if self.bootstrapQueue.enqueue(cids) { self.runNextBootstrap() }
+        }
+    }
+
+    /// A genuinely new connection may resume a settled transport failure once. Metadata
+    /// refresh, foreground, pong and duplicate notifications cannot renew that budget.
+    func resumeBootstrapAfterConnection(_ connectionId: String) {
+        let owner = sessionProgress.owner
+        readinessLock.lock()
+        guard lastBootstrapConnectionId != connectionId else { readinessLock.unlock(); return }
+        lastBootstrapConnectionId = connectionId
+        let failed = readinessByCid.compactMap { $0.value == .infrastructureRetryable ? $0.key : nil }
+        readinessLock.unlock()
+        guard !failed.isEmpty else { return }
+        syncThrottleQueue.async { [weak self] in
+            guard let self, self.sessionProgress.owns(owner) else { return }
+            let cids = self.orderedBootstrapCids(Set(failed)).filter {
+                self.observedScopeMembership($0.rawValue) == true && !self.bootstrapQueue.contains($0)
+            }
+            for cid in cids { self.setReadiness(.restoring, for: cid.rawValue) }
+            if self.bootstrapQueue.enqueue(cids) { self.runNextBootstrap() }
         }
     }
 
     private func handlePreparedEncryptedChannels(_ cids: [ChannelId]) {
-        let discovered = Dictionary(grouping: cids.map(mlsGroupCid(for:)), by: \.rawValue)
-            .compactMap { $0.value.first }
-        let warm = discovered.count <= 1 ? Set(discovered.map(\.rawValue)) : warmBootstrapCids(Set(discovered.map(\.rawValue)))
-        let resolved = discovered.filter { warm.contains($0.rawValue) }
-        // List hydration discovers scopes; it is not retry authority. In particular,
-        // another page/realtime list refresh must not restart a failed scope's entire
-        // generation/sync/GroupInfo budget. Explicit scope demand and authoritative
-        // events still enter the existing bootstrap queue. Reserve under the same
-        // readiness lock so overlapping list callbacks cannot both admit a scope.
-        let candidates = resolved.filter { cid in
-            readinessLock.lock()
-            defer { readinessLock.unlock() }
+        let ordered = orderedBootstrapCids(Set(cids.map(\.rawValue)))
+        // Discovery is not retry authority: repeated metadata/foreground callbacks do not
+        // restart a failed budget. Explicit open/retry and authoritative events still can.
+        let candidates = ordered.filter { cid in
+            readinessLock.lock(); defer { readinessLock.unlock() }
+            if dormantBootstrapScopes.contains(cid.rawValue) { return false }
             guard readinessByCid[cid.rawValue] == nil else { return false }
             readinessByCid[cid.rawValue] = .restoring
             return true
         }
-        let existing = candidates.filter {
-            mlsClient.isGroupLoaded(cid: $0.rawValue)
-                && !mlsClient.hasNonOperationalGroup(cid: $0.rawValue)
-                && !hasLocalJoinReceipt(for: $0.rawValue)
-        }
-        let missing = candidates.filter {
-            !mlsClient.isGroupLoaded(cid: $0.rawValue)
-                || mlsClient.hasNonOperationalGroup(cid: $0.rawValue)
-                || hasLocalJoinReceipt(for: $0.rawValue)
-        }
+        // Reserve the whole continuation before starting its first scope. Every scope uses
+        // runNextBootstrap's existing local/Welcome/retained-candidate/admission decisions.
+        if bootstrapQueue.enqueue(candidates) || candidates.isEmpty { runNextBootstrap() }
+    }
 
-        existing.forEach { setReadiness(.restoring, for: $0.rawValue) }
-
-        // Existing groups use bounded batches; missing groups keep the exact Web state machine
-        // and are serialized below (pre-sync -> Welcome or external join -> post-sync).
-        let startBootstrap = { [weak self] in
-            guard let self else { return }
-            self.syncExistingGroupsInBatches(Array(existing), batchSize: 20) { [weak self] in
-                missing.forEach { self?.enqueueBootstrap(for: $0) }
-            }
-        }
-        guard !existing.isEmpty else {
-            startBootstrap()
-            return
-        }
-        database.write { session in
-            for cid in existing {
-                guard let dto = session.channel(cid: cid), dto.mlsGroupJoinedAt == nil else { continue }
-                dto.mlsGroupJoinedAt = Date().bridgeDate
-            }
-        } completion: { error in
-            if let error {
-                log.error(
-                    "[E2eSync] state=join_anchor_persist_failed \(PrivacySafeLogMetadata.errorFields(error))",
-                    subsystems: .mls
-                )
-            }
-            startBootstrap()
+    func localGroupEpoch(for cid: ChannelId, completion: @escaping (UInt64?) -> Void) {
+        let groupCid = mlsGroupCid(for: cid).rawValue
+        let user = mlsClient.userId
+        mutationExecutor.enqueue(scopeIds: [groupCid], priority: .low) { [weak self] in
+            guard let self, self.mlsClient.userId == user else { completion(nil); return }
+            completion(self.mlsClient.localGroupEpoch(cid: groupCid))
         }
     }
 
@@ -1998,7 +2479,7 @@ class E2eRepository: EventsControllerDelegate {
         completion: @escaping (E2eeChannelReadiness) -> Void
     ) {
         let groupCid = mlsGroupCid(for: cid)
-        readinessLock.lock(); activeBootstrapCid = groupCid.rawValue; readinessLock.unlock()
+        readinessLock.lock(); activeBootstrapCid = groupCid.rawValue; dormantBootstrapScopes.remove(groupCid.rawValue); readinessLock.unlock()
         let current = readiness(for: groupCid)
         if current == .ready || current == .recovered || current == .historyIncomplete {
             completion(current)
@@ -2007,7 +2488,7 @@ class E2eRepository: EventsControllerDelegate {
         readinessLock.lock()
         readinessCallbacks[groupCid.rawValue, default: []].append(completion)
         readinessLock.unlock()
-        enqueueBootstrap(for: groupCid)
+        if bootstrapQueue.enqueuePriority(groupCid) { runNextBootstrap() }
     }
 
     private func syncExistingGroupsInBatches(
@@ -2198,7 +2679,31 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func runNextBootstrap() {
-        guard let cid = bootstrapQueue.dequeue() else { return }
+        let owner = sessionProgress.owner
+        // Metadata/cache callbacks may complete synchronously. Continue on the
+        // existing session lane instead of recursing once per prepared scope.
+        syncThrottleQueue.async { [weak self] in
+            guard let self, self.sessionProgress.owns(owner) else { return }
+            self.runNextBootstrapTurn()
+        }
+    }
+
+    private func runNextBootstrapTurn() {
+        let point = bootstrapQueue.takeSyncBatch(pointOnly: true)
+        if !point.isEmpty { runBootstrapBatchSync(point, sessionBatch: false); return }
+        guard let cid = bootstrapQueue.dequeue() else {
+            if bootstrapQueue.takeFullSyncRequest() {
+                runBootstrapBatchSync(bootstrapQueue.takeSyncBatch(limit: Int.max), full: true)
+                return
+            }
+            let batch = bootstrapQueue.takeSyncBatch()
+            if !batch.isEmpty { runBootstrapBatchSync(batch) }
+            return
+        }
+        let workStarted = ProcessInfo.processInfo.systemUptime
+        readinessLock.lock(); bootstrapStartedAt[cid.rawValue] = workStarted; readinessLock.unlock()
+        let alias = SHA256.hash(data: Data(cid.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+        log.info("session_bootstrap scope_sha256=\(alias) stage=started result=pending elapsed_ms=0", subsystems: .mls)
 
         let trace = E2eeJoinTrace.Context(cid: cid.rawValue)
         trace.info(
@@ -2209,11 +2714,12 @@ class E2eRepository: EventsControllerDelegate {
             groupLoaded: mlsClient.isGroupLoaded(cid: cid.rawValue)
         )
         setReadiness(.syncing, for: cid.rawValue)
+        let progressOwner = sessionProgress.owner
         let ownerIdentity = mlsClient.identity
         let ownerUser = mlsClient.userId
         let ownerDevice = mlsClient.currentDeviceId
         apiClient.request(endpoint: .mlsGeneration(cid: cid)) { [weak self] result in
-            guard let self, self.mlsClient.identity === ownerIdentity,
+            guard let self, self.sessionProgress.owns(progressOwner), self.mlsClient.identity === ownerIdentity,
                   self.mlsClient.userId == ownerUser, self.mlsClient.currentDeviceId == ownerDevice else { return }
             switch result {
             case .success(let state):
@@ -2260,14 +2766,14 @@ class E2eRepository: EventsControllerDelegate {
                     if self.mlsClient.loadPendingGenerationJoin(cid: cid.rawValue) != nil {
                         self.externalJoinAuthoritativeGeneration(cid: cid, trace: trace)
                     } else {
-                        self.performE2eChannelSync(cids: [cid.rawValue]) { [weak self] in
+                        self.afterBootstrapDurableTurns(cid) { [weak self] in
                             guard let self else { return }
                             let marker = self.mlsClient.loadGenerationMarker(cid: cid.rawValue)
                             if marker?.generation == UInt64(state.groupGeneration),
                                marker?.groupId == state.groupId.map({ Data($0) }),
                                self.mlsClient.isGroupLoaded(cid: cid.rawValue),
                                !self.mlsClient.hasNonOperationalGroup(cid: cid.rawValue) {
-                                self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
+                                self.prepareBootstrapBatchSync(cid)
                             } else {
                                 self.externalJoinAuthoritativeGeneration(cid: cid, trace: trace)
                             }
@@ -2278,13 +2784,7 @@ class E2eRepository: EventsControllerDelegate {
                 if self.mlsClient.isGroupLoaded(cid: cid.rawValue),
                    !self.mlsClient.hasNonOperationalGroup(cid: cid.rawValue),
                    !self.hasLocalJoinReceipt(for: cid.rawValue) {
-                    self.recoverRetainedGroupIfBehind(cid: cid) { [weak self] in
-                        guard let self, self.mlsClient.identity === ownerIdentity else { return }
-                        self.performE2eChannelSync(cids: [cid.rawValue]) {
-                            guard self.mlsClient.identity === ownerIdentity else { return }
-                            self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
-                        }
-                    }
+                    self.prepareBootstrapBatchSync(cid)
                     return
                 }
                 if state.state == .eligible, state.capability.automaticEnabled {
@@ -2321,20 +2821,22 @@ class E2eRepository: EventsControllerDelegate {
         cid: ChannelId,
         trace: E2eeJoinTrace.Context
     ) {
-        performE2eChannelSync(cids: Set([cid.rawValue])) { [weak self] in
+        // Intake/durable Welcome processing precedes admission without a per-scope HTTP sync.
+        replayDurablePendingEvents(scopeCids: [cid.rawValue])
+        afterBootstrapDurableTurns(cid) { [weak self] in
             guard let self else { return }
             let groupLoaded = self.mlsClient.isGroupLoaded(cid: cid.rawValue)
             let hasReceipt = self.hasLocalJoinReceipt(for: cid.rawValue)
             let retainedGroupIsNonOperational = self.mlsClient.hasNonOperationalGroup(cid: cid.rawValue)
             trace.info(
                 stage: "bootstrap_presync_finished",
-                source: "scope_sync",
+                source: "bootstrap",
                 result: groupLoaded && !retainedGroupIsNonOperational && !hasReceipt ? "group_ready" : "join_required",
                 receipt: self.joinReceiptTraceStatus(for: cid.rawValue),
                 groupLoaded: groupLoaded
             )
             if groupLoaded, !retainedGroupIsNonOperational, !hasReceipt {
-                self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
+                self.prepareBootstrapBatchSync(cid)
                 return
             }
 
@@ -2424,16 +2926,7 @@ class E2eRepository: EventsControllerDelegate {
                     groupLoaded: self.mlsClient.isGroupLoaded(cid: cid.rawValue)
                 )
                 self.setReadiness(.syncing, for: cid.rawValue)
-                self.performE2eChannelSync(cids: Set([cid.rawValue])) { [weak self] in
-                    guard let self else { return }
-                    trace.info(
-                        stage: "bootstrap_postsync_finished",
-                        source: "scope_sync",
-                        receipt: self.joinReceiptTraceStatus(for: cid.rawValue),
-                        groupLoaded: self.mlsClient.isGroupLoaded(cid: cid.rawValue)
-                    )
-                    self.finishBootstrap(cid: cid, state: self.bootstrapCompletionState(for: cid))
-                }
+                self.prepareBootstrapBatchSync(cid)
             }
         }
     }
@@ -2458,10 +2951,7 @@ class E2eRepository: EventsControllerDelegate {
                 )
                 return
             }
-            self.performE2eChannelSync(cids: Set([cid.rawValue])) { [weak self] in
-                guard let self else { return }
-                self.finishBootstrap(cid: cid, state: .recovered)
-            }
+            self.prepareBootstrapBatchSync(cid)
         }
     }
 
@@ -2876,23 +3366,131 @@ class E2eRepository: EventsControllerDelegate {
         mlsClient.userDefaults.removeObject(forKey: mlsRebootstrapCheckpointKey(cid: cid))
     }
 
+    private func hasVerifiedLiveSync(_ cid: String) -> Bool {
+        syncLock.lock(); defer { syncLock.unlock() }
+        return !unverifiedLiveSyncScopes.contains(cid)
+    }
+
     private func bootstrapCompletionState(for cid: ChannelId) -> E2eeChannelReadiness {
-        if isScopeBlocked(cid.rawValue) { return .needsRetry }
+        func blocked(_ reason: String, _ state: E2eeChannelReadiness = .needsRetry) -> E2eeChannelReadiness {
+            let alias = SHA256.hash(data: Data(cid.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+            log.info("session_readiness_guard scope_sha256=\(alias) reason=\(reason)", subsystems: .mls)
+            return state
+        }
+        guard observedScopeMembership(cid.rawValue) == true else { return blocked("membership") }
+        guard hasVerifiedLiveSync(cid.rawValue) else { return blocked("live_sync", .infrastructureRetryable) }
+        if isScopeBlocked(cid.rawValue) { return blocked("protocol") }
         if let store = try? mlsClient.membershipMutationStore(),
-           store.hasIntent(cid: cid.rawValue) || (try? store.load(cid: cid.rawValue)) != nil { return .needsRetry }
-        guard mlsClient.isGroupLoaded(cid: cid.rawValue) else { return .failed }
-        if mlsClient.hasNonOperationalGroup(cid: cid.rawValue) { return .needsRetry }
+           store.hasIntent(cid: cid.rawValue) || (try? store.load(cid: cid.rawValue)) != nil { return blocked("membership_mutation") }
+        guard mlsClient.isGroupLoaded(cid: cid.rawValue) else { return blocked("group_missing", .failed) }
+        if mlsClient.hasNonOperationalGroup(cid: cid.rawValue) { return blocked("group_nonoperational") }
         // This remains a lifecycle/sync UI state. `encryptedMessage` independently evaluates
         // crypto safety, so a merged exact receipt may send while post-sync reconciles.
-        if hasLocalJoinReceipt(for: cid.rawValue) { return .needsRetry }
+        if hasLocalJoinReceipt(for: cid.rawValue) { return blocked("join_receipt") }
         return .ready
     }
 
-    private func finishBootstrap(cid: ChannelId, state: E2eeChannelReadiness) {
+    private func prepareBootstrapBatchSync(_ cid: ChannelId) {
+        setReadiness(.syncing, for: cid.rawValue)
+        bootstrapQueue.prepareForBatchSync(cid)
+        runNextBootstrap()
+    }
+
+    private func afterBootstrapDurableTurns(_ cid: ChannelId, completion: @escaping () -> Void) {
+        let owner = sessionProgress.owner
+        let operation = BlockOperation { [weak self] in
+            guard let self, self.sessionProgress.owns(owner), let user = self.mlsClient.userId else { return }
+            self.durableApplyLock.lock()
+            let pending = self.scheduledDurableDrains.contains("\(user)|\(cid.rawValue)")
+            self.durableApplyLock.unlock()
+            if pending { self.afterBootstrapDurableTurns(cid, completion: completion) }
+            else { completion() }
+        }
+        operation.queuePriority = .low
+        enqueueGroupOperation(operation, cidStrings: [cid.rawValue])
+    }
+
+    private func runBootstrapBatchSync(_ cids: [ChannelId], full: Bool = false, sessionBatch: Bool = true) {
+        let owner = sessionProgress.owner
+        if sessionBatch { sessionProgress.startReadiness(owner: owner) }
+        let completed = { [weak self] in
+            guard let self, self.sessionProgress.owns(owner) else { return }
+            let repair = cids.filter { self.hasVerifiedLiveSync($0.rawValue) && self.isScopeBlocked($0.rawValue) }
+            self.recoverRetainedGroups(repair) { [weak self] in
+                guard let self, self.sessionProgress.owns(owner) else { return }
+                for cid in cids {
+                    let state = self.hasVerifiedLiveSync(cid.rawValue)
+                        ? self.bootstrapCompletionState(for: cid) : .infrastructureRetryable
+                    self.finishBootstrap(cid: cid, state: state, advanceQueue: false)
+                }
+                self.bootstrapQueue.finishSyncBatch(cids)
+                self.runNextBootstrap()
+            }
+        }
+        if full { performE2eSyncNow(trigger: "bootstrap_continuation", completion: completed) }
+        else {
+            let remaining = scopesNeedingBootstrapSync(cids)
+            if remaining.isEmpty { completed() }
+            else { performE2eChannelSync(cids: Set(remaining.map(\.rawValue)), completion: completed) }
+        }
+    }
+
+    private func syncMembershipDates(_ cids: Set<String>) -> [String: Date] {
+        let context = database.backgroundReadOnlyContext
+        return context.performAndWait {
+            let request = NSFetchRequest<ChannelDTO>(entityName: ChannelDTO.entityName)
+            request.predicate = NSPredicate(format: "cid IN %@", Array(cids))
+            request.relationshipKeyPathsForPrefetching = ["membership"]
+            return Dictionary(uniqueKeysWithValues: ((try? context.fetch(request)) ?? []).compactMap { row in
+                row.membership?.memberCreatedAt.map { (row.cid, $0.bridgeDate) }
+            })
+        }
+    }
+
+    private func scopesNeedingBootstrapSync(_ cids: [ChannelId]) -> [ChannelId] {
+        let owner = sessionProgress.owner
+        let memberships = syncMembershipDates(Set(cids.map(\.rawValue)))
+        readinessLock.lock()
+        let started = Dictionary(uniqueKeysWithValues: cids.compactMap { cid in
+            bootstrapStartedAt[cid.rawValue].map { (cid.rawValue, $0) }
+        })
+        readinessLock.unlock()
+        syncLock.lock()
+        let coverage = Dictionary(uniqueKeysWithValues: cids.compactMap { cid -> (String, LiveSyncCoverage)? in
+            guard let witness = liveSyncCoverage[cid.rawValue],
+                  witness.demand == (scopeSyncDemand[cid.rawValue]?.id ?? owner),
+                  !unverifiedLiveSyncScopes.contains(cid.rawValue) else { return nil }
+            return (cid.rawValue, witness)
+        })
+        syncLock.unlock()
+        return cids.filter { cid in
+            guard let since = started[cid.rawValue], let witness = coverage[cid.rawValue],
+                  witness.completedAt >= since, let requestedMembership = witness.membershipDate,
+                  requestedMembership == memberships[cid.rawValue],
+                  witness.marker == mlsClient.loadGenerationMarker(cid: cid.rawValue),
+                  bootstrapCompletionState(for: cid) == .ready else { return true }
+            return false
+        }
+    }
+
+    private func finishBootstrap(cid: ChannelId, state: E2eeChannelReadiness, advanceQueue: Bool = true) {
         // Historical recovery belongs to an explicitly queried page, never a broad live-gap epoch scan.
         let trace = E2eeJoinTrace.Context(cid: cid.rawValue)
         setReadiness(state, for: cid.rawValue)
-        let needsCatchUp = bootstrapQueue.finish(cid)
+        let actual = trackedReadiness(for: cid.rawValue) ?? state
+        readinessLock.lock(); let started = bootstrapStartedAt.removeValue(forKey: cid.rawValue); readinessLock.unlock()
+        let alias = SHA256.hash(data: Data(cid.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+        let elapsed = Int((ProcessInfo.processInfo.systemUptime - (started ?? ProcessInfo.processInfo.systemUptime)) * 1000)
+        let result = [.ready, .recovered, .historyIncomplete].contains(actual) ? "ready" : [.failed, .infrastructureRetryable].contains(actual) ? "failed" : "blocked"
+        log.info("session_bootstrap scope_sha256=\(alias) stage=settled result=\(result) elapsed_ms=\(elapsed)", subsystems: .mls)
+        if ![.ready, .recovered, .historyIncomplete].contains(actual) {
+            // A terminal queue turn can leave an intentional wait/rebootstrap state.
+            // That is settled partial work, never an endlessly spinning success ticket.
+            sessionProgress.record(scope: cid.rawValue,
+                result: [.failed, .infrastructureRetryable].contains(actual) ? .failed : .blocked,
+                owner: sessionProgress.owner)
+        }
+        let needsCatchUp = advanceQueue ? bootstrapQueue.finish(cid) : false
         trace.info(
             stage: "bootstrap_finished",
             source: "bootstrap",
@@ -2902,6 +3500,7 @@ class E2eRepository: EventsControllerDelegate {
             groupLoaded: mlsClient.isGroupLoaded(cid: cid.rawValue),
             deferredSync: needsCatchUp
         )
+        guard advanceQueue else { return }
         // An invite/WebSocket hint that arrived during pre-sync → join → post-sync must not
         // start a competing scope sync. Coalesce it into exactly one catch-up before starting
         // the next serialized external-join mutation.
@@ -2915,9 +3514,20 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func setReadiness(_ requestedState: E2eeChannelReadiness, for cidString: String) {
+        let owner = sessionProgress.owner
         let successStates: Set<E2eeChannelReadiness> = [.ready, .recovered, .historyIncomplete]
-        let state = successStates.contains(requestedState) && !recoveryControlAllowsReady(cid: cidString)
-            ? E2eeChannelReadiness.needsRetry : requestedState
+        var state = requestedState
+        if successStates.contains(requestedState) {
+            let verified = (try? performMlsMutation(cidString: cidString) {
+                guard self.sessionProgress.owns(owner), self.recoveryControlAllowsReady(cid: cidString),
+                      let cid = try? ChannelId(cid: cidString),
+                      self.bootstrapCompletionState(for: cid) == .ready,
+                      let group = try? self.mlsClient.loadGroup(with: cidString) else { return false }
+                return self.canEncrypt(in: group, scopeCid: cidString)
+            }) ?? false
+            if !verified { state = .needsRetry }
+        }
+        guard sessionProgress.owns(owner) else { return }
         readinessLock.lock()
         readinessByCid[cidString] = state
         let terminalStates: Set<E2eeChannelReadiness> = [
@@ -2934,6 +3544,14 @@ class E2eRepository: EventsControllerDelegate {
             ? readinessCallbacks.removeValue(forKey: cidString) ?? []
             : []
         readinessLock.unlock()
+        let progressResult: SessionSyncProgress.ScopeResult
+        if successStates.contains(state) { progressResult = .ready }
+        else if [.failed, .infrastructureRetryable].contains(state) { progressResult = .failed }
+        else if terminalStates.contains(state) { progressResult = .blocked }
+        else { progressResult = .pending }
+        if successStates.contains(state) { checkpointBootstrap(cidString, owner: owner) }
+        sessionProgress.record(scope: cidString, result: progressResult, owner: owner,
+            invalidateReady: state == .joining || state == .rebootstrapping)
         E2eeJoinTrace.Context(cid: cidString).info(
             stage: "readiness_changed",
             source: "readiness",
@@ -3009,13 +3627,25 @@ class E2eRepository: EventsControllerDelegate {
         guard let accountId = mlsClient.userId else { return false }
         do {
             if try installedGenerationWelcomeBoundary(for: cidString) != nil { return false }
-            let finalized = try durableInboxStore.finalizeAppliedLocalJoinReceiptIfPossible(
-                accountId: accountId,
-                scopeCid: cidString
-            )
+            let finalized = try performMlsMutation(cidString: cidString) {
+                guard self.mlsClient.userId == accountId,
+                      self.mlsClient.loadPendingGenerationJoin(cid: cidString) == nil,
+                      let receipt = try self.durableInboxStore.localJoinReceiptProof(accountId: accountId, scopeCid: cidString) else { return false }
+                var witness: E2eeDurableInboxStore.InstalledJoinReceiptWitness?
+                if receipt.status == .merged, receipt.requestDeviceId == self.mlsClient.currentDeviceId,
+                   !self.mlsClient.hasNonOperationalGroup(cid: cidString),
+                   let group = try? self.mlsClient.loadGroup(with: cidString), group.epoch() >= receipt.epoch,
+                   let marker = self.mlsClient.loadGenerationMarker(cid: cidString), marker.status == "active" {
+                    witness = .init(receipt: receipt, generation: marker.generation, groupId: marker.groupId)
+                }
+                return try self.durableInboxStore.finalizeAppliedLocalJoinReceiptIfPossible(
+                    accountId: accountId, scopeCid: cidString, installedWitness: witness
+                )
+            }
             if finalized, let cid = try? ChannelId(cid: cidString) {
                 normalizeHistoricalApplications(cid: cid)
                 retryPendingGroupApplications(in: cid)
+                reDecryptPendingMessages(in: cid)
             }
             return try durableInboxStore.localJoinReceiptProof(
                 accountId: accountId,
@@ -3081,8 +3711,30 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
 
-    func performE2eChannelSync(cid: ChannelId) {
-        runSync(forCidStrings: [cid.rawValue], completion: nil)
+    func performE2eChannelSync(cid: ChannelId, protocolEvent: MLSProtocolMessagePayload? = nil) {
+        let scope = mlsGroupCid(for: cid)
+        var protocolDigest: String?
+        if let event = protocolEvent, let payload = event.processData {
+            // Realtime is a wake-up hint, never acceptance or Ready authority.
+            // Two deliveries of identical protocol bytes must not look like a
+            // newer demand arriving during the first request.
+            var hash = SHA256()
+            let groupId = event.groupId ?? []
+            hash.update(data: Data("\(scope.rawValue)|\(event.type.rawValue)|\(event.groupGeneration)|\(event.epoch)|\(groupId.count)|".utf8))
+            hash.update(data: Data(groupId))
+            hash.update(data: payload)
+            protocolDigest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+        }
+        syncLock.lock()
+        if protocolDigest == nil || scopeSyncDemand[scope.rawValue]?.protocolDigest != protocolDigest {
+            // A->B->A must stay newer than the HTTP that captured the first A.
+            scopeSyncDemand[scope.rawValue] = ScopeSyncDemand(id: UUID(), protocolDigest: protocolDigest)
+        }
+        syncLock.unlock()
+        // Preparation already owns this scope. Wakeups before its batch starts are
+        // covered by that batch; wakeups during transport retain one trailing turn.
+        guard !bootstrapQueue.deferSyncIfAdmitted(scope) else { return }
+        runSync(forCidStrings: [scope.rawValue], completion: nil)
     }
 
     /// Owner diagnostics: read at most 500 retained envelopes without changing cursor,
@@ -3192,14 +3844,17 @@ class E2eRepository: EventsControllerDelegate {
         isSyncing = true
         syncProgressTicket = sessionProgress.begin("preparing")
         activeSyncCids = cidStrings
+        unverifiedLiveSyncScopes.formUnion(cidStrings)
+        successfulSyncScopes.removeAll()
+        pendingSyncReadinessScopes.removeAll()
         if let completion { activeSyncCompletions = [completion] }
         syncLock.unlock()
 
         var cursors: [String: ScopeSyncCursorPayload] = [:]
+        var membershipDates: [String: Date] = [:]
         let deviceLoginTime = loginTime
         let context = database.backgroundReadOnlyContext
-        let selected = cidStrings.count <= 6 ? cidStrings : warmBootstrapCids(cidStrings)
-        prepareLiveScopes(selected) { [weak self] allowed in
+        prepareLiveScopes(cidStrings) { [weak self] allowed in
         guard let self else { return }
         context.performAndWait {
             for cidString in allowed {
@@ -3212,6 +3867,7 @@ class E2eRepository: EventsControllerDelegate {
                     deviceLoginTime: deviceLoginTime
                 ) {
                     cursors[cidString] = cursor
+                    membershipDates[cidString] = dto.membership?.memberCreatedAt?.bridgeDate
                 }
             }
         }
@@ -3226,32 +3882,23 @@ class E2eRepository: EventsControllerDelegate {
         }
         log.debug("[E2eSync] Starting sync for \(cursors.count) channel(s)", subsystems: .mls)
         self.replayDurablePendingEvents(scopeCids: Set(cursors.keys))
+        self.syncLock.lock(); self.activeSyncMembershipDates = membershipDates; self.syncLock.unlock()
         self.startSyncPages(cursors: cursors)
         }
     }
 
-    /// The backend returns at most 100 events per request. Keeping each request to at most 20
-    /// scopes also bounds request/response dictionaries and durable-inbox memory on large users.
+    /// One initial cursor map covers the session; only actual event/removal
+    /// pagination requires further HTTP. Durable page/capacity guards still apply.
     private func startSyncPages(cursors: [String: ScopeSyncCursorPayload]) {
         sessionProgress.phase("syncing")
-        let sortedCids = cursors.keys.sorted()
-        var batches: [[String: ScopeSyncCursorPayload]] = []
-        for startIndex in stride(from: 0, to: sortedCids.count, by: 20) {
-            let endIndex = min(startIndex + 20, sortedCids.count)
-            var batch: [String: ScopeSyncCursorPayload] = [:]
-            for cid in sortedCids[startIndex..<endIndex] {
-                batch[cid] = cursors[cid]
-            }
-            batches.append(batch)
-        }
-        guard let first = batches.first else {
+        guard !cursors.isEmpty else {
             finishSync()
             return
         }
         syncLock.lock()
-        pendingInitialSyncCursorBatches = Array(batches.dropFirst())
+        pendingInitialSyncCursorBatches.removeAll()
         syncLock.unlock()
-        syncPage(cursors: first)
+        syncPage(cursors: cursors)
     }
 
     private func syncNextInitialBatchOrFinish() {
@@ -3268,12 +3915,16 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func syncPage(cursors: [String: ScopeSyncCursorPayload], materializationRetries: [String: Int] = [:]) {
+        let owner = sessionProgress.owner
+        syncLock.lock()
+        let requestedDemands = Dictionary(uniqueKeysWithValues: cursors.keys.map { ($0, scopeSyncDemand[$0]?.id ?? owner) })
+        syncLock.unlock()
         for (cid, cursor) in cursors {
             log.info("mls_scope_trace stage=requested cid=\(cid) event_id=\(cursor.eventId) created_at=\(cursor.createdAt)", subsystems: .mls)
         }
         let body = E2eSyncRequestBody(cursors: cursors, removedCursor: loadRemovedSyncCursor())
         apiClient.request(endpoint: .e2eSync(body: body)) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.sessionProgress.owns(owner) else { return }
             switch result {
             case .failure(let error):
                 log.error(
@@ -3281,7 +3932,7 @@ class E2eRepository: EventsControllerDelegate {
                     subsystems: .mls
                 )
                 self.sessionProgress.markPartial()
-                self.finishSync()
+                self.syncNextInitialBatchOrFinish()
             case .success(let payload):
                 guard let accountId = self.mlsClient.userId else {
                     log.error("[E2eSync] Discarding response without an active account", subsystems: .mls)
@@ -3319,12 +3970,23 @@ class E2eRepository: EventsControllerDelegate {
                             nextCursors[cidString] = fetchCursor
                             // Rollback-only mirror for versions predating the durable store.
                             self.saveSyncCursors([cidString: fetchCursor])
+                            if let owner = self.bootstrapOwnerStamp() {
+                                try? self.mlsClient.removeRecoveryCheckpoint(key: self.initialJoinSyncKey(cidString, owner: owner))
+                            }
                         }
                         self.processE2eSyncEvents(
                             persisted.insertedEvents,
                             cid: cid,
                             cidString: cidString
                         )
+                        if !channelPayload.hasMore {
+                            self.syncLock.lock()
+                            if self.successfulSyncScopes.insert(cidString).inserted {
+                                self.pendingSyncReadinessScopes.insert(cidString)
+                            }
+                            self.successfulSyncDemand[cidString] = requestedDemands[cidString]
+                            self.syncLock.unlock()
+                        }
                     } catch {
                         self.sessionProgress.markPartial()
                         failedScopes.insert(cidString)
@@ -3392,6 +4054,9 @@ class E2eRepository: EventsControllerDelegate {
                 self.handleRemovedChannels(payload.removedChannels) { result in
                     switch result {
                     case .failure(let error):
+                        self.syncLock.lock()
+                        self.successfulSyncScopes.removeAll(); self.pendingSyncReadinessScopes.removeAll()
+                        self.syncLock.unlock()
                         log.error(
                             "[E2eSync] state=removed_cleanup_blocked "
                                 + PrivacySafeLogMetadata.errorFields(error),
@@ -3399,6 +4064,7 @@ class E2eRepository: EventsControllerDelegate {
                         )
                         self.finishSync()
                     case .success(let removedHasMore):
+                        if !removedHasMore { self.publishCompletedSyncScopes(owner: owner) }
                         var remaining = retryCursors
                         for (cid, ch) in payload.channels where ch.hasMore && !failedScopes.contains(cid) {
                             if let next = nextCursors[cid] {
@@ -3413,7 +4079,7 @@ class E2eRepository: EventsControllerDelegate {
                                 let retryPage = remaining
                                 let retryCounts = nextRetries
                                 DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(150)) { [weak self] in
-                                    guard let self, self.mlsClient.userId == accountId else { return }
+                                    guard let self, self.sessionProgress.owns(owner), self.mlsClient.userId == accountId else { return }
                                     self.syncLock.lock()
                                     let stillSyncing = self.isSyncing
                                     self.syncLock.unlock()
@@ -3580,13 +4246,55 @@ class E2eRepository: EventsControllerDelegate {
             return
         }
 
-        // API pagination is complete, but MLS/Core Data apply operations are asynchronous.
-        // The barrier makes pre/post-join completion observe fully persisted state.
+        finishSyncAfterDurableTurns(cids, owner: sessionProgress.owner)
+    }
+
+    private func finishSyncAfterDurableTurns(_ cids: Set<String>, owner: UUID) {
+        // A drain deliberately yields every 100 envelopes. Its next turn can be queued
+        // behind this barrier, so one barrier alone does not prove the durable prefix
+        // has settled. Continue behind real queued turns, never a timer or network poll.
         let barrier = BlockOperation { [weak self] in
-            self?.finishSessionDelta()
+            guard let self, self.sessionProgress.owns(owner), let accountId = self.mlsClient.userId else { return }
+            self.durableApplyLock.lock()
+            let pending = cids.filter { self.scheduledDurableDrains.contains("\(accountId)|\($0)") }
+            self.durableApplyLock.unlock()
+            if pending.isEmpty {
+                self.finishSessionDelta()
+            } else {
+                self.finishSyncAfterDurableTurns(pending, owner: owner)
+            }
         }
         barrier.queuePriority = .low
         enqueueGroupOperation(barrier, cidStrings: cids)
+    }
+
+    /// The last successful page and this scope's durable drain establish its
+    /// live-sync proof independently of other scopes. Queue admission remains
+    /// owned by the original batch until its normal completion.
+    private func publishCompletedSyncScopes(owner: UUID) {
+        syncLock.lock()
+        let cids = pendingSyncReadinessScopes
+        pendingSyncReadinessScopes.removeAll()
+        let work = syncProgressTicket?.work
+        syncLock.unlock()
+        guard let work else { return }
+        for raw in cids {
+            readinessLock.lock(); let dormant = dormantBootstrapScopes.contains(raw); readinessLock.unlock()
+            if dormant { continue }
+            guard let cid = try? ChannelId(cid: raw) else { continue }
+            afterBootstrapDurableTurns(cid) { [weak self] in
+                guard let self, self.sessionProgress.owns(owner) else { return }
+                // The existing serialized provider turn also orders this check
+                // before batch completion/replacement; old tickets cannot publish.
+                self.syncLock.lock()
+                let current = self.isSyncing && self.syncProgressTicket?.work == work
+                    && self.successfulSyncScopes.contains(raw)
+                if current { self.unverifiedLiveSyncScopes.remove(raw) }
+                self.syncLock.unlock()
+                guard current, self.bootstrapCompletionState(for: cid) == .ready else { return }
+                self.setReadiness(.ready, for: raw)
+            }
+        }
     }
 
     private func finishSessionDelta() {
@@ -3599,8 +4307,16 @@ class E2eRepository: EventsControllerDelegate {
     }
 
     private func completeSyncRun() {
+        let owner = sessionProgress.owner
         syncLock.lock()
         let completedCids = activeSyncCids
+        let delivered = successfulSyncScopes, deliveredDemands = successfulSyncDemand
+        let memberships = activeSyncMembershipDates
+        activeSyncMembershipDates.removeAll()
+        successfulSyncDemand.removeAll()
+        unverifiedLiveSyncScopes.subtract(successfulSyncScopes)
+        successfulSyncScopes.removeAll()
+        pendingSyncReadinessScopes.removeAll()
         let progressTicket = syncProgressTicket
         syncProgressTicket = nil
         isSyncing = false
@@ -3610,10 +4326,27 @@ class E2eRepository: EventsControllerDelegate {
         let completions = activeSyncCompletions
         activeSyncCompletions.removeAll()
         pendingInitialSyncCursorBatches.removeAll()
-        let pending = pendingChannelSyncCids
+        // Same-demand duplicate notifications are already represented by this
+        // successful durable delivery. New demand or failed transport keeps the
+        // normal trailing run; this does not publish messaging readiness.
+        let pending = pendingSyncCompletions.isEmpty ? Set(pendingChannelSyncCids.filter {
+            !delivered.contains($0) || deliveredDemands[$0] != scopeSyncDemand[$0]?.id
+        }) : pendingChannelSyncCids
         pendingChannelSyncCids.removeAll()
         let pendingCompletions = pendingSyncCompletions
         pendingSyncCompletions.removeAll()
+        syncLock.unlock()
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let coverage = delivered.compactMap { cid -> (String, LiveSyncCoverage)? in
+            guard let demand = deliveredDemands[cid] else { return nil }
+            return (cid, LiveSyncCoverage(completedAt: now, demand: demand,
+                marker: mlsClient.loadGenerationMarker(cid: cid), membershipDate: memberships[cid]))
+        }
+        syncLock.lock()
+        if sessionProgress.owns(owner), !isSyncing {
+            for (cid, witness) in coverage { liveSyncCoverage[cid] = witness }
+        }
         syncLock.unlock()
 
         if let progressTicket { sessionProgress.end(progressTicket, retry: { [weak self] in self?.performE2eSync(trigger: "progress_retry") }) }
@@ -3771,21 +4504,35 @@ class E2eRepository: EventsControllerDelegate {
             self.durableApplyLock.unlock()
             guard !blocked else { return }
             do {
-                let events = try self.durableInboxStore.loadPendingPrefix(
-                    accountId: accountId,
-                    scopeCid: cidString,
-                    limit: 100
-                )
-                guard !events.isEmpty else { return }
-                var appliedCount = 0
-                for event in events {
-                    if self.applyDurableEvent(event, accountId: accountId, cid: cid, cidString: cidString) {
-                        appliedCount += 1
-                    } else {
-                        break
+                var attempts = 0
+                var observedPredecessors = Set<String>()
+                while attempts < 100 {
+                    let events = try self.durableInboxStore.loadPendingPrefix(
+                        accountId: accountId, scopeCid: cidString, limit: 100 - attempts
+                    )
+                    guard !events.isEmpty else { return }
+                    var prefixChanged = false
+                    for event in events {
+                        attempts += 1
+                        switch self.applyDurableEvent(event, accountId: accountId, cid: cid, cidString: cidString) {
+                        case .applied: break
+                        case .blocked: return
+                        case .prefixChanged(let predecessor):
+                            // A WS event may have been read just before an HTTP page inserts
+                            // its older predecessor. Reload that durable prefix, never retry
+                            // native bytes out of order or classify this race as bad protocol.
+                            guard observedPredecessors.insert(predecessor).inserted else {
+                                throw E2eeDurableInboxError.outOfOrderApply(expectedEventId: predecessor, actualEventId: event.eventId)
+                            }
+                            prefixChanged = true
+                        }
+                        if prefixChanged { break }
                     }
+                    if prefixChanged { continue }
+                    scheduleNext = true
+                    return
                 }
-                scheduleNext = appliedCount == events.count
+                scheduleNext = true // Existing continuation yields after at most100 attempts.
             } catch {
                 scheduleNext = false
                 self.blockDurableScope(cidString, eventId: nil, error: error)
@@ -3795,14 +4542,21 @@ class E2eRepository: EventsControllerDelegate {
         enqueueGroupOperation(op, cidString: mlsGroupCid(for: cid).rawValue)
     }
 
-    /// Returns false only for a protocol-prefix blocker. Metadata and application repairs keep
+    private enum DurableApplyOutcome {
+        case applied
+        case blocked
+        case prefixChanged(String)
+    }
+
+    /// A changed prefix is retried locally; genuine protocol failure blocks that prefix.
+    /// Metadata and application repairs keep
     /// the exact cursor moving after their repair row is durable; they never change send safety.
     private func applyDurableEvent(
         _ event: E2eSyncEventEnvelope,
         accountId: String,
         cid: ChannelId,
         cidString: String
-    ) -> Bool {
+    ) -> DurableApplyOutcome {
         do {
             let disposition = try processSingleE2eSyncEvent(
                 event,
@@ -3853,6 +4607,7 @@ class E2eRepository: EventsControllerDelegate {
                 )
                 normalizeHistoricalApplications(cid: cid)
                 retryPendingGroupApplications(in: cid)
+                reDecryptPendingMessages(in: cid)
                 trace.info(
                     stage: "external_commit_finalized",
                     source: "scope_sync",
@@ -3863,8 +4618,12 @@ class E2eRepository: EventsControllerDelegate {
                     localEpoch: epoch
                 )
             }
-            return true
+            return .applied
         } catch {
+            if case let E2eeDurableInboxError.outOfOrderApply(expected, actual) = error,
+               expected != actual {
+                return .prefixChanged(expected)
+            }
             let category = (error as? E2eeSyncApplyError)?.repairCategory ?? "apply_failed"
             try? durableInboxStore.recordRepairIssue(
                 accountId: accountId,
@@ -3885,14 +4644,14 @@ class E2eRepository: EventsControllerDelegate {
                         "[E2ESyncHealth] sync_health=repairing category=\(category)",
                         subsystems: .mls
                     )
-                    return true
+                    return .applied
                 } catch {
                     self.blockDurableScope(cidString, eventId: event.eventId, error: error)
-                    return false
+                    return .blocked
                 }
             }
             blockDurableScope(cidString, eventId: event.eventId, error: error)
-            return false
+            return .blocked
         }
     }
 
@@ -4162,6 +4921,7 @@ class E2eRepository: EventsControllerDelegate {
     ) throws -> E2eeSyncApplyDisposition {
         switch envelope.event {
         case .protocol(let data):
+            readinessLock.lock(); dormantBootstrapScopes.remove(cidString); readinessLock.unlock()
             return try applyE2eSyncProtocolEvent(
                 data,
                 accountId: accountId,
@@ -4170,6 +4930,7 @@ class E2eRepository: EventsControllerDelegate {
                 cidString: cidString
             )
         case .application(let data):
+            if !data.isSystemMessage { readinessLock.lock(); dormantBootstrapScopes.remove(cidString); readinessLock.unlock() }
             if data.isSystemMessage {
                 handleSystemMessage(data, cid: cid)
             } else {
@@ -4308,8 +5069,10 @@ class E2eRepository: EventsControllerDelegate {
 
     private func firstDecryptableEpoch(for cid: ChannelId) -> Int64? {
         var epoch: Int64?
-        database.viewContext.performAndWait {
-            epoch = ChannelDTO.load(cid: cid, context: database.viewContext)?
+        // Receipt/drain work can hold the serialized MLS executor while a main
+        // callback waits for that executor. Read committed metadata off the UI queue.
+        e2eReadContext.performAndWait {
+            epoch = ChannelDTO.load(cid: cid, context: e2eReadContext)?
                 .mlsFirstDecryptableEpoch?.int64Value
         }
         return epoch
@@ -4708,6 +5471,7 @@ class E2eRepository: EventsControllerDelegate {
         }
 
         if userId == mlsClient.userId {
+            retireInventoryChannel(cid)
             membershipRefresh?.invalidate(cid)
             // Current user was removed → delete local MLS group and stop E2EE for this channel.
             let trace = E2eeJoinTrace.Context(cid: cidString)
@@ -4754,7 +5518,9 @@ class E2eRepository: EventsControllerDelegate {
     ) {
         guard data.mlsEnabled else { return }
         let trace = E2eeJoinTrace.Context(cid: cid.rawValue)
-        let bootstrapping = bootstrapQueue.deferSyncIfAdmitted(cid)
+        // This event is already in the ordered sync being applied. Unlike a new
+        // realtime wakeup it cannot request another read of that same transport.
+        let bootstrapping = bootstrapQueue.contains(mlsGroupCid(for: cid))
         if bootstrapping {
             trace.info(
                 stage: "invite_response_received",
@@ -4970,27 +5736,31 @@ class E2eRepository: EventsControllerDelegate {
     /// channel. Idempotent: messages already decrypted (cache present) are skipped.
     private func reDecryptPendingMessages(in cid: ChannelId) {
         let context = e2eReadContext
-        var pending: [(id: MessageId, data: Data)] = []
-        let effectiveCid = mlsGroupCid(for: cid)
-        let firstEpoch = firstDecryptableEpoch(for: effectiveCid)
+        let scope = mlsGroupCid(for: cid)
+        let assertOwner = captureRetainedHistoryOwner()
+        var pending: [(id: MessageId, data: Data, cid: ChannelId)] = []
+        let firstEpoch = firstDecryptableEpoch(for: scope)
         context.performAndWait {
             let request = NSFetchRequest<MessageDTO>(entityName: MessageDTO.entityName)
             if let firstEpoch {
                 request.predicate = NSPredicate(
-                    format: "cid == %@ AND encryptedData != nil AND decryptedMessage == nil AND mlsEpoch >= %lld",
-                    cid.rawValue,
+                    format: "(cid == %@ OR channel.e2eeGroupId == %@ OR channel.parentcid == %@) AND encryptedData != nil AND decryptedMessage == nil AND mlsEpoch >= %lld",
+                    scope.rawValue, scope.rawValue, scope.rawValue,
                     firstEpoch
                 )
             } else {
                 request.predicate = NSPredicate(
-                    format: "cid == %@ AND encryptedData != nil AND decryptedMessage == nil",
-                    cid.rawValue
+                    format: "(cid == %@ OR channel.e2eeGroupId == %@ OR channel.parentcid == %@) AND encryptedData != nil AND decryptedMessage == nil",
+                    scope.rawValue, scope.rawValue, scope.rawValue
                 )
             }
+            request.sortDescriptors = [NSSortDescriptor(keyPath: \MessageDTO.createdAt, ascending: true),
+                NSSortDescriptor(keyPath: \MessageDTO.id, ascending: true)]
             guard let results = try? context.fetch(request) else { return }
             pending = results.compactMap { dto in
-                guard let data = dto.encryptedData else { return nil }
-                return (dto.id, data)
+                guard let data = dto.encryptedData, let rawCid = dto.cid, let route = try? ChannelId(cid: rawCid),
+                      dto.channel?.mlsGroupCid == scope.rawValue else { return nil }
+                return (dto.id, data, route)
             }
         }
         guard !pending.isEmpty else { return }
@@ -4999,12 +5769,15 @@ class E2eRepository: EventsControllerDelegate {
             subsystems: .mls
         )
         for item in pending {
-            decryptMessagePayload(
-                messageId: item.id,
-                encryptedData: item.data,
-                cid: cid,
-                receiveSource: .scopeSync
-            )
+            let op = BlockOperation { [weak self] in
+                guard let self else { return }
+                do { try assertOwner(); try self.receiveStoredRealtimeApplication(messageId: item.id,
+                    encryptedData: item.data, cid: item.cid, assertOwner: assertOwner) }
+                catch { log.error("[MLS] state=realtime_decrypt_failed action=retain_ciphertext "
+                    + PrivacySafeLogMetadata.errorFields(error), subsystems: .mls) }
+            }
+            op.queuePriority = .low
+            enqueueGroupOperation(op, cidString: scope.rawValue)
         }
     }
 
@@ -5067,6 +5840,20 @@ class E2eRepository: EventsControllerDelegate {
                 // to current GroupInfo. Marking the commit safe prevents it from blocking the
                 // later Welcome in the same ordered scope page.
                 guard mlsClient.isGroupLoaded(cid: cidString) else {
+                    if data.type == .externalCommit,
+                       data.epoch >= 0,
+                       let receipt = try durableInboxStore.localJoinReceiptProof(accountId: accountId, scopeCid: cidString),
+                       receipt.epoch == UInt64(data.epoch), let commit = data.commit,
+                       receipt.commitHash == Data(SHA256.hash(data: Data(commit))),
+                       let pending = mlsClient.loadPendingGenerationJoin(cid: cidString),
+                       pending.candidateFenceVersion == 1, pending.generation == incomingGeneration,
+                       pending.epoch == UInt64(data.epoch) {
+                        // The server can publish our exact commit before its receipt callback
+                        // activates the isolated candidate. This is a current join obligation,
+                        // not pre-join history. Keep the protocol prefix durable; the existing
+                        // post-activation sync will verify/finalize it and retry applications.
+                        throw E2eeSyncApplyError.invalidCommit(reason: "external_join_activation_pending")
+                    }
                     trace.info(
                         stage: "commit_skipped",
                         source: "scope_sync",
@@ -5112,6 +5899,17 @@ class E2eRepository: EventsControllerDelegate {
                 }
                 group = try self.mlsClient.loadGroup(with: cidString)
                 let localEpoch = group.epoch()
+                let receipt = try durableInboxStore.localJoinReceiptProof(
+                    accountId: accountId,
+                    scopeCid: cidString
+                )
+                let receiptMatches = receipt.map {
+                    $0.status == .merged &&
+                        $0.commitHash == ciphertextHash &&
+                        $0.epoch == targetEpoch &&
+                        $0.requestDeviceId == data.deviceId &&
+                        data.user.id == accountId
+                } ?? false
                 let epochAction = E2eeCommitEpochAction.resolve(
                     localEpoch: localEpoch,
                     targetEpoch: targetEpoch
@@ -5135,6 +5933,31 @@ class E2eRepository: EventsControllerDelegate {
                 )
                 switch epochAction {
                 case .supersedeHistorical:
+                    if data.type == .externalCommit, receiptMatches,
+                       let deviceId = data.deviceId, deviceId == mlsClient.currentDeviceId,
+                       mlsClient.loadPendingGenerationJoin(cid: cidString) == nil,
+                       let marker = mlsClient.loadGenerationMarker(cid: cidString), marker.status == "active",
+                       marker.generation == incomingGeneration,
+                       (incomingGeneration == 0 || (marker.groupId != nil && marker.groupId == data.groupId.map { Data($0) })),
+                       !mlsClient.hasNonOperationalGroup(cid: cidString) {
+                        // The exact merged receipt proves our accepted candidate was installed.
+                        // A later realtime Commit may advance that installed group before the
+                        // first catch-up returns our join event. Preserve the original boundary
+                        // and finalize through the same atomic cursor/receipt transaction; do
+                        // not reapply the older Commit or treat other historical bytes as proof.
+                        try durableInboxStore.markCommitProofPersisted(
+                            accountId: accountId, scopeCid: cidString, eventId: eventId,
+                            ciphertextHash: ciphertextHash, targetEpoch: targetEpoch
+                        )
+                        try durableInboxStore.markCommitStatePersisted(
+                            accountId: accountId, scopeCid: cidString, eventId: eventId,
+                            ciphertextHash: ciphertextHash, targetEpoch: targetEpoch
+                        )
+                        return .finalizeExternalJoin(
+                            commitHash: ciphertextHash, epoch: targetEpoch,
+                            deviceId: deviceId, requireReceipt: true
+                        )
+                    }
                     try self.markMembershipCanonicalPersisted(cid: ChannelId(cid: cidString), epoch: data.epoch, commit: commitData)
                     try durableInboxStore.markCommitSuperseded(
                         accountId: accountId,
@@ -5173,17 +5996,6 @@ class E2eRepository: EventsControllerDelegate {
                     )
                 }
                 if localEpoch == targetEpoch {
-                    let receipt = try durableInboxStore.localJoinReceiptProof(
-                        accountId: accountId,
-                        scopeCid: cidString
-                    )
-                    let receiptMatches = receipt.map {
-                        $0.status == .merged &&
-                            $0.commitHash == ciphertextHash &&
-                            $0.epoch == targetEpoch &&
-                            $0.requestDeviceId == data.deviceId &&
-                            data.user.id == accountId
-                    } ?? false
                     let isOwnCommit = data.deviceId.flatMap { eventDeviceId in
                         data.user.id == accountId &&
                             mlsClient.ownsDeviceId(eventDeviceId, userId: accountId)
@@ -5498,9 +6310,17 @@ class E2eRepository: EventsControllerDelegate {
     }
     
     func consumeKeyPackagesBatch(targetUserIds: [String], completion: @escaping (Result<[KeyPackage], Error>) -> Void) {
+        // Other creator devices are optional; they cannot substitute for a
+        // required recipient. Preserve this check before staging any Commit.
+        let requiredRecipients = Set(targetUserIds).subtracting([mlsClient.userId].compactMap { $0 })
         apiClient.request(endpoint: .consumeKeyPackagesBatch(userIds: targetUserIds), completion: { result in
             switch result {
             case .success(let payload):
+                let coveredRecipients = Set(payload.members.filter { !$0.keyPackages.isEmpty }.map(\.userId))
+                guard requiredRecipients.isSubset(of: coveredRecipients) else {
+                    completion(.failure(ClientError.Unexpected("Recipient KeyPackage inventory is incomplete")))
+                    return
+                }
                 let memberKeyPackages = payload.members.reduce(into: [[UInt8]]()) { result, memberPackage in
                     let keyPackages = memberPackage.keyPackages.map({ $0.keyPackage})
                     result.append(contentsOf: keyPackages)
@@ -6518,7 +7338,8 @@ class E2eRepository: EventsControllerDelegate {
                 return
             }
             switch result {
-            case .success(let acceptedCandidate):
+            case .success(let acceptance):
+                let acceptedCandidate = acceptance.candidate
                 trace.info(
                     stage: "external_commit_accepted",
                     source: "external_join",
@@ -6551,10 +7372,25 @@ class E2eRepository: EventsControllerDelegate {
                     try performMlsMutation(cidString: cid.rawValue) {
                         try self.mlsClient.finishExternalJoinCandidate(cid: cid.rawValue, expected: acceptedCandidate)
                     }
+                    let retainedWelcome = try durableInboxStore.hasNoMatchingKeyPackageJoinPrerequisite(
+                        accountId: accountId, scopeCid: cid.rawValue
+                    )
                     try durableInboxStore.clearNoMatchingKeyPackageJoinPrerequisite(
                         accountId: accountId,
                         scopeCid: cid.rawValue
                     )
+                    if !retainedWelcome, self.isPristineJoinBase(acceptedCandidate),
+                       let cursor = acceptance.initialCursor, let owner = self.bootstrapOwnerStamp(),
+                       self.mlsClient.userId == accountId, self.mlsClient.currentDeviceId == requestDeviceId,
+                       self.mlsClient.identity === identityOwner,
+                       let marker = self.mlsClient.loadGenerationMarker(cid: cid.rawValue) {
+                        let hint = InitialJoinSyncAnchor(owner: owner, cid: cid.rawValue, deviceId: requestDeviceId,
+                            commitHash: commitHash, epoch: epoch, marker: marker, cursor: cursor)
+                        // Optional optimization; a failed write retains the membership fallback.
+                        if let bytes = try? JSONEncoder().encode(hint) {
+                            try? self.mlsClient.writeRecoveryCheckpoint(bytes, key: self.initialJoinSyncKey(cid.rawValue, owner: owner))
+                        }
+                    }
                     normalizeHistoricalApplications(cid: cid)
                     trace.info(
                         stage: "external_commit_merged",
@@ -6592,6 +7428,29 @@ class E2eRepository: EventsControllerDelegate {
         }
     }
     
+    private struct InitialJoinSyncAnchor: Codable {
+        let owner: Data
+        let cid: String
+        let deviceId: String
+        let commitHash: Data
+        let epoch: UInt64
+        let marker: MlsClient.GroupGenerationMarker
+        let cursor: ScopeSyncCursorPayload
+    }
+
+    private func initialJoinSyncKey(_ cid: String, owner: Data) -> String {
+        "initial_join_sync_v1:" + SHA256.hash(data: owner).map { String(format: "%02x", $0) }.joined() + ":" + cid
+    }
+
+    private func isPristineJoinBase(_ candidate: MlsClient.GroupGenerationMarker) -> Bool {
+        guard candidate.candidateFenceVersion == 1, candidate.candidateBaseEpoch == nil,
+              let bytes = candidate.candidateBaseMarker else { return false }
+        do { return try JSONDecoder().decode(MlsClient.GroupGenerationMarker?.self, from: bytes) == nil }
+        catch { return false }
+    }
+
+    private typealias AtomicJoinAcceptance = (candidate: MlsClient.GroupGenerationMarker, initialCursor: ScopeSyncCursorPayload?)
+
     private struct AtomicJoinReceipt: Decodable {
         let version: Int
         let operation_id: String
@@ -6605,10 +7464,23 @@ class E2eRepository: EventsControllerDelegate {
         let event_id: String?
         let rejection_reason: String?
         let rejected_at: String?
+        let acceptance_context: E2eeArchiveWire?
+
+        var initialCursor: ScopeSyncCursorPayload? {
+            guard let context = acceptance_context, let event = event_id, UUID(uuidString: event) != nil,
+                  let generation = group_generation, let epoch, let digest = commit_sha256,
+                  context["version"].number == 1, context["provenance"].string == "bellboy_transition_v1",
+                  context["event_id"].string == event, context["cid"].string == cid,
+                  context["group_generation"].number == generation, context["epoch"].number == epoch,
+                  context["payload_sha256"].string == digest,
+                  let second = context["accepted_at"].number, second > 0,
+                  second <= UInt64(Int64.max / 1000), Double(second) <= Date().timeIntervalSince1970 + 300 else { return nil }
+            return E2eRepository.cursor(fromMilliseconds: Int64(second) * 1000)
+        }
     }
 
     private func submitAtomicExternalJoin(cid: ChannelId, body: ExternalJoinRequestBody,
-        completion: @escaping (Result<MlsClient.GroupGenerationMarker, Error>) -> Void) {
+        completion: @escaping (Result<AtomicJoinAcceptance, Error>) -> Void) {
         do {
             guard let account = mlsClient.userId, var marker = mlsClient.loadPendingGenerationJoin(cid: cid.rawValue) else {
                 throw ClientError.Unexpected("Isolated external join checkpoint required")
@@ -6634,6 +7506,7 @@ class E2eRepository: EventsControllerDelegate {
             let hash: (Data) -> String = { SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined() }
             let receiptEndpoint = Endpoint<AtomicJoinReceipt>(path: .mlsControl("v1/e2ee/channels/\(cid.apiPath)/external_join/operations/\(operation)"),
                 method: .get, needDeviceId: true)
+            log.info("session_join operation_id=\(operation.lowercased()) stage=receipt", subsystems: .mls)
             let settle: (Result<AtomicJoinReceipt, Error>) -> Void = { [weak self] result in
                 do {
                     try current()
@@ -6652,7 +7525,8 @@ class E2eRepository: EventsControllerDelegate {
                     guard receipt.state == "accepted", receipt.event_id != nil else {
                         throw ClientError.Unexpected("External join outcome unknown")
                     }
-                    completion(.success(frozen))
+                    log.info("session_join operation_id=\(operation.lowercased()) stage=accepted", subsystems: .mls)
+                    completion(.success((candidate: frozen, initialCursor: receipt.initialCursor)))
                 } catch { completion(.failure(error)) }
             }
             apiClient.request(endpoint: receiptEndpoint) { [weak self] first in
@@ -6660,6 +7534,7 @@ class E2eRepository: EventsControllerDelegate {
                     try current()
                     let receipt = try first.get()
                     if receipt.state != "outcome_unknown" { settle(first); return }
+                    log.info("session_join operation_id=\(operation.lowercased()) stage=submit", subsystems: .mls)
                     self?.apiClient.request(endpoint: Endpoint<ChannelPayload>(path: .externalJoin(cid), method: .post,
                         body: encoded, needDeviceId: true)) { [weak self] _ in
                         do { try current(); self?.apiClient.request(endpoint: receiptEndpoint, completion: settle) }
@@ -6686,15 +7561,15 @@ class E2eRepository: EventsControllerDelegate {
     
     /// Resolves the channel id whose MLS group should be used for crypto operations in `cid`.
     ///
-    /// Topics share their parent channel's MLS group, so a topic resolves to its parent cid;
-    /// every other channel resolves to itself. If the topic's parent can't be resolved (e.g.
+    /// Canonical metadata selects a topic's own group or its shared parent group.
+    /// Old rows retain the parent fallback. If metadata can't be resolved (e.g.
     /// its row isn't in the DB yet) the topic cid is returned unchanged — the caller then
     /// fails to load a group and the message is buffered for retry, same as any missing group.
     func mlsGroupCid(for cid: ChannelId) -> ChannelId {
         guard cid.type == .topic else { return cid }
         var resolved = cid
-        database.viewContext.performAndWait {
-            guard let dto = ChannelDTO.load(cid: cid, context: database.viewContext),
+        e2eReadContext.performAndWait {
+            guard let dto = ChannelDTO.load(cid: cid, context: e2eReadContext),
                   let parentCid = try? ChannelId(cid: dto.mlsGroupCid) else { return }
             resolved = parentCid
         }
@@ -7287,9 +8162,17 @@ class E2eRepository: EventsControllerDelegate {
         do { try archiveRecovery?.stop() } catch { log.error("archive_recovery stage=logout_clear_failed", subsystems: .mls) }
         archiveRecovery = nil
         abortSync()
+        syncLock.lock(); unverifiedLiveSyncScopes.removeAll(); successfulSyncScopes.removeAll(); pendingSyncReadinessScopes.removeAll()
+        liveSyncCoverage.removeAll(); scopeSyncDemand.removeAll(); successfulSyncDemand.removeAll(); activeSyncMembershipDates.removeAll(); syncLock.unlock()
         bootstrapQueue.reset()
+        syncThrottleQueue.async { [weak self] in
+            self?.pendingSyncWorkItem?.cancel(); self?.pendingSyncWorkItem = nil; self?.lastSyncTriggeredAt = nil
+        }
         readinessLock.lock()
         readinessByCid.removeAll()
+        dormantBootstrapScopes.removeAll()
+        bootstrapStartedAt.removeAll()
+        lastBootstrapConnectionId = nil
         readinessCallbacks.removeAll()
         readinessLock.unlock()
         mutationExecutor.cancelAllAndWait()

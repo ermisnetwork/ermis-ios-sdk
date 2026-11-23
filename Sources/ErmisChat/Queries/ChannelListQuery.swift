@@ -348,6 +348,8 @@ public struct ChannelListQuery: Encodable {
     public let sort: [Sorting<ChannelListSortingKey>]
     /// Load the complete list through baseline pages; local only, never sent to the server.
     public var shouldLoadAllChannels: Bool = false
+    /// Only the unfiltered session root list owns the initial readiness inventory. Local-only.
+    public var sessionReadinessProjectId: String? = nil
     /// A pagination.
     public var pagination: Pagination
     /// A number of messages inside each channel.
