@@ -40,6 +40,12 @@ public class MessageController: DataController, DelegateCallable, DataStoreProvi
         return messageObserver.item
     }
 
+    /// Diagnoses the selected encrypted snapshot against its own archive epoch.
+    public func diagnoseMessageDecryption(_ message: ChatMessage) async -> E2eeMessageInfoReason {
+        guard message.id == messageId, message.cid == cid else { return .invalidEnvelope }
+        return await client.e2eRepository.diagnoseMessageDecryption(message, cid: cid)
+    }
+
     /// The replies to the message the controller represents.
     ///
     /// To observe changes of the replies, set your class as a delegate of this controller or use the provided

@@ -285,6 +285,7 @@ final class SessionSyncProgressTests: XCTestCase {
         XCTAssertEqual(sync.cycle, page.cycle); XCTAssertEqual(progress.snapshot?.scheduled, 2)
         progress.end(page, partial: true, retry: { retries += 1 }); progress.retry(); XCTAssertEqual(retries, 0)
         XCTAssertEqual(progress.snapshot?.status, "running")
+        XCTAssertEqual(progress.snapshot?.phase, "preparing")
         progress.end(sync); XCTAssertEqual(progress.snapshot?.status, "partial"); XCTAssertEqual(progress.snapshot?.completed, 2)
         progress.retry(); XCTAssertEqual(retries, 1)
         progress.end(page); XCTAssertEqual(progress.snapshot?.completed, 2)

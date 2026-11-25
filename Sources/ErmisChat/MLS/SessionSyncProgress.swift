@@ -199,12 +199,13 @@ public final class SessionSyncProgress {
         lock.lock()
         if pending.isEmpty { cycle = UUID(); scheduled = 0; completed = 0; failed = false; retryAction = nil }
         let ticket = Ticket(session: session, cycle: cycle, work: UUID())
-        pending.insert(ticket.work); scheduled += 1; self.phase = phase
+        pending.insert(ticket.work); scheduled += 1
+        if phase != "restoring_page" || pending.count == 1 { self.phase = phase }
         if phase == "restoring_page" { historyPresentation = true; historyTickets.insert(ticket.work) }
         else if historyTickets.isEmpty { historyPresentation = false }
         update(); let owner = session; lock.unlock(); publish(owner); return ticket
     }
-    func phase(_ phase: String) { lock.lock(); guard !pending.isEmpty else { lock.unlock(); return }; if !historyPresentation { self.phase = phase }; update(); let owner = session; lock.unlock(); publish(owner) }
+    func phase(_ phase: String) { lock.lock(); guard !pending.isEmpty else { lock.unlock(); return }; self.phase = phase; update(); let owner = session; lock.unlock(); publish(owner) }
     func markPartial() { lock.lock(); guard !pending.isEmpty else { lock.unlock(); return }; failed = true; update(); let owner = session; lock.unlock(); publish(owner) }
     func end(_ ticket: Ticket, partial: Bool = false, retry: (() -> Void)? = nil) {
         lock.lock()
@@ -212,7 +213,7 @@ public final class SessionSyncProgress {
         completed += 1; failed = failed || partial
         historyTickets.remove(ticket.work)
         // A settled page must not hide an existing session inventory indefinitely.
-        if historyTickets.isEmpty, inventoryCycle != nil { historyPresentation = false }
+        if historyTickets.isEmpty { historyPresentation = false }
         if let retry, failed { retryAction = retry }
         update(); let owner = session; lock.unlock(); publish(owner)
     }
@@ -250,7 +251,8 @@ public final class SessionSyncProgress {
                 scheduled: scheduled, completed: completed, isChannelReadiness: true, totalChannels: total,
                 readyChannels: ready, blockedChannels: blocked, failedChannels: failures, settledScopes: settled - standardSettled, totalScopes: weights.count - standardCount, standardChannels: standardCount)
         } else {
-            value = .init(cycleId: cycle, phase: phase, status: pending.isEmpty ? (failed ? "partial" : "done") : "running",
+            let visiblePhase = historyPresentation ? "restoring_page" : !pending.isEmpty && phase == "restoring_page" ? "preparing" : phase
+            value = .init(cycleId: cycle, phase: visiblePhase, status: pending.isEmpty ? (failed ? "partial" : "done") : "running",
                 scheduled: scheduled, completed: completed, isChannelReadiness: false, totalChannels: nil,
                 readyChannels: 0, blockedChannels: 0, failedChannels: 0, settledScopes: 0, totalScopes: 0, standardChannels: 0)
         }

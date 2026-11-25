@@ -430,10 +430,14 @@ private enum E2eeSyncApplyDisposition {
 
 /// Observable lifecycle state for one channel's effective MLS group.
 public enum E2eeChannelReadiness: String, Equatable, Sendable {
+    /// Posted with the owning client's sessionSyncProgress as the object.
+    public static let changed = Notification.Name("io.ermis.e2ee.channel.readiness")
+
     case restoring
     case syncing
     case joining
     case waitingForRepair = "waiting_for_repair"
+    case manualInterventionRequired = "manual_intervention_required"
     case rebootstrapping
     case recovered
     case historyIncomplete = "history_incomplete"
@@ -1390,7 +1394,7 @@ class E2eRepository: EventsControllerDelegate {
         // A fresh metadata observation may retry a settled partial head; in-flight
         // admission still coalesces the same envelope.
         for preview in previews {
-            requestHistoryPage(messages: [preview.message], cid: preview.cid, pageOwner: owner, retry: true)
+            requestHistoryPage(messages: [preview.message], cid: preview.cid, pageOwner: owner, retry: true, isPreview: true)
         }
     }
 
@@ -1400,10 +1404,12 @@ class E2eRepository: EventsControllerDelegate {
         let snapshot = Array(channelListPreviews.values)
         historyPageLock.unlock()
         let pending = snapshot.filter { scope == nil || mlsGroupCid(for: $0.0).rawValue == scope }
-        for (cid, message) in pending { requestHistoryPage(messages: [message], cid: cid, pageOwner: owner) }
+        for (cid, message) in pending {
+            requestHistoryPage(messages: [message], cid: cid, pageOwner: owner, isPreview: true)
+        }
     }
 
-    func requestHistoryPage(messages: [MessagePayload], cid: ChannelId, pageOwner: (() throws -> Void)? = nil, retry: Bool = false) {
+    func requestHistoryPage(messages: [MessagePayload], cid: ChannelId, pageOwner: (() throws -> Void)? = nil, retry: Bool = false, isPreview: Bool = false) {
         do { try pageOwner?() } catch { return }
         guard messages.count <= 50 else { return }
         var missing = messages
@@ -1432,7 +1438,47 @@ class E2eRepository: EventsControllerDelegate {
             return .object(raw)
         }
         guard !page.isEmpty else { return }
-        scheduleHistoryPage(cid: cid, page: page, retry: retry, pageOwner: pageOwner)
+        scheduleHistoryPage(cid: cid, page: page, retry: retry, pageOwner: pageOwner, isPreview: isPreview)
+    }
+
+    func diagnoseMessageDecryption(_ message: ChatMessage, cid: ChannelId) async -> E2eeMessageInfoReason {
+        guard let recovery = archiveRecovery else { return .unavailable }
+        guard let cipher = message.encryptedData, !cipher.isEmpty,
+              let epoch = message.mlsEpoch, epoch >= 0,
+              let generation = message.mlsGroupGeneration, generation >= 0 else { return .invalidEnvelope }
+        let assertOwner = captureHistorySessionOwner()
+        guard (try? assertOwner()) != nil else { return .unavailable }
+
+        var scope: String?
+        var hasPlaintext = false
+        e2eReadContext.performAndWait {
+            guard let row = MessageDTO.load(id: message.id, context: e2eReadContext),
+                  row.cid == cid.rawValue, row.encryptedData == cipher, row.mlsEpoch == Int64(epoch),
+                  row.mlsGroupGeneration == Int64(generation), row.updatedAt.bridgeDate == message.updatedAt,
+                  row.deletedAt == nil else { return }
+            scope = cid.type == .topic ? ChannelDTO.load(cid: cid, context: e2eReadContext)?.mlsGroupCid : cid.rawValue
+            if let cached = row.decryptedMessage {
+                hasPlaintext = cached.ciphertextHash == Data(SHA256.hash(data: cipher)) && (try? cached.asPayload()) != nil
+            }
+        }
+        guard (try? assertOwner()) != nil else { return .unavailable }
+        guard let scope, !scope.isEmpty else { return .invalidEnvelope }
+        if hasPlaintext { return .recovered }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var envelope: [String: E2eeArchiveWire] = [
+            "cid": .string(cid.rawValue), "e2ee_group_id": .string(scope), "message_id": .string(message.id),
+            "mls_ciphertext": .bytes(cipher), "mls_epoch": .uint(UInt64(epoch)), "group_generation": .uint(UInt64(generation)),
+            "created_at": .string(formatter.string(from: message.createdAt)),
+            "updated_at": .string(formatter.string(from: message.updatedAt)),
+            "user_id": .string(message.author.id), "user": .object(["id": .string(message.author.id)]),
+            "type": .string(message.type.rawValue)
+        ]
+        if let parent = message.parentMessageId { envelope["parent_id"] = .string(parent) }
+        if let quote = message.quotedMessageId { envelope["quoted_message_id"] = .string(quote) }
+        let reason = await recovery.diagnoseHistoryMessage(cid: scope, message: .object(envelope))
+        return (try? assertOwner()) != nil ? reason : .unavailable
     }
 
     func retryRequestedHistoryPage(afterUnlock: Bool = false) {
@@ -1443,13 +1489,13 @@ class E2eRepository: EventsControllerDelegate {
         if afterUnlock { restoreChannelListPreviews() }
     }
 
-    private func scheduleHistoryPage(cid: ChannelId, page: [E2eeArchiveWire], retry: Bool = false, pageOwner: (() throws -> Void)? = nil) {
+    private func scheduleHistoryPage(cid: ChannelId, page: [E2eeArchiveWire], retry: Bool = false, pageOwner: (() throws -> Void)? = nil, isPreview: Bool = false) {
         do { try pageOwner?() } catch { return }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         guard let encoded = try? encoder.encode(E2eeArchiveWire.array(page)), encoded.count <= 16 * 1024 * 1024 else { return }
         let key = Data(SHA256.hash(data: encoded)).base64EncodedString()
         historyPageLock.lock()
-        lastRequestedHistoryPage = (cid, page)
+        if !isPreview { lastRequestedHistoryPage = (cid, page) }
         if retry, historyPagesInFlight[key] == false { historyPagesInFlight.removeValue(forKey: key) }
         let admitted = historyPagesInFlight[key] == nil
         if admitted { historyPagesInFlight[key] = true }
@@ -1461,7 +1507,7 @@ class E2eRepository: EventsControllerDelegate {
         }
         let sessionOwner = captureHistorySessionOwner()
         let assertOwner = { try sessionOwner(); try pageOwner?() }
-        let progress = sessionProgress.begin("restoring_page")
+        let progress = isPreview ? nil : sessionProgress.begin("restoring_page")
         Task {
             var partial = false
             defer {
@@ -1474,7 +1520,9 @@ class E2eRepository: EventsControllerDelegate {
                     }
                 }
                 self.historyPageLock.unlock()
-                self.sessionProgress.end(progress, partial: partial, retry: { [weak self] in self?.retryRequestedHistoryPage() })
+                if let progress {
+                    self.sessionProgress.end(progress, partial: partial, retry: { [weak self] in self?.retryRequestedHistoryPage() })
+                }
             }
             do {
                 try assertOwner()
@@ -2732,7 +2780,7 @@ class E2eRepository: EventsControllerDelegate {
                 do {
                     let control = try self.observeRecoveryControl(state, cid: cid)
                     if control?.control.action == .manualInterventionRequired {
-                        self.finishBootstrap(cid: cid, state: .needsRetry)
+                        self.finishBootstrap(cid: cid, state: .manualInterventionRequired)
                         return
                     }
                 } catch {
@@ -3273,7 +3321,7 @@ class E2eRepository: EventsControllerDelegate {
                         self.removeMlsRebootstrapCheckpoint(cid: cid.rawValue)
                         self.removeMlsRebootstrapClaimIntent(cid: cid.rawValue)
                         if control.control.action == .manualInterventionRequired {
-                            self.finishBootstrap(cid: cid, state: .needsRetry)
+                            self.finishBootstrap(cid: cid, state: .manualInterventionRequired)
                         } else {
                             self.continueBootstrapAfterGenerationDiscovery(cid: cid, trace: trace)
                         }
@@ -3529,7 +3577,7 @@ class E2eRepository: EventsControllerDelegate {
         }
         guard sessionProgress.owns(owner) else { return }
         readinessLock.lock()
-        readinessByCid[cidString] = state
+        let previousState = readinessByCid.updateValue(state, forKey: cidString)
         let terminalStates: Set<E2eeChannelReadiness> = [
             .ready,
             .recovered,
@@ -3537,6 +3585,7 @@ class E2eRepository: EventsControllerDelegate {
             .clientUpgradeRequired,
             .infrastructureRetryable,
             .waitingForRepair,
+            .manualInterventionRequired,
             .needsRetry,
             .failed,
         ]
@@ -3560,6 +3609,9 @@ class E2eRepository: EventsControllerDelegate {
             groupLoaded: mlsClient.isGroupLoaded(cid: cidString)
         )
         log.debug("[E2EReadiness] state=\(state.rawValue)", subsystems: .mls)
+        if state != previousState {
+            NotificationCenter.default.post(name: E2eeChannelReadiness.changed, object: sessionProgress)
+        }
         callbacks.forEach { $0(state) }
     }
 
@@ -7534,6 +7586,7 @@ class E2eRepository: EventsControllerDelegate {
                     try current()
                     let receipt = try first.get()
                     if receipt.state != "outcome_unknown" { settle(first); return }
+                    guard !gi.isEmpty, gi.count <= 1024 * 1024 else { throw ClientError.Unexpected("Invalid external join GroupInfo size") }
                     log.info("session_join operation_id=\(operation.lowercased()) stage=submit", subsystems: .mls)
                     self?.apiClient.request(endpoint: Endpoint<ChannelPayload>(path: .externalJoin(cid), method: .post,
                         body: encoded, needDeviceId: true)) { [weak self] _ in

@@ -57,6 +57,23 @@ public struct E2eeHistoryPageResult: Sendable {
     /// Evidence from this requested page only; absence of accessible material is not proof of permanent loss.
     public var failures: [String: [String]] = [:]
 }
+
+public enum E2eeMessageInfoReason: String, Sendable {
+    case unavailable, invalidEnvelope, noVault, pinLocked, archiveAccessDenied, noArchive
+    case noWrap, missingSnapshot, invalidMaterial, archiveOpenFailed, decryptFailed, requestFailed, storageFailed, recovered
+
+    static func fromPageFailures(_ failures: [String]) -> Self {
+        if failures.contains("local_storage_failed") { return .storageFailed }
+        if failures.contains("epoch_access_denied") { return .archiveAccessDenied }
+        if failures.contains("no_accessible_archive") { return .noArchive }
+        if failures.contains("message_decrypt_or_validation_failed") { return .decryptFailed }
+        if failures.contains("archive_open_failed") { return .archiveOpenFailed }
+        if failures.contains("archive_metadata_invalid") { return .invalidMaterial }
+        if failures.contains("snapshot_unavailable") { return .missingSnapshot }
+        if failures.contains("matching_wrap_unavailable") { return .noWrap }
+        return .requestFailed
+    }
+}
 private struct PageEpoch: Hashable { let generation: UInt64; let epoch: UInt64 }
 
 private struct ArchiveCachedKey: Codable { let keyId: String; let privateKey: Data }
@@ -123,7 +140,7 @@ public actor E2eeArchiveRecovery {
 
     nonisolated public func clearRecoveryUnlock() throws { try session.write { try keys.clearUnlock() } }
     nonisolated func stop(clearUnlock: Bool = false) throws { try session.stop { if clearUnlock { try keys.clearUnlock() } }; Task { await cancelRuntime() } }
-    private func cancelRuntime() { retryTask?.cancel(); tail?.cancel(); pageTail?.cancel(); pageMaterials.removeAll(); pageMaterialOrder.removeAll(); pageMaterialBytes = 0; pendingPinChannels.removeAll() }
+    private func cancelRuntime() { retryTask?.cancel(); tail?.cancel(); pageTail?.cancel(); pageMaterials.removeAll(); pageMaterialOrder.removeAll(); pageMaterialBytes = 0; messageInfoFailures.removeAll(); pendingPinChannels.removeAll() }
     private func active() throws {
         try session.check()
         guard isCurrentAccount() else {
@@ -519,7 +536,7 @@ public actor E2eeArchiveRecovery {
     }
 
     /// Exact queried page. This lane never enumerates epochs/ciphertexts or marks history complete.
-    func restoreHistoryPage(cid: String, messages: [E2eeArchiveWire]) async throws -> E2eeHistoryPageResult {
+    func restoreHistoryPage(cid: String, messages: [E2eeArchiveWire], reportProgress: Bool = true) async throws -> E2eeHistoryPageResult {
         guard cid.contains(":"), messages.count <= 50,
               messages.allSatisfy({ message in
                   guard let id = message["message_id"].string, UUID(uuidString: id)?.uuidString.lowercased() == id.lowercased(),
@@ -528,18 +545,50 @@ public actor E2eeArchiveRecovery {
                   return message["cid"].string == cid || message["e2ee_group_id"].string == cid
               }) else { throw E2eeArchiveError.invalidData }
         let previous = pageTail
-        let job = Task { await previous?.value; try active(); return try await restoreRequestedPage(cid, messages) }
+        let job = Task { await previous?.value; try active(); return try await restoreRequestedPage(cid, messages, reportProgress: reportProgress) }
         pageTail = Task { _ = try? await job.value }
         return try await job.value
     }
 
-    private func restoreRequestedPage(_ cid: String, _ messages: [E2eeArchiveWire]) async throws -> E2eeHistoryPageResult {
+    func diagnoseHistoryMessage(cid: String, message: E2eeArchiveWire) async -> E2eeMessageInfoReason {
+        do {
+            let page = try await restoreHistoryPage(cid: cid, messages: [message], reportProgress: false)
+            if page.requiresPin { return vault == nil ? .noVault : .pinLocked }
+            if page.restored > 0 || page.skipped > 0 { return .recovered }
+            return .fromPageFailures(page.failures[message["message_id"].string ?? ""] ?? [])
+        } catch E2eeArchiveError.sessionEnded {
+            return .unavailable
+        } catch E2eeArchiveError.invalidData {
+            return .invalidEnvelope
+        } catch {
+            return .requestFailed
+        }
+    }
+
+    private var messageInfoFailures: [String: [String]] = [:]
+
+    private func messageInfoKey(_ cid: String, _ message: E2eeArchiveWire) -> String {
+        let digest = SHA256.hash(data: message["mls_ciphertext"].bytes ?? Data())
+        return [
+            cid, message["cid"].string ?? "", message["message_id"].string ?? "",
+            String(message["group_generation"].number ?? 0), String(message["mls_epoch"].number ?? 0),
+            message["updated_at"].string ?? message["created_at"].string ?? "",
+            vault?["recovery_key_id"].string ?? "", Data(digest).base64EncodedString()
+        ].joined(separator: "|")
+    }
+
+    private func restoreRequestedPage(_ cid: String, _ messages: [E2eeArchiveWire], reportProgress: Bool) async throws -> E2eeHistoryPageResult {
         try active()
         if messages.isEmpty { return .init(restored: 0, unavailable: 0, skipped: 0, requiresPin: false) }
         if vault == nil { try await loadVault() }
         guard var privateKey = try cachedKey() else { return .init(restored: 0, unavailable: messages.count, skipped: 0, requiresPin: true) }
         defer { privateKey.resetBytes(in: 0..<privateKey.count) }
-        publish("page_restoring", cid: cid)
+        if !reportProgress, messages.count == 1, let message = messages.first,
+           let reason = messageInfoFailures[messageInfoKey(cid, message)],
+           let id = message["message_id"].string {
+            return .init(restored: 0, unavailable: 1, skipped: 0, requiresPin: false, failures: [id: reason])
+        }
+        if reportProgress { publish("page_restoring", cid: cid) }
         var restored = 0, unavailable = 0, skipped = 0
         var failures: [String: [String]] = [:]
         func recordFailure(_ message: E2eeArchiveWire, _ reasons: Set<String>) {
@@ -621,7 +670,10 @@ public actor E2eeArchiveRecovery {
                 removePageMaterial(key); unavailable += page.count - processed
                 let underlying = (error as? ClientError)?.underlyingError ?? error
                 let reason: String
-                if let api = underlying as? ErmisApiError { reason = "material_http_\(api.httpStatusCode)" }
+                if let api = Self.apiError(error) {
+                    reason = api.code == 6 && api.message.localizedCaseInsensitiveContains("restore this epoch range")
+                        ? "epoch_access_denied" : "material_http_\(api.httpStatusCode)"
+                }
                 else if underlying is URLError { reason = "material_network_error" }
                 else if case E2eeArchiveError.storageFailure = error { reason = "local_storage_failed" }
                 else { reason = "material_read_or_validation_failed" }
@@ -629,7 +681,19 @@ public actor E2eeArchiveRecovery {
             }
         }
         try active()
-        publish(unavailable == 0 ? "page_ready" : "page_partial", cid: cid, reason: unavailable == 0 ? nil : "material_or_validation_unavailable", restored: restored)
+        for message in messages {
+            guard let id = message["message_id"].string else { continue }
+            let reason = failures[id]
+            let classified = E2eeMessageInfoReason.fromPageFailures(reason ?? [])
+            let key = messageInfoKey(cid, message)
+            messageInfoFailures[key] = classified == .requestFailed || classified == .storageFailed ? nil : reason
+        }
+        while messageInfoFailures.count > 1024, let key = messageInfoFailures.keys.first {
+            messageInfoFailures.removeValue(forKey: key)
+        }
+        if reportProgress {
+            publish(unavailable == 0 ? "page_ready" : "page_partial", cid: cid, reason: unavailable == 0 ? nil : "material_or_validation_unavailable", restored: restored)
+        }
         return .init(restored: restored, unavailable: unavailable, skipped: skipped, requiresPin: false, failures: failures)
     }
 

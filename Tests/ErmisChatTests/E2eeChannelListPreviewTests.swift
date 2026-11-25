@@ -51,15 +51,15 @@ final class E2eeChannelListPreviewTests: XCTestCase {
     }
 
     private final class TrackingRepository: E2eRepository {
-        var requests: [(ChannelId, [MessagePayload], Bool)] = []
+        var requests: [(cid: ChannelId, messages: [MessagePayload], isPreview: Bool)] = []
         var retired = false
         override func captureHistorySessionOwner() -> () throws -> Void {
             return { [weak self] in guard let self, !self.retired else { throw E2eeArchiveError.sessionEnded } }
         }
         override func readiness(for cid: ChannelId) -> E2eeChannelReadiness { .needsRetry }
-        override func requestHistoryPage(messages: [MessagePayload], cid: ChannelId, pageOwner: (() throws -> Void)? = nil, retry: Bool = false) {
+        override func requestHistoryPage(messages: [MessagePayload], cid: ChannelId, pageOwner: (() throws -> Void)? = nil, retry: Bool = false, isPreview: Bool = false) {
             do { try pageOwner?() } catch { return }
-            requests.append((cid, messages, retry))
+            requests.append((cid, messages, isPreview))
         }
     }
 
@@ -84,7 +84,8 @@ final class E2eeChannelListPreviewTests: XCTestCase {
     func testJoinedPreviewUsesIndependentHistoryLaneEvenWhenLiveScopeNeedsRetry() throws {
         let (client, repository) = try repository(); defer { withExtendedLifetime(client) {} }
         repository.requestChannelListPreviews([try row(1)])
-        XCTAssertEqual(repository.requests.map { $0.1.first?.id }, ["head-1"])
+        XCTAssertEqual(repository.requests.map { $0.messages.first?.id }, ["head-1"])
+        XCTAssertEqual(repository.requests.map { $0.isPreview }, [true])
     }
 
     func testUnlockRetriesAllRetainedPreviewHeadsWithoutOpeningChannels() throws {
@@ -92,7 +93,8 @@ final class E2eeChannelListPreviewTests: XCTestCase {
         repository.requestChannelListPreviews([try row(1), try row(2)])
         repository.requests.removeAll()
         repository.retryRequestedHistoryPage(afterUnlock: true)
-        XCTAssertEqual(Set(repository.requests.compactMap { $0.1.first?.id }), ["head-1", "head-2"])
+        XCTAssertEqual(Set(repository.requests.compactMap { $0.messages.first?.id }), ["head-1", "head-2"])
+        XCTAssertTrue(repository.requests.allSatisfy { $0.isPreview })
     }
 
     func testRetiredMetadataOwnerCannotSchedulePreview() throws {

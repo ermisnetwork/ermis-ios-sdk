@@ -24,6 +24,16 @@ private actor PageMaterialRequests {
 }
 
 final class E2eeHistoryPageTests: XCTestCase {
+    func testMessageInfoKeepsMissingArchiveDistinctFromDenialAndRequestFailure() {
+        XCTAssertEqual(E2eeMessageInfoReason.fromPageFailures(["no_accessible_archive"]), .noArchive)
+        XCTAssertEqual(E2eeMessageInfoReason.fromPageFailures(["epoch_access_denied"]), .archiveAccessDenied)
+        XCTAssertEqual(E2eeMessageInfoReason.fromPageFailures(["material_http_400"]), .requestFailed)
+        XCTAssertEqual(E2eeMessageInfoReason.fromPageFailures(["matching_wrap_unavailable"]), .noWrap)
+        XCTAssertEqual(E2eeMessageInfoReason.fromPageFailures(["snapshot_unavailable"]), .missingSnapshot)
+        XCTAssertEqual(E2eeMessageInfoReason.fromPageFailures(["archive_open_failed"]), .archiveOpenFailed)
+        XCTAssertEqual(E2eeMessageInfoReason.fromPageFailures(["message_decrypt_or_validation_failed"]), .decryptFailed)
+    }
+
     func testBaselineOmittedGenerationIsZeroAndExplicitInvalidProvenanceStaysRejected() throws {
         let base: [String: Any] = ["id": UUID().uuidString.lowercased(), "cid": "messaging:project:page",
             "user": ["id": "sender"], "created_at": "2026-11-17T00:00:00.000Z",
