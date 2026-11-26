@@ -57,7 +57,7 @@ final class E2eeChannelListPreviewTests: XCTestCase {
             return { [weak self] in guard let self, !self.retired else { throw E2eeArchiveError.sessionEnded } }
         }
         override func readiness(for cid: ChannelId) -> E2eeChannelReadiness { .needsRetry }
-        override func requestHistoryPage(messages: [MessagePayload], cid: ChannelId, pageOwner: (() throws -> Void)? = nil, retry: Bool = false, isPreview: Bool = false) {
+        override func requestHistoryPage(messages: [MessagePayload], cid: ChannelId, pageOwner: (() throws -> Void)? = nil, retry: Bool = false, isPreview: Bool = false, showHistoryProgress: Bool = false) {
             do { try pageOwner?() } catch { return }
             requests.append((cid, messages, isPreview))
         }

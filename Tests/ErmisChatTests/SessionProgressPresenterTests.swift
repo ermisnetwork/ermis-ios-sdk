@@ -27,6 +27,26 @@ final class SessionProgressPresenterTests: XCTestCase {
         })
     }
 
+    @MainActor func testForegroundHistoryShowsOnceForItsEncryptedRoute() throws {
+        let progress = SessionSyncProgress(), ui = presenter(progress)
+        let (window, chat, _) = host()
+        let first = try XCTUnwrap(progress.beginHistoryPage(cid: "team:secure"))
+        ui.show(on: chat, channelId: "team:secure", isEncrypted: { true })
+        XCTAssertEqual(panels(chat).count, 1)
+        ui.show(on: chat, channelId: "topic:standard", isEncrypted: { false })
+        XCTAssertTrue(panels(chat).isEmpty)
+        ui.show(on: chat, channelId: "other", isEncrypted: { true })
+        XCTAssertTrue(panels(chat).isEmpty)
+        progress.endHistoryPage(first)
+        XCTAssertNil(progress.snapshot)
+        XCTAssertNil(progress.beginHistoryPage(cid: "team:secure"))
+        progress.invalidate()
+        let replacement = try XCTUnwrap(progress.beginHistoryPage(cid: "team:secure"))
+        progress.endHistoryPage(first)
+        XCTAssertEqual(progress.snapshot?.cycleId, replacement)
+        withExtendedLifetime(window) {}
+    }
+
     @MainActor func testPreparationHidesFractionsUntilReadinessStartsOnTheSamePopup() throws {
         let p = SessionSyncProgress(), ui = presenter(p)
         let (window, list, action) = host()

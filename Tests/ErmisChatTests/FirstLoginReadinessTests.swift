@@ -9,7 +9,7 @@ final class FirstLoginReadinessTests: XCTestCase {
     private func row(_ id: String, parent: String? = nil, scope: String? = nil,
                      role: String? = "member", encrypted: Bool = true, blocked: Bool = false,
                      topics: [[String: Any]] = []) -> [String: Any] {
-        var channel: [String: Any] = ["cid": id, "type": parent == nil ? "team" : "topic",
+        var channel: [String: Any] = ["cid": id, "type": parent == nil ? (id.hasPrefix("messaging:") ? "messaging" : "team") : "topic",
             "created_at": "2026-11-19T00:00:00Z", "updated_at": "2026-11-19T00:00:00Z",
             "mls_enabled": encrypted]
         channel["gate"] = parent != nil && scope == id
@@ -882,6 +882,89 @@ final class FirstLoginReadinessTests: XCTestCase {
         f.api.lock.lock(); let reply = f.api.syncReply; f.api.syncReply = nil; f.api.lock.unlock(); reply?()
         awaitState(f) { f.repo.sessionProgress.snapshot?.status == "done" }
         XCTAssertEqual(f.repo.sessionProgress.snapshot?.readyChannels, 8)
+    }
+
+    func testForegroundOpenUsesCommittedGroupForRootDirectAndBothTopicTypes() throws {
+        let root = "team:project:foreground"
+        let direct = "messaging:project:foreground-direct"
+        let inherited = "topic:project:foreground-inherited"
+        let independent = "topic:project:foreground-independent"
+        let standard = "team:project:foreground-standard"
+        let plainTopic = "topic:project:foreground-plain-topic"
+        let rows = [row(root), row(direct), row(inherited, parent: root, scope: root),
+                    row(independent, parent: root, scope: independent), row(standard, encrypted: false),
+                    row(plainTopic, parent: standard, encrypted: false)]
+        let f = try fixture(rows: rows, groups: [root, direct, independent])
+        let snapshot = try payload(rows)
+        let topicId = try ChannelId(cid: inherited)
+        let missing = expectation(description: "Missing topic never starts discovery against its own CID")
+        f.repo.prepareForegroundConversation(topicId) { state in
+            XCTAssertNil(state)
+            missing.fulfill()
+        }
+        wait(for: [missing], timeout: 5)
+        XCTAssertTrue(f.api.discovered.isEmpty)
+
+        try f.db.writeAndWait { session in
+            for row in snapshot.channels { _ = try session.saveChannel(payload: row, query: nil, cache: nil) }
+        }
+        for raw in [standard, plainTopic] {
+            let ignored = expectation(description: "Standard timeline does not start MLS")
+            f.repo.prepareForegroundConversation(try ChannelId(cid: raw)) { state in
+                XCTAssertNil(state)
+                ignored.fulfill()
+            }
+            wait(for: [ignored], timeout: 5)
+        }
+        XCTAssertTrue(f.api.discovered.isEmpty)
+
+        for raw in [inherited, root, direct, independent] {
+            let opened = expectation(description: "Visible timeline becomes usable in this process")
+            let cid = try ChannelId(cid: raw)
+            f.repo.prepareForegroundConversation(cid) { state in
+                XCTAssertEqual(state, .ready)
+                opened.fulfill()
+            }
+            wait(for: [opened], timeout: 8)
+            XCTAssertNoThrow(try f.repo.encryptedMessage(E2ePayload(text: "fixture", attachments: [], stickerUrl: nil), in: cid))
+        }
+        XCTAssertEqual(f.api.discovered, [root: 1, direct: 1, independent: 1])
+        XCTAssertEqual(f.api.externalJoins, 0)
+    }
+
+    func testForegroundInstalledGroupDoesNotWaitForUnrelatedDiscovery() throws {
+        let head = "team:project:foreground-busy"
+        let root = "team:project:foreground-local"
+        let rows = [row(head), row(root)]
+        let f = try fixture(rows: rows, groups: [head, root])
+        let channels = try payload(rows).channels
+        try f.db.writeAndWait { session in
+            for row in channels { _ = try session.saveChannel(payload: row, query: nil, cache: nil) }
+        }
+        let control = try JSONDecoder().decode(MlsRecoveryControl.self, from: JSONSerialization.data(withJSONObject: [
+            "incident_id": "00000000-0000-4000-8000-000000000001", "recovery_action": "none",
+            "recovery_revision": "1", "repair_retry_until": NSNull()
+        ]))
+        let identity = try XCTUnwrap(f.client.identity)
+        let signer = SHA256.hash(data: identity.signaturePublicKey()).map { String(format: "%02x", $0) }.joined()
+        let checkpoint = MlsRecoveryControlCheckpoint(userId: user, deviceId: try XCTUnwrap(f.client.currentDeviceId),
+            signerSha256: signer, cid: root, generation: 0, groupId: nil, control: control)
+        _ = try f.client.recoveryControlStore().observe(checkpoint, assertCurrent: {})
+
+        f.api.holdScope = head
+        let held = try ChannelId(cid: head)
+        f.repo.ensureE2eeReady(for: held) { _ in }
+        awaitState(f) { f.api.lock.lock(); defer { f.api.lock.unlock() }; return f.api.scopeReply != nil }
+        defer { releaseHead(f) }
+
+        let opened = expectation(description: "Local proof settles before unrelated HTTP resumes")
+        f.repo.prepareForegroundConversation(try ChannelId(cid: root)) { state in
+            XCTAssertEqual(state, .ready)
+            opened.fulfill()
+        }
+        wait(for: [opened], timeout: 5)
+        XCTAssertEqual(f.api.discovered, [head: 1])
+        XCTAssertTrue(f.api.synced.isEmpty)
     }
 
     func testConcurrentOpenUsesAlreadyAdmittedScopeAndOldSessionResponseCannotPublish() throws {

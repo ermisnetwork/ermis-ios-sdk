@@ -33,7 +33,9 @@ public final class SessionProgressPresenter {
         observers.append(NotificationCenter.default.addObserver(forName: Self.hostDidAppear, object: nil, queue: .main) { [weak self] notification in
             _Concurrency.Task { @MainActor in
                 guard let self, let host = notification.object as? UIViewController else { return }
-                self.show(on: host, anchor: notification.userInfo?["progressAnchor"] as? UIView)
+                self.show(on: host, anchor: notification.userInfo?["progressAnchor"] as? UIView,
+                          channelId: notification.userInfo?["progressChannelId"] as? String,
+                          isEncrypted: notification.userInfo?["progressIsEncrypted"] as? () -> Bool)
             }
         })
         observers.append(NotificationCenter.default.addObserver(forName: Self.hostWillDisappear, object: nil, queue: .main) { [weak self] notification in
@@ -49,23 +51,32 @@ public final class SessionProgressPresenter {
         }
     }
     private weak var progressAnchor: UIView?
-    public func show(on host: UIViewController, anchor: UIView? = nil) {
+    private var channelId: String?
+    private var isEncrypted: (() -> Bool)?
+
+    public func show(on host: UIViewController, anchor: UIView? = nil, channelId: String? = nil, isEncrypted: (() -> Bool)? = nil) {
         panel?.removeFromSuperview(); panel = nil; progressHost = host; progressAnchor = anchor
+        self.channelId = channelId
+        self.isEncrypted = isEncrypted
         refresh(replayTerminal: false)
     }
     public func hide(from host: UIViewController) {
         guard progressHost === host else { return }
-        panel?.removeFromSuperview(); panel = nil; progressHost = nil; progressAnchor = nil
+        panel?.removeFromSuperview(); panel = nil; progressHost = nil; progressAnchor = nil; channelId = nil; isEncrypted = nil
     }
     func refresh(replayTerminal: Bool = true) {
         guard let progress = currentProgress() else { panel?.removeFromSuperview(); panel = nil; owner = nil; cycle = nil; dismissed = nil; return }
         if owner !== progress { panel?.removeFromSuperview(); panel = nil; owner = progress; cycle = nil; dismissed = nil }
         guard let state = progress.snapshot else { panel?.removeFromSuperview(); panel = nil; cycle = nil; dismissed = nil; return }
+        if isEncrypted?() == false || (state.historyCid != nil && state.historyCid != channelId) {
+            panel?.removeFromSuperview(); panel = nil
+            return
+        }
         if cycle != state.cycleId || state.status != "done" {
             completionTimer?.cancel(); completionTimer = nil; timerCycle = nil; timerToken = UUID()
         }
         cycle = state.cycleId
-        guard dismissed != state.cycleId else { return }
+        guard dismissed != state.cycleId else { panel?.removeFromSuperview(); panel = nil; return }
         // Navigation must not replay a previous page's completed notification.
         guard replayTerminal || state.status == "running" || state.isChannelReadiness else { return }
         guard let progressHost, let host = progressHost.viewIfLoaded, host.window != nil else { panel?.removeFromSuperview(); panel = nil; return }

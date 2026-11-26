@@ -52,6 +52,11 @@ final class MessageRepositoryAtomicTransportTests: XCTestCase {
     private final class CancelBeforePrepareRepository: E2eRepository {
         var beforePrepare: (() throws -> Void)?
         var beforeAccept: (() -> Void)?
+        var beforeDispatch: (() -> Void)?
+        override func markOutgoingDispatch(_ original: MlsSendIntent) throws -> MlsSendIntent {
+            beforeDispatch?()
+            return try super.markOutgoingDispatch(original)
+        }
         override func acceptOutgoingSend(_ original: MlsSendIntent) throws {
             beforeAccept?()
             try super.acceptOutgoingSend(original)
@@ -65,6 +70,9 @@ final class MessageRepositoryAtomicTransportTests: XCTestCase {
         try scenario(cancelAfterDispatch: false, cancelBeforeIntent: true)
     }
     func testLostAckUsesReconcileExactEnvelopeAndPublishesOnce() throws { try scenario(cancelAfterDispatch: false) }
+    func testOutgoingDispatchReleasesWriterBeforeMlsInboxRead() throws {
+        try scenario(cancelAfterDispatch: false, directAcceptance: true, probeDispatchWriter: true)
+    }
     func testDirectCanonicalAcceptanceReleasesWriterBeforeMlsInboxRead() throws {
         try scenario(cancelAfterDispatch: false, directAcceptance: true)
     }
@@ -225,7 +233,7 @@ final class MessageRepositoryAtomicTransportTests: XCTestCase {
 
     private func scenario(cancelAfterDispatch: Bool, cancelBeforeIntent: Bool = false,
                           automaticReconcile: Bool = false, coalescedWake: Bool = false,
-                          directAcceptance: Bool = false) throws {
+                          directAcceptance: Bool = false, probeDispatchWriter: Bool = false) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("message-repository-" + UUID().uuidString)
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "message-repository-" + UUID().uuidString))
         let devices = MlsDeviceIdStore(defaults: defaults, legacyDefaults: defaults, secureStore: SecureStore())
@@ -262,6 +270,14 @@ final class MessageRepositoryAtomicTransportTests: XCTestCase {
             downloader: ErmisDownloader(client: ErmisDownloadClient(sessionConfiguration: config)))
         let e2e = CancelBeforePrepareRepository(database: database, eventNotificationCenter: EventNotificationCenter(database: database), mlsClient: client, apiClient: api)
         let repository = MessageRepository(database: database, apiClient: api, e2eRepository: e2e)
+        if probeDispatchWriter {
+            e2e.beforeDispatch = {
+                let writerAvailable = DispatchSemaphore(value: 0)
+                database.writableContext.perform { writerAvailable.signal() }
+                XCTAssertEqual(writerAvailable.wait(timeout: .now() + 2), .success,
+                    "Outgoing dispatch must release the database writer before waiting for MLS")
+            }
+        }
         e2e.beforeAccept = {
             // Reproduce the opposing inbox read from a separate thread. A callback
             // still holding writableContext would prevent this queued read from

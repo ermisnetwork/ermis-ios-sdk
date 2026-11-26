@@ -301,6 +301,21 @@ final class E2eeMlsRolloutControlsTests: XCTestCase {
         XCTAssertNil(queue.dequeue())
     }
 
+    func testPointSyncCompletionAllowsAnotherForegroundOpenToStart() throws {
+        let queue = E2eeBootstrapQueue()
+        let first = try ChannelId(cid: "team:project:foreground-first")
+        let next = try ChannelId(cid: "team:project:foreground-next")
+        XCTAssertTrue(queue.enqueuePriority(first))
+        XCTAssertEqual(queue.dequeue(), first)
+        queue.prepareForBatchSync(first)
+        XCTAssertEqual(queue.takeSyncBatch(pointOnly: true), [first])
+        queue.finishSyncBatch([first])
+        XCTAssertNil(queue.dequeue())
+        XCTAssertTrue(queue.takeSyncBatch().isEmpty)
+        XCTAssertTrue(queue.enqueuePriority(next))
+        XCTAssertEqual(queue.dequeue(), next)
+    }
+
     func testConcurrentBootstrapAdmissionCreatesOneJoinCandidatePerScope() throws {
         let queue = E2eeBootstrapQueue()
         let cid = try ChannelId(cid: "messaging:project:rollout-bootstrap")

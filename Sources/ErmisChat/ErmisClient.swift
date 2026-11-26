@@ -1009,6 +1009,25 @@ public class ErmisClient {
         }
     }
 
+    /// Prepares the MLS group of a visible channel or topic. Nil means its stored metadata
+    /// cannot yet identify an eligible encrypted conversation. Completion runs on main.
+    public func prepareForegroundE2eeConversation(
+        _ cid: ChannelId, completion: @escaping (E2eeChannelReadiness?) -> Void
+    ) {
+        let owner = sessionSyncProgress.owner
+        e2eRepository.prepareForegroundConversation(cid) { [weak self] state in
+            DispatchQueue.main.async {
+                guard self?.sessionSyncProgress.owns(owner) == true else { return }
+                completion(state)
+            }
+        }
+    }
+
+    /// Replays the last queried history page only when it belongs to this visible timeline.
+    public func refreshForegroundE2eeHistory(_ cid: ChannelId) {
+        e2eRepository.refreshForegroundHistory(cid)
+    }
+
     /// Runs the Welcome-first bootstrap flow and completes when the channel reaches a terminal state.
     public func ensureE2eeReady(
         for cid: ChannelId,

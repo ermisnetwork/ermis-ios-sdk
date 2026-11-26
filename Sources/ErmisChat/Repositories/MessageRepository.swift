@@ -21,8 +21,8 @@ class MessageRepository {
     private let reconcileLock = NSLock()
     private var reconciliationWakeInFlight = false
     private var reconciliationWakePending = false
-    // Canonical acceptance may synchronously enter the MLS executor, whose inbox
-    // reads also need Core Data's writer. Never invoke it while holding that writer.
+    // Send continuations may synchronously enter MLS, whose inbox reads also
+    // need Core Data's writer. Run them outside the writer's completion callback.
     private let sendPersistenceCompletionQueue = DispatchQueue(
         label: "network.ermis.MessageRepository.send-persistence-completion",
         qos: .userInitiated
@@ -215,15 +215,7 @@ class MessageRepository {
             // Change the message state to `.sending` and the proceed with the actual sending
             let sendingStateStartedAt = E2eeSendTrace.nowNanoseconds()
             e2eeTrace?.info(stage: "local_state_sending_started")
-            self.database.write({
-                guard let messageDTO = $0.message(id: messageId), !messageDTO.isHardDeleted,
-                      messageDTO.localMessageState == localState else {
-                    throw MessageRepositoryError.messageNotPendingSend
-                }
-                messageDTO.localMessageState = isEpochStaleRetry
-                    ? .sendingAfterE2eeEpochStale
-                    : .sending
-            }, completion: { error in
+            let continueSending: (Error?) -> Void = { error in
                 if let error = error {
                     if isEncrypted { self.retireOutgoingIntentAfterLocalCancellation(messageId: messageId, cid: cid) }
                     if let e2eeTrace {
@@ -376,6 +368,19 @@ class MessageRepository {
                         }
                     }
                 }
+            }
+            self.database.write({
+                guard let messageDTO = $0.message(id: messageId), !messageDTO.isHardDeleted,
+                      messageDTO.localMessageState == localState else {
+                    throw MessageRepositoryError.messageNotPendingSend
+                }
+                messageDTO.localMessageState = isEpochStaleRetry
+                    ? .sendingAfterE2eeEpochStale
+                    : .sending
+            }, completion: { error in
+                // Dispatch and retirement can wait for MLS, which in turn can
+                // synchronously read the writer-owned durable inbox.
+                self.sendPersistenceCompletionQueue.async { continueSending(error) }
             })
         }
     }

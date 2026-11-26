@@ -15,6 +15,7 @@ public struct SessionSyncProgressSnapshot {
     public let settledScopes: Int
     public let totalScopes: Int
     public let standardChannels: Int
+    public let historyCid: String?
 }
 
 /// One session's presentation state. Jobs and verified channel readiness have separate units.
@@ -35,6 +36,27 @@ public final class SessionSyncProgress {
     private var quietRestoredBootstrap = false
     private var historyPresentation = false
     private var historyTickets = Set<UUID>()
+    private var presentedHistoryCids = Set<String>()
+    private var historyProgress: SessionSyncProgressSnapshot?
+
+    func beginHistoryPage(cid: String) -> UUID? {
+        lock.lock()
+        guard presentedHistoryCids.insert(cid).inserted else { lock.unlock(); return nil }
+        let ticket = UUID()
+        historyProgress = .init(cycleId: ticket, phase: "restoring_page", status: "running",
+            scheduled: 1, completed: 0, isChannelReadiness: false, totalChannels: nil,
+            readyChannels: 0, blockedChannels: 0, failedChannels: 0, settledScopes: 0,
+            totalScopes: 0, standardChannels: 0, historyCid: cid)
+        update(); let owner = session; lock.unlock(); publish(owner)
+        return ticket
+    }
+
+    func endHistoryPage(_ ticket: UUID) {
+        lock.lock()
+        guard historyProgress?.cycleId == ticket else { lock.unlock(); return }
+        historyProgress = nil
+        update(); let owner = session; lock.unlock(); publish(owner)
+    }
 
     private var inventoryRequest: InventoryTicket?
     private var excludedDuringInventory = Set<String>()
@@ -228,8 +250,9 @@ public final class SessionSyncProgress {
         lock.unlock(); action?()
     }
     func invalidate() {
-        lock.lock(); session = UUID(); pending.removeAll(); value = nil; retryAction = nil
+        lock.lock(); session = UUID(); pending.removeAll(); value = nil; retryAction = nil; scheduled = 0; completed = 0
         quietRestoredBootstrap = false
+        historyProgress = nil; presentedHistoryCids.removeAll()
         readinessStarted = false
         inventoryRequest = nil; inventoryCycle = nil; channels = nil; weights.removeAll(); channelsByScope.removeAll(); results.removeAll(); historyTickets.removeAll()
         excludedDuringInventory.removeAll()
@@ -237,6 +260,8 @@ public final class SessionSyncProgress {
         let owner = session; lock.unlock(); publish(owner)
     }
     private func update() {
+        if let historyProgress { value = historyProgress; return }
+        if inventoryCycle == nil && scheduled == 0 { value = nil; return }
         if let inventoryCycle, !historyPresentation {
             let total = channels?.count
             if quietRestoredBootstrap && !inventoryFailed && (total == nil || ready == total) {
@@ -249,12 +274,12 @@ public final class SessionSyncProgress {
             let status = inventoryFailed ? "partial" : total == nil ? "running" : ready == total ? "done" : settled == weights.count ? "partial" : "running"
             value = .init(cycleId: inventoryCycle, phase: total == nil ? "inventory" : status == "running" && !readinessStarted ? "preparing" : "readiness", status: status,
                 scheduled: scheduled, completed: completed, isChannelReadiness: true, totalChannels: total,
-                readyChannels: ready, blockedChannels: blocked, failedChannels: failures, settledScopes: settled - standardSettled, totalScopes: weights.count - standardCount, standardChannels: standardCount)
+                readyChannels: ready, blockedChannels: blocked, failedChannels: failures, settledScopes: settled - standardSettled, totalScopes: weights.count - standardCount, standardChannels: standardCount, historyCid: nil)
         } else {
             let visiblePhase = historyPresentation ? "restoring_page" : !pending.isEmpty && phase == "restoring_page" ? "preparing" : phase
             value = .init(cycleId: cycle, phase: visiblePhase, status: pending.isEmpty ? (failed ? "partial" : "done") : "running",
                 scheduled: scheduled, completed: completed, isChannelReadiness: false, totalChannels: nil,
-                readyChannels: 0, blockedChannels: 0, failedChannels: 0, settledScopes: 0, totalScopes: 0, standardChannels: 0)
+                readyChannels: 0, blockedChannels: 0, failedChannels: 0, settledScopes: 0, totalScopes: 0, standardChannels: 0, historyCid: nil)
         }
     }
     private func publish(_ owner: UUID) {
